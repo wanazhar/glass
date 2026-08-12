@@ -154,15 +154,33 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )
         }
         DevSurface::Agent => format!(
-            "CONVERSATION\n{}\n\n{}\n\nComposer: press i · submit Enter · Esc returns to navigation\nSession and model actions: :agent status|doctor|models|new|resume",
+            "CONVERSATION\n{}\n\n{}\n\nComposer: press i · submit Enter · Esc returns to navigation\nFirst run: :agent setup [login] · readiness: :agent status|doctor\nSession actions: :agent new|clone|fork|model|thinking",
             state.agent_readiness, state.agent_conversation
         ),
         DevSurface::Code => format!(
-            "FILES / EDITOR\n{}\n\nDIAGNOSTICS\n{}\n\nActions: :editor open PATH · :editor replace PATH OLD NEW · :editor save PATH · :lsp diagnostics",
-            state.editor, state.lsp
+            "FILES\n{}\n\nEDITOR{}\n{}\n\nDIAGNOSTICS\n{}\n\nKeys: j/k select file · Enter open · i edit · arrows · Ctrl-S · Ctrl-Z/Y",
+            state
+                .files
+                .iter()
+                .enumerate()
+                .take(24)
+                .map(|(index, path)| format!(
+                    "{} {}",
+                    if index == state.selected_file {
+                        "◆"
+                    } else {
+                        "○"
+                    },
+                    path
+                ))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            if state.code_edit_mode { " · EDIT" } else { "" },
+            state.editor,
+            state.lsp
         ),
         DevSurface::App => format!(
-            "APP WORKSPACE\n{}\n\nWORKFLOW\n{}\n\nActions: :browser start|observe|targets|navigate|back|forward|reload|click|type · :workflow list|run",
+            "APP WORKSPACE\n{}\n\nWORKFLOW\n{}\n\nKeys: j/k select · Enter activate · n address · t type · PgUp/PgDn page · H human · G Glass\nActions: :browser start|observe|targets|navigate|back|forward|reload|click|type · :workflow list|run",
             state.browser, state.workflow
         ),
         DevSurface::Terminal => format!(
@@ -378,6 +396,20 @@ mod tests {
         assert!(state.palette_matches().contains(&"browser"));
 
         state.close_palette();
+        state.command_history = vec!["agent status".into(), "browser observe".into()];
+        state.open_palette();
+        state.navigate_palette_history(true);
+        assert_eq!(state.command_input, "browser observe");
+        state.navigate_palette_history(true);
+        assert_eq!(state.command_input, "agent status");
+        state.navigate_palette_history(false);
+        assert_eq!(state.command_input, "browser observe");
+        state.command_input = "brw".into();
+        state.command_cursor = state.command_input.len();
+        state.complete_palette();
+        assert_eq!(state.command_input, "browser");
+
+        state.close_palette();
         let surface = state.surface;
         state.scroll_surface(3);
         assert_eq!(state.surface, surface);
@@ -394,6 +426,57 @@ mod tests {
         state.deny_confirmation();
         assert!(state.pending_confirmation.is_none());
         assert!(state.status.contains("Denied"));
+    }
+
+    #[test]
+    fn code_surface_opens_edits_navigates_undoes_redoes_and_saves() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Code;
+        state.selected_file = state
+            .files
+            .iter()
+            .position(|path| path == "Cargo.toml")
+            .unwrap();
+        state.open_selected_file();
+        state.enter_code_edit();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('#'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(
+            state
+                .workspace
+                .project()
+                .buffer("Cargo.toml")
+                .unwrap()
+                .dirty
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('z'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        assert!(
+            !state
+                .workspace
+                .project()
+                .buffer("Cargo.toml")
+                .unwrap()
+                .content
+                .starts_with('#')
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('y'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        assert!(
+            std::fs::read_to_string(state.workspace.root().join("Cargo.toml"))
+                .unwrap()
+                .starts_with('#')
+        );
     }
 
     #[test]

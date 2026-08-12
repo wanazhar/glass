@@ -411,12 +411,6 @@ impl BrowserWorkspaceController {
         let mut controller = Self::new(layout);
         if adapter == BrowserWorkspaceAdapterKind::Standalone {
             for operation in [
-                BrowserOperation::WorkflowList,
-                BrowserOperation::WorkflowRun,
-                BrowserOperation::WorkflowPause,
-                BrowserOperation::WorkflowResume,
-                BrowserOperation::WorkflowCancel,
-                BrowserOperation::WorkflowVerify,
                 BrowserOperation::RemoteViewOpen,
                 BrowserOperation::RemoteViewStatus,
                 BrowserOperation::RemoteViewRevoke,

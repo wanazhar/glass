@@ -49,6 +49,11 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             }
                             _ => {}
                         }
+                    } else if state.code_edit_mode {
+                        match key.code {
+                            KeyCode::Esc => state.close_code_edit(),
+                            _ => state.edit_code_key(key.code, key.modifiers),
+                        }
                     } else if state.composer_mode {
                         match key.code {
                             KeyCode::Esc => state.close_composer(),
@@ -66,6 +71,9 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             KeyCode::Backspace => state.palette_backspace(),
                             KeyCode::Left => state.move_palette_cursor(false),
                             KeyCode::Right => state.move_palette_cursor(true),
+                            KeyCode::Up => state.navigate_palette_history(true),
+                            KeyCode::Down => state.navigate_palette_history(false),
+                            KeyCode::Tab => state.complete_palette(),
                             KeyCode::Char(character) => state.insert_palette_char(character),
                             _ => {}
                         }
@@ -94,6 +102,41 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             (KeyCode::Char('i'), _) if state.surface == DevSurface::Agent => {
                                 state.open_composer();
                             }
+                            (KeyCode::Char('i'), _) if state.surface == DevSurface::Code => {
+                                state.enter_code_edit();
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::Code => {
+                                state.open_selected_file();
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::App => {
+                                state.execute_app_intent(BrowserWorkspaceIntent::ActivateSelected)
+                            }
+                            (KeyCode::PageUp, _) if state.surface == DevSurface::App => state
+                                .execute_app_intent(BrowserWorkspaceIntent::ScrollBrowser {
+                                    dx: 0.0,
+                                    dy: -600.0,
+                                }),
+                            (KeyCode::PageDown, _) if state.surface == DevSurface::App => state
+                                .execute_app_intent(BrowserWorkspaceIntent::ScrollBrowser {
+                                    dx: 0.0,
+                                    dy: 600.0,
+                                }),
+                            (KeyCode::Char('n'), _) if state.surface == DevSurface::App => {
+                                state.open_palette_with("browser navigate ")
+                            }
+                            (KeyCode::Char('t'), _) if state.surface == DevSurface::App => {
+                                state.open_palette_with("browser type ")
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Code =>
+                            {
+                                state.move_file_selection(-1)
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Code =>
+                            {
+                                state.move_file_selection(1)
+                            }
                             (KeyCode::Up, _) | (KeyCode::Char('k'), _)
                                 if state.surface == DevSurface::App =>
                             {
@@ -101,6 +144,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                     .browser_workspace
                                     .reduce(BrowserWorkspaceIntent::MoveSelection { delta: -1 });
                                 state.browser = state.browser_workspace_summary();
+                                state.highlight_app_selection();
                             }
                             (KeyCode::Down, _) | (KeyCode::Char('j'), _)
                                 if state.surface == DevSurface::App =>
@@ -109,6 +153,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                     .browser_workspace
                                     .reduce(BrowserWorkspaceIntent::MoveSelection { delta: 1 });
                                 state.browser = state.browser_workspace_summary();
+                                state.highlight_app_selection();
                             }
                             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => state.scroll_surface(-1),
                             (KeyCode::Down, _) | (KeyCode::Char('j'), _) => state.scroll_surface(1),
@@ -136,6 +181,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             .browser_workspace
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta });
                         state.browser = state.browser_workspace_summary();
+                        state.highlight_app_selection();
                     }
                 }
                 Event::Mouse(mouse) => match mouse.kind {

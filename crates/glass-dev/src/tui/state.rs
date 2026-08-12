@@ -1,8 +1,9 @@
 use super::command;
 use crate::{DevelopmentWorkspace, ExperimentComparison};
 use glass_browser::browser_workspace::{
-    BrowserConnectionPhase, BrowserWorkspaceAdapterKind, BrowserWorkspaceController,
-    BrowserWorkspaceEntity, BrowserWorkspaceLayout,
+    BrowserConnectionPhase, BrowserWorkspaceAction, BrowserWorkspaceAdapterKind,
+    BrowserWorkspaceController, BrowserWorkspaceEntity, BrowserWorkspaceIntent,
+    BrowserWorkspaceLayout,
 };
 use glass_browser::cli::args::TuiLayout;
 use serde::{Deserialize, Serialize};
@@ -90,6 +91,7 @@ pub struct DevTuiState {
     pub command_input: String,
     pub command_cursor: usize,
     pub command_history: Vec<String>,
+    pub command_history_index: Option<usize>,
     pub palette_error: Option<String>,
     pub composer_mode: bool,
     pub composer_input: String,
@@ -105,6 +107,9 @@ pub struct DevTuiState {
     pub agent_conversation: String,
     pub tasks: String,
     pub editor: String,
+    pub files: Vec<String>,
+    pub selected_file: usize,
+    pub code_edit_mode: bool,
     pub lsp: String,
     pub processes: String,
     pub git: String,
@@ -153,6 +158,7 @@ impl DevTuiState {
             command_input: String::new(),
             command_cursor: 0,
             command_history: Vec::new(),
+            command_history_index: None,
             palette_error: None,
             composer_mode: false,
             composer_input: String::new(),
@@ -174,6 +180,9 @@ impl DevTuiState {
             agent_conversation: "No conversation yet. Press i to compose a message.".into(),
             tasks: String::new(),
             editor: String::new(),
+            files: Vec::new(),
+            selected_file: 0,
+            code_edit_mode: false,
             lsp: String::new(),
             processes: String::new(),
             git: String::new(),
@@ -215,6 +224,7 @@ impl DevTuiState {
         self.command_mode = true;
         self.command_input.clear();
         self.command_cursor = 0;
+        self.command_history_index = None;
         self.palette_error = None;
         self.status = "Command palette · type help for routes".into();
     }
@@ -223,6 +233,7 @@ impl DevTuiState {
         self.command_mode = false;
         self.command_input.clear();
         self.command_cursor = 0;
+        self.command_history_index = None;
         self.palette_error = None;
         self.status = "Command cancelled".into();
     }
@@ -230,6 +241,7 @@ impl DevTuiState {
     pub fn submit_palette(&mut self) {
         let input = std::mem::take(&mut self.command_input);
         self.command_cursor = 0;
+        self.command_history_index = None;
         self.command_mode = false;
         if !input.trim().is_empty() && self.command_history.last() != Some(&input) {
             self.command_history.push(input.clone());
@@ -254,6 +266,7 @@ impl DevTuiState {
         self.command_input.insert(self.command_cursor, character);
         self.command_cursor += character.len_utf8();
         self.palette_error = None;
+        self.command_history_index = None;
     }
 
     pub fn insert_palette_text(&mut self, text: &str) {
@@ -273,6 +286,50 @@ impl DevTuiState {
             .unwrap_or(0);
         self.command_input.drain(previous..self.command_cursor);
         self.command_cursor = previous;
+        self.command_history_index = None;
+    }
+
+    pub fn navigate_palette_history(&mut self, older: bool) {
+        if self.command_history.is_empty() {
+            return;
+        }
+        let last = self.command_history.len() - 1;
+        let index = match (self.command_history_index, older) {
+            (None, true) => last,
+            (None, false) => return,
+            (Some(index), true) => index.saturating_sub(1),
+            (Some(index), false) if index < last => index + 1,
+            (Some(_), false) => {
+                self.command_history_index = None;
+                self.command_input.clear();
+                self.command_cursor = 0;
+                return;
+            }
+        };
+        self.command_history_index = Some(index);
+        self.command_input.clone_from(&self.command_history[index]);
+        self.command_cursor = self.command_input.len();
+    }
+
+    pub fn complete_palette(&mut self) {
+        let Some(completion) = self.palette_matches().first().copied() else {
+            return;
+        };
+        let suffix = self
+            .command_input
+            .find(char::is_whitespace)
+            .map(|index| self.command_input[index..].to_string())
+            .unwrap_or_default();
+        self.command_input = format!("{completion}{suffix}");
+        self.command_cursor = self.command_input.len();
+        self.command_history_index = None;
+        self.status = format!("Completed `{completion}` · Enter runs · ↑/↓ history");
+    }
+
+    pub fn open_palette_with(&mut self, prefix: &str) {
+        self.open_palette();
+        self.command_input = prefix.into();
+        self.command_cursor = self.command_input.len();
     }
 
     pub fn move_palette_cursor(&mut self, right: bool) {
@@ -522,6 +579,203 @@ impl DevTuiState {
             .min(u16::MAX as usize) as u16
     }
 
+    pub fn move_file_selection(&mut self, delta: i32) {
+        if self.files.is_empty() {
+            self.selected_file = 0;
+            return;
+        }
+        self.selected_file = (self.selected_file as i32 + delta)
+            .clamp(0, self.files.len().saturating_sub(1) as i32)
+            as usize;
+    }
+
+    pub fn open_selected_file(&mut self) {
+        let Some(path) = self.files.get(self.selected_file).cloned() else {
+            self.status = "No project file selected".into();
+            return;
+        };
+        match self
+            .workspace
+            .project_mut()
+            .open_buffer(&path, crate::development::Actor::local())
+        {
+            Ok(_) => {
+                self.status = format!("Opened {path} · press i to edit");
+                self.refresh();
+            }
+            Err(error) => self.status = format!("Open failed: {error}"),
+        }
+    }
+
+    pub fn enter_code_edit(&mut self) {
+        if self.workspace.project().buffers().next().is_none() {
+            self.open_selected_file();
+        }
+        if self.workspace.project().buffers().next().is_some() {
+            self.code_edit_mode = true;
+            self.status =
+                "EDIT · arrows move · Ctrl-S save · Ctrl-Z/Y undo/redo · Esc close".into();
+        }
+    }
+
+    pub fn close_code_edit(&mut self) {
+        self.code_edit_mode = false;
+        self.status = "Code navigation".into();
+    }
+
+    pub fn edit_code_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
+        let Some(buffer) = self.workspace.project().buffers().next().cloned() else {
+            self.status = "No open buffer".into();
+            return;
+        };
+        let path = buffer.path.clone();
+        let result = match (code, modifiers) {
+            (crossterm::event::KeyCode::Char('s'), value)
+                if value.contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.workspace.project_mut().save_buffer(&path).map(|_| ())
+            }
+            (crossterm::event::KeyCode::Char('z'), value)
+                if value.contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.workspace.project_mut().undo_buffer(&path).map(|_| ())
+            }
+            (crossterm::event::KeyCode::Char('y'), value)
+                if value.contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.workspace.project_mut().redo_buffer(&path).map(|_| ())
+            }
+            (crossterm::event::KeyCode::Left, _) => self.move_editor_cursor(&path, 0, -1),
+            (crossterm::event::KeyCode::Right, _) => self.move_editor_cursor(&path, 0, 1),
+            (crossterm::event::KeyCode::Up, _) => self.move_editor_cursor(&path, -1, 0),
+            (crossterm::event::KeyCode::Down, _) => self.move_editor_cursor(&path, 1, 0),
+            (crossterm::event::KeyCode::Enter, _) => self.insert_editor_text(&path, "\n"),
+            (crossterm::event::KeyCode::Backspace, _) => self.backspace_editor(&path),
+            (crossterm::event::KeyCode::Char(character), _) => {
+                self.insert_editor_text(&path, &character.to_string())
+            }
+            _ => Ok(()),
+        };
+        if let Err(error) = result {
+            self.status = format!("Editor action failed: {error}");
+        }
+        self.refresh();
+    }
+
+    fn move_editor_cursor(
+        &mut self,
+        path: &str,
+        line_delta: i32,
+        column_delta: i32,
+    ) -> crate::development::DevelopmentResult<()> {
+        let buffer = self
+            .workspace
+            .project()
+            .buffer(path)
+            .cloned()
+            .ok_or_else(|| {
+                crate::development::DevelopmentError::NotFound(format!("buffer {path}"))
+            })?;
+        let lines = buffer.content.split('\n').collect::<Vec<_>>();
+        let line =
+            (buffer.cursor_line as i32 + line_delta).clamp(1, lines.len().max(1) as i32) as u32;
+        let max_column = lines
+            .get(line.saturating_sub(1) as usize)
+            .map(|line| line.chars().count() + 1)
+            .unwrap_or(1) as u32;
+        let column = if line_delta != 0 {
+            buffer.cursor_column.min(max_column)
+        } else {
+            (buffer.cursor_column as i32 + column_delta).clamp(1, max_column as i32) as u32
+        };
+        self.workspace
+            .project_mut()
+            .set_buffer_cursor(path, line, column)
+    }
+
+    fn insert_editor_text(
+        &mut self,
+        path: &str,
+        text: &str,
+    ) -> crate::development::DevelopmentResult<()> {
+        let buffer = self
+            .workspace
+            .project()
+            .buffer(path)
+            .cloned()
+            .ok_or_else(|| {
+                crate::development::DevelopmentError::NotFound(format!("buffer {path}"))
+            })?;
+        let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
+        let mut content = buffer.content.clone();
+        content.insert_str(offset, text);
+        self.workspace.project_mut().edit_buffer(
+            path,
+            content,
+            crate::development::Actor::local(),
+        )?;
+        let (line, column) = if text == "\n" {
+            (buffer.cursor_line + 1, 1)
+        } else {
+            (
+                buffer.cursor_line,
+                buffer.cursor_column + text.chars().count() as u32,
+            )
+        };
+        self.workspace
+            .project_mut()
+            .set_buffer_cursor(path, line, column)
+    }
+
+    fn backspace_editor(&mut self, path: &str) -> crate::development::DevelopmentResult<()> {
+        let buffer = self
+            .workspace
+            .project()
+            .buffer(path)
+            .cloned()
+            .ok_or_else(|| {
+                crate::development::DevelopmentError::NotFound(format!("buffer {path}"))
+            })?;
+        let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
+        if offset == 0 {
+            return Ok(());
+        }
+        let previous = buffer.content[..offset]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let removed_newline = &buffer.content[previous..offset] == "\n";
+        let mut content = buffer.content.clone();
+        content.drain(previous..offset);
+        self.workspace.project_mut().edit_buffer(
+            path,
+            content.clone(),
+            crate::development::Actor::local(),
+        )?;
+        let (line, column) = if removed_newline {
+            let line = buffer.cursor_line.saturating_sub(1).max(1);
+            let column = content
+                .split('\n')
+                .nth(line.saturating_sub(1) as usize)
+                .map(|line| line.chars().count() + 1)
+                .unwrap_or(1) as u32;
+            (line, column)
+        } else {
+            (
+                buffer.cursor_line,
+                buffer.cursor_column.saturating_sub(1).max(1),
+            )
+        };
+        self.workspace
+            .project_mut()
+            .set_buffer_cursor(path, line, column)
+    }
+
     pub fn previous_surface(&mut self) {
         let surfaces: &[DevSurface] = if self
             .responsive_class(self.terminal_width, self.terminal_height)
@@ -544,6 +798,22 @@ impl DevTuiState {
     }
 
     pub fn refresh(&mut self) {
+        self.files = self
+            .workspace
+            .project()
+            .list_files()
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|entry| matches!(entry.kind, crate::development::FileKind::File))
+                    .map(|entry| entry.path)
+                    .take(512)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !self.files.is_empty() {
+            self.selected_file = self.selected_file.min(self.files.len() - 1);
+        }
         self.agents = match self.workspace.agents().list() {
             Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
             Ok(agents) => agents
@@ -1058,6 +1328,64 @@ impl DevTuiState {
             entities,
         )
     }
+
+    pub fn highlight_app_selection(&mut self) {
+        let Some(entity) = self.browser_workspace.state().selected().cloned() else {
+            return;
+        };
+        if let Err(error) = self
+            .workspace
+            .browser()
+            .highlight(entity.reference, entity.revision)
+        {
+            let stale = error.to_string().to_lowercase().contains("stale");
+            self.browser_workspace.fail_action(error.to_string(), stale);
+            self.status = format!("App highlight failed: {error}");
+        }
+    }
+
+    pub fn execute_app_intent(&mut self, intent: BrowserWorkspaceIntent) {
+        let action = match self.browser_workspace.reduce(intent) {
+            Ok(Some(action)) => action,
+            Ok(None) => return,
+            Err(error) => {
+                self.status = format!("App action unavailable: {error}");
+                return;
+            }
+        };
+        let result = match action {
+            BrowserWorkspaceAction::Click {
+                target,
+                expected_revision,
+            } => self.workspace.browser().click(target, expected_revision),
+            BrowserWorkspaceAction::Scroll {
+                dx,
+                dy,
+                expected_revision,
+            } => self.workspace.browser().scroll(dx, dy, expected_revision),
+            _ => return,
+        };
+        match result.and_then(|_| self.workspace.browser().observe()) {
+            Ok(observation) => {
+                self.apply_browser_result("glass.browser.observe", &observation);
+                self.browser_detail = serde_json::to_string_pretty(&observation)
+                    .unwrap_or_else(|_| observation.to_string());
+                self.status = "App action complete · semantic revision refreshed".into();
+            }
+            Err(error) => {
+                let stale = error.to_string().to_lowercase().contains("stale");
+                self.browser_workspace.fail_action(error.to_string(), stale);
+                self.status = format!("App action failed: {error}");
+            }
+        }
+    }
+
+    pub fn refresh_agent_readiness(&mut self) -> Result<bool, String> {
+        let readiness = crate::pi_runtime::pi_readiness().map_err(|error| error.to_string())?;
+        let ready = readiness.ready;
+        self.agent_readiness = format_pi_readiness(&readiness);
+        Ok(ready)
+    }
 }
 
 fn format_pi_readiness(readiness: &crate::PiReadiness) -> String {
@@ -1119,4 +1447,21 @@ fn fuzzy_contains(candidate: &str, query: &str) -> bool {
         }
     }
     false
+}
+
+fn editor_offset(content: &str, line: u32, column: u32) -> usize {
+    let mut offset = 0;
+    for (index, value) in content.split_inclusive('\n').enumerate() {
+        if index + 1 == line as usize {
+            let column_bytes = value
+                .trim_end_matches('\n')
+                .char_indices()
+                .nth(column.saturating_sub(1) as usize)
+                .map(|(offset, _)| offset)
+                .unwrap_or_else(|| value.trim_end_matches('\n').len());
+            return offset + column_bytes;
+        }
+        offset += value.len();
+    }
+    content.len()
 }

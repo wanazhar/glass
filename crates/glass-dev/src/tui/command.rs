@@ -108,6 +108,27 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
     };
     require_trusted(state)?;
     match action {
+        "doctor" | "status" => {
+            let ready = state.refresh_agent_readiness()?;
+            state.surface = DevSurface::Agent;
+            Ok(if ready {
+                "Glass Agent is ready".into()
+            } else {
+                "Glass Agent needs setup · run `agent setup`, then `agent status`".into()
+            })
+        }
+        "setup" => {
+            let login = parts.get(1).is_some_and(|value| *value == "login");
+            crate::pi_runtime::setup_pi_runtime(None, None, false, login)
+                .map_err(|error| error.to_string())?;
+            let ready = state.refresh_agent_readiness()?;
+            state.surface = DevSurface::Agent;
+            Ok(if ready {
+                "Managed Pi runtime installed and Glass Agent is ready".into()
+            } else {
+                "Managed Pi runtime installed · authentication is still required; run `agent setup login`".into()
+            })
+        }
         "spawn" => {
             let role = parts.get(1).ok_or("agent spawn requires ROLE TASK")?;
             let task = parts.get(2..).unwrap_or_default().join(" ");
@@ -164,7 +185,7 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
         "messages" => agent_control(state, &parts, "glass.agent.messages", json!({})),
         "entries" => agent_control(state, &parts, "glass.agent.entries", json!({})),
         "stats" => agent_control(state, &parts, "glass.agent.stats", json!({})),
-        _ => Err("agent actions: spawn, prompt, steer, follow-up, cancel, compact, model, thinking, new, clone, fork, messages, entries, stats".into()),
+        _ => Err("agent actions: doctor, status, setup [login], spawn, prompt, steer, follow-up, cancel, compact, model, thinking, new, clone, fork, messages, entries, stats".into()),
     }
 }
 

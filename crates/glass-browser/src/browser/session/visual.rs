@@ -7,6 +7,48 @@
 use super::*;
 
 impl BrowserSession {
+    /// Highlight one current semantic target in the live page without changing page state.
+    pub async fn highlight_target_with_revision(
+        &self,
+        target: &str,
+        expected_revision: u64,
+    ) -> BrowserResult<()> {
+        self.cdp
+            .with_current_route(async {
+                self.require_expected_revision(Some(expected_revision))?;
+                let element = self.resolve_element(target).await?;
+                self.cdp.send("Overlay.enable", None).await?;
+                let mut params = serde_json::json!({
+                    "highlightConfig": {
+                        "showInfo": false,
+                        "showStyles": false,
+                        "contentColor": {"r": 0, "g": 210, "b": 255, "a": 0.18},
+                        "borderColor": {"r": 0, "g": 210, "b": 255, "a": 0.95}
+                    }
+                });
+                if let Some(node_id) = element.node_id {
+                    params["nodeId"] = Value::from(node_id);
+                } else if let Some(backend_id) = element.backend_dom_node_id {
+                    params["backendNodeId"] = Value::from(backend_id);
+                } else {
+                    return Err("semantic target has no highlightable DOM identity".into());
+                }
+                self.cdp.send("Overlay.highlightNode", Some(params)).await?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Clear the current live semantic highlight.
+    pub async fn clear_target_highlight(&self) -> BrowserResult<()> {
+        self.cdp
+            .with_current_route(async {
+                self.cdp.send("Overlay.hideHighlight", None).await?;
+                Ok(())
+            })
+            .await
+    }
+
     /// Capture a PNG screenshot and return the raw PNG bytes.
     ///
     /// Policy-gated: requires the `Screenshot` capability. Base64-decodes

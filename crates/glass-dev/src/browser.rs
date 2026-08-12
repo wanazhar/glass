@@ -79,6 +79,10 @@ enum BrowserCommand {
     Forward(u64),
     Reload(u64),
     StopLoading(u64),
+    Highlight {
+        target: String,
+        expected_revision: u64,
+    },
     Click {
         target: String,
         expected_revision: u64,
@@ -221,6 +225,13 @@ impl BrowserService {
 
     pub fn stop_loading(&self, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::StopLoading(expected_revision))
+    }
+
+    pub fn highlight(&self, target: String, expected_revision: u64) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::Highlight {
+            target,
+            expected_revision,
+        })
     }
 
     pub fn click(&self, target: String, expected_revision: u64) -> DevelopmentResult<Value> {
@@ -513,6 +524,16 @@ impl BrowserWorker {
                     .map_err(browser_error)?;
                 self.revision = Some(outcome.current_revision);
                 serde_json::to_value(outcome).map_err(Into::into)
+            }
+            BrowserCommand::Highlight {
+                target,
+                expected_revision,
+            } => {
+                self.session()?
+                    .highlight_target_with_revision(&target, expected_revision)
+                    .await
+                    .map_err(browser_error)?;
+                Ok(serde_json::json!({"highlighted":target,"browserRevision":expected_revision}))
             }
             BrowserCommand::Click {
                 target,

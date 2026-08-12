@@ -18,12 +18,16 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use std::collections::BTreeMap;
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 use std::time::Instant;
 
 use super::herdr_graphics::{HerdrEnvironment, HerdrEvent, HerdrFrame, HerdrGraphicsWorker};
-use crate::browser::session::{BrowserResult, BrowserSession, SessionOptions};
+use crate::browser::session::{
+    BrowserResult, BrowserSession, SessionOptions, WorkflowCheckpoint, WorkflowDefinition,
+    WorkflowRunResult,
+};
 use crate::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAdapterKind, BrowserWorkspaceController,
     BrowserWorkspaceEntity, BrowserWorkspaceIntent, BrowserWorkspaceLayout,
@@ -69,6 +73,8 @@ struct BrowserTui {
     workspace: BrowserWorkspaceController,
     graphics: Option<HerdrGraphicsWorker>,
     live_visual: bool,
+    last_workflow: Option<(WorkflowDefinition, WorkflowRunResult)>,
+    workflow_checkpoint: Option<WorkflowCheckpoint>,
 }
 
 impl BrowserTui {
@@ -86,6 +92,8 @@ impl BrowserTui {
             ),
             graphics,
             live_visual: false,
+            last_workflow: None,
+            workflow_checkpoint: None,
         }
     }
 
@@ -110,6 +118,56 @@ impl BrowserTui {
         if command == "observe" {
             self.mode = WorkspaceMode::Browser;
             return self.observe().await.map(|_| false);
+        }
+        if let Some(text) = command.strip_prefix("type ") {
+            let action = self
+                .workspace
+                .reduce(BrowserWorkspaceIntent::TypeSelected {
+                    text: text.to_string(),
+                })
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let Some(crate::browser_workspace::BrowserWorkspaceAction::Type {
+                target,
+                text,
+                expected_revision,
+            }) = action
+            else {
+                return Ok(false);
+            };
+            self.session
+                .as_ref()
+                .ok_or("browser is detached")?
+                .type_text_with_expected_revision(&text, target.as_deref(), Some(expected_revision))
+                .await?;
+            self.observe().await?;
+            self.status = "Text sent to selected semantic target".into();
+            return Ok(false);
+        }
+        if let Some(dy) = command.strip_prefix("scroll ") {
+            let dy = dy
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| "scroll requires a pixel delta such as `scroll 600`")?;
+            let action = self
+                .workspace
+                .reduce(BrowserWorkspaceIntent::ScrollBrowser { dx: 0.0, dy })
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let Some(crate::browser_workspace::BrowserWorkspaceAction::Scroll {
+                dx,
+                dy,
+                expected_revision,
+            }) = action
+            else {
+                return Ok(false);
+            };
+            self.session
+                .as_ref()
+                .ok_or("browser is detached")?
+                .scroll_with_revision(dx, dy, Some(expected_revision))
+                .await?;
+            self.observe().await?;
+            self.status = format!("Scrolled page by {dy:.0}px");
+            return Ok(false);
         }
         if command == "state" {
             self.status = format!(
@@ -236,6 +294,96 @@ impl BrowserTui {
                 crate::browser_workspace::BrowserPresentationPath::SemanticOnly;
             self.workspace.state_mut().presentation_reason =
                 Some("continuous visual presentation disabled".into());
+            return Ok(false);
+        }
+        if command == "workflow list" {
+            self.page = self.last_workflow.as_ref().map_or_else(
+                || "No workflow run in this workspace".into(),
+                |(definition, result)| {
+                    format!(
+                        "{} · {:?} · final revision {} · {} steps",
+                        definition.name,
+                        result.status,
+                        result.final_revision,
+                        result.steps.len()
+                    )
+                },
+            );
+            self.status = "Workflow history".into();
+            return Ok(false);
+        }
+        if let Some(path) = command.strip_prefix("workflow run ") {
+            let document: serde_json::Value = serde_json::from_slice(&std::fs::read(path.trim())?)?;
+            let definition = WorkflowDefinition::from_value(document)?;
+            let session = self.session.as_ref().ok_or("browser is detached")?;
+            let result = session.run_workflow(&definition, &BTreeMap::new()).await?;
+            self.workspace.state_mut().browser_revision = Some(result.final_revision);
+            self.workspace.state_mut().workflow = format!("{:?}", result.status);
+            self.page = format!(
+                "{} · {:?} · final revision {} · {} steps",
+                definition.name,
+                result.status,
+                result.final_revision,
+                result.steps.len()
+            );
+            self.last_workflow = Some((definition, result));
+            self.status = "Workflow completed; run `workflow verify`".into();
+            return Ok(false);
+        }
+        if command == "workflow pause" {
+            let (definition, result) = self
+                .last_workflow
+                .as_ref()
+                .ok_or("no workflow result to checkpoint")?;
+            let session = self.session.as_ref().ok_or("browser is detached")?;
+            self.workflow_checkpoint = Some(
+                session
+                    .export_workflow_checkpoint(definition, result)
+                    .await?,
+            );
+            self.workspace.state_mut().workflow = "paused".into();
+            self.status = "Workflow checkpoint retained in this workspace".into();
+            return Ok(false);
+        }
+        if let Some(path) = command.strip_prefix("workflow resume ") {
+            let document: serde_json::Value = serde_json::from_slice(&std::fs::read(path.trim())?)?;
+            let definition = WorkflowDefinition::from_value(document)?;
+            let checkpoint = self
+                .workflow_checkpoint
+                .as_ref()
+                .ok_or("no workflow checkpoint to resume")?;
+            let session = self.session.as_ref().ok_or("browser is detached")?;
+            let result = session
+                .resume_workflow(&definition, &BTreeMap::new(), checkpoint)
+                .await?;
+            self.workspace.state_mut().browser_revision = Some(result.final_revision);
+            self.workspace.state_mut().workflow = format!("{:?}", result.status);
+            self.last_workflow = Some((definition, result));
+            self.status = "Workflow resumed to a terminal result".into();
+            return Ok(false);
+        }
+        if command == "workflow cancel" {
+            self.workflow_checkpoint = None;
+            self.workspace.state_mut().workflow = "cancelled".into();
+            self.status = "Retained workflow continuation cancelled".into();
+            return Ok(false);
+        }
+        if command == "workflow verify" {
+            let (_, result) = self
+                .last_workflow
+                .as_ref()
+                .ok_or("no workflow result to verify")?;
+            self.page = format!(
+                "{} · final revision {} · {} recorded steps",
+                if format!("{:?}", result.status).eq_ignore_ascii_case("completed") {
+                    "✓ verified"
+                } else {
+                    "× not completed"
+                },
+                result.final_revision,
+                result.steps.len()
+            );
+            self.status = "Workflow verification projected".into();
             return Ok(false);
         }
         if let Some(url) = command.strip_prefix("navigate ") {
@@ -420,6 +568,25 @@ impl BrowserTui {
         Ok(())
     }
 
+    async fn highlight_selected(&mut self) {
+        let Some(entity) = self.workspace.state().selected().cloned() else {
+            return;
+        };
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        if let Err(error) = session
+            .highlight_target_with_revision(&entity.reference, entity.revision)
+            .await
+        {
+            self.workspace.fail_action(
+                error.to_string(),
+                error.to_string().to_lowercase().contains("stale"),
+            );
+            self.status = format!("Highlight failed: {error}");
+        }
+    }
+
     fn poll_graphics(&mut self) {
         let Some(graphics) = self.graphics.as_ref() else {
             return;
@@ -462,6 +629,14 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
     }
     let mut terminal = TerminalGuard::enter()?;
     let mut app = BrowserTui::new();
+    if let Err(error) = app.ensure_session(cli).await {
+        app.workspace.disconnected(error.to_string(), true);
+        app.status = format!(
+            "Automatic browser start failed: {error} · attach PORT, launch auto, or launch PORT"
+        );
+    } else {
+        app.status = "Browser ready · enter an address with `navigate URL`".into();
+    }
     let mut last_visual = Instant::now();
     let result: BrowserResult<()> = loop {
         app.poll_graphics();
@@ -501,6 +676,14 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                         app.command.clear();
                         let _ = app.workspace.reduce(BrowserWorkspaceIntent::CloseOverlay);
                     }
+                    KeyCode::Char('n') if app.command.is_empty() => {
+                        app.command = "navigate ".into();
+                        app.status = "Address entry · type URL · Enter navigates".into();
+                    }
+                    KeyCode::Char('t') if app.command.is_empty() => {
+                        app.command = "type ".into();
+                        app.status = "Type into selected semantic target · Enter sends".into();
+                    }
                     KeyCode::Enter if app.command.is_empty() => {
                         if let Err(error) = app.activate_selected().await {
                             app.status = format!("Action failed: {error}");
@@ -529,12 +712,14 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             .workspace
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta: -1 });
                         app.page = semantic_text(&app.workspace);
+                        app.highlight_selected().await;
                     }
                     KeyCode::Down | KeyCode::Char('j') if app.command.is_empty() => {
                         let _ = app
                             .workspace
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta: 1 });
                         app.page = semantic_text(&app.workspace);
+                        app.highlight_selected().await;
                     }
                     KeyCode::Char(':') if app.command.is_empty() => {
                         let _ = app.workspace.reduce(BrowserWorkspaceIntent::OpenPalette);
@@ -552,12 +737,14 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             .workspace
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta: -1 });
                         app.page = semantic_text(&app.workspace);
+                        app.highlight_selected().await;
                     }
                     crossterm::event::MouseEventKind::ScrollDown => {
                         let _ = app
                             .workspace
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta: 1 });
                         app.page = semantic_text(&app.workspace);
+                        app.highlight_selected().await;
                     }
                     _ => {}
                 },
@@ -627,7 +814,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &BrowserTui) {
         rows[0],
     );
     let content = if app.mode == WorkspaceMode::Help {
-        "navigate URL  start/navigate browser\nobserve       structured accessibility evidence\nsemantic      structured semantic view\ntargets       bounded page targets\nselect ID     change target and invalidate evidence\nstate         connection/revision status\nreconnect     recover in place\nattach PORT   attach verified DevTools\nlaunch auto   recover on a free port\nlaunch PORT   recover on an explicit port\nstop          stop browser, keep workspace\nscreenshot    explicit Herdr frame\nlive on|off   latest-frame Herdr stream\nquit          close owned browser and exit"
+        "navigate URL  start/navigate browser\nobserve       structured accessibility evidence\nsemantic      structured semantic view\ntargets       bounded page targets\nselect ID     change target and invalidate evidence\nstate         connection/revision status\nreconnect     recover in place\nattach PORT   attach verified DevTools\nlaunch auto   recover on a free port\nlaunch PORT   recover on an explicit port\nstop          stop browser, keep workspace\nscreenshot    explicit Herdr frame\nlive on|off   latest-frame Herdr stream\nworkflow list|run FILE|pause|resume FILE|cancel|verify\nquit          close owned browser and exit"
     } else {
         app.page.as_str()
     };

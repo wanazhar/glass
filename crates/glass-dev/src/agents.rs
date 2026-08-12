@@ -148,6 +148,7 @@ struct AgentRecord {
     snapshot: AgentSnapshot,
     spec: AgentSpec,
     command: Option<SyncSender<WorkerCommand>>,
+    worker: Option<thread::JoinHandle<()>>,
     awaiting_agent_settle: bool,
     dropped_events: Arc<AtomicU64>,
 }
@@ -311,6 +312,7 @@ impl AgentRegistry {
                 },
                 spec,
                 command: None,
+                worker: None,
                 awaiting_agent_settle: false,
                 dropped_events: Arc::new(AtomicU64::new(0)),
             },
@@ -405,6 +407,12 @@ impl AgentRegistry {
         if let Some(sender) = record.command.take() {
             let _ = sender.try_send(WorkerCommand::Shutdown);
         }
+        let worker = record.worker.take();
+        if let Some(worker) = worker {
+            worker.join().map_err(|_| {
+                DevelopmentError::Process(format!("agent {} worker panicked", id.as_str()))
+            })?;
+        }
         self.record_event(id, "completed", Value::Null);
         self.start_ready_agents()?;
         Ok(())
@@ -421,8 +429,14 @@ impl AgentRegistry {
             let _ = sender.try_send(WorkerCommand::Shutdown);
         }
         record.command = None;
+        let worker = record.worker.take();
         record.snapshot.status = AgentStatus::Cancelled;
         record.snapshot.updated_at_ms = now_ms();
+        if let Some(worker) = worker {
+            worker.join().map_err(|_| {
+                DevelopmentError::Process(format!("agent {} worker panicked", id.as_str()))
+            })?;
+        }
         self.record_event(id, "cancelled", Value::Null);
         self.fail_blocked_dependents();
         Ok(())
@@ -471,7 +485,7 @@ impl AgentRegistry {
         record.snapshot.status = AgentStatus::Starting;
         record.snapshot.started_at_ms = Some(now_ms());
         record.snapshot.updated_at_ms = now_ms();
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name(format!("glass-{}", id.as_str()))
             .spawn(move || {
                 run_worker(
@@ -489,6 +503,7 @@ impl AgentRegistry {
                 )
             })
             .map_err(DevelopmentError::Io)?;
+        record.worker = Some(worker);
         self.record_event(id, "starting", Value::Null);
         Ok(())
     }
@@ -679,10 +694,17 @@ impl AgentRegistry {
 
 impl Drop for AgentRegistry {
     fn drop(&mut self) {
+        let mut workers = Vec::new();
         for record in self.records.values_mut() {
             if let Some(sender) = record.command.take() {
                 let _ = sender.try_send(WorkerCommand::Shutdown);
             }
+            if let Some(worker) = record.worker.take() {
+                workers.push(worker);
+            }
+        }
+        for worker in workers {
+            let _ = worker.join();
         }
     }
 }

@@ -1,4 +1,4 @@
-# Glass v0.3.7 issue #36 gate review
+# Glass v0.3.8 issue #36 gate review
 
 Status: local candidate certification in progress on 2026-08-12
 
@@ -52,7 +52,7 @@ unchecked until their records exist.
 - [x] 13. Recovery: collision/attach/auto-port/reconnect/target/stale paths.
 - [x] 14. Documentation: current architecture, controls, setup, migration,
       release notes, package boundary, limitations, and evidence are explicit.
-- [ ] 15. Exact-tag certification: corrected local candidate, signed 0.3.7 tag, native CI,
+- [ ] 15. Exact-tag certification: corrected local candidate, signed 0.3.8 tag, native CI,
       fuzz, registries, GitHub Release, and issue closure must all pass.
 
 ## Forbidden outcomes
@@ -99,5 +99,7 @@ automatic Chrome startup could block the standalone TUI input loop beyond the
 five-second PTY quit deadline on a clean runner. Commit `4d90bf3` moved browser
 startup off the critical input path; the PTY test then passed 20 consecutive
 runs plus focused TUI/clippy validation. The immutable failed tag is retained;
-the corrected 0.3.7 public exact-tag records will be appended before Gate 15 is
-checked.
+exact-tag `v0.3.7` then exposed an unsynchronized Windows-only daemon request
+fixture in CI run 31589287135. Commit `cb8993f` added the optional operation ID
+to that fixture. Both immutable failed tags are retained; the corrected 0.3.8
+public exact-tag records will be appended before Gate 15 is checked.

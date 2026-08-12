@@ -10,7 +10,7 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MARKERS = {
     "README.md": [
-        "| `glass-browser 0.3.7`, `glass-dev 0.3.7` | Current release source; public registry state is recorded in release evidence |",
+        "| `glass-browser 0.3.8`, `glass-dev 0.3.8` | Current release source; public registry state is recorded in release evidence |",
         "docs/feature-parity.md",
         "docs/release-evidence.md",
     ],
@@ -27,7 +27,7 @@ REQUIRED_MARKERS = {
         "release delivery record are complete",
     ],
     "docs/release-checklist.md": [
-        "release checkout is `glass-browser` and `glass-dev` version `0.3.7`",
+        "release checkout is `glass-browser` and `glass-dev` version `0.3.8`",
         "## 0.3.2 release record",
         "GitHub release binaries, checksum manifests",
     ],
@@ -46,7 +46,7 @@ REQUIRED_MARKERS = {
         "## 0.3.2 publication evidence",
         "## 0.3.3 release evidence",
         "## 0.3.4 release evidence",
-        "## 0.3.7 release evidence",
+        "## 0.3.8 release evidence",
         "Release workflow run 31254928934",
         "GitHub Release v0.3.2",
         "`feature-parity.json`",
@@ -138,8 +138,8 @@ def main() -> None:
         )
     except (OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError, StopIteration) as error:
         fail(f"cannot read package version: {error}")
-    if package_version != "0.3.7":
-        fail(f"release checkout must use package version 0.3.7, not {package_version}")
+    if package_version != "0.3.8":
+        fail(f"release checkout must use package version 0.3.8, not {package_version}")
     marker_sets = REQUIRED_MARKERS
     failures = []
     for relative, markers in marker_sets.items():

@@ -5,7 +5,17 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-08-12
+
+### Fixed
+
+- Synchronize the Windows-only native daemon lifecycle fixture with the stable
+  recoverable-operation request schema so all-target Windows checks compile.
+
 ## [0.3.7] - 2026-08-12
+
+This exact-tag candidate was not published; Windows CI exposed the fixture
+schema mismatch repaired in 0.3.8.
 
 ### Fixed
 

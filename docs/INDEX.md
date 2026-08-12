@@ -176,6 +176,10 @@ current user instructions.
 - [Terminal UI](architecture/tui.md), [Development TUI](architecture/development-tui.md),
   and [remote cockpit](architecture/mobile-cockpit.md) — layouts, interaction,
   workers, phone states, live frames, and SDK orchestration.
+- [Canonical Browser Workspace](architecture/browser-workspace.md) and
+  [Glass Product Workspace](architecture/product-workspace.md) — the shared
+  browser/App controller, direct Agent/Code/App UX, focus, desktop, and phone
+  interaction contracts for 0.3.6.
 - [Connection-aware presentation](architecture/connection-presentation.md) and
   [browser connection/Remote View](architecture/browser-connection.md) — the
   0.3.3 environment-policy matrix, recovery controller, target picker, and

@@ -1,6 +1,31 @@
 # Glass delivery plans
 
-## Active plan: Glass v0.3.5 issue #35
+## Active plan: Glass v0.3.6 issue #36
+
+Status: Direct serial implementation in progress. Conventional checkpoints,
+push, publication, release, and issue completion are authorized only after the
+complete release gate passes.
+
+Issue [#36](https://github.com/wanazhar/glass/issues/36) is the authoritative
+urgent product-repair contract. The 35-pillar baseline, locked architecture,
+dependency order, scenarios A-J, and 15 release gates are mapped in
+[the v0.3.6 delivery analysis](analysis/release-036.md). The serial tasks are:
+
+1. [correctness-036-001](tasks/correctness-036-001.md) — lifecycle, operations,
+   verification, Pi setup, and semantic documentation truth;
+2. [browser-workspace-036-002](tasks/browser-workspace-036-002.md) — one shared
+   browser controller/view and standalone/embedded parity;
+3. [product-ux-036-003](tasks/product-ux-036-003.md) — Agent, Code, App,
+   Terminal, Tasks, Git, Debug and contextual desktop interaction;
+4. [mobile-onboarding-036-004](tasks/mobile-onboarding-036-004.md) — intentional
+   phone navigation, onboarding, and searchable palette;
+5. [certification-036-005](tasks/certification-036-005.md) — integrated, PTY,
+   remote-boundary, package, exact-tag, publication, and release evidence.
+
+Each completed checkpoint receives a focused conventional commit before the
+next task starts.
+
+## Completed plan: Glass v0.3.5 issue #35
 
 Status: Direct local implementation in progress — no push, tag, publication,
 GitHub Release, or issue mutation is authorized.

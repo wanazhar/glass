@@ -52,6 +52,7 @@ async fn windows_named_pipe_daemon_lifecycle_reconnect_and_permissions() {
         actor: Some("windows-native-test".into()),
         since: None,
         limit: None,
+        operation_id: None,
     };
     let mut open = base_request("open", "workspace.open");
     open.root = Some(project.clone());

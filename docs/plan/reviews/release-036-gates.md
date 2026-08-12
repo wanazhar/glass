@@ -73,5 +73,25 @@ Focused checkpoints passed canonical BrowserWorkspace (5), standalone TUI (3),
 product TUI (8), Git (4), correctness, daemon, Pi, and strict warnings-denied
 Clippy suites. Both package-owned TUIs passed PTY resize, focus, SGR mouse,
 bracketed paste, ordinary input, bounded quit, alternate-screen, cursor, and
-terminal-mode cleanup checks. The full candidate and public exact-tag records
-will be appended before Gate 15 is checked.
+terminal-mode cleanup checks.
+
+The clean candidate through documentation commit `df86f18` passed:
+
+- locked all-target/all-feature tests: `glass-browser` 741 passed/1 ignored,
+  `glass-dev` 127 passed, development integration 4 passed, plus all examples
+  and integration suites;
+- warnings-denied Clippy and rustdoc for both packages;
+- all 18 live Chromium scenarios plus the resident BrowserService revision,
+  Remote View, reload, process, and port-cleanup scenario;
+- both packaged TUI PTY smokes, version/release/docs/coverage/depth/parity,
+  reliability, adapter, and Web IR validators;
+- verified `glass-browser` packaging; patched pre-publication `glass-dev`
+  packaging with an exact normalized registry dependency; both publish dry
+  runs aborted before upload;
+- isolated fuzz all-target compilation, `cargo deny`, and `cargo audit` with
+  only the allowed transitive `lru` advisory warning;
+- optimized release and release-size builds reporting 0.3.6;
+- isolated core/full installs, core-to-full, full-to-full, full-to-core, and
+  published 0.3.5-to-candidate 0.3.6 upgrade transitions.
+
+The public exact-tag records will be appended before Gate 15 is checked.

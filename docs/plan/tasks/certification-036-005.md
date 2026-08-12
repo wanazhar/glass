@@ -6,7 +6,7 @@ depends-on: [mobile-onboarding-036-004]
 ## Objective
 
 Certify scenarios A-J, gates 1-15, and every forbidden outcome; synchronize
-0.3.6 packages/docs/release automation and publish the exact-tag product.
+0.3.7 packages/docs/release automation and publish the corrected exact-tag product.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # Complete MCP tool catalog
 
-This catalog names every browser tool in the `0.3.6` client-conformance inventory.
+This catalog names every browser tool in the `0.3.7` client-conformance inventory.
 The full `glass` command also merges its live `glass.*` Development Workspace
 catalog at runtime; these tools are governed by actor, authority, confirmation,
 workspace-generation, and project-revision metadata.
@@ -51,7 +51,7 @@ agreement for availability; an inventory entry is not authority to mutate.
 ## Legacy project and agent names
 
 The `project.*` and local-harness `agent.*` names below document the 0.3.4
-compatibility vocabulary. They are not part of the 0.3.6 negotiated inventory
+compatibility vocabulary. They are not part of the 0.3.7 negotiated inventory
 and new clients must use the `glass.*` resident development tools above. A
 server may retain selected executable aliases during source migration, but an
 unadvertised alias is not a public capability and must not be probed as one.

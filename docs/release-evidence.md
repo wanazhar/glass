@@ -1,11 +1,21 @@
 # Release evidence
 
-## 0.3.6 release evidence
+## 0.3.7 release evidence
 
 Issue #36 candidate evidence is recorded in
 [`plan/reviews/release-036-gates.md`](plan/reviews/release-036-gates.md).
-This section intentionally makes no publication, tag, registry, native-CI, or
-GitHub Release claim until those records exist and have been verified.
+The candidate includes the TUI startup repair discovered by exact-tag 0.3.6
+CI. Publication claims will be added only after the 0.3.7 registry, workflow,
+release, native-certification, and issue records are verified.
+
+## 0.3.6 release evidence
+
+Signed tag `v0.3.6` points to
+`3c1ba0397db32afdf2c34f4ce2e1481c797d9e28`. Exact-tag CI run 31587950535
+exposed that automatic Chrome startup blocked the TUI input loop on a clean
+runner, causing the five-second PTY quit contract to fail. The release workflow
+did not publish crates or create a GitHub Release. The tag remains immutable as
+failed-candidate evidence; it was superseded by the 0.3.7 repair.
 
 ## 0.3.5 release evidence
 

@@ -5,6 +5,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-08-12
+
+### Fixed
+
+- Keep standalone Browser TUI startup off the input loop so clean hosts can
+  render, accept quit/navigation input, and restore terminal modes immediately;
+  browser startup remains explicit or demand-driven by navigation.
+
 ## [0.3.6] - 2026-08-12
 
 ### Added

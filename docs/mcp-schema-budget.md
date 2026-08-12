@@ -6,7 +6,7 @@ It is not the tool reference; use the [complete MCP catalog](mcp-tools.md) for
 purpose and authority, and the live negotiated `tools/list` result for exact
 schemas supported by an installed server.
 
-## Current 0.3.6 development-source measurement
+## Current 0.3.7 development-source measurement
 
 On the current checkout, `target/debug/glass` reports:
 

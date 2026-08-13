@@ -16,7 +16,7 @@ certification; native browser/PTY support is not certified.
 - [x] Certify issue #36 scenarios A-J, gates 1-14, and every forbidden outcome.
 - [x] Pass the complete local workspace, docs, package, security, fuzz, live
       browser, PTY, clean-install, and publish dry-run gates.
-- [ ] Verify the signed exact tag, ordered registry publication, clean registry
+- [x] Verify the signed exact tag, ordered registry publication, clean registry
       installs, native CI, fuzz, GitHub Release, and issue closure.
 
 The signed `v0.3.6`, `v0.3.7`, and `v0.3.8` tags are retained as failed,

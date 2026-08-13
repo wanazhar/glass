@@ -4,10 +4,20 @@
 
 Issue #36 candidate evidence is recorded in
 [`plan/reviews/release-036-gates.md`](plan/reviews/release-036-gates.md).
-The candidate includes the TUI startup, Windows request-schema, and
-scheduler-safe daemon test repairs discovered by exact-tag 0.3.6 through 0.3.8
-CI. Publication claims will be added only after the 0.3.9 registry, workflow,
-release, native-certification, and issue records are verified.
+Signed tag `v0.3.9` points to
+`f9c4d5f507e1a14905442487aa5a54ac7f2e42ce`; GitHub reports its signature as
+verified. Exact-tag CI run 31594125510 and fuzz run 31594125431 passed. Release
+run 31594125413 passed validation, ordered publication, and clean registry
+installs. Its final record check exposed a stale validator assumption; commit
+`9105682` now distinguishes the three immutable failed candidates and the
+corrected validator passes with 36 published records.
+
+crates.io published `glass-browser 0.3.9` at
+`2026-08-12T12:11:46.815942Z` and `glass-dev 0.3.9` at
+`2026-08-12T12:12:47.073595Z`; neither is yanked. The source-only GitHub Release
+is non-draft, non-prerelease, and has no assets. Native certification run
+31596213668 passed pinned Pi, automatic experiments, all 18 live Chromium
+scenarios, and native Windows named-pipe reconnect/process-tree lifecycle.
 
 ## 0.3.8 release evidence
 

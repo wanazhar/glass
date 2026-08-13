@@ -1,6 +1,6 @@
 id: certification-036-005
 scope: integration and release certification
-status: pending
+status: complete
 depends-on: [mobile-onboarding-036-004]
 
 ## Objective

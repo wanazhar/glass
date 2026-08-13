@@ -1,10 +1,10 @@
 # Glass v0.3.9 issue #36 gate review
 
-Status: local candidate certification in progress on 2026-08-12
+Status: complete on 2026-08-13
 
 This review maps issue #36 scenarios A-J, release gates 1-15, and forbidden
-outcomes to concrete source and executable evidence. Public/tag items remain
-unchecked until their records exist.
+outcomes to concrete source and executable evidence. Public and exact-tag
+records are included below.
 
 ## Integrated scenarios
 
@@ -52,8 +52,8 @@ unchecked until their records exist.
 - [x] 13. Recovery: collision/attach/auto-port/reconnect/target/stale paths.
 - [x] 14. Documentation: current architecture, controls, setup, migration,
       release notes, package boundary, limitations, and evidence are explicit.
-- [ ] 15. Exact-tag certification: corrected local candidate, signed 0.3.9 tag, native CI,
-      fuzz, registries, GitHub Release, and issue closure must all pass.
+- [x] 15. Exact-tag certification: signed 0.3.9 tag, native CI, fuzz,
+      registries, GitHub Release, and issue closure records all pass.
 
 ## Forbidden outcomes
 
@@ -104,6 +104,9 @@ fixture in CI run 31589287135. Commit `cb8993f` added the optional operation ID
 to that fixture. Exact-source Windows run 31591017832 for `v0.3.8` then passed
 compilation but exposed two subsecond scheduler assumptions in daemon tests
 under parallel load. Commit `cb8ef7b` replaced wall-clock assumptions with
-bounded state and behavior assertions. All immutable failed tags are retained;
-the corrected 0.3.9 public exact-tag records will be appended before Gate 15 is
-checked.
+bounded state and behavior assertions. All immutable failed tags are retained.
+The corrected 0.3.9 records are signed tag commit
+`f9c4d5f507e1a14905442487aa5a54ac7f2e42ce`, exact-tag CI run 31594125510,
+fuzz run 31594125431, release run 31594125413, and native certification run
+31596213668. Both crates are public and unyanked; the source-only GitHub Release
+is non-draft, non-prerelease, and has no assets.

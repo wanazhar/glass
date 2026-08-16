@@ -295,51 +295,109 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         state.workspace.project().revision()
     );
     let content = match state.surface {
-        DevSurface::Trust => format!("Selected: workspace trust{authority}"),
-        DevSurface::Agent => format!(
-            "SELECTED CONVERSATION\n{}\n\nActions\nnew · resume · model · thinking · abort{authority}",
-            state.agent_readiness
-        ),
-        DevSurface::Code => format!(
-            "SELECTED CODE\n{}\n\nLINKED APP\n{}\n\nActions\nsave · undo · redo · search · diagnostics · V open App{authority}",
-            state.editor.lines().next().unwrap_or("No buffer selected"),
+        DevSurface::Trust => format!(
+            "TRUST DECISION\n{} configuration item(s) need attention{}",
             state
-                .browser_workspace
-                .state()
-                .selected()
-                .map(|entity| format!("{} · {}", entity.name, entity.reference))
-                .unwrap_or_else(|| "No current source/runtime link".into())
+                .workspace
+                .trust_inspection()
+                .iter()
+                .filter(|item| item.trust_required)
+                .count(),
+            authority
         ),
-        DevSurface::App => format!(
-            "SELECTED APP ENTITY\n{}\n\nActions\nactivate · type · inspect · workflow{authority}",
-            state
-                .browser_workspace
-                .state()
-                .selected()
-                .map(|entity| format!("{} · {}", entity.name, entity.role))
-                .unwrap_or_else(|| "No semantic entity selected".into())
-        ),
-        DevSurface::Terminal => format!(
-            "SELECTED PROCESS\n{}{}",
-            state
-                .processes
+        DevSurface::Agent => {
+            let working = state
+                .agents
                 .lines()
+                .any(|line| line.contains("Working"));
+            let model = state
+                .agents
+                .lines()
+                .find_map(|line| line.split("model ").nth(1).map(str::to_string));
+            if state.selected_agent.is_some() || state.agents.lines().count() > 1 {
+                format!(
+                    "ACTIVE AGENT\n{} · model {} · events in Inspect{}{}",
+                    if working { "● working" } else { "○ idle" },
+                    model.as_deref().unwrap_or("default"),
+                    if state.browser_workspace.state().selected().is_some() {
+                        "\napp entity attached as context"
+                    } else {
+                        ""
+                    },
+                    authority
+                )
+            } else {
+                format!(
+                    "AGENT READINESS\n{}{}",
+                    state.agent_readiness.lines().next().unwrap_or(""),
+                    authority
+                )
+            }
+        }
+        DevSurface::Code => {
+            let selected = state
+                .workspace
+                .project()
+                .buffers()
                 .next()
-                .unwrap_or("No process selected"),
+                .map(|buffer| (buffer.path.clone(), buffer.dirty, buffer.cursor_line));
+            match selected {
+                Some((path, dirty, line)) => format!(
+                    "EDITING\n{}{} · line {}\n\nLINKED APP\n{}{}",
+                    if dirty { "● " } else { "○ " },
+                    path,
+                    line,
+                    state
+                        .browser_workspace
+                        .state()
+                        .selected()
+                        .map(|entity| format!("{} · {}", entity.name, entity.reference))
+                        .unwrap_or_else(|| "No current source/runtime link".into()),
+                    authority
+                ),
+                None => format!(
+                    "FILES\n{} project file(s) listed{}",
+                    state.files.len(),
+                    authority
+                ),
+            }
+        }
+        DevSurface::App => {
+            let browser = state.browser_workspace.state();
+            format!(
+                "SELECTED APP ENTITY\n{}\n\nWORKSPACE\nrev {} · {} · owner {}{}",
+                browser
+                    .selected()
+                    .map(|entity| format!("◆ {} · {} · {}", entity.name, entity.role, entity.reference))
+                    .unwrap_or_else(|| "No semantic entity selected".into()),
+                browser
+                    .browser_revision
+                    .map_or_else(|| "—".into(), |revision| revision.to_string()),
+                browser.presentation_label(),
+                browser.input_owner_label(),
+                authority
+            )
+        }
+        DevSurface::Terminal => format!(
+            "PROCESSES\n{}{}",
+            state.processes.lines().next().unwrap_or("No process selected"),
             authority
         ),
-        DevSurface::Tasks => format!(
-            "SELECTED TASK\n{}{}",
-            state.tasks.lines().next().unwrap_or("No task selected"),
-            authority
-        ),
+        DevSurface::Tasks => {
+            let running = state
+                .tasks
+                .lines()
+                .filter(|line| line.starts_with("●"))
+                .count();
+            format!("TASKS\n{running} running{}", authority)
+        }
         DevSurface::Git => format!(
-            "SELECTED CHANGE\n{}{}",
+            "SOURCE CONTROL\n{}{}",
             state.git.lines().next().unwrap_or("No change selected"),
             authority
         ),
         DevSurface::Debug => format!(
-            "SELECTED FRAME\n{}{}",
+            "DEBUG\n{}{}",
             state.debugger.lines().next().unwrap_or("No frame selected"),
             authority
         ),

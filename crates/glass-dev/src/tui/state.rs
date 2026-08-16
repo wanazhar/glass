@@ -1059,26 +1059,38 @@ impl DevTuiState {
             .cloned()
             .collect::<Vec<_>>();
         self.editor = if buffers.is_empty() {
-            "No file open. Use :editor open PATH or select a file.".into()
+            "No file open. Select a file below and press Enter, then i to edit.".into()
         } else {
             buffers
                 .iter()
                 .map(|buffer| {
-                    let viewport = buffer
-                        .content
-                        .lines()
-                        .take(24)
+                    // Viewport follows the cursor; long files stay editable.
+                    let lines: Vec<&str> = buffer.content.lines().collect();
+                    let cursor = buffer.cursor_line as usize;
+                    let viewport_rows = 16;
+                    let start = cursor
+                        .saturating_sub(viewport_rows / 2)
+                        .min(lines.len().saturating_sub(viewport_rows.min(lines.len())));
+                    let end = (start + viewport_rows).min(lines.len());
+                    let gutter_width = lines.len().to_string().len().max(3);
+                    let viewport = lines[start..end]
+                        .iter()
                         .enumerate()
-                        .map(|(index, line)| format!("{:>4} {}", index + 1, line))
+                        .map(|(index, line)| {
+                            let number = start + index + 1;
+                            let marker = if number == cursor { "▶" } else { " " };
+                            format!("{marker}{:>gutter_width$} │ {line}", number, gutter_width = gutter_width)
+                        })
                         .collect::<Vec<_>>()
                         .join("\n");
                     format!(
-                        "{}{} · cursor {}:{} · actor {}\n{}",
+                        "{}{} · cursor {}:{} · actor {} · {} lines\n{}",
                         if buffer.dirty { "● " } else { "○ " },
                         buffer.path,
                         buffer.cursor_line,
                         buffer.cursor_column,
                         buffer.actor.id,
+                        lines.len(),
                         viewport
                     )
                 })

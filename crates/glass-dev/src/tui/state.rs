@@ -158,6 +158,8 @@ pub struct DevTuiState {
     pub status: String,
     /// Wall-clock cost of the last background refresh pass.
     pub refresh_latency_ms: u64,
+    /// Highest agent event sequence folded into the live conversation.
+    pub conversation_cursor: u64,
     pub agents: String,
     pub agent_readiness: String,
     pub agent_conversation: String,
@@ -259,6 +261,7 @@ impl DevTuiState {
             terminal_width: 80,
             terminal_height: 24,
             refresh_latency_ms: 0,
+            conversation_cursor: 0,
             status: if trust_prompt {
                 "Workspace trust required · I inspect · O untrusted · 1 trust once · T trust project".into()
             } else {

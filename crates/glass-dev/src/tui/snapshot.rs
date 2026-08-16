@@ -61,6 +61,8 @@ pub struct SnapshotWorker {
     snapshots: Arc<std::sync::Mutex<Option<DisplaySnapshot>>>,
     dirty: Arc<AtomicBool>,
     last_applied: Option<DisplaySnapshot>,
+    /// Highest agent event sequence already folded into the conversation.
+    conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl SnapshotWorker {
@@ -73,10 +75,18 @@ impl SnapshotWorker {
         let dirty = Arc::new(AtomicBool::new(true));
         let snapshot_sink = Arc::clone(&snapshots);
         let dirty_flag = Arc::clone(&dirty);
+        let conversation_cursor = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let worker_cursor = Arc::clone(&conversation_cursor);
         let handle = std::thread::Builder::new()
             .name("glass-snapshot".into())
             .spawn(move || {
-                worker_loop(workspace, request_rx, snapshot_sink, dirty_flag);
+                worker_loop(
+                    workspace,
+                    request_rx,
+                    snapshot_sink,
+                    dirty_flag,
+                    worker_cursor,
+                );
             })
             .expect("failed to spawn snapshot worker");
         Self {
@@ -85,6 +95,7 @@ impl SnapshotWorker {
             snapshots,
             dirty,
             last_applied: None,
+            conversation_cursor,
         }
     }
 
@@ -118,6 +129,11 @@ impl SnapshotWorker {
     pub fn is_busy(&self) -> bool {
         self.dirty.load(Ordering::Acquire)
     }
+
+    /// Highest agent event sequence already folded into the conversation.
+    pub fn conversation_cursor(&self) -> u64 {
+        self.conversation_cursor.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for SnapshotWorker {
@@ -134,9 +150,11 @@ fn worker_loop(
     requests: Receiver<ActorRequest>,
     snapshots: Arc<std::sync::Mutex<Option<DisplaySnapshot>>>,
     dirty: Arc<AtomicBool>,
+    conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
 ) {
     // Seed an initial snapshot before the first draw.
     let mut seeded = false;
+    let mut conversation_tail = String::new();
     loop {
         let request = if seeded {
             match requests.recv_timeout(Duration::from_millis(250)) {
@@ -152,11 +170,47 @@ fn worker_loop(
         };
         match request {
             ActorRequest::ShutDown => break,
-            ActorRequest::Refresh | ActorRequest::RefreshConversation => {
+            ActorRequest::RefreshConversation => {
+                // Cheap fast path: fold only new events into the tail.
+                let Ok(mut locked) = workspace.lock() else {
+                    continue;
+                };
+                let cursor = conversation_cursor.load(Ordering::Acquire);
+                match locked.agents().history(cursor) {
+                    Ok(events) if !events.is_empty() => {
+                        let highest = events
+                            .iter()
+                            .map(|event| event.sequence)
+                            .max()
+                            .unwrap_or(cursor);
+                        let rendered = crate::tui::projection::conversation(&events);
+                        if !conversation_tail.is_empty() && !rendered.is_empty() {
+                            conversation_tail.push_str("\n\n");
+                        }
+                        conversation_tail.push_str(&rendered);
+                        conversation_cursor.store(highest, Ordering::Release);
+                    }
+                    _ => {}
+                }
+                if let Ok(mut slot) = snapshots.lock()
+                    && let Some(snapshot) = slot.as_mut()
+                {
+                    snapshot.agent_conversation = conversation_tail.clone();
+                }
+                dirty.store(false, Ordering::Release);
+            }
+            ActorRequest::Refresh => {
                 let started = Instant::now();
-                let snapshot = compute_snapshot(&workspace, &mut seeded);
-                let mut snapshot = snapshot;
+                let mut snapshot = compute_snapshot(&workspace, &mut seeded);
                 snapshot.duration = started.elapsed();
+                conversation_tail = snapshot.agent_conversation.clone();
+                if let Ok(latest) = workspace
+                    .lock()
+                    .and_then(|mut locked| locked.agents().history(0))
+                    && let Some(highest) = latest.iter().map(|event| event.sequence).max()
+                {
+                    conversation_cursor.store(highest, Ordering::Release);
+                }
                 if let Ok(mut slot) = snapshots.lock() {
                     *slot = Some(snapshot);
                 }
@@ -427,6 +481,14 @@ mod tests {
         };
         assert!(!snapshot.files.is_empty());
         assert!(snapshot.git.contains("branch") || snapshot.git.contains("Git"));
+        // The conversation cursor starts at zero and only moves when events exist.
+        let cursor = worker.conversation_cursor();
+        worker.request_conversation();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while worker.is_busy() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(worker.conversation_cursor() >= cursor);
         drop(worker);
         drop(state);
         let _ = std::fs::remove_dir_all(root);

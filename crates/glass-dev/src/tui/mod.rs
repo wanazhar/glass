@@ -307,6 +307,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
         } else if worker.is_busy() && last_render.elapsed() >= Duration::from_millis(100) {
             // Conversation tail keeps streaming while a full pass is in flight.
             worker.request_conversation();
+            state.conversation_cursor = worker.conversation_cursor();
         }
         // Apply whatever the worker finished; never block on it.
         if let Some(snapshot) = worker.take_pending() {

@@ -84,6 +84,17 @@ pub enum ProductMode {
     Debug,
 }
 
+impl ProductMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Agent => "agent",
+            Self::RunApp => "run",
+            Self::Debug => "debug",
+        }
+    }
+}
+
 pub struct DevTuiState {
     pub workspace: DevelopmentWorkspace,
     pub surface: DevSurface,
@@ -1265,14 +1276,14 @@ impl DevTuiState {
         let kernel_count = self.workspace.kernels().snapshots().count();
         let debugger_count = self.workspace.debugger_names().count();
         self.workspace_status = format!(
-            "root {}\n{} project · {} · branch {}\ngeneration {} · project revision {} · trust {:?}\nresident: {} agents · {} tasks · {} kernels · {} debuggers\nnext actions: Agent · Code · {} · {}",
+            "root {}\n{} project · {} · branch {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers\nnext actions: Agent · Code · {} · {}",
             root,
             detection.languages.join("/"),
             detection.build_system.as_deref().unwrap_or("unknown build"),
             detection.git_branch.as_deref().unwrap_or("no Git"),
             generation,
             project_revision,
-            trust,
+            trust.label(),
             agent_count,
             task_count,
             kernel_count,
@@ -1401,13 +1412,13 @@ impl DevTuiState {
                 .join("\n")
         };
         format!(
-            "{} · rev {} · {} · owner {:?}\n{}\n{}\n\nUNDERSTANDING\n{}",
+            "{} · rev {} · {} · owner {}\n{}\n{}\n\nUNDERSTANDING\n{}",
             browser.connection_label(),
             browser
                 .browser_revision
                 .map_or_else(|| "—".into(), |revision| revision.to_string()),
             browser.presentation_label(),
-            browser.input_owner,
+            browser.input_owner_label(),
             browser.title,
             browser.url,
             entities,

@@ -26,6 +26,15 @@ impl WorkspaceTrust {
     pub fn permits_project_execution(self) -> bool {
         matches!(self, Self::TrustedOnce | Self::TrustedProject)
     }
+
+    /// Human-facing label for TUI surfaces.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Untrusted => "untrusted",
+            Self::TrustedOnce => "trusted once",
+            Self::TrustedProject => "trusted project",
+        }
+    }
 }
 
 /// Explicit local-user decision. This is intentionally absent from MCP/tools.

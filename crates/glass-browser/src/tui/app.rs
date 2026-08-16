@@ -916,14 +916,14 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &BrowserTui) {
     };
     let workspace = app.workspace.state();
     let status = format!(
-        "{} · rev {} · {} · owner {:?} · focus {:?}",
+        "{} · rev {} · {} · owner {} · focus {}",
         workspace.connection_label(),
         workspace
             .browser_revision
             .map_or_else(|| "—".into(), |revision| revision.to_string()),
         workspace.presentation_label(),
-        workspace.input_owner,
-        workspace.focus,
+        workspace.input_owner_label(),
+        workspace.focus_label(),
     );
     frame.render_widget(
         Paragraph::new(vec![

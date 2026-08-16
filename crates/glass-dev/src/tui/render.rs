@@ -97,10 +97,10 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
-                " {} · {} · mode {:?} · {}",
+                " {} · {} · {} · {}",
                 state.workspace.root().display(),
                 state.surface.label(),
-                state.product_mode(),
+                state.product_mode().label(),
                 mode
             )),
         ])),
@@ -147,8 +147,8 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         DevSurface::Trust => {
             let inspection = super::projection::trust_items(&state.workspace.trust_inspection());
             format!(
-                "WORKSPACE TRUST\n\nThis repository contains executable Glass settings.\nCurrent state: {:?}\n\n[I] Inspect configuration\n[O] Open untrusted\n[1] Trust once\n[T] Trust this project\n\nCONFIGURATION BY AUTHORITY / RISK\n{}",
-                state.workspace.trust(),
+                "WORKSPACE TRUST\n\nThis repository contains executable Glass settings.\nCurrent state: {}\n\n[I] Inspect configuration\n[O] Open untrusted\n[1] Trust once\n[T] Trust this project\n\nCONFIGURATION BY AUTHORITY / RISK\n{}",
+                state.workspace.trust().label(),
                 inspection
             )
         }
@@ -272,8 +272,8 @@ fn draw_ansi_pane(frame: &mut Frame<'_>, area: Rect, pane: &glass_browser::tui::
 
 fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let authority = format!(
-        "\n\nAUTHORITY\ntrust {:?} · project rev {}\nmutations require revision + confirmation",
-        state.workspace.trust(),
+        "\n\nAUTHORITY\ntrust {} · project rev {}\nmutations require revision + confirmation",
+        state.workspace.trust().label(),
         state.workspace.project().revision()
     );
     let content = match state.surface {

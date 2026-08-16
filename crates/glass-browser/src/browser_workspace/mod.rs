@@ -390,6 +390,26 @@ impl BrowserWorkspaceState {
             BrowserPresentationPath::SemanticOnly => "Semantic",
         }
     }
+
+    pub fn input_owner_label(&self) -> &'static str {
+        match self.input_owner {
+            BrowserInputOwner::Glass => "Glass",
+            BrowserInputOwner::Human => "human",
+            BrowserInputOwner::Agent => "agent",
+        }
+    }
+
+    pub fn focus_label(&self) -> &'static str {
+        match self.focus {
+            BrowserFocus::Controls => "controls",
+            BrowserFocus::Visual => "visual",
+            BrowserFocus::Semantic => "semantic list",
+            BrowserFocus::Footer => "command",
+            BrowserFocus::Palette => "palette",
+            BrowserFocus::Address => "address",
+            BrowserFocus::Recovery => "recovery",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

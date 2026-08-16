@@ -178,12 +178,16 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             state.editor,
             state.lsp
         ),
-        DevSurface::App => format!(
-            "APP WORKSPACE\n{}\n\n{}\n\nWORKFLOW\n{}\n\nKeys: j/k select · Enter activate · n address · t type · PgUp/PgDn page · H human · G Glass · v visual",
-            state.browser,
-            state.browser_detail,
-            state.workflow
-        ),
+        DevSurface::App => {
+            let mut content = format!(
+                "APP WORKSPACE\n{}\n\n{}\n\nWORKFLOW\n{}\n\nKeys: j/k select · Enter activate · n address · t type · v visual · PgUp/PgDn page · H human · G Glass",
+                state.browser, state.browser_detail, state.workflow
+            );
+            if state.browser_visual_live {
+                content.push_str("\n\nLIVE VIEW · ANSI half-block rendering · v stops");
+            }
+            content
+        }
         DevSurface::Terminal => format!(
             "MANAGED TERMINALS\n{}\n\nKeys: Enter start detected dev command · r restart · x stop",
             state.processes
@@ -220,6 +224,50 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .wrap(Wrap { trim: false }),
         area,
     );
+    if state.surface == DevSurface::App
+        && state.browser_visual_live
+        && let Some(pane) = state.browser_pane.as_ref()
+    {
+        draw_ansi_pane(frame, area, pane);
+    }
+}
+
+/// Paint an ANSI half-block pane into the lower half of a surface area.
+fn draw_ansi_pane(frame: &mut Frame<'_>, area: Rect, pane: &glass_browser::tui::live_view::AnsiPane) {
+    let inner = Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    // Anchor the pane to the bottom of the surface so semantic text stays on top.
+    let pane_height = inner.height.min(pane.rows);
+    let top = inner.bottom().saturating_sub(pane_height);
+    for (row_index, row_cells) in pane.cells.chunks(pane.columns as usize).enumerate() {
+        let y = top + row_index as u16;
+        if y >= inner.bottom() {
+            break;
+        }
+        for (column_index, cell) in row_cells.iter().enumerate() {
+            let x = inner.x + column_index as u16;
+            if x >= inner.right() {
+                break;
+            }
+            if let Some(target) = frame.buffer_mut().cell_mut((x, y)) {
+                target.set_char('▀');
+                target.set_fg(ratatui::style::Color::Rgb(
+                    cell.top.red,
+                    cell.top.green,
+                    cell.top.blue,
+                ));
+                target.set_bg(ratatui::style::Color::Rgb(
+                    cell.bottom.red,
+                    cell.bottom.green,
+                    cell.bottom.blue,
+                ));
+            }
+        }
+    }
 }
 
 fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {

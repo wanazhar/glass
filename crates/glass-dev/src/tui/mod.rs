@@ -172,6 +172,38 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             (KeyCode::PageDown, _) => state.scroll_surface(10),
                             (KeyCode::Home, _) => state.scroll_home(),
                             (KeyCode::End, _) => state.scroll_end(),
+                            (KeyCode::Char('v'), _) if state.surface == DevSurface::App => {
+                                state.browser_visual_live = !state.browser_visual_live;
+                                if state.browser_visual_live {
+                                    state.refresh_app_visual(state.terminal_width / 3, state.terminal_height / 3);
+                                    state.status = if state.browser_pane.is_some() {
+                                        "Live view on · ANSI half-block rendering · v stops".into()
+                                    } else {
+                                        state.browser_visual_live = false;
+                                        "Live view unavailable · observe the browser first".into()
+                                    };
+                                } else {
+                                    state.status = "Live view off".into();
+                                }
+                            }
+                            (KeyCode::Left, modifiers)
+                                if modifiers.contains(KeyModifiers::ALT)
+                                    && state.surface == DevSurface::App =>
+                            {
+                                state.execute_app_intent(BrowserWorkspaceIntent::Back)
+                            }
+                            (KeyCode::Right, modifiers)
+                                if modifiers.contains(KeyModifiers::ALT)
+                                    && state.surface == DevSurface::App =>
+                            {
+                                state.execute_app_intent(BrowserWorkspaceIntent::Forward)
+                            }
+                            (KeyCode::Char('r'), modifiers)
+                                if modifiers.contains(KeyModifiers::CONTROL)
+                                    && state.surface == DevSurface::App =>
+                            {
+                                state.execute_app_intent(BrowserWorkspaceIntent::Reload)
+                            }
                             (KeyCode::Char('n'), _) if state.surface == DevSurface::App => {
                                 state.open_palette_with("browser navigate ")
                             }
@@ -245,6 +277,9 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
         }
         if last_refresh.elapsed() >= Duration::from_millis(250) {
             state.refresh();
+            if state.browser_visual_live {
+                state.refresh_app_visual(state.terminal_width / 3, state.terminal_height / 3);
+            }
             last_refresh = Instant::now();
         }
     }

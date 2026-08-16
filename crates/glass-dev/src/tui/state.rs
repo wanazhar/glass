@@ -6,6 +6,8 @@ use glass_browser::browser_workspace::{
     BrowserWorkspaceLayout,
 };
 use glass_browser::cli::args::TuiLayout;
+use glass_browser::terminal_graphics::AnsiCanvas;
+use glass_browser::tui::live_view::AnsiPane;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -121,6 +123,9 @@ pub struct DevTuiState {
     pub browser: String,
     pub browser_detail: String,
     pub browser_workspace: BrowserWorkspaceController,
+    pub browser_visual_live: bool,
+    pub browser_ansi: AnsiCanvas,
+    pub browser_pane: Option<AnsiPane>,
     pub workflow: String,
     pub workspace_status: String,
     pub experiment_comparison: Option<ExperimentComparison>,
@@ -202,6 +207,9 @@ impl DevTuiState {
                 },
                 BrowserWorkspaceAdapterKind::EmbeddedDevelopment,
             ),
+            browser_visual_live: false,
+            browser_ansi: AnsiCanvas::default(),
+            browser_pane: None,
             workflow: "No workflow evidence yet".into(),
             workspace_status: String::new(),
             experiment_comparison: None,
@@ -1462,6 +1470,44 @@ impl DevTuiState {
         let ready = readiness.ready;
         self.agent_readiness = format_pi_readiness(&readiness);
         Ok(ready)
+    }
+
+    /// Capture one browser frame into the ANSI pane for the App surface.
+    pub fn refresh_app_visual(&mut self, columns: u16, rows: u16) {
+        let png = match self.workspace.browser().screenshot() {
+            Ok(value) => value
+                .get("base64")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|encoded| {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .ok()
+                }),
+            Err(_) => None,
+        };
+        let Some(png) = png else {
+            self.browser_visual_live = false;
+            self.browser_workspace.state_mut().presentation_reason =
+                Some("screenshot unavailable; start or observe the browser first".into());
+            return;
+        };
+        let columns = columns.clamp(8, 80);
+        let rows = rows.clamp(4, 40);
+        match AnsiPane::from_png(&mut self.browser_ansi, &png, columns, rows, glass_browser::terminal_graphics::FrameFit::Contain)
+        {
+            Ok(pane) => {
+                self.browser_pane = Some(pane);
+                self.browser_workspace.state_mut().presentation =
+                    glass_browser::browser_workspace::BrowserPresentationPath::Ansi;
+                self.browser_workspace.state_mut().presentation_reason = None;
+            }
+            Err(error) => {
+                self.browser_visual_live = false;
+                self.browser_workspace.state_mut().presentation_reason =
+                    Some(format!("ANSI renderer failed: {error}"));
+            }
+        }
     }
 }
 

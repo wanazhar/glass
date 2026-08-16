@@ -11,3 +11,4 @@
 
 pub mod app;
 mod herdr_graphics;
+pub mod live_view;

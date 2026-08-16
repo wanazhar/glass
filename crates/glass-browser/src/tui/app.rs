@@ -24,6 +24,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::herdr_graphics::{HerdrEnvironment, HerdrEvent, HerdrFrame, HerdrGraphicsWorker};
+use super::live_view::{AnsiPane, VisualPath, decide_path, frame_fit, frame_interval_ms, pane_size};
 use crate::browser::session::{
     BrowserResult, BrowserSession, SessionOptions, WorkflowCheckpoint, WorkflowDefinition,
     WorkflowRunResult,
@@ -32,7 +33,8 @@ use crate::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAdapterKind, BrowserWorkspaceController,
     BrowserWorkspaceEntity, BrowserWorkspaceIntent, BrowserWorkspaceLayout,
 };
-use crate::cli::args::Cli;
+use crate::cli::args::{Cli, TuiLiveFit, TuiLiveMode, TuiLiveQuality};
+use crate::terminal_graphics::AnsiCanvas;
 
 const PHONE_MAX_COLUMNS: u16 = 72;
 const COMPACT_MAX_COLUMNS: u16 = 109;
@@ -72,14 +74,70 @@ struct BrowserTui {
     session: Option<BrowserSession>,
     workspace: BrowserWorkspaceController,
     graphics: Option<HerdrGraphicsWorker>,
-    live_visual: bool,
+    visual: VisualState,
     last_workflow: Option<(WorkflowDefinition, WorkflowRunResult)>,
     workflow_checkpoint: Option<WorkflowCheckpoint>,
 }
 
+/// Live-visual state decided once from CLI flags plus the environment.
+#[derive(Default)]
+struct VisualState {
+    path: Option<VisualPath>,
+    live: bool,
+    ansi_canvas: AnsiCanvas,
+    ansi_pane: Option<AnsiPane>,
+    quality: TuiLiveQuality,
+    fit: TuiLiveFit,
+}
+
+impl VisualState {
+    fn configure(&mut self, cli: &Cli) {
+        let herdr_available = HerdrEnvironment::from_process().is_some();
+        self.path = Some(decide_path(
+            cli.tui_live,
+            cli.tui_live_backend,
+            herdr_available,
+        ));
+        self.quality = cli.tui_live_quality;
+        self.fit = cli.tui_live_fit;
+    }
+
+    fn request_live(&mut self, on: bool) -> Option<String> {
+        let path = self.path.clone()?;
+        self.live = on;
+        if !on {
+            self.ansi_pane = None;
+            return None;
+        }
+        match path {
+            VisualPath::Herdr | VisualPath::Ansi => None,
+            VisualPath::SemanticOnly { reason } => {
+                self.live = false;
+                Some(reason)
+            }
+        }
+    }
+
+    fn label(&self) -> String {
+        match &self.path {
+            Some(VisualPath::Herdr) if self.live => "Herdr live".into(),
+            Some(VisualPath::Ansi) if self.live => "ANSI live".into(),
+            Some(VisualPath::SemanticOnly { reason }) => format!("Semantic · {reason}"),
+            _ => "Semantic · live off".into(),
+        }
+    }
+}
+
 impl BrowserTui {
-    fn new() -> Self {
+    fn new(cli: &Cli) -> Self {
         let graphics = HerdrEnvironment::from_process().map(HerdrGraphicsWorker::spawn);
+        let mut visual = VisualState::default();
+        visual.configure(cli);
+        let auto_live = matches!(
+            visual.path,
+            Some(VisualPath::Herdr) | Some(VisualPath::Ansi)
+        ) && matches!(cli.tui_live, TuiLiveMode::On | TuiLiveMode::Auto);
+        let _ = visual.request_live(auto_live);
         Self {
             mode: WorkspaceMode::Browser,
             command: String::new(),
@@ -91,7 +149,7 @@ impl BrowserTui {
                 BrowserWorkspaceAdapterKind::Standalone,
             ),
             graphics,
-            live_visual: false,
+            visual,
             last_workflow: None,
             workflow_checkpoint: None,
         }
@@ -280,20 +338,18 @@ impl BrowserTui {
             return Ok(false);
         }
         if command == "live on" {
-            if self.graphics.is_none() {
-                self.status = "Herdr is unavailable; remaining semantic-only".into();
+            if let Some(reason) = self.visual.request_live(true) {
+                self.status = format!("Live view unavailable · {reason}");
             } else {
-                self.live_visual = true;
-                self.status = "Herdr latest-frame live view enabled".into();
+                self.status = format!("Live view enabled · {}", self.visual.label());
             }
+            self.sync_presentation_state();
             return Ok(false);
         }
         if command == "live off" {
-            self.live_visual = false;
-            self.workspace.state_mut().presentation =
-                crate::browser_workspace::BrowserPresentationPath::SemanticOnly;
-            self.workspace.state_mut().presentation_reason =
-                Some("continuous visual presentation disabled".into());
+            self.visual.request_live(false);
+            self.sync_presentation_state();
+            self.status = "Continuous visual presentation disabled".into();
             return Ok(false);
         }
         if command == "workflow list" {
@@ -547,25 +603,82 @@ impl BrowserTui {
         let Some(session) = self.session.as_ref() else {
             return Err("browser is detached".into());
         };
-        let Some(graphics) = self.graphics.as_ref() else {
-            self.workspace.state_mut().presentation_reason =
-                Some("Herdr environment was not detected".into());
-            return Ok(());
-        };
-        let png = session.screenshot_png().await?;
-        let (image_width, image_height) = png_dimensions(&png).unwrap_or((1, 1));
-        if graphics.try_send(HerdrFrame {
-            png,
-            image_width,
-            image_height,
-            viewport_col: 0,
-            viewport_row: 3,
-            grid_cols: u32::from(columns),
-            grid_rows: u32::from(rows.saturating_sub(6).max(1)),
+        match self.visual.path.clone().unwrap_or(VisualPath::SemanticOnly {
+            reason: "visual policy not configured".into(),
         }) {
-            self.workspace.state_mut().frame_revision = self.workspace.state().browser_revision;
+            VisualPath::Herdr => {
+                let Some(graphics) = self.graphics.as_ref() else {
+                    self.workspace.state_mut().presentation_reason =
+                        Some("Herdr environment was not detected".into());
+                    return Ok(());
+                };
+                let png = session.screenshot_png().await?;
+                let (image_width, image_height) = png_dimensions(&png).unwrap_or((1, 1));
+                if graphics.try_send(HerdrFrame {
+                    png,
+                    image_width,
+                    image_height,
+                    viewport_col: 0,
+                    viewport_row: 3,
+                    grid_cols: u32::from(columns),
+                    grid_rows: u32::from(rows.saturating_sub(6).max(1)),
+                }) {
+                    self.workspace.state_mut().frame_revision =
+                        self.workspace.state().browser_revision;
+                }
+                Ok(())
+            }
+            VisualPath::Ansi => {
+                let png = session.screenshot_png().await?;
+                let (columns, rows) = pane_size(self.visual.quality, (columns, rows));
+                match AnsiPane::from_png(
+                    &mut self.visual.ansi_canvas,
+                    &png,
+                    columns,
+                    rows,
+                    frame_fit(self.visual.fit),
+                ) {
+                    Ok(pane) => {
+                        self.visual.ansi_pane = Some(pane);
+                        self.workspace.state_mut().frame_revision =
+                            self.workspace.state().browser_revision;
+                        Ok(())
+                    }
+                    Err(error) => {
+                        self.visual.request_live(false);
+                        self.workspace.state_mut().presentation_reason =
+                            Some(format!("ANSI renderer failed: {error}"));
+                        Ok(())
+                    }
+                }
+            }
+            VisualPath::SemanticOnly { reason } => {
+                self.workspace.state_mut().presentation_reason = Some(reason);
+                Ok(())
+            }
         }
-        Ok(())
+    }
+
+    /// Mirror the decided visual path into workspace presentation state.
+    fn sync_presentation_state(&mut self) {
+        let (presentation, reason) = match &self.visual.path {
+            Some(VisualPath::Herdr) if self.visual.live => {
+                (crate::browser_workspace::BrowserPresentationPath::Herdr, None)
+            }
+            Some(VisualPath::Ansi) if self.visual.live => {
+                (crate::browser_workspace::BrowserPresentationPath::Ansi, None)
+            }
+            Some(VisualPath::SemanticOnly { reason }) => (
+                crate::browser_workspace::BrowserPresentationPath::SemanticOnly,
+                Some(reason.clone()),
+            ),
+            _ => (
+                crate::browser_workspace::BrowserPresentationPath::SemanticOnly,
+                Some("continuous visual presentation disabled".into()),
+            ),
+        };
+        self.workspace.state_mut().presentation = presentation;
+        self.workspace.state_mut().presentation_reason = reason;
     }
 
     async fn highlight_selected(&mut self) {
@@ -599,12 +712,14 @@ impl BrowserTui {
                     self.workspace.state_mut().presentation_reason = None;
                 }
                 HerdrEvent::Failed(reason) => {
-                    self.live_visual = false;
+                    self.visual.request_live(false);
                     self.workspace.state_mut().presentation =
                         crate::browser_workspace::BrowserPresentationPath::SemanticOnly;
                     self.workspace.state_mut().presentation_reason = Some(reason);
                 }
-                HerdrEvent::Stopped => self.live_visual = false,
+                HerdrEvent::Stopped => {
+                    self.visual.request_live(false);
+                }
             }
         }
     }
@@ -628,7 +743,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
         return Err("browser TUI requires an interactive terminal".into());
     }
     let mut terminal = TerminalGuard::enter()?;
-    let mut app = BrowserTui::new();
+    let mut app = BrowserTui::new(cli);
     app.status =
         "Ready · n enters an address · `navigate URL` starts a browser · `attach PORT` reuses one"
             .into();
@@ -765,11 +880,11 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                 Event::Resize(_, _) | Event::FocusGained | Event::Key(_) => {}
             }
         }
-        if app.live_visual && last_visual.elapsed() >= Duration::from_millis(500) {
+        if app.visual.live && last_visual.elapsed() >= Duration::from_millis(frame_interval_ms(app.visual.quality)) {
             let size = terminal.terminal.size()?;
             if let Err(error) = app.refresh_visual(size.width, size.height).await {
                 app.status = format!("Visual refresh failed: {error}");
-                app.live_visual = false;
+                app.visual.request_live(false);
             }
             last_visual = Instant::now();
         }
@@ -825,16 +940,54 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &BrowserTui) {
         rows[0],
     );
     let content = if app.mode == WorkspaceMode::Help {
-        "navigate URL  start/navigate browser\nobserve       structured accessibility evidence\nsemantic      structured semantic view\ntargets       bounded page targets\nselect ID     change target and invalidate evidence\nstate         connection/revision status\nreconnect     recover in place\nattach PORT   attach verified DevTools\nlaunch auto   recover on a free port\nlaunch PORT   recover on an explicit port\nstop          stop browser, keep workspace\nscreenshot    explicit Herdr frame\nlive on|off   latest-frame Herdr stream\nworkflow list|run FILE|pause|resume FILE|cancel|verify\nquit          close owned browser and exit"
+        "navigate URL  start/navigate browser\nobserve       structured accessibility evidence\nsemantic      structured semantic view\ntargets       bounded page targets\nselect ID     change target and invalidate evidence\nstate         connection/revision status\nreconnect     recover in place\nattach PORT   attach verified DevTools\nlaunch auto   recover on a free port\nlaunch PORT   recover on an explicit port\nstop          stop browser, keep workspace\nscreenshot    explicit frame capture\nlive on|off   continuous pixels (Herdr or ANSI per policy)\nworkflow list|run FILE|pause|resume FILE|cancel|verify\nquit          close owned browser and exit"
     } else {
         app.page.as_str()
     };
     draw_content(frame, rows[1], content, class);
+    if let Some(pane) = app.visual.ansi_pane.as_ref() {
+        draw_ansi_pane(frame, rows[1], pane);
+    }
     frame.render_widget(
-        Paragraph::new(format!("> {}", app.command))
+        Paragraph::new(format!("{} · {} · > {}", app.visual.label(), app.status, app.command))
             .block(Block::default().title("COMMAND").borders(Borders::ALL)),
         rows[2],
     );
+}
+
+/// Paint an ANSI half-block pane inside the content area, below its border.
+fn draw_ansi_pane(frame: &mut ratatui::Frame<'_>, area: Rect, pane: &AnsiPane) {
+    let inner = Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    for (row_index, row_cells) in pane.cells.chunks(pane.columns as usize).enumerate() {
+        let y = inner.y + row_index as u16;
+        if y >= inner.bottom() {
+            break;
+        }
+        for (column_index, cell) in row_cells.iter().enumerate() {
+            let x = inner.x + column_index as u16;
+            if x >= inner.right() {
+                break;
+            }
+            if let Some(target) = frame.buffer_mut().cell_mut((x, y)) {
+                target.set_char('▀');
+                target.set_fg(ratatui::style::Color::Rgb(
+                    cell.top.red,
+                    cell.top.green,
+                    cell.top.blue,
+                ));
+                target.set_bg(ratatui::style::Color::Rgb(
+                    cell.bottom.red,
+                    cell.bottom.green,
+                    cell.bottom.blue,
+                ));
+            }
+        }
+    }
 }
 
 fn png_dimensions(png: &[u8]) -> Option<(u32, u32)> {
@@ -951,9 +1104,33 @@ mod tests {
 
     #[test]
     fn browser_tui_starts_structured_first_and_without_a_session() {
-        let app = BrowserTui::new();
+        let cli = test_cli(&[], TuiLiveMode::Off);
+        let app = BrowserTui::new(&cli);
         assert!(app.status.contains("structured observation"));
         assert!(app.session.is_none());
         assert_eq!(app.mode, WorkspaceMode::Browser);
+        assert!(!app.visual.live);
+    }
+
+    #[test]
+    fn live_on_uses_ansi_fallback_when_herdr_is_absent() {
+        let cli = test_cli(&["--tui-live", "on"], TuiLiveMode::On);
+        let mut app = BrowserTui::new(&cli);
+        assert_eq!(app.visual.path, Some(VisualPath::Ansi));
+        app.visual.request_live(true);
+        assert!(app.visual.live);
+        app.sync_presentation_state();
+        assert_eq!(
+            app.workspace.state().presentation,
+            crate::browser_workspace::BrowserPresentationPath::Ansi
+        );
+    }
+
+    fn test_cli(extra: &[&str], _mode: TuiLiveMode) -> Cli {
+        let mut base: Cli = clap::Parser::parse_from(
+            std::iter::once("glass-browser").chain(extra.iter().copied()),
+        );
+        base.tui_layout = crate::cli::args::TuiLayout::Desktop;
+        base
     }
 }

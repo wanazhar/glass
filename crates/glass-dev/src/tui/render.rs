@@ -259,7 +259,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             state.git
         ),
         DevSurface::More => format!(
-            "PROJECT / ONBOARDING\n{}\n\nPI READINESS\n{}\n\nKERNELS\n{}\n\nEXPERIMENTS\n{}\n\nREPLAY / OPERATIONS\n{}\n\nActions: :kernel · :experiment · :replay · :workspace · :trust",
+            "{}\n\nPI READINESS\n{}\n\nKERNELS\n{}\n\nEXPERIMENTS\n{}\n\nREPLAY / OPERATIONS\n{}\n\nKeys: a actions · : expert commands",
             state.workspace_status,
             state.agent_readiness,
             state.kernels,

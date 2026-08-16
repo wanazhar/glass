@@ -1436,8 +1436,6 @@ impl DevTuiState {
         let root = self.workspace.root().display().to_string();
         let generation = self.workspace.generation();
         let project_revision = self.workspace.project().revision();
-        let trust = self.workspace.trust();
-        let detection = self.workspace.project().detection().clone();
         let agent_count = self
             .workspace
             .agents()
@@ -1447,29 +1445,49 @@ impl DevTuiState {
         let task_count = self.workspace.tasks().map(|items| items.len()).unwrap_or(0);
         let kernel_count = self.workspace.kernels().snapshots().count();
         let debugger_count = self.workspace.debugger_names().count();
+        let detection = self.workspace.project().detection().clone();
+        let trust = self.workspace.trust();
+        let trust_ready = trust.permits_project_execution();
+        let dev_hint = detection
+            .dev_command
+            .as_deref()
+            .map(|command| format!("● run `{command}`"))
+            .unwrap_or_else(|| "○ configure a dev command".into());
+        let app_hint = detection
+            .browser_url
+            .as_deref()
+            .map(|url| format!("● open App {url}"))
+            .unwrap_or_else(|| "○ start App after a URL is detected".into());
+        let project_line = if detection.languages.is_empty() {
+            "○ project type unknown".to_string()
+        } else {
+            format!("✓ {} project", detection.languages.join("/"))
+        };
+        let workspace_line = format!("✓ workspace {}", trust.label());
+        let agent_hint = if self
+            .agent_readiness
+            .starts_with("✓")
+        {
+            "✓ Glass Agent ready"
+        } else {
+            "○ Glass Agent needs setup (More → agent setup)"
+        };
         self.workspace_status = format!(
-            "root {}\n{} project · {} · branch {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers\nnext actions: Agent · Code · {} · {}",
+            "WELCOME · {}\n{}\n\n{}\n{}\n\nNEXT ACTIONS\n◆ [a] actions menu · per-surface flows\n◆ [i] talk to Glass Agent\n◆ [Enter] open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+            detection.git_branch.as_deref().unwrap_or("no branch"),
+            project_line,
+            agent_hint,
+            workspace_line,
+            dev_hint,
+            app_hint,
             root,
-            detection.languages.join("/"),
-            detection.build_system.as_deref().unwrap_or("unknown build"),
-            detection.git_branch.as_deref().unwrap_or("no Git"),
             generation,
             project_revision,
-            trust.label(),
+            trust_ready,
             agent_count,
             task_count,
             kernel_count,
             debugger_count,
-            detection
-                .dev_command
-                .as_deref()
-                .map(|command| format!("run `{command}`"))
-                .unwrap_or_else(|| "configure a dev command".into()),
-            detection
-                .browser_url
-                .as_deref()
-                .map(|url| format!("open App {url}"))
-                .unwrap_or_else(|| "start App after a URL is detected".into()),
         );
         if self.workspace.trust().permits_project_execution()
             && let Ok(experiments) = self.workspace.experiments()

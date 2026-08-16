@@ -40,7 +40,7 @@ top-level and nested command tree for documentation drift validation. Live
 | `--tui-rtt-ms MS` | unknown | Supply measured round-trip latency. |
 | `--tui-throughput-mbps MBPS` | unknown | Supply measured terminal-link throughput. |
 | `--tui-live off\|auto\|on` | `off` | Keep continuous pixels off, require a detected native backend, or allow ANSI fallback. |
-| `--tui-live-backend auto\|herdr\|kitty\|ansi` | `auto` | Select the terminal-native renderer. |
+| `--tui-live-backend auto\|herdr\|ansi` | `auto` | Select the terminal-native renderer; `kitty` is accepted and currently rendered through the ANSI path. |
 | `--tui-live-quality data\|balanced\|smooth` | `balanced` | Select the adaptive capture size and target frame rate. |
 | `--tui-live-fit contain\|cover\|actual` | `contain` | Select ANSI sampling; native image backends use contain. |
 

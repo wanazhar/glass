@@ -5,6 +5,38 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Discoverable per-surface action menus (`a`) so ordinary flows no longer
+  require memorized palette command strings.
+- Live browser visuals through the ANSI half-block renderer in both the
+  standalone Browser TUI (`--tui-live on`, honoring
+  `--tui-live-backend/--tui-live-quality/--tui-live-fit`, which were previously
+  parsed but unused) and the embedded App surface (`v` toggles live view).
+- In-TUI browser recovery sheet: a port collision or failed attach now offers
+  attach, automatic free-port launch, or an explicit-port retry without
+  leaving the workspace.
+- Context-sensitive right pane projecting the active agent, editing target,
+  selected semantic entity, trust attention, and running task count.
+- Welcome/onboarding summary on the More surface with project detection,
+  agent readiness, and next actions.
+- Designed human projections for trust inspection, workflow state, git, tests,
+  debugger, kernels, LSP, and browser tool results; screenshots report size
+  instead of inlining base64. Raw JSON remains available via CLI/MCP.
+- Agent conversation rendering as YOU/GLASS AGENT blocks with tool-call rows
+  and state glyphs; steer (Ctrl-D) and abort (Ctrl-X) from the composer.
+
+### Fixed
+
+- Ctrl+C now quits from composer, palette, and edit modes instead of inserting
+  a literal `c` into user input.
+- Mouse wheel scrolls surface content; left clicks select navigation entries
+  and semantic entities instead of being captured and ignored.
+- PageUp/PageDown/Home/End scroll panes; editor viewport follows the cursor
+  instead of showing only the first 24 lines.
+- Rust `{:?}` debug formatting no longer leaks into status lines, headers,
+  authority footers, or trust state.
+
 ## [0.3.9] - 2026-08-12
 
 ### Fixed

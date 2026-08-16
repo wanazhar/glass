@@ -1,3 +1,4 @@
+use super::projection;
 use super::state::{DevSurface, DevTuiState};
 use crate::agents::AgentSpec;
 use crate::development::{Actor, ToolAuthorization, ToolCall};
@@ -399,7 +400,11 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
         _ => return Err("lsp actions: start, stop, list, events, diagnostics, hover, complete, definition, declaration, implementation, references, symbols, workspace-symbols, signature, format, tokens, rename".into()),
     };
     let result = run_tool(state, tool, arguments, mutating)?;
-    state.editor = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+    state.editor = if tool == "glass.lsp.diagnostics" {
+        projection::lsp(Some(&result))
+    } else {
+        projection::first_meaningful(&result)
+    };
     state.surface = DevSurface::Code;
     Ok(compact_result(tool, &result))
 }
@@ -498,8 +503,7 @@ fn execute_browser(
     };
     let result = run_tool(state, tool, arguments, mutating)?;
     state.apply_browser_result(tool, &result);
-    state.browser_detail =
-        serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+    state.browser_detail = projection::browser_result(tool, &result);
     state.surface = DevSurface::App;
     Ok(compact_result(tool, &result))
 }
@@ -584,7 +588,7 @@ fn execute_debug(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             run_tool(state, tool, arguments, mutating)?
         }
     };
-    state.debugger = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+    state.debugger = projection::debugger(Some(&result));
     state.surface = DevSurface::Debug;
     Ok(compact_result("debug", &result))
 }
@@ -620,7 +624,7 @@ fn execute_kernel(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         _ => return Err("kernel actions: start, execute, cancel, reset, stop".into()),
     };
     let result = run_tool(state, tool, arguments, true)?;
-    state.kernels = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+    state.kernels = projection::kernels(Some(&result));
     state.surface = DevSurface::More;
     Ok(format!("Kernel {name}: {action}"))
 }
@@ -675,7 +679,9 @@ fn execute_git(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
         }
     };
     let result = run_tool(state, tool, arguments, mutating)?;
-    state.git = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+    if tool.contains("git") {
+        state.git = format!("{}\n{}", state.git, projection::git(Some(&result)));
+    }
     state.surface = DevSurface::Git;
     Ok(compact_result(tool, &result))
 }
@@ -701,7 +707,7 @@ fn execute_test(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
         _ => return Err("test actions: discover, run, results, cancel".into()),
     };
     let result = run_tool(state, tool, arguments, mutating)?;
-    state.tests = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+    state.tests = projection::tests(Some(&result));
     state.surface = DevSurface::Tasks;
     Ok(compact_result(tool, &result))
 }

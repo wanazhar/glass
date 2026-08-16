@@ -145,8 +145,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     }
     let content = match state.surface {
         DevSurface::Trust => {
-            let inspection = serde_json::to_string_pretty(&state.workspace.trust_inspection())
-                .unwrap_or_else(|error| format!("inspection failed: {error}"));
+            let inspection = super::projection::trust_items(&state.workspace.trust_inspection());
             format!(
                 "WORKSPACE TRUST\n\nThis repository contains executable Glass settings.\nCurrent state: {:?}\n\n[I] Inspect configuration\n[O] Open untrusted\n[1] Trust once\n[T] Trust this project\n\nCONFIGURATION BY AUTHORITY / RISK\n{}",
                 state.workspace.trust(),
@@ -154,7 +153,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )
         }
         DevSurface::Agent => format!(
-            "CONVERSATION\n{}\n\n{}\n\nComposer: press i · submit Enter · Esc returns to navigation\nFirst run: :agent setup [login] · readiness: :agent status|doctor\nSession actions: :agent new|clone|fork|model|thinking",
+            "CONVERSATION\n{}\n\n{}\n\nComposer: i compose · Enter sends · Ctrl-A abort · Ctrl-S steer · Esc returns to navigation",
             state.agent_readiness, state.agent_conversation
         ),
         DevSurface::Code => format!(
@@ -180,22 +179,27 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             state.lsp
         ),
         DevSurface::App => format!(
-            "APP WORKSPACE\n{}\n\nWORKFLOW\n{}\n\nKeys: j/k select · Enter activate · n address · t type · PgUp/PgDn page · H human · G Glass\nActions: :browser start|observe|targets|navigate|back|forward|reload|click|type · :workflow list|run",
-            state.browser, state.workflow
+            "APP WORKSPACE\n{}\n\n{}\n\nWORKFLOW\n{}\n\nKeys: j/k select · Enter activate · n address · t type · PgUp/PgDn page · H human · G Glass · v visual",
+            state.browser,
+            state.browser_detail,
+            state.workflow
         ),
         DevSurface::Terminal => format!(
-            "MANAGED TERMINALS\n{}\n\nActions: :process start|stop|restart|logs|input|resize|health|ports",
+            "MANAGED TERMINALS\n{}\n\nKeys: Enter start detected dev command · r restart · x stop",
             state.processes
         ),
         DevSurface::Tasks => format!(
-            "TASK DAG\n\n{}\n\nActions: :task create|pause|resume|cancel|retry|reassign|override|evidence",
+            "TASK DAG\n\n{}\n\nKeys: Enter create task · p pause · u resume · x cancel",
             state.tasks
         ),
         DevSurface::Debug => format!(
-            "DEBUG SESSIONS\n{}\n\nTESTS\n{}\n\nActions: :debug start|breakpoint|continue|step|evaluate · :test run|watch",
+            "DEBUG SESSIONS\n{}\n\nTESTS\n{}\n\nKeys: c continue · s step · b breakpoint",
             state.debugger, state.tests
         ),
-        DevSurface::Git => state.git.clone(),
+        DevSurface::Git => format!(
+            "{}\n\nKeys: Enter stage/unstage selected · d diff · c commit · D discard",
+            state.git
+        ),
         DevSurface::More => format!(
             "PROJECT / ONBOARDING\n{}\n\nPI READINESS\n{}\n\nKERNELS\n{}\n\nEXPERIMENTS\n{}\n\nREPLAY / OPERATIONS\n{}\n\nActions: :kernel · :experiment · :replay · :workspace · :trust",
             state.workspace_status,

@@ -1163,7 +1163,7 @@ impl DevTuiState {
             .workspace
             .browser()
             .list_workflows()
-            .and_then(|state| serde_json::to_string_pretty(&state).map_err(Into::into))
+            .map(|state| super::projection::workflow(Some(&state)))
             .unwrap_or_else(|error| format!("Workflow state failed: {error}"));
         let root = self.workspace.root().display().to_string();
         let generation = self.workspace.generation();
@@ -1368,8 +1368,8 @@ impl DevTuiState {
         match result.and_then(|_| self.workspace.browser().observe()) {
             Ok(observation) => {
                 self.apply_browser_result("glass.browser.observe", &observation);
-                self.browser_detail = serde_json::to_string_pretty(&observation)
-                    .unwrap_or_else(|_| observation.to_string());
+                self.browser_detail =
+                    super::projection::browser_result("glass.browser.observe", &observation);
                 self.status = "App action complete · semantic revision refreshed".into();
             }
             Err(error) => {

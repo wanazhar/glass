@@ -1,6 +1,7 @@
 //! Decomposed full Glass Dev terminal application.
 
 mod command;
+mod projection;
 mod render;
 mod state;
 

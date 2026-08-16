@@ -185,6 +185,12 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             (KeyCode::Enter, _) if state.surface == DevSurface::Code => {
                                 state.open_selected_file();
                             }
+                            (KeyCode::Char(']'), _) if state.surface == DevSurface::Code => {
+                                state.cycle_editor_buffer(1)
+                            }
+                            (KeyCode::Char('['), _) if state.surface == DevSurface::Code => {
+                                state.cycle_editor_buffer(-1)
+                            }
                             (KeyCode::Enter, _) if state.surface == DevSurface::App => {
                                 state.execute_app_intent(BrowserWorkspaceIntent::ActivateSelected)
                             }

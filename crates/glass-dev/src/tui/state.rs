@@ -160,6 +160,8 @@ pub struct DevTuiState {
     pub refresh_latency_ms: u64,
     /// Highest agent event sequence folded into the live conversation.
     pub conversation_cursor: u64,
+    /// Index of the editor buffer focused by the Code surface.
+    pub editor_buffer_index: usize,
     pub agents: String,
     pub agent_readiness: String,
     pub agent_conversation: String,
@@ -262,6 +264,7 @@ impl DevTuiState {
             terminal_height: 24,
             refresh_latency_ms: 0,
             conversation_cursor: 0,
+            editor_buffer_index: 0,
             status: if trust_prompt {
                 "Workspace trust required · I inspect · O untrusted · 1 trust once · T trust project".into()
             } else {
@@ -911,6 +914,34 @@ impl DevTuiState {
             }
             Err(error) => self.status = format!("Open failed: {error}"),
         }
+    }
+
+    /// Cycle the focused editor buffer by `delta`; wraps around.
+    pub fn cycle_editor_buffer(&mut self, delta: i32) {
+        let count = self
+            .workspace
+            .lock()
+            .map(|workspace| workspace.project().buffers().count())
+            .unwrap_or(0);
+        if count == 0 {
+            self.status = "No open buffers · open a file from the list".into();
+            return;
+        }
+        let index = self.editor_buffer_index as i32 + delta;
+        self.editor_buffer_index = index.rem_euclid(count as i32) as usize;
+        let name = self
+            .workspace
+            .lock()
+            .ok()
+            .and_then(|workspace| {
+                workspace
+                    .project()
+                    .buffers()
+                    .nth(self.editor_buffer_index)
+                    .map(|buffer| buffer.path.clone())
+            })
+            .unwrap_or_default();
+        self.status = format!("Buffer {}/{} · {name}", self.editor_buffer_index + 1, count);
     }
 
     pub fn enter_code_edit(&mut self) {

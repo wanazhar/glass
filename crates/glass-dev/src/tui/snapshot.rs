@@ -347,45 +347,152 @@ fn compute_snapshot(
 fn editor_projection(workspace: &crate::DevelopmentWorkspace) -> String {
     let buffers: Vec<_> = workspace.project().buffers().cloned().collect();
     if buffers.is_empty() {
-        return "No file open. Select a file below and press Enter, then i to edit.".into();
+        return "No file open. Select a file below and press Enter, then i to edit.\n\nBUFFERS\nnone open · ] opens the next buffer".into();
     }
-    buffers
+    let diagnostics = workspace.project().diagnostics();
+    let mut body = String::new();
+    for (position, buffer) in buffers.iter().enumerate() {
+        let lines: Vec<&str> = buffer.content.lines().collect();
+        let cursor = buffer.cursor_line as usize;
+        let viewport_rows = 16;
+        let start = cursor
+            .saturating_sub(viewport_rows / 2)
+            .min(lines.len().saturating_sub(viewport_rows.min(lines.len())));
+        let end = (start + viewport_rows).min(lines.len());
+        let gutter_width = lines.len().to_string().len().max(3);
+        // Mark lines that carry diagnostics for this buffer.
+        let file_diagnostics: Vec<_> = diagnostics
+            .get(&buffer.path)
+            .map(|items| items.as_slice())
+            .unwrap_or(&[])
+            .to_vec();
+        let flagged: std::collections::BTreeSet<u32> = file_diagnostics
+            .iter()
+            .map(|item| item.start.line)
+            .collect();
+        let extension = buffer
+            .path
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let spans = crate::development::editor::syntax_spans(&buffer.content, &extension);
+        let viewport = lines[start..end]
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                let number = start + index + 1;
+                let marker = if number == cursor {
+                    "▶"
+                } else if flagged.contains(&(number as u32)) {
+                    "!"
+                } else {
+                    " "
+                };
+                let byte_offset = lines[..start + index]
+                    .iter()
+                    .map(|prefix| prefix.len() + 1)
+                    .sum::<usize>();
+                let highlighted = highlight_line(line, byte_offset, &spans);
+                format!(
+                    "{marker}{:>gutter_width$} │ {highlighted}",
+                    number,
+                    gutter_width = gutter_width
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if position > 0 {
+            body.push_str("\n\n");
+        }
+        let diagnostic_summary = if file_diagnostics.is_empty() {
+            String::new()
+        } else {
+            format!(" · {} diagnostics", file_diagnostics.len())
+        };
+        body.push_str(&format!(
+            "{}{} · cursor {}:{} · actor {} · {} lines{}\n{viewport}",
+            if buffer.dirty { "● " } else { "○ " },
+            buffer.path,
+            buffer.cursor_line,
+            buffer.cursor_column,
+            buffer.actor.id,
+            lines.len(),
+            diagnostic_summary,
+        ));
+    }
+    let list = buffers
         .iter()
-        .map(|buffer| {
-            let lines: Vec<&str> = buffer.content.lines().collect();
-            let cursor = buffer.cursor_line as usize;
-            let viewport_rows = 16;
-            let start = cursor
-                .saturating_sub(viewport_rows / 2)
-                .min(lines.len().saturating_sub(viewport_rows.min(lines.len())));
-            let end = (start + viewport_rows).min(lines.len());
-            let gutter_width = lines.len().to_string().len().max(3);
-            let viewport = lines[start..end]
-                .iter()
-                .enumerate()
-                .map(|(index, line)| {
-                    let number = start + index + 1;
-                    let marker = if number == cursor { "▶" } else { " " };
-                    format!(
-                        "{marker}{:>gutter_width$} │ {line}",
-                        number,
-                        gutter_width = gutter_width
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+        .enumerate()
+        .map(|(index, buffer)| {
             format!(
-                "{}{} · cursor {}:{} · actor {} · {} lines\n{viewport}",
-                if buffer.dirty { "● " } else { "○ " },
+                "{} {}{}",
+                if index == 0 { "▶" } else { " " },
                 buffer.path,
-                buffer.cursor_line,
-                buffer.cursor_column,
-                buffer.actor.id,
-                lines.len()
+                if buffer.dirty { " ●" } else { "" }
             )
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n");
+    format!("{body}\n\nBUFFERS · ]/[ switch\n{list}")
+}
+
+/// Apply span markers to one line. Spans are byte offsets over the whole
+/// buffer; only spans intersecting this line leave a marker.
+fn highlight_line(
+    line: &str,
+    byte_offset: usize,
+    spans: &[crate::development::editor::SyntaxSpan],
+) -> String {
+    let line_start = byte_offset;
+    let line_end = byte_offset + line.len();
+    let mut markers = String::new();
+    let mut any = false;
+    for span in spans {
+        if span.end > line_start && span.start < line_end {
+            any = true;
+            break;
+        }
+    }
+    if !any {
+        return line.to_string();
+    }
+    // Mark keyword spans with guillemets so the projection stays plain text
+    // while visibly distinguishing syntax kinds.
+    let mut chars = line.char_indices().peekable();
+    let mut output = String::new();
+    while let Some((offset, character)) = chars.next() {
+        let absolute = line_start + offset;
+        let in_keyword = spans.iter().any(|span| {
+            span.kind == crate::development::editor::SyntaxKind::Keyword
+                && absolute >= span.start
+                && absolute < span.end
+        });
+        if in_keyword {
+            output.push('«');
+            output.push(character);
+            // consume the rest of the keyword run
+            while let Some(&(next_offset, next_character)) = chars.peek() {
+                let next_absolute = line_start + next_offset;
+                let still = spans.iter().any(|span| {
+                    span.kind == crate::development::editor::SyntaxKind::Keyword
+                        && next_absolute >= span.start
+                        && next_absolute < span.end
+                });
+                if still {
+                    output.push(next_character);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            output.push('»');
+        } else {
+            output.push(character);
+        }
+    }
+    markers.push_str(&output);
+    markers
 }
 
 fn git_projection(workspace: &mut crate::DevelopmentWorkspace) -> String {

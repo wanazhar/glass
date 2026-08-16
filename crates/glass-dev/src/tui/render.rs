@@ -698,6 +698,61 @@ mod tests {
     }
 
     #[test]
+    fn desktop_flow_opens_actions_menu_composes_and_pages_without_clipping() {
+        let mut state = state(TuiLayout::Desktop);
+
+        // Discoverability: the action menu opens from navigation mode and
+        // renders its entries inside the surface pane at desktop size.
+        state.surface = DevSurface::Agent;
+        state.open_menu();
+        let output = rendered(&state, 118, 32);
+        assert!(output.contains("ACTIONS · Agent"));
+        assert!(output.contains("Compose message"));
+        state.move_menu_selection(1);
+        state.run_menu_action();
+        assert!(state.command_mode);
+        assert!(state.command_input.starts_with("agent setup"));
+        state.close_palette();
+
+        // Composer editing keys behave like a real input line.
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        state.insert_composer_text("fix the login bug");
+        // Ctrl-W deletes the word before the cursor (at end: drops "bug").
+        state.delete_composer_word();
+        assert_eq!(state.composer_input, "fix the login");
+        state.move_composer_cursor(false);
+        state.composer_backspace();
+        assert_eq!(state.composer_input, "fix the logn");
+        state.close_composer();
+
+        // Long content pages with PageDown/Home/End instead of being clipped.
+        state.surface = DevSurface::More;
+        state.scroll_surface(40);
+        assert_eq!(state.current_scroll(), 40);
+        state.scroll_home();
+        assert_eq!(state.current_scroll(), 0);
+        state.scroll_surface(-5);
+        assert_eq!(state.current_scroll(), 0, "scroll is bounded at zero");
+    }
+
+    #[test]
+    fn app_recovery_sheet_offers_choices_after_collision() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::App;
+        state.note_browser_failure(
+            "glass.browser.start",
+            "CDP port 9222 is already occupied; use --attach to connect to that Chrome endpoint or choose another --port",
+        );
+        let output = rendered(&state, 118, 32);
+        assert!(output.contains("BROWSER RECOVERY"));
+        assert!(output.contains("automatic free port"));
+        // Actions are reachable without leaving the TUI.
+        state.accept_browser_recovery(1);
+        assert!(state.browser_recovery.is_none() || state.status.contains("Recovery"));
+    }
+
+    #[test]
     fn executable_project_configuration_prompts_on_phone_before_activation() {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(

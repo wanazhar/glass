@@ -744,9 +744,12 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
     }
     let mut terminal = TerminalGuard::enter()?;
     let mut app = BrowserTui::new(cli);
-    app.status =
-        "Ready · n enters an address · `navigate URL` starts a browser · `attach PORT` reuses one"
-            .into();
+    app.status = if app.visual.live {
+        format!("Ready · {} · n address · Enter activates the selection", app.visual.label())
+    } else {
+        "Ready · n enters an address · `navigate URL` starts a browser · `attach PORT` reuses one · help lists all"
+            .into()
+    };
     let mut last_visual = Instant::now();
     let result: BrowserResult<()> = loop {
         app.poll_graphics();
@@ -1035,8 +1038,8 @@ fn semantic_text(workspace: &BrowserWorkspaceController) -> String {
 fn draw_content(frame: &mut ratatui::Frame<'_>, area: Rect, content: &str, class: ResponsiveClass) {
     let title = match class {
         ResponsiveClass::Phone => "Overview · pixels opt-in",
-        ResponsiveClass::Compact => "Browser evidence",
-        ResponsiveClass::Desktop => "Browser / Structured Observation",
+        ResponsiveClass::Compact => "Browser evidence · help for keys",
+        ResponsiveClass::Desktop => "Browser / Structured Observation · n address · Enter activate · j/k select · help for all",
     };
     frame.render_widget(
         Paragraph::new(content)

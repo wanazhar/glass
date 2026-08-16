@@ -1371,7 +1371,28 @@ impl DevTuiState {
                 })
                 .collect::<Result<Vec<_>, _>>();
             match snapshots {
-                Ok(snapshots) => snapshots.iter().map(|(name, snapshot)| format!("● {} · {:?} · pid {} · {} breakpoints · {} watches · {} threads/processes", name, snapshot.state, snapshot.adapter_process_id, snapshot.breakpoints.values().map(Vec::len).sum::<usize>(), snapshot.watches.len(), snapshot.debuggee_processes.len())).collect::<Vec<_>>().join("\n"),
+                Ok(snapshots) => snapshots
+                    .iter()
+                    .map(|(name, snapshot)| {
+                        format!(
+                            "● {} · {} · pid {} · {} breakpoints · {} watches · {} threads/processes",
+                            name,
+                            match snapshot.state {
+                                crate::debugger::DebugSessionState::Starting => "starting",
+                                crate::debugger::DebugSessionState::Initialized => "initialized",
+                                crate::debugger::DebugSessionState::Running => "running",
+                                crate::debugger::DebugSessionState::Stopped => "stopped",
+                                crate::debugger::DebugSessionState::Terminated => "terminated",
+                                crate::debugger::DebugSessionState::Failed => "failed",
+                            },
+                            snapshot.adapter_process_id,
+                            snapshot.breakpoints.values().map(Vec::len).sum::<usize>(),
+                            snapshot.watches.len(),
+                            snapshot.debuggee_processes.len()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 Err(error) => format!("Debugger state failed: {error}"),
             }
         };

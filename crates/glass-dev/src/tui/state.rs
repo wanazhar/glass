@@ -1067,9 +1067,9 @@ impl DevTuiState {
                 .iter()
                 .map(|agent| {
                     format!(
-                        "{}  {:?}  {} · {}\n  target {} · model {} · thinking {} · events {} · dropped {}{}\n  evidence {}",
+                        "{}  {}  {} · {}\n  target {} · model {} · thinking {} · events {} · dropped {}{}\n  evidence {}",
                         agent.id.as_str(),
-                        agent.status,
+                        agent.status.label(),
                         agent.role,
                         agent.task,
                         agent.worktree.display(),

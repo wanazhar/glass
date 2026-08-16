@@ -717,7 +717,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                         app.highlight_selected().await;
                     }
                     KeyCode::Char(':') if app.command.is_empty() => {
-                        let _ = app.workspace.reduce(BrowserWorkspaceIntent::OpenPalette);
+                        app.status = "Command line · type help for the command reference".into();
                     }
                     KeyCode::Char(character) => app.command.push(character),
                     _ => {}
@@ -740,6 +740,22 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta: 1 });
                         app.page = semantic_text(&app.workspace);
                         app.highlight_selected().await;
+                    }
+                    // Left click on a semantic line selects it; clicking the
+                    // command row focuses nothing (keyboard-first footer).
+                    crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ) => {
+                        let semantic_top = semantic_first_row(&app.workspace);
+                        let scrolled = app.workspace.state().semantic_scroll;
+                        if mouse.row >= semantic_top {
+                            let index = usize::from(mouse.row - semantic_top) + scrolled;
+                            if app.workspace.state().entities.get(index).is_some() {
+                                app.workspace.state_mut().selected_entity = Some(index);
+                                app.page = semantic_text(&app.workspace);
+                                app.highlight_selected().await;
+                            }
+                        }
                     }
                     _ => {}
                 },
@@ -875,6 +891,14 @@ fn draw_content(frame: &mut ratatui::Frame<'_>, area: Rect, content: &str, class
             .block(Block::default().title(title).borders(Borders::ALL)),
         area,
     );
+}
+
+/// First terminal row (inside the content border) that shows semantic entities.
+fn semantic_first_row(workspace: &BrowserWorkspaceController) -> u16 {
+    let state = workspace.state();
+    let header_rows = 1 + usize::from(!state.title.is_empty())
+        + usize::from(!state.url.is_empty());
+    3 + 1 + header_rows as u16
 }
 
 struct TerminalGuard {

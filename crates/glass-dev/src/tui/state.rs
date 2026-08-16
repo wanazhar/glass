@@ -96,6 +96,7 @@ pub struct DevTuiState {
     pub composer_mode: bool,
     pub composer_input: String,
     pub composer_cursor: usize,
+    pub composer_steer: bool,
     pub selected_agent: Option<crate::AgentId>,
     pub pending_confirmation: Option<PendingConfirmation>,
     pub surface_scroll: std::collections::BTreeMap<DevSurface, usize>,
@@ -163,6 +164,7 @@ impl DevTuiState {
             composer_mode: false,
             composer_input: String::new(),
             composer_cursor: 0,
+            composer_steer: false,
             selected_agent: None,
             pending_confirmation: None,
             surface_scroll: std::collections::BTreeMap::new(),
@@ -389,7 +391,50 @@ impl DevTuiState {
 
     pub fn close_composer(&mut self) {
         self.composer_mode = false;
+        self.composer_steer = false;
         self.status = "Composer closed".into();
+    }
+
+    pub fn move_composer_cursor(&mut self, right: bool) {
+        if right {
+            self.composer_cursor = self.composer_input[self.composer_cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(offset, _)| self.composer_cursor + offset)
+                .unwrap_or(self.composer_input.len());
+        } else if self.composer_cursor > 0 {
+            self.composer_cursor = self.composer_input[..self.composer_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+        }
+    }
+
+    pub fn delete_composer_word(&mut self) {
+        let before = self.composer_input[..self.composer_cursor]
+            .trim_end();
+        let start = before.len();
+        let target = before[..start].trim_end_matches(|c: char| c.is_whitespace())
+            .char_indices()
+            .rev()
+            .find_map(|(index, character)| character.is_whitespace().then_some(index))
+            .map(|index| before[..index].trim_end().len())
+            .unwrap_or(0);
+        self.composer_input.drain(target..self.composer_cursor);
+        self.composer_cursor = target;
+    }
+
+    pub fn abort_selected_agent(&mut self) {
+        let Some(agent) = self.selected_agent.clone() else {
+            self.status = "No active agent to abort".into();
+            return;
+        };
+        match self.workspace.agents().cancel(&agent) {
+            Ok(()) => self.status = format!("Aborted {}", agent.as_str()),
+            Err(error) => self.status = format!("Abort failed: {error}"),
+        }
+        self.refresh();
     }
 
     pub fn insert_composer_text(&mut self, text: &str) {
@@ -414,8 +459,10 @@ impl DevTuiState {
 
     pub fn submit_composer(&mut self) {
         let mut text = std::mem::take(&mut self.composer_input);
+        let steer = self.composer_steer;
         self.composer_cursor = 0;
         self.composer_mode = false;
+        self.composer_steer = false;
         if text.trim().is_empty() {
             self.status = "Message was empty".into();
             return;
@@ -456,7 +503,13 @@ impl DevTuiState {
                 .snapshot(&agent)
                 .map(|item| item.status);
             match status {
-                Ok(crate::AgentStatus::Working) => self.workspace.agents().follow_up(&agent, text),
+                Ok(crate::AgentStatus::Working) => {
+                    if steer {
+                        self.workspace.agents().steer(&agent, text)
+                    } else {
+                        self.workspace.agents().follow_up(&agent, text)
+                    }
+                }
                 Ok(_) => self.workspace.agents().prompt(&agent, text),
                 Err(error) => Err(error),
             }
@@ -569,6 +622,30 @@ impl DevTuiState {
     pub fn scroll_surface(&mut self, delta: i32) {
         let scroll = self.surface_scroll.entry(self.surface).or_default();
         *scroll = (*scroll as i64 + i64::from(delta)).max(0) as usize;
+    }
+
+    pub fn scroll_home(&mut self) {
+        self.surface_scroll.insert(self.surface, 0);
+    }
+
+    pub fn scroll_end(&mut self) {
+        let end = self.surface_content_height().saturating_sub(1);
+        self.surface_scroll.insert(self.surface, end);
+    }
+
+    /// Bounded logical height of the current surface's content, used for End.
+    fn surface_content_height(&self) -> usize {
+        let content = match self.surface {
+            DevSurface::Agent => &self.agent_conversation,
+            DevSurface::Code => &self.editor,
+            DevSurface::App => &self.browser,
+            DevSurface::Terminal => &self.processes,
+            DevSurface::Tasks => &self.tasks,
+            DevSurface::Git => &self.git,
+            DevSurface::Debug => &self.debugger,
+            DevSurface::More | DevSurface::Trust => &self.workspace_status,
+        };
+        content.lines().count().max(1)
     }
 
     pub fn current_scroll(&self) -> u16 {

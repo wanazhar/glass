@@ -1,6 +1,6 @@
 //! Resident development workspace ownership.
 
-use crate::agents::AgentRegistry;
+use crate::agents::{AgentRegistry, AgentSnapshot};
 use crate::browser::BrowserService;
 use crate::customization::Customization;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
@@ -663,6 +663,45 @@ impl SharedDevelopmentWorkspace {
                 "development workspace lock was poisoned".into(),
             )
         })
+    }
+
+    /// Snapshot helpers used by long-lived UIs: safe, bounded reads that
+    /// degrade instead of poisoning the render loop.
+    pub fn trust_status(&self) -> WorkspaceTrust {
+        self.lock()
+            .map(|w| w.trust())
+            .unwrap_or(WorkspaceTrust::Untrusted)
+    }
+    pub fn trust_inspection_list(&self) -> Vec<crate::customization::CustomizationInspectionItem> {
+        self.lock()
+            .map(|w| w.trust_inspection())
+            .unwrap_or_default()
+    }
+    pub fn customization_snapshot_counts(&self) -> (usize, usize) {
+        self.lock()
+            .map(|w| {
+                (
+                    w.customization().skills().count(),
+                    w.customization().config().tools.len(),
+                )
+            })
+            .unwrap_or((0, 0))
+    }
+    pub fn agents_list(&self) -> Vec<AgentSnapshot> {
+        self.lock()
+            .map(|mut w| w.agents().list().unwrap_or_default())
+            .unwrap_or_default()
+    }
+    pub fn tasks_list(&self) -> Vec<TaskSnapshot> {
+        self.lock().and_then(|mut w| w.tasks()).unwrap_or_default()
+    }
+    pub fn kernels_snapshot_list(&self) -> Vec<crate::kernels::KernelSnapshot> {
+        self.lock()
+            .map(|w| w.kernels().snapshots().cloned().collect())
+            .unwrap_or_default()
+    }
+    pub fn debugger_count(&self) -> usize {
+        self.lock().map(|w| w.debugger_names().count()).unwrap_or(0)
     }
 }
 

@@ -28,7 +28,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
     match command {
         "help" | "?" => {
             let project_commands = state
-                .workspace
+                .ws()?
                 .customization()
                 .config()
                 .commands
@@ -74,7 +74,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
             state.surface = DevSurface::More;
             Ok("Observable replay refreshed".into())
         }
-        _ if state.workspace.customization().command(command).is_some() => {
+        _ if state.ws()?.customization().command(command).is_some() => {
             let result = run_tool(state, &format!("glass.command.{command}"), json!({}), true)?;
             Ok(format!(
                 "PROJECT command {}: {}",
@@ -88,15 +88,12 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
 
 fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     match parts.first().copied().unwrap_or("inspect") {
-        "status" => Ok(format!(
-            "Workspace trust: {}",
-            state.workspace.trust().label()
-        )),
+        "status" => Ok(format!("Workspace trust: {}", state.ws()?.trust().label())),
         "inspect" => {
             state.surface = DevSurface::Trust;
             Ok(format!(
                 "Inspecting {} configuration items",
-                state.workspace.trust_inspection().len()
+                state.ws()?.trust_inspection().len()
             ))
         }
         action @ ("untrusted" | "once" | "project") => {
@@ -106,7 +103,7 @@ fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
                 _ => crate::LocalTrustDecision::TrustProject,
             };
             let trust = state
-                .workspace
+                .ws()?
                 .apply_local_trust_decision(decision)
                 .map_err(|error| error.to_string())?;
             state.surface = DevSurface::Agent;
@@ -151,7 +148,7 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
                 return Err("agent spawn requires ROLE TASK".into());
             }
             let id = state
-                .workspace
+                .ws_mut()?
                 .agents()
                 .create(AgentSpec::new(*role, task))
                 .map_err(|error| error.to_string())?;
@@ -163,9 +160,9 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             let text = parts.get(2..).unwrap_or_default().join(" ");
             let agent = find_agent(state, id)?;
             match action {
-                "prompt" => state.workspace.agents().prompt(&agent, text),
-                "steer" => state.workspace.agents().steer(&agent, text),
-                _ => state.workspace.agents().follow_up(&agent, text),
+                "prompt" => state.ws_mut()?.agents().prompt(&agent, text),
+                "steer" => state.ws_mut()?.agents().steer(&agent, text),
+                _ => state.ws_mut()?.agents().follow_up(&agent, text),
             }
             .map_err(|error| error.to_string())?;
             state.surface = DevSurface::Agent;
@@ -175,7 +172,7 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             let id = parts.get(1).ok_or("agent cancel requires ID")?;
             let agent = find_agent(state, id)?;
             state
-                .workspace
+                .ws_mut()?
                 .agents()
                 .cancel(&agent)
                 .map_err(|error| error.to_string())?;
@@ -244,7 +241,7 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
                 ).map_err(|error| error.to_string())?);
             }
             let id = state
-                .workspace
+                .ws_mut()?
                 .create_task(spec)
                 .map_err(|error| error.to_string())?;
             state.surface = DevSurface::Tasks;
@@ -257,11 +254,11 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             )
             .map_err(|error| error.to_string())?;
             let result = match action {
-                "pause" => state.workspace.pause_task(&id),
-                "resume" => state.workspace.resume_task(&id),
-                "cancel" => state.workspace.cancel_task(&id),
-                "retry" => state.workspace.retry_task(&id),
-                _ => state.workspace.override_blocked_task(&id),
+                "pause" => state.ws_mut()?.pause_task(&id),
+                "resume" => state.ws_mut()?.resume_task(&id),
+                "cancel" => state.ws_mut()?.cancel_task(&id),
+                "retry" => state.ws_mut()?.retry_task(&id),
+                _ => state.ws_mut()?.override_blocked_task(&id),
             };
             result.map_err(|error| error.to_string())?;
             state.surface = DevSurface::Tasks;
@@ -274,7 +271,7 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             )
             .map_err(|error| error.to_string())?;
             state
-                .workspace
+                .ws_mut()?
                 .reassign_task(
                     &id,
                     parts
@@ -309,7 +306,7 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
                 serde_json::from_str(&encoded).map_err(|error| error.to_string())?
             };
             state
-                .workspace
+                .ws_mut()?
                 .submit_task_evidence(&id, (*kind).into(), "local-human".into(), passed, details)
                 .map_err(|error| error.to_string())?;
             state.surface = DevSurface::Tasks;
@@ -328,9 +325,9 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
     if matches!(action, "undo" | "redo") {
         require_trusted(state)?;
         let result = if action == "undo" {
-            state.workspace.project_mut().undo_buffer(path)
+            state.ws_mut()?.project_mut().undo_buffer(path)
         } else {
-            state.workspace.project_mut().redo_buffer(path)
+            state.ws_mut()?.project_mut().redo_buffer(path)
         }
         .map_err(|error| error.to_string())?;
         state.surface = DevSurface::Code;
@@ -343,7 +340,7 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
     if action == "search" {
         let query = parts.get(1..).unwrap_or_default().join(" ");
         let hits = state
-            .workspace
+            .ws_mut()?
             .project_mut()
             .search(&query, 64)
             .map_err(|error| error.to_string())?;
@@ -524,7 +521,7 @@ fn execute_browser(
 
 fn read_project_json(state: &mut DevTuiState, path: &str) -> Result<Value, String> {
     let content = state
-        .workspace
+        .ws_mut()?
         .project_mut()
         .read_file(path)
         .map_err(|error| error.to_string())?;
@@ -541,7 +538,7 @@ fn parse_inline_json(value: Option<&&str>, default: Value) -> Result<Value, Stri
 
 fn find_agent(state: &mut DevTuiState, id: &str) -> Result<crate::AgentId, String> {
     state
-        .workspace
+        .ws_mut()?
         .agents()
         .list()
         .map_err(|error| error.to_string())?
@@ -732,10 +729,9 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
         return Ok("Opened experiments".into());
     };
     require_trusted(state)?;
-    let experiments = state
-        .workspace
-        .experiments()
-        .map_err(|error| error.to_string())?;
+    let mut workspace = state.ws_mut()?;
+    let experiments = workspace.experiments().map_err(|error| error.to_string())?;
+    let mut comparison = None;
     let message = match action {
         "create" => {
             let id = parts
@@ -758,7 +754,7 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
             )
         }
         "compare" => {
-            state.experiment_comparison = Some(experiments.compare());
+            comparison = Some(experiments.compare());
             "Compared experiment evidence".into()
         }
         "collect" => {
@@ -789,6 +785,10 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
         }
         _ => return Err("experiment actions: create, collect, compare, select, remove".into()),
     };
+    drop(workspace);
+    if let Some(comparison) = comparison {
+        state.experiment_comparison = Some(comparison);
+    }
     state.surface = DevSurface::More;
     Ok(message)
 }
@@ -799,6 +799,11 @@ fn run_tool(
     arguments: Value,
     mutating: bool,
 ) -> Result<Value, String> {
+    let expected_generation = state.ws().map(|w| w.generation()).unwrap_or_default();
+    let expected_project_revision = state
+        .ws()
+        .map(|w| w.project().revision())
+        .unwrap_or_default();
     let context = DevelopmentToolContext {
         authorization: ToolAuthorization {
             actor: Actor::local(),
@@ -806,8 +811,8 @@ fn run_tool(
             confirmed: mutating,
         },
         initiator: None,
-        expected_generation: state.workspace.generation(),
-        expected_project_revision: state.workspace.project().revision(),
+        expected_generation,
+        expected_project_revision,
     };
     let call = ToolCall {
         id: format!("tui-{}", NEXT_TUI_TOOL.fetch_add(1, Ordering::Relaxed)),
@@ -831,7 +836,7 @@ fn run_tool(
         return Ok(json!({"confirmationRequired":true,"summary":summary}));
     }
     state
-        .workspace
+        .ws_mut()?
         .execute_tool(&call, &context)
         .map_err(|error| error.to_string())
 }
@@ -844,7 +849,7 @@ fn compact_result(tool: &str, value: &Value) -> String {
 
 fn require_trusted(state: &DevTuiState) -> Result<(), String> {
     state
-        .workspace
+        .ws_mut()?
         .trust()
         .permits_project_execution()
         .then_some(())

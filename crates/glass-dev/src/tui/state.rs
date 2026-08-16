@@ -1,6 +1,6 @@
 use super::command;
 use crate::browser::BrowserStartConfig;
-use crate::{DevelopmentWorkspace, ExperimentComparison};
+use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
 use glass_browser::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAction, BrowserWorkspaceAdapterKind,
     BrowserWorkspaceController, BrowserWorkspaceEntity, BrowserWorkspaceIntent,
@@ -134,7 +134,7 @@ impl ProductMode {
 }
 
 pub struct DevTuiState {
-    pub workspace: DevelopmentWorkspace,
+    pub workspace: SharedDevelopmentWorkspace,
     pub surface: DevSurface,
     pub layout: TuiLayout,
     pub quit: bool,
@@ -185,6 +185,31 @@ pub struct DevTuiState {
 }
 
 impl DevTuiState {
+    /// Lock the shared workspace, mapping errors to strings for the palette.
+    pub fn ws(&self) -> Result<std::sync::MutexGuard<'_, crate::DevelopmentWorkspace>, String> {
+        self.workspace.lock().map_err(|error| error.to_string())
+    }
+
+    /// Lock the shared workspace for mutation, mapping errors to strings.
+    pub fn ws_mut(&self) -> Result<std::sync::MutexGuard<'_, crate::DevelopmentWorkspace>, String> {
+        self.workspace.lock().map_err(|error| error.to_string())
+    }
+
+    /// Lock the workspace for mutation inside UI callbacks; reports lock
+    /// failures through the status line instead of `?`.
+    fn locked<F, T>(&mut self, operation: F) -> Option<T>
+    where
+        F: FnOnce(&mut crate::DevelopmentWorkspace) -> T,
+    {
+        match self.workspace.lock() {
+            Ok(mut workspace) => Some(operation(&mut workspace)),
+            Err(error) => {
+                self.status = format!("Workspace lock failed: {error}");
+                None
+            }
+        }
+    }
+
     pub fn product_mode(&self) -> ProductMode {
         match self.surface {
             DevSurface::Agent => ProductMode::Agent,
@@ -197,12 +222,14 @@ impl DevTuiState {
         root: impl AsRef<Path>,
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let workspace = DevelopmentWorkspace::open(root)?;
-        let trust_prompt = workspace.trust() == crate::WorkspaceTrust::Untrusted
-            && workspace
+        let workspace = SharedDevelopmentWorkspace::open(root)?;
+        let locked = workspace.lock()?;
+        let trust_prompt = locked.trust() == crate::WorkspaceTrust::Untrusted
+            && locked
                 .trust_inspection()
                 .iter()
                 .any(|item| item.trust_required);
+        drop(locked);
         let mut state = Self {
             workspace,
             surface: if trust_prompt {
@@ -600,7 +627,12 @@ impl DevTuiState {
             self.status = "No active agent to abort".into();
             return;
         };
-        match self.workspace.agents().cancel(&agent) {
+        let outcome = self
+            .workspace
+            .lock()
+            .map_err(|e| e.to_string())
+            .and_then(|mut workspace| workspace.agents().cancel(&agent).map_err(|e| e.to_string()));
+        match outcome {
             Ok(()) => self.status = format!("Aborted {}", agent.as_str()),
             Err(error) => self.status = format!("Abort failed: {error}"),
         }
@@ -637,7 +669,12 @@ impl DevTuiState {
             self.status = "Message was empty".into();
             return;
         }
-        if !self.workspace.trust().permits_project_execution() {
+        let trusted = self
+            .workspace
+            .lock()
+            .map(|workspace| workspace.trust().permits_project_execution())
+            .unwrap_or(false);
+        if !trusted {
             self.status = "Agent requires trusted project execution · open Trust".into();
             return;
         }
@@ -651,9 +688,7 @@ impl DevTuiState {
         }
         let current = self.selected_agent.clone().or_else(|| {
             self.workspace
-                .agents()
-                .list()
-                .ok()?
+                .agents_list()
                 .into_iter()
                 .find(|agent| {
                     !matches!(
@@ -667,34 +702,44 @@ impl DevTuiState {
         });
         let result = if let Some(agent) = current {
             self.selected_agent = Some(agent.clone());
-            let status = self
-                .workspace
-                .agents()
-                .snapshot(&agent)
-                .map(|item| item.status);
-            match status {
+            let status = self.workspace.lock().and_then(|mut workspace| {
+                workspace.agents().snapshot(&agent).map(|item| item.status)
+            });
+            let outcome = match status {
                 Ok(crate::AgentStatus::Working) => {
-                    if steer {
-                        self.workspace.agents().steer(&agent, text)
-                    } else {
-                        self.workspace.agents().follow_up(&agent, text)
-                    }
+                    self.workspace.lock().ok().and_then(|mut workspace| {
+                        if steer {
+                            workspace.agents().steer(&agent, text).ok()
+                        } else {
+                            workspace.agents().follow_up(&agent, text).ok()
+                        }
+                    })
                 }
-                Ok(_) => self.workspace.agents().prompt(&agent, text),
-                Err(error) => Err(error),
-            }
-            .map(|()| agent)
+                Ok(_) => self
+                    .workspace
+                    .lock()
+                    .ok()
+                    .and_then(|mut workspace| workspace.agents().prompt(&agent, text).ok()),
+                Err(error) => {
+                    self.status = format!("Agent failed: {error}");
+                    None
+                }
+            };
+            outcome.map(|()| agent)
         } else {
-            self.workspace
-                .agents()
-                .create(crate::AgentSpec::new("assistant", text))
+            self.workspace.lock().ok().and_then(|mut workspace| {
+                workspace
+                    .agents()
+                    .create(crate::AgentSpec::new("assistant", text))
+                    .ok()
+            })
         };
         match result {
-            Ok(agent) => {
+            Some(agent) => {
                 self.selected_agent = Some(agent);
                 self.status = "Message queued".into();
             }
-            Err(error) => self.status = format!("Message failed: {error}"),
+            None => self.status = "Message failed · workspace or agent unavailable".into(),
         }
         self.refresh();
     }
@@ -703,7 +748,11 @@ impl DevTuiState {
         let Some(pending) = self.pending_confirmation.take() else {
             return;
         };
-        match self.workspace.execute_tool(&pending.call, &pending.context) {
+        match self
+            .workspace
+            .lock()
+            .and_then(|mut workspace| workspace.execute_tool(&pending.call, &pending.context))
+        {
             Ok(_) => self.status = format!("Approved once · {}", pending.summary),
             Err(error) => self.status = format!("Approved action failed: {error}"),
         }
@@ -729,10 +778,14 @@ impl DevTuiState {
                 _ => None,
             };
             if let Some(decision) = decision {
-                match self.workspace.apply_local_trust_decision(decision) {
+                match self
+                    .workspace
+                    .lock()
+                    .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
+                {
                     Ok(trust) => {
                         self.surface = DevSurface::Agent;
-                        self.status = format!("Workspace opened with {trust:?} authority");
+                        self.status = format!("Workspace opened with {} authority", trust.label());
                     }
                     Err(error) => self.status = format!("Trust decision failed: {error}"),
                 }
@@ -841,11 +894,11 @@ impl DevTuiState {
             self.status = "No project file selected".into();
             return;
         };
-        match self
-            .workspace
-            .project_mut()
-            .open_buffer(&path, crate::development::Actor::local())
-        {
+        match self.workspace.lock().and_then(|mut workspace| {
+            workspace
+                .project_mut()
+                .open_buffer(&path, crate::development::Actor::local())
+        }) {
             Ok(_) => {
                 self.status = format!("Opened {path} · press i to edit");
                 self.refresh();
@@ -855,10 +908,16 @@ impl DevTuiState {
     }
 
     pub fn enter_code_edit(&mut self) {
-        if self.workspace.project().buffers().next().is_none() {
+        let has_buffer = self
+            .locked(|workspace| workspace.project().buffers().next().is_some())
+            .unwrap_or(false);
+        if !has_buffer {
             self.open_selected_file();
         }
-        if self.workspace.project().buffers().next().is_some() {
+        let has_buffer = self
+            .locked(|workspace| workspace.project().buffers().next().is_some())
+            .unwrap_or(false);
+        if has_buffer {
             self.code_edit_mode = true;
             self.status =
                 "EDIT · arrows move · Ctrl-S save · Ctrl-Z/Y undo/redo · Esc close".into();
@@ -875,7 +934,10 @@ impl DevTuiState {
         code: crossterm::event::KeyCode,
         modifiers: crossterm::event::KeyModifiers,
     ) {
-        let Some(buffer) = self.workspace.project().buffers().next().cloned() else {
+        let Some(buffer) = self
+            .locked(|workspace| workspace.project().buffers().next().cloned())
+            .flatten()
+        else {
             self.status = "No open buffer".into();
             return;
         };
@@ -884,17 +946,32 @@ impl DevTuiState {
             (crossterm::event::KeyCode::Char('s'), value)
                 if value.contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
-                self.workspace.project_mut().save_buffer(&path).map(|_| ())
+                self.locked(|workspace| workspace.project_mut().save_buffer(&path).map(|_| ()))
+                    .unwrap_or_else(|| {
+                        Err(crate::development::DevelopmentError::Conflict(
+                            "workspace lock failed".into(),
+                        ))
+                    })
             }
             (crossterm::event::KeyCode::Char('z'), value)
                 if value.contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
-                self.workspace.project_mut().undo_buffer(&path).map(|_| ())
+                self.locked(|workspace| workspace.project_mut().undo_buffer(&path).map(|_| ()))
+                    .unwrap_or_else(|| {
+                        Err(crate::development::DevelopmentError::Conflict(
+                            "workspace lock failed".into(),
+                        ))
+                    })
             }
             (crossterm::event::KeyCode::Char('y'), value)
                 if value.contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
-                self.workspace.project_mut().redo_buffer(&path).map(|_| ())
+                self.locked(|workspace| workspace.project_mut().redo_buffer(&path).map(|_| ()))
+                    .unwrap_or_else(|| {
+                        Err(crate::development::DevelopmentError::Conflict(
+                            "workspace lock failed".into(),
+                        ))
+                    })
             }
             (crossterm::event::KeyCode::Left, _) => self.move_editor_cursor(&path, 0, -1),
             (crossterm::event::KeyCode::Right, _) => self.move_editor_cursor(&path, 0, 1),
@@ -921,6 +998,7 @@ impl DevTuiState {
     ) -> crate::development::DevelopmentResult<()> {
         let buffer = self
             .workspace
+            .lock()?
             .project()
             .buffer(path)
             .cloned()
@@ -940,6 +1018,7 @@ impl DevTuiState {
             (buffer.cursor_column as i32 + column_delta).clamp(1, max_column as i32) as u32
         };
         self.workspace
+            .lock()?
             .project_mut()
             .set_buffer_cursor(path, line, column)
     }
@@ -951,6 +1030,7 @@ impl DevTuiState {
     ) -> crate::development::DevelopmentResult<()> {
         let buffer = self
             .workspace
+            .lock()?
             .project()
             .buffer(path)
             .cloned()
@@ -960,7 +1040,7 @@ impl DevTuiState {
         let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
         let mut content = buffer.content.clone();
         content.insert_str(offset, text);
-        self.workspace.project_mut().edit_buffer(
+        self.workspace.lock()?.project_mut().edit_buffer(
             path,
             content,
             crate::development::Actor::local(),
@@ -974,6 +1054,7 @@ impl DevTuiState {
             )
         };
         self.workspace
+            .lock()?
             .project_mut()
             .set_buffer_cursor(path, line, column)
     }
@@ -981,6 +1062,7 @@ impl DevTuiState {
     fn backspace_editor(&mut self, path: &str) -> crate::development::DevelopmentResult<()> {
         let buffer = self
             .workspace
+            .lock()?
             .project()
             .buffer(path)
             .cloned()
@@ -999,7 +1081,7 @@ impl DevTuiState {
         let removed_newline = &buffer.content[previous..offset] == "\n";
         let mut content = buffer.content.clone();
         content.drain(previous..offset);
-        self.workspace.project_mut().edit_buffer(
+        self.workspace.lock()?.project_mut().edit_buffer(
             path,
             content.clone(),
             crate::development::Actor::local(),
@@ -1019,6 +1101,7 @@ impl DevTuiState {
             )
         };
         self.workspace
+            .lock()?
             .project_mut()
             .set_buffer_cursor(path, line, column)
     }
@@ -1045,8 +1128,11 @@ impl DevTuiState {
     }
 
     pub fn refresh(&mut self) {
-        self.files = self
-            .workspace
+        let Ok(mut workspace) = self.workspace.lock() else {
+            self.status = "Workspace lock failed".into();
+            return;
+        };
+        self.files = workspace
             .project()
             .list_files()
             .map(|entries| {
@@ -1061,7 +1147,7 @@ impl DevTuiState {
         if !self.files.is_empty() {
             self.selected_file = self.selected_file.min(self.files.len() - 1);
         }
-        self.agents = match self.workspace.agents().list() {
+        self.agents = match workspace.agents().list() {
             Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
             Ok(agents) => agents
                 .iter()
@@ -1096,7 +1182,7 @@ impl DevTuiState {
                 .join("\n\n"),
             Err(error) => format!("Agent registry failed: {error}"),
         };
-        self.agent_conversation = match self.workspace.agents().history(0) {
+        self.agent_conversation = match workspace.agents().history(0) {
             Ok(events) if events.is_empty() => {
                 "No conversation yet. Press i to compose a message.".into()
             }
@@ -1116,7 +1202,7 @@ impl DevTuiState {
             }
             Err(error) => format!("Conversation unavailable · {error}"),
         };
-        self.tasks = match self.workspace.tasks() {
+        self.tasks = match workspace.tasks() {
             Ok(tasks) if tasks.is_empty() => {
                 "No tasks. :task create TITLE PROMPT creates an autonomous task".into()
             }
@@ -1175,8 +1261,7 @@ impl DevTuiState {
                 .join("\n\n"),
             Err(error) => format!("Task scheduler failed: {error}"),
         };
-        self.processes = self
-            .workspace
+        self.processes = workspace
             .project_mut()
             .processes()
             .list_checked()
@@ -1209,12 +1294,7 @@ impl DevTuiState {
                 }
             })
             .unwrap_or_else(|error| format!("Process state failed: {error}"));
-        let buffers = self
-            .workspace
-            .project()
-            .buffers()
-            .cloned()
-            .collect::<Vec<_>>();
+        let buffers = workspace.project().buffers().cloned().collect::<Vec<_>>();
         self.editor = if buffers.is_empty() {
             "No file open. Select a file below and press Enter, then i to edit.".into()
         } else {
@@ -1259,7 +1339,7 @@ impl DevTuiState {
                 .join("\n\n")
         };
         self.lsp = {
-            let language = self.workspace.language();
+            let language = workspace.language();
             let servers = language.names().collect::<Vec<_>>();
             let event_count = language.events(0).len();
             if servers.is_empty() {
@@ -1268,8 +1348,7 @@ impl DevTuiState {
                 format!("● {} · {} recent events", servers.join(" · "), event_count)
             }
         };
-        self.git = self
-            .workspace
+        self.git = workspace
             .git()
             .map(|git| match git.status() {
                 Ok(status) => {
@@ -1306,9 +1385,8 @@ impl DevTuiState {
                 Err(error) => format!("Git state failed: {error}"),
             })
             .unwrap_or_else(|| "Not a Git repository".into());
-        let _ = self.workspace.tests_mut().poll();
-        let test_runs = self
-            .workspace
+        let _ = workspace.tests_mut().poll();
+        let test_runs = workspace
             .tests()
             .results()
             .rev()
@@ -1336,7 +1414,7 @@ impl DevTuiState {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let kernels = self.workspace.kernels().snapshots().collect::<Vec<_>>();
+        let kernels = workspace.kernels().snapshots().collect::<Vec<_>>();
         self.kernels = if kernels.is_empty() {
             "No persistent kernels".into()
         } else {
@@ -1359,23 +1437,22 @@ impl DevTuiState {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let debugger_names = self
-            .workspace
+        let debugger_names = workspace
             .debugger_names()
             .map(str::to_string)
             .collect::<Vec<_>>();
         self.debugger = if debugger_names.is_empty() {
             "No debugger sessions. :debug start NAME COMMAND [ARGS...]".into()
         } else {
-            let snapshots = debugger_names
+            let snapshots: Result<Vec<_>, _> = debugger_names
                 .iter()
                 .map(|name| {
-                    self.workspace
+                    workspace
                         .debugger_mut(name)
                         .and_then(|debugger| debugger.snapshot())
-                        .map(|snapshot| (name, snapshot))
+                        .map(|snapshot| (name.to_string(), snapshot))
                 })
-                .collect::<Result<Vec<_>, _>>();
+                .collect();
             match snapshots {
                 Ok(snapshots) => snapshots
                     .iter()
@@ -1402,8 +1479,7 @@ impl DevTuiState {
                 Err(error) => format!("Debugger state failed: {error}"),
             }
         };
-        self.replay = self
-            .workspace
+        self.replay = workspace
             .intelligence()
             .replay(0, 128)
             .map(|events| {
@@ -1430,7 +1506,7 @@ impl DevTuiState {
                 }
             })
             .unwrap_or_else(|error| format!("Replay failed: {error}"));
-        self.browser = match self.workspace.browser().state() {
+        self.browser = match workspace.browser().state() {
             Ok(state) => {
                 let connected = state
                     .get("connected")
@@ -1455,26 +1531,24 @@ impl DevTuiState {
             }
             Err(error) => format!("Browser state failed: {error}"),
         };
-        self.workflow = self
-            .workspace
+        self.workflow = workspace
             .browser()
             .list_workflows()
             .map(|state| super::projection::workflow(Some(&state)))
             .unwrap_or_else(|error| format!("Workflow state failed: {error}"));
-        let root = self.workspace.root().display().to_string();
-        let generation = self.workspace.generation();
-        let project_revision = self.workspace.project().revision();
-        let agent_count = self
-            .workspace
+        let root = workspace.root().display().to_string();
+        let generation = workspace.generation();
+        let project_revision = workspace.project().revision();
+        let agent_count = workspace
             .agents()
             .list()
             .map(|items| items.len())
             .unwrap_or(0);
-        let task_count = self.workspace.tasks().map(|items| items.len()).unwrap_or(0);
-        let kernel_count = self.workspace.kernels().snapshots().count();
-        let debugger_count = self.workspace.debugger_names().count();
-        let detection = self.workspace.project().detection().clone();
-        let trust = self.workspace.trust();
+        let task_count = workspace.tasks().map(|items| items.len()).unwrap_or(0);
+        let kernel_count = workspace.kernels().snapshots().count();
+        let debugger_count = workspace.debugger_names().count();
+        let detection = workspace.project().detection().clone();
+        let trust = workspace.trust();
         let trust_ready = trust.permits_project_execution();
         let dev_hint = detection
             .dev_command
@@ -1514,8 +1588,8 @@ impl DevTuiState {
             kernel_count,
             debugger_count,
         );
-        if self.workspace.trust().permits_project_execution()
-            && let Ok(experiments) = self.workspace.experiments()
+        if workspace.trust().permits_project_execution()
+            && let Ok(experiments) = workspace.experiments()
         {
             let snapshots = experiments.snapshots();
             self.experiments = if snapshots.is_empty() {
@@ -1644,11 +1718,12 @@ impl DevTuiState {
         let Some(entity) = self.browser_workspace.state().selected().cloned() else {
             return;
         };
-        if let Err(error) = self
-            .workspace
-            .browser()
-            .highlight(entity.reference, entity.revision)
-        {
+        let highlight = self.workspace.lock().and_then(|workspace| {
+            workspace
+                .browser()
+                .highlight(entity.reference, entity.revision)
+        });
+        if let Err(error) = highlight {
             let stale = error.to_string().to_lowercase().contains("stale");
             self.browser_workspace.fail_action(error.to_string(), stale);
             self.status = format!("App highlight failed: {error}");
@@ -1668,15 +1743,26 @@ impl DevTuiState {
             BrowserWorkspaceAction::Click {
                 target,
                 expected_revision,
-            } => self.workspace.browser().click(target, expected_revision),
+            } => self
+                .workspace
+                .lock()
+                .and_then(|workspace| workspace.browser().click(target, expected_revision)),
             BrowserWorkspaceAction::Scroll {
                 dx,
                 dy,
                 expected_revision,
-            } => self.workspace.browser().scroll(dx, dy, expected_revision),
+            } => self
+                .workspace
+                .lock()
+                .and_then(|workspace| workspace.browser().scroll(dx, dy, expected_revision)),
             _ => return,
         };
-        match result.and_then(|_| self.workspace.browser().observe()) {
+        let observed = result.and_then(|_| {
+            self.workspace
+                .lock()
+                .and_then(|workspace| workspace.browser().observe())
+        });
+        match observed {
             Ok(observation) => {
                 self.apply_browser_result("glass.browser.observe", &observation);
                 self.browser_detail =
@@ -1717,10 +1803,12 @@ impl DevTuiState {
             return;
         };
         let result = match (offer.compatible_endpoint, choice) {
-            (true, 0) => self.workspace.browser().start(BrowserStartConfig {
-                port: offer.port,
-                attach: true,
-                ..Default::default()
+            (true, 0) => self.workspace.lock().and_then(|workspace| {
+                workspace.browser().start(BrowserStartConfig {
+                    port: offer.port,
+                    attach: true,
+                    ..Default::default()
+                })
             }),
             (true, 1) | (false, 0) | (true, 2) | (false, 1) => {
                 let port = free_local_port().unwrap_or(0);
@@ -1728,14 +1816,18 @@ impl DevTuiState {
                     self.status = "No free local port was available".into();
                     return;
                 }
-                self.workspace.browser().start(BrowserStartConfig {
-                    port,
-                    ..Default::default()
+                self.workspace.lock().and_then(|workspace| {
+                    workspace.browser().start(BrowserStartConfig {
+                        port,
+                        ..Default::default()
+                    })
                 })
             }
-            (true, 3) | (false, 2) => self.workspace.browser().start(BrowserStartConfig {
-                port: offer.port,
-                ..Default::default()
+            (true, 3) | (false, 2) => self.workspace.lock().and_then(|workspace| {
+                workspace.browser().start(BrowserStartConfig {
+                    port: offer.port,
+                    ..Default::default()
+                })
             }),
             _ => {
                 self.status = "Recovery dismissed".into();
@@ -1766,7 +1858,11 @@ impl DevTuiState {
 
     /// Capture one browser frame into the ANSI pane for the App surface.
     pub fn refresh_app_visual(&mut self, columns: u16, rows: u16) {
-        let png = match self.workspace.browser().screenshot() {
+        let screenshot = self
+            .workspace
+            .lock()
+            .and_then(|workspace| workspace.browser().screenshot());
+        let png = match screenshot {
             Ok(value) => value
                 .get("base64")
                 .and_then(serde_json::Value::as_str)

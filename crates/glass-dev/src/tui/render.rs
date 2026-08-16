@@ -98,7 +98,11 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
             ),
             Span::raw(format!(
                 " {} · {} · {} · {}",
-                state.workspace.root().display(),
+                state
+                    .workspace
+                    .lock()
+                    .map(|w| w.root().display().to_string())
+                    .unwrap_or_default(),
                 state.surface.label(),
                 state.product_mode().label(),
                 mode
@@ -199,10 +203,11 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     }
     let content = match state.surface {
         DevSurface::Trust => {
-            let inspection = super::projection::trust_items(&state.workspace.trust_inspection());
+            let inspection =
+                super::projection::trust_items(&state.workspace.trust_inspection_list());
             format!(
                 "WORKSPACE TRUST\n\nThis repository contains executable Glass settings.\nCurrent state: {}\n\n[I] Inspect configuration\n[O] Open untrusted\n[1] Trust once\n[T] Trust this project\n\nCONFIGURATION BY AUTHORITY / RISK\n{}",
-                state.workspace.trust().label(),
+                state.workspace.trust_status().label(),
                 inspection
             )
         }
@@ -331,15 +336,19 @@ fn draw_ansi_pane(
 fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let authority = format!(
         "\n\nAUTHORITY\ntrust {} · project rev {}\nmutations require revision + confirmation",
-        state.workspace.trust().label(),
-        state.workspace.project().revision()
+        state.workspace.trust_status().label(),
+        state
+            .workspace
+            .lock()
+            .map(|w| w.project().revision())
+            .unwrap_or(0)
     );
     let content = match state.surface {
         DevSurface::Trust => format!(
             "TRUST DECISION\n{} configuration item(s) need attention{}",
             state
                 .workspace
-                .trust_inspection()
+                .trust_inspection_list()
                 .iter()
                 .filter(|item| item.trust_required)
                 .count(),
@@ -374,10 +383,10 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         DevSurface::Code => {
             let selected = state
                 .workspace
-                .project()
-                .buffers()
-                .next()
-                .map(|buffer| (buffer.path.clone(), buffer.dirty, buffer.cursor_line));
+                .lock()
+                .ok()
+                .and_then(|workspace| workspace.project().buffers().next().cloned())
+                .map(|buffer| (buffer.path, buffer.dirty, buffer.cursor_line));
             match selected {
                 Some((path, dirty, line)) => format!(
                     "EDITING\n{}{} · line {}\n\nLINKED APP\n{}{}",
@@ -447,8 +456,8 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         ),
         DevSurface::More => format!(
             "PROJECT SERVICES\n{} skills · {} custom tools{}",
-            state.workspace.customization().skills().count(),
-            state.workspace.customization().config().tools.len(),
+            state.workspace.customization_snapshot_counts().0,
+            state.workspace.customization_snapshot_counts().1,
             authority
         ),
     };
@@ -638,6 +647,8 @@ mod tests {
         assert!(
             state
                 .workspace
+                .lock()
+                .unwrap()
                 .project()
                 .buffer("Cargo.toml")
                 .unwrap()
@@ -650,6 +661,8 @@ mod tests {
         assert!(
             !state
                 .workspace
+                .lock()
+                .unwrap()
                 .project()
                 .buffer("Cargo.toml")
                 .unwrap()
@@ -665,7 +678,7 @@ mod tests {
             crossterm::event::KeyModifiers::CONTROL,
         );
         assert!(
-            std::fs::read_to_string(state.workspace.root().join("Cargo.toml"))
+            std::fs::read_to_string(state.workspace.lock().unwrap().root().join("Cargo.toml"),)
                 .unwrap()
                 .starts_with('#')
         );
@@ -771,7 +784,10 @@ mod tests {
         assert!(rendered.contains("WORKSPACE TRUST"));
         assert!(rendered.contains("Open untrusted"));
         state.handle_printable('O');
-        assert_eq!(state.workspace.trust(), crate::WorkspaceTrust::Untrusted);
+        assert_eq!(
+            state.workspace.lock().unwrap().trust(),
+            crate::WorkspaceTrust::Untrusted
+        );
         assert_eq!(state.surface, DevSurface::Agent);
         std::fs::remove_dir_all(root).unwrap();
     }

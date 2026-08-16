@@ -949,14 +949,20 @@ impl DevTuiState {
             Ok(events) if events.is_empty() => {
                 "No conversation yet. Press i to compose a message.".into()
             }
-            Ok(events) => events
-                .iter()
-                .rev()
-                .take(32)
-                .rev()
-                .map(format_agent_event)
-                .collect::<Vec<_>>()
-                .join("\n\n"),
+            Ok(events) => {
+                let mut projected = events
+                    .iter()
+                    .rev()
+                    .take(40)
+                    .rev()
+                    .map(format_agent_event)
+                    .collect::<Vec<_>>();
+                // The latest state leads the view: working state on top.
+                projected.reverse();
+                projected.dedup();
+                projected.reverse();
+                projected.join("\n\n")
+            }
             Err(error) => format!("Conversation unavailable · {error}"),
         };
         self.tasks = match self.workspace.tasks() {
@@ -1530,34 +1536,66 @@ fn format_pi_readiness(readiness: &crate::PiReadiness) -> String {
         .first()
         .map(|item| format!(" · next: {item}"))
         .unwrap_or_default();
-    format!(
-        "{} · Node {:?} · SDK {} · auth {:?} · provider {} · {}{}",
+    let state_line = format!(
+        "{} · Node {} · SDK {} · auth {}",
         if readiness.ready {
-            "Ready"
+            "✓ Ready"
         } else {
-            "Needs setup"
+            "○ Needs setup"
         },
-        readiness.node.state,
+        component_label(&readiness.node),
         readiness.sdk.version.as_deref().unwrap_or("missing"),
-        readiness.authentication.state,
-        provider,
-        session,
-        remediation,
-    )
+        component_label(&readiness.authentication),
+    );
+    if readiness.ready {
+        format!("{state_line}\nprovider {provider} · {session}")
+    } else {
+        format!(
+            "{state_line}\nprovider {provider} · {session}{remediation}\n\n[E] `agent setup` installs the managed runtime · `agent setup login` authenticates"
+        )
+    }
+}
+
+fn component_label(component: &crate::pi_runtime::PiReadinessComponent) -> String {
+    match component.state {
+        crate::pi_runtime::PiReadinessState::Ready => "✓".into(),
+        crate::pi_runtime::PiReadinessState::Missing => "× missing".into(),
+        crate::pi_runtime::PiReadinessState::Incompatible => "! incompatible".into(),
+        crate::pi_runtime::PiReadinessState::Expired => "! expired".into(),
+        crate::pi_runtime::PiReadinessState::Unknown => "? unknown".into(),
+    }
 }
 
 fn format_agent_event(event: &crate::AgentEvent) -> String {
-    let actor = event.agent_id.as_str();
     let text = event
         .payload
         .pointer("/message/content")
         .or_else(|| event.payload.pointer("/result/text"))
         .or_else(|| event.payload.get("text"))
         .and_then(serde_json::Value::as_str);
-    match text {
-        Some(text) => format!("{actor} · {}\n{}", event.kind, text),
-        None if event.payload.is_null() => format!("{actor} · {}", event.kind),
-        None => format!("{actor} · {} · details available in Inspect", event.kind),
+    // Tool calls render as compact activity rows, never raw payloads.
+    if let Some(tool) = event.payload.get("tool").and_then(serde_json::Value::as_str) {
+        return format!("→ {tool} · {}", event.kind);
+    }
+    match event.kind.as_str() {
+        "starting" => "◆ starting".into(),
+        "ready" => "◆ ready".into(),
+        "requestStarted" => "● working".into(),
+        "completed" => text.map_or_else(|| "✓ done".into(), |text| {
+            format!("GLASS AGENT\n{}", crate::tui::projection::trimmed_lines(text, 24))
+        }),
+        "failed" | "workerPanicked" | "budgetExceeded" => format!(
+            "× {}",
+            text.or(event.payload.get("error").and_then(serde_json::Value::as_str))
+                .unwrap_or("failed")
+        ),
+        "cancelled" => "× cancelled".into(),
+        "user" => format!("YOU\n{}", text.unwrap_or_default()),
+        _ => match text {
+            Some(text) => format!("GLASS AGENT\n{}", crate::tui::projection::trimmed_lines(text, 24)),
+            None if event.payload.is_null() => String::new(),
+            None => "· activity recorded".into(),
+        },
     }
 }
 

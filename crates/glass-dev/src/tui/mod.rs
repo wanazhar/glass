@@ -42,9 +42,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     // The terminal's strongest reflex works in every mode.
                     if key.code == KeyCode::Char('c')
-                        && key
-                            .modifiers
-                            .contains(KeyModifiers::CONTROL)
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         state.quit = true;
                     } else if state.menu_open {
@@ -55,9 +53,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             KeyCode::Down | KeyCode::Char('j') => state.move_menu_selection(1),
                             _ => {}
                         }
-                    } else if state.browser_recovery.is_some()
-                        && state.surface == DevSurface::App
-                    {
+                    } else if state.browser_recovery.is_some() && state.surface == DevSurface::App {
                         match key.code {
                             KeyCode::Esc => {
                                 state.browser_recovery = None;
@@ -127,9 +123,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             (KeyCode::Left, _) => state.move_composer_cursor(false),
                             (KeyCode::Right, _) => state.move_composer_cursor(true),
                             (KeyCode::Home, _) => state.composer_cursor = 0,
-                            (KeyCode::End, _) => {
-                                state.composer_cursor = state.composer_input.len()
-                            }
+                            (KeyCode::End, _) => state.composer_cursor = state.composer_input.len(),
                             (KeyCode::Char(character), _) => {
                                 state.insert_composer_text(&character.to_string());
                             }
@@ -151,9 +145,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             (KeyCode::Up, _) => state.navigate_palette_history(true),
                             (KeyCode::Down, _) => state.navigate_palette_history(false),
                             (KeyCode::Tab, _) => state.complete_palette(),
-                            (KeyCode::Char(character), _) => {
-                                state.insert_palette_char(character)
-                            }
+                            (KeyCode::Char(character), _) => state.insert_palette_char(character),
                             _ => {}
                         }
                     } else {
@@ -199,7 +191,10 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             (KeyCode::Char('v'), _) if state.surface == DevSurface::App => {
                                 state.browser_visual_live = !state.browser_visual_live;
                                 if state.browser_visual_live {
-                                    state.refresh_app_visual(state.terminal_width / 3, state.terminal_height / 3);
+                                    state.refresh_app_visual(
+                                        state.terminal_width / 3,
+                                        state.terminal_height / 3,
+                                    );
                                     state.status = if state.browser_pane.is_some() {
                                         "Live view on · ANSI half-block rendering · v stops".into()
                                     } else {

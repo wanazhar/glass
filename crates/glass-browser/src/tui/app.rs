@@ -24,7 +24,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::herdr_graphics::{HerdrEnvironment, HerdrEvent, HerdrFrame, HerdrGraphicsWorker};
-use super::live_view::{AnsiPane, VisualPath, decide_path, frame_fit, frame_interval_ms, pane_size};
+use super::live_view::{
+    AnsiPane, VisualPath, decide_path, frame_fit, frame_interval_ms, pane_size,
+};
 use crate::browser::session::{
     BrowserResult, BrowserSession, SessionOptions, WorkflowCheckpoint, WorkflowDefinition,
     WorkflowRunResult,
@@ -603,9 +605,13 @@ impl BrowserTui {
         let Some(session) = self.session.as_ref() else {
             return Err("browser is detached".into());
         };
-        match self.visual.path.clone().unwrap_or(VisualPath::SemanticOnly {
-            reason: "visual policy not configured".into(),
-        }) {
+        match self
+            .visual
+            .path
+            .clone()
+            .unwrap_or(VisualPath::SemanticOnly {
+                reason: "visual policy not configured".into(),
+            }) {
             VisualPath::Herdr => {
                 let Some(graphics) = self.graphics.as_ref() else {
                     self.workspace.state_mut().presentation_reason =
@@ -662,12 +668,14 @@ impl BrowserTui {
     /// Mirror the decided visual path into workspace presentation state.
     fn sync_presentation_state(&mut self) {
         let (presentation, reason) = match &self.visual.path {
-            Some(VisualPath::Herdr) if self.visual.live => {
-                (crate::browser_workspace::BrowserPresentationPath::Herdr, None)
-            }
-            Some(VisualPath::Ansi) if self.visual.live => {
-                (crate::browser_workspace::BrowserPresentationPath::Ansi, None)
-            }
+            Some(VisualPath::Herdr) if self.visual.live => (
+                crate::browser_workspace::BrowserPresentationPath::Herdr,
+                None,
+            ),
+            Some(VisualPath::Ansi) if self.visual.live => (
+                crate::browser_workspace::BrowserPresentationPath::Ansi,
+                None,
+            ),
             Some(VisualPath::SemanticOnly { reason }) => (
                 crate::browser_workspace::BrowserPresentationPath::SemanticOnly,
                 Some(reason.clone()),
@@ -745,7 +753,10 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
     let mut terminal = TerminalGuard::enter()?;
     let mut app = BrowserTui::new(cli);
     app.status = if app.visual.live {
-        format!("Ready · {} · n address · Enter activates the selection", app.visual.label())
+        format!(
+            "Ready · {} · n address · Enter activates the selection",
+            app.visual.label()
+        )
     } else {
         "Ready · n enters an address · `navigate URL` starts a browser · `attach PORT` reuses one · help lists all"
             .into()
@@ -861,9 +872,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                     }
                     // Left click on a semantic line selects it; clicking the
                     // command row focuses nothing (keyboard-first footer).
-                    crossterm::event::MouseEventKind::Down(
-                        crossterm::event::MouseButton::Left,
-                    ) => {
+                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                         let semantic_top = semantic_first_row(&app.workspace);
                         let scrolled = app.workspace.state().semantic_scroll;
                         if mouse.row >= semantic_top {
@@ -883,7 +892,9 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                 Event::Resize(_, _) | Event::FocusGained | Event::Key(_) => {}
             }
         }
-        if app.visual.live && last_visual.elapsed() >= Duration::from_millis(frame_interval_ms(app.visual.quality)) {
+        if app.visual.live
+            && last_visual.elapsed() >= Duration::from_millis(frame_interval_ms(app.visual.quality))
+        {
             let size = terminal.terminal.size()?;
             if let Err(error) = app.refresh_visual(size.width, size.height).await {
                 app.status = format!("Visual refresh failed: {error}");
@@ -952,8 +963,13 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &BrowserTui) {
         draw_ansi_pane(frame, rows[1], pane);
     }
     frame.render_widget(
-        Paragraph::new(format!("{} · {} · > {}", app.visual.label(), app.status, app.command))
-            .block(Block::default().title("COMMAND").borders(Borders::ALL)),
+        Paragraph::new(format!(
+            "{} · {} · > {}",
+            app.visual.label(),
+            app.status,
+            app.command
+        ))
+        .block(Block::default().title("COMMAND").borders(Borders::ALL)),
         rows[2],
     );
 }
@@ -1039,7 +1055,9 @@ fn draw_content(frame: &mut ratatui::Frame<'_>, area: Rect, content: &str, class
     let title = match class {
         ResponsiveClass::Phone => "Overview · pixels opt-in",
         ResponsiveClass::Compact => "Browser evidence · help for keys",
-        ResponsiveClass::Desktop => "Browser / Structured Observation · n address · Enter activate · j/k select · help for all",
+        ResponsiveClass::Desktop => {
+            "Browser / Structured Observation · n address · Enter activate · j/k select · help for all"
+        }
     };
     frame.render_widget(
         Paragraph::new(content)
@@ -1052,8 +1070,7 @@ fn draw_content(frame: &mut ratatui::Frame<'_>, area: Rect, content: &str, class
 /// First terminal row (inside the content border) that shows semantic entities.
 fn semantic_first_row(workspace: &BrowserWorkspaceController) -> u16 {
     let state = workspace.state();
-    let header_rows = 1 + usize::from(!state.title.is_empty())
-        + usize::from(!state.url.is_empty());
+    let header_rows = 1 + usize::from(!state.title.is_empty()) + usize::from(!state.url.is_empty());
     3 + 1 + header_rows as u16
 }
 
@@ -1130,9 +1147,8 @@ mod tests {
     }
 
     fn test_cli(extra: &[&str], _mode: TuiLiveMode) -> Cli {
-        let mut base: Cli = clap::Parser::parse_from(
-            std::iter::once("glass-browser").chain(extra.iter().copied()),
-        );
+        let mut base: Cli =
+            clap::Parser::parse_from(std::iter::once("glass-browser").chain(extra.iter().copied()));
         base.tui_layout = crate::cli::args::TuiLayout::Desktop;
         base
     }

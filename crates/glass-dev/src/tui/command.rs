@@ -88,7 +88,10 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
 
 fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     match parts.first().copied().unwrap_or("inspect") {
-        "status" => Ok(format!("Workspace trust: {}", state.workspace.trust().label())),
+        "status" => Ok(format!(
+            "Workspace trust: {}",
+            state.workspace.trust().label()
+        )),
         "inspect" => {
             state.surface = DevSurface::Trust;
             Ok(format!(

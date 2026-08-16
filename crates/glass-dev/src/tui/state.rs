@@ -356,10 +356,7 @@ impl DevTuiState {
     /// Run the selected menu action. Keyboard hints apply directly; strings
     /// starting with ':' open the palette prefilled with the command.
     pub fn run_menu_action(&mut self) {
-        let Some((_, hint, prefix)) = self
-            .surface_actions()
-            .get(self.menu_selection)
-            .copied()
+        let Some((_, hint, prefix)) = self.surface_actions().get(self.menu_selection).copied()
         else {
             return;
         };
@@ -585,10 +582,10 @@ impl DevTuiState {
     }
 
     pub fn delete_composer_word(&mut self) {
-        let before = self.composer_input[..self.composer_cursor]
-            .trim_end();
+        let before = self.composer_input[..self.composer_cursor].trim_end();
         let start = before.len();
-        let target = before[..start].trim_end_matches(|c: char| c.is_whitespace())
+        let target = before[..start]
+            .trim_end_matches(|c: char| c.is_whitespace())
             .char_indices()
             .rev()
             .find_map(|(index, character)| character.is_whitespace().then_some(index))
@@ -1233,7 +1230,11 @@ impl DevTuiState {
                         .map(|(index, line)| {
                             let number = start + index + 1;
                             let marker = if number == cursor { "▶" } else { " " };
-                            format!("{marker}{:>gutter_width$} │ {line}", number, gutter_width = gutter_width)
+                            format!(
+                                "{marker}{:>gutter_width$} │ {line}",
+                                number,
+                                gutter_width = gutter_width
+                            )
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
@@ -1464,10 +1465,7 @@ impl DevTuiState {
             format!("✓ {} project", detection.languages.join("/"))
         };
         let workspace_line = format!("✓ workspace {}", trust.label());
-        let agent_hint = if self
-            .agent_readiness
-            .starts_with("✓")
-        {
+        let agent_hint = if self.agent_readiness.starts_with("✓") {
             "✓ Glass Agent ready"
         } else {
             "○ Glass Agent needs setup (More → agent setup)"
@@ -1703,14 +1701,15 @@ impl DevTuiState {
                     self.status = "No free local port was available".into();
                     return;
                 }
-                self.workspace
-                    .browser()
-                    .start(BrowserStartConfig { port, ..Default::default() })
+                self.workspace.browser().start(BrowserStartConfig {
+                    port,
+                    ..Default::default()
+                })
             }
-            (true, 3) | (false, 2) => self
-                .workspace
-                .browser()
-                .start(BrowserStartConfig { port: offer.port, ..Default::default() }),
+            (true, 3) | (false, 2) => self.workspace.browser().start(BrowserStartConfig {
+                port: offer.port,
+                ..Default::default()
+            }),
             _ => {
                 self.status = "Recovery dismissed".into();
                 return;
@@ -1760,8 +1759,13 @@ impl DevTuiState {
         };
         let columns = columns.clamp(8, 80);
         let rows = rows.clamp(4, 40);
-        match AnsiPane::from_png(&mut self.browser_ansi, &png, columns, rows, glass_browser::terminal_graphics::FrameFit::Contain)
-        {
+        match AnsiPane::from_png(
+            &mut self.browser_ansi,
+            &png,
+            columns,
+            rows,
+            glass_browser::terminal_graphics::FrameFit::Contain,
+        ) {
             Ok(pane) => {
                 self.browser_pane = Some(pane);
                 self.browser_workspace.state_mut().presentation =
@@ -1823,25 +1827,41 @@ fn format_agent_event(event: &crate::AgentEvent) -> String {
         .or_else(|| event.payload.get("text"))
         .and_then(serde_json::Value::as_str);
     // Tool calls render as compact activity rows, never raw payloads.
-    if let Some(tool) = event.payload.get("tool").and_then(serde_json::Value::as_str) {
+    if let Some(tool) = event
+        .payload
+        .get("tool")
+        .and_then(serde_json::Value::as_str)
+    {
         return format!("→ {tool} · {}", event.kind);
     }
     match event.kind.as_str() {
         "starting" => "◆ starting".into(),
         "ready" => "◆ ready".into(),
         "requestStarted" => "● working".into(),
-        "completed" => text.map_or_else(|| "✓ done".into(), |text| {
-            format!("GLASS AGENT\n{}", crate::tui::projection::trimmed_lines(text, 24))
-        }),
+        "completed" => text.map_or_else(
+            || "✓ done".into(),
+            |text| {
+                format!(
+                    "GLASS AGENT\n{}",
+                    crate::tui::projection::trimmed_lines(text, 24)
+                )
+            },
+        ),
         "failed" | "workerPanicked" | "budgetExceeded" => format!(
             "× {}",
-            text.or(event.payload.get("error").and_then(serde_json::Value::as_str))
+            text.or(event
+                .payload
+                .get("error")
+                .and_then(serde_json::Value::as_str))
                 .unwrap_or("failed")
         ),
         "cancelled" => "× cancelled".into(),
         "user" => format!("YOU\n{}", text.unwrap_or_default()),
         _ => match text {
-            Some(text) => format!("GLASS AGENT\n{}", crate::tui::projection::trimmed_lines(text, 24)),
+            Some(text) => format!(
+                "GLASS AGENT\n{}",
+                crate::tui::projection::trimmed_lines(text, 24)
+            ),
             None if event.payload.is_null() => String::new(),
             None => "· activity recorded".into(),
         },

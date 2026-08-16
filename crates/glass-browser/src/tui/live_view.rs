@@ -31,8 +31,7 @@ pub fn decide_path(
         },
         (_, TuiLiveBackend::Herdr) if herdr_available => VisualPath::Herdr,
         (_, TuiLiveBackend::Herdr) => VisualPath::SemanticOnly {
-            reason: "Herdr pane graphics were requested but the environment is unavailable"
-                .into(),
+            reason: "Herdr pane graphics were requested but the environment is unavailable".into(),
         },
         (_, TuiLiveBackend::Ansi) => VisualPath::Ansi,
         (_, TuiLiveBackend::Kitty) => VisualPath::Ansi,

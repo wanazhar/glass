@@ -27,7 +27,8 @@ pub fn trust_items(items: &[crate::customization::CustomizationInspectionItem]) 
                 crate::customization::CustomizationAuthority::GlassBuiltIn => "built-in",
                 crate::customization::CustomizationAuthority::UserGlobal => "user-global",
                 crate::customization::CustomizationAuthority::TrustedProject => "trusted-project",
-                crate::customization::CustomizationAuthority::UntrustedProject => "untrusted-project",
+                crate::customization::CustomizationAuthority::UntrustedProject =>
+                    "untrusted-project",
                 crate::customization::CustomizationAuthority::ExternalClient => "external-client",
             },
             item.source.display(),
@@ -55,7 +56,9 @@ pub fn workflow(value: Option<&Value>) -> String {
     match (active, last) {
         (Some(active), _) => format!(
             "→ {active} · {state}{}",
-            steps.map(|steps| format!(" · {steps} recorded steps")).unwrap_or_default()
+            steps
+                .map(|steps| format!(" · {steps} recorded steps"))
+                .unwrap_or_default()
         ),
         (None, Some(last)) => format!("✓ last {last} · {state}"),
         (None, None) => format!("{state} · no workflow selected"),
@@ -96,9 +99,13 @@ pub fn tests(value: Option<&Value>) -> String {
                     Some(_) => "×",
                     None => "○",
                 },
-                run.get("suiteId").and_then(Value::as_str).unwrap_or("suite"),
+                run.get("suiteId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("suite"),
                 run.get("durationMs").and_then(Value::as_u64).unwrap_or(0),
-                run.get("cases").and_then(Value::as_array).map_or(0, Vec::len),
+                run.get("cases")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len),
             ));
         }
     }
@@ -106,7 +113,9 @@ pub fn tests(value: Option<&Value>) -> String {
         for run in running {
             lines.push(format!(
                 "→ {} running",
-                run.get("suiteId").and_then(Value::as_str).unwrap_or("suite")
+                run.get("suiteId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("suite")
             ));
         }
     }
@@ -125,7 +134,13 @@ pub fn debugger(value: Option<&Value>) -> String {
     let breakpoints = value
         .get("breakpoints")
         .and_then(Value::as_object)
-        .map(|files| files.values().filter_map(|lines| lines.as_array()).map(Vec::len).sum::<usize>())
+        .map(|files| {
+            files
+                .values()
+                .filter_map(|lines| lines.as_array())
+                .map(Vec::len)
+                .sum::<usize>()
+        })
         .unwrap_or(0);
     let watches = value
         .get("watches")
@@ -172,7 +187,10 @@ pub fn lsp(value: Option<&Value>) -> String {
                 .unwrap_or(0);
             lines.push(format!(
                 "  {}:{} · {}",
-                diagnostic.get("path").and_then(Value::as_str).unwrap_or("?"),
+                diagnostic
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
                 line.saturating_add(1),
                 diagnostic
                     .get("message")
@@ -264,10 +282,7 @@ pub fn first_meaningful(value: &Value) -> String {
                         if let Some(text) = inner.get("text").and_then(Value::as_str) {
                             lines.push(format!("{key}: {}", trimmed_lines(text, 1)));
                         } else {
-                            lines.push(format!(
-                                "{key}: {} field(s)",
-                                inner.len()
-                            ));
+                            lines.push(format!("{key}: {} field(s)", inner.len()));
                         }
                     }
                 }
@@ -326,7 +341,10 @@ mod tests {
     #[test]
     fn workflow_projection_prefers_active_runs() {
         let active = serde_json::json!({"state": "running", "active": "checkout", "steps": 3});
-        assert_eq!(workflow(Some(&active)), "→ checkout · running · 3 recorded steps");
+        assert_eq!(
+            workflow(Some(&active)),
+            "→ checkout · running · 3 recorded steps"
+        );
         let idle = serde_json::json!({"state": "idle", "active": null, "last": null});
         assert_eq!(workflow(Some(&idle)), "idle · no workflow selected");
     }

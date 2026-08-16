@@ -287,7 +287,11 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 /// Paint an ANSI half-block pane into the lower half of a surface area.
-fn draw_ansi_pane(frame: &mut Frame<'_>, area: Rect, pane: &glass_browser::tui::live_view::AnsiPane) {
+fn draw_ansi_pane(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    pane: &glass_browser::tui::live_view::AnsiPane,
+) {
     let inner = Rect {
         x: area.x.saturating_add(1),
         y: area.y.saturating_add(1),
@@ -342,10 +346,7 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             authority
         ),
         DevSurface::Agent => {
-            let working = state
-                .agents
-                .lines()
-                .any(|line| line.contains("Working"));
+            let working = state.agents.lines().any(|line| line.contains("Working"));
             let model = state
                 .agents
                 .lines()
@@ -404,7 +405,10 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 "SELECTED APP ENTITY\n{}\n\nWORKSPACE\nrev {} · {} · owner {}{}",
                 browser
                     .selected()
-                    .map(|entity| format!("◆ {} · {} · {}", entity.name, entity.role, entity.reference))
+                    .map(|entity| format!(
+                        "◆ {} · {} · {}",
+                        entity.name, entity.role, entity.reference
+                    ))
                     .unwrap_or_else(|| "No semantic entity selected".into()),
                 browser
                     .browser_revision
@@ -416,7 +420,11 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         }
         DevSurface::Terminal => format!(
             "PROCESSES\n{}{}",
-            state.processes.lines().next().unwrap_or("No process selected"),
+            state
+                .processes
+                .lines()
+                .next()
+                .unwrap_or("No process selected"),
             authority
         ),
         DevSurface::Tasks => {

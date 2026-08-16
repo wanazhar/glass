@@ -156,6 +156,8 @@ pub struct DevTuiState {
     pub terminal_width: u16,
     pub terminal_height: u16,
     pub status: String,
+    /// Wall-clock cost of the last background refresh pass.
+    pub refresh_latency_ms: u64,
     pub agents: String,
     pub agent_readiness: String,
     pub agent_conversation: String,
@@ -256,6 +258,7 @@ impl DevTuiState {
             surface_scroll: std::collections::BTreeMap::new(),
             terminal_width: 80,
             terminal_height: 24,
+            refresh_latency_ms: 0,
             status: if trust_prompt {
                 "Workspace trust required · I inspect · O untrusted · 1 trust once · T trust project".into()
             } else {
@@ -1122,6 +1125,31 @@ impl DevTuiState {
         self.surface = surfaces[(index + surfaces.len() - 1) % surfaces.len()];
     }
 
+    /// Apply one background snapshot without touching UI-only fields.
+    pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
+        self.refresh_latency_ms = snapshot.duration.as_millis() as u64;
+        self.agents = snapshot.agents.clone();
+        self.agent_conversation = snapshot.agent_conversation.clone();
+        self.tasks = snapshot.tasks.clone();
+        self.editor = snapshot.editor.clone();
+        self.lsp = snapshot.lsp.clone();
+        self.processes = snapshot.processes.clone();
+        self.git = snapshot.git.clone();
+        self.tests = snapshot.tests.clone();
+        self.kernels = snapshot.kernels.clone();
+        self.debugger = snapshot.debugger.clone();
+        self.replay = snapshot.replay.clone();
+        self.workflow = snapshot.workflow.clone();
+        self.workspace_status = snapshot.workspace_status.clone();
+        self.experiments = snapshot.experiments.clone();
+        if !snapshot.files.is_empty() {
+            self.files = snapshot.files.clone();
+            if !self.files.is_empty() {
+                self.selected_file = self.selected_file.min(self.files.len() - 1);
+            }
+        }
+    }
+
     pub fn set_terminal_size(&mut self, width: u16, height: u16) {
         self.terminal_width = width;
         self.terminal_height = height;
@@ -1186,20 +1214,15 @@ impl DevTuiState {
             Ok(events) if events.is_empty() => {
                 "No conversation yet. Press i to compose a message.".into()
             }
-            Ok(events) => {
-                let mut projected = events
+            Ok(events) => super::projection::conversation(
+                &events
                     .iter()
                     .rev()
                     .take(40)
                     .rev()
-                    .map(format_agent_event)
-                    .collect::<Vec<_>>();
-                // The latest state leads the view: working state on top.
-                projected.reverse();
-                projected.dedup();
-                projected.reverse();
-                projected.join("\n\n")
-            }
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
             Err(error) => format!("Conversation unavailable · {error}"),
         };
         self.tasks = match workspace.tasks() {
@@ -1939,55 +1962,6 @@ fn component_label(component: &crate::pi_runtime::PiReadinessComponent) -> Strin
         crate::pi_runtime::PiReadinessState::Incompatible => "! incompatible".into(),
         crate::pi_runtime::PiReadinessState::Expired => "! expired".into(),
         crate::pi_runtime::PiReadinessState::Unknown => "? unknown".into(),
-    }
-}
-
-fn format_agent_event(event: &crate::AgentEvent) -> String {
-    let text = event
-        .payload
-        .pointer("/message/content")
-        .or_else(|| event.payload.pointer("/result/text"))
-        .or_else(|| event.payload.get("text"))
-        .and_then(serde_json::Value::as_str);
-    // Tool calls render as compact activity rows, never raw payloads.
-    if let Some(tool) = event
-        .payload
-        .get("tool")
-        .and_then(serde_json::Value::as_str)
-    {
-        return format!("→ {tool} · {}", event.kind);
-    }
-    match event.kind.as_str() {
-        "starting" => "◆ starting".into(),
-        "ready" => "◆ ready".into(),
-        "requestStarted" => "● working".into(),
-        "completed" => text.map_or_else(
-            || "✓ done".into(),
-            |text| {
-                format!(
-                    "GLASS AGENT\n{}",
-                    crate::tui::projection::trimmed_lines(text, 24)
-                )
-            },
-        ),
-        "failed" | "workerPanicked" | "budgetExceeded" => format!(
-            "× {}",
-            text.or(event
-                .payload
-                .get("error")
-                .and_then(serde_json::Value::as_str))
-                .unwrap_or("failed")
-        ),
-        "cancelled" => "× cancelled".into(),
-        "user" => format!("YOU\n{}", text.unwrap_or_default()),
-        _ => match text {
-            Some(text) => format!(
-                "GLASS AGENT\n{}",
-                crate::tui::projection::trimmed_lines(text, 24)
-            ),
-            None if event.payload.is_null() => String::new(),
-            None => "· activity recorded".into(),
-        },
     }
 }
 

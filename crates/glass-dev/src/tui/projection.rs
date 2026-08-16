@@ -305,6 +305,53 @@ pub fn trimmed_lines(text: &str, limit: usize) -> String {
         .to_string()
 }
 
+pub fn conversation(events: &[crate::AgentEvent]) -> String {
+    events
+        .iter()
+        .filter(|event| !matches!(event.kind.as_str(), "starting" | "ready" | "requestStarted"))
+        .map(agent_event)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Render a single agent event; tool calls collapse to activity rows.
+fn agent_event(event: &crate::AgentEvent) -> String {
+    let text = event
+        .payload
+        .pointer("/message/content")
+        .or_else(|| event.payload.pointer("/result/text"))
+        .or_else(|| event.payload.get("text"))
+        .and_then(serde_json::Value::as_str);
+    if let Some(tool) = event
+        .payload
+        .get("tool")
+        .and_then(serde_json::Value::as_str)
+    {
+        return format!("→ {tool} · {}", event.kind);
+    }
+    match event.kind.as_str() {
+        "completed" => text.map_or_else(
+            || "✓ done".into(),
+            |text| format!("GLASS AGENT\n{}", trimmed_lines(text, 24)),
+        ),
+        "failed" | "workerPanicked" | "budgetExceeded" => format!(
+            "× {}",
+            text.or_else(|| event
+                .payload
+                .get("error")
+                .and_then(serde_json::Value::as_str))
+                .unwrap_or("failed")
+        ),
+        "cancelled" => "× cancelled".into(),
+        "user" => format!("YOU\n{}", text.unwrap_or_default()),
+        _ => match text {
+            Some(text) => format!("GLASS AGENT\n{}", trimmed_lines(text, 24)),
+            None if event.payload.is_null() => String::new(),
+            None => "· activity recorded".into(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

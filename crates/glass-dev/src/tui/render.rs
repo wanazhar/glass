@@ -485,7 +485,11 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .unwrap_or_default();
         format!(":{}  [{}]{}", state.command_input, suggestions, error)
     } else {
-        state.status.clone()
+        if state.refresh_latency_ms >= 200 {
+            format!("{} · refresh {}ms", state.status, state.refresh_latency_ms)
+        } else {
+            state.status.clone()
+        }
     };
     frame.render_widget(
         Paragraph::new(content).style(Style::default().fg(Color::Yellow)),

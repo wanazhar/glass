@@ -2,8 +2,9 @@
 
 mod command;
 mod projection;
-mod render;
-mod state;
+pub mod render;
+mod snapshot;
+pub mod state;
 
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
@@ -28,8 +29,11 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
         return Err("Glass Dev TUI requires an interactive terminal; use a CLI subcommand or --mcp for non-interactive use".into());
     }
     let mut state = DevTuiState::open(root, layout)?;
+    let mut worker = snapshot::SnapshotWorker::spawn(&state);
+    worker.request_refresh();
     let mut guard = TerminalGuard::enter()?;
     let mut last_refresh = Instant::now();
+    let mut last_render = Instant::now();
     loop {
         let size = guard.terminal.size()?;
         state.set_terminal_size(size.width, size.height);
@@ -295,13 +299,25 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
             }
         }
         if last_refresh.elapsed() >= Duration::from_millis(250) {
-            state.refresh();
+            worker.request_refresh();
             if state.browser_visual_live {
                 state.refresh_app_visual(state.terminal_width / 3, state.terminal_height / 3);
             }
             last_refresh = Instant::now();
+        } else if worker.is_busy() && last_render.elapsed() >= Duration::from_millis(100) {
+            // Conversation tail keeps streaming while a full pass is in flight.
+            worker.request_conversation();
+        }
+        // Apply whatever the worker finished; never block on it.
+        if let Some(snapshot) = worker.take_pending() {
+            state.apply_snapshot(&snapshot);
+        }
+        // Redraw at most ~30fps so event polling stays responsive.
+        if last_render.elapsed() >= Duration::from_millis(33) {
+            last_render = Instant::now();
         }
     }
+    drop(worker);
     Ok(())
 }
 

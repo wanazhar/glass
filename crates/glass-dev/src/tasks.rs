@@ -52,6 +52,24 @@ pub enum TaskState {
 }
 
 impl TaskState {
+    /// Human-readable label for terminal and TUI surfaces.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Ready => "ready",
+            Self::Running => "running",
+            Self::Waiting => "waiting",
+            Self::Verifying => "verifying",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Paused => "paused",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+impl TaskState {
     fn terminal(self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
     }

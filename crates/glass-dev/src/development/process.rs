@@ -31,6 +31,19 @@ pub enum ProcessHealth {
     Failed,
 }
 
+impl ProcessHealth {
+    /// Human-readable label for terminal and TUI surfaces.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Healthy => "healthy",
+            Self::Exited => "exited",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessSnapshot {

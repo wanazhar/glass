@@ -76,6 +76,19 @@ pub enum TestRunState {
     TimedOut,
 }
 
+impl TestRunState {
+    /// Human-readable label for terminal and TUI surfaces.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timed out",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum TestCaseState {

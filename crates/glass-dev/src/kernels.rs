@@ -147,12 +147,35 @@ pub enum KernelKind {
     Sql,
 }
 
+impl KernelKind {
+    /// Human-readable label for terminal and TUI surfaces.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Python => "python",
+            Self::JavaScript => "javascript",
+            Self::Shell => "shell",
+            Self::Sql => "sql",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum KernelState {
     Ready,
     Failed,
     Stopped,
+}
+
+impl KernelState {
+    /// Human-readable label for terminal and TUI surfaces.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

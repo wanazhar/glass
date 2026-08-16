@@ -359,9 +359,9 @@ impl BrowserTui {
                 || "No workflow run in this workspace".into(),
                 |(definition, result)| {
                     format!(
-                        "{} · {:?} · final revision {} · {} steps",
+                        "{} · {} · final revision {} · {} steps",
                         definition.name,
-                        result.status,
+                        result.status.label(),
                         result.final_revision,
                         result.steps.len()
                     )
@@ -376,11 +376,11 @@ impl BrowserTui {
             let session = self.session.as_ref().ok_or("browser is detached")?;
             let result = session.run_workflow(&definition, &BTreeMap::new()).await?;
             self.workspace.state_mut().browser_revision = Some(result.final_revision);
-            self.workspace.state_mut().workflow = format!("{:?}", result.status);
+            self.workspace.state_mut().workflow = result.status.label().to_string();
             self.page = format!(
-                "{} · {:?} · final revision {} · {} steps",
+                "{} · {} · final revision {} · {} steps",
                 definition.name,
-                result.status,
+                result.status.label(),
                 result.final_revision,
                 result.steps.len()
             );
@@ -415,7 +415,7 @@ impl BrowserTui {
                 .resume_workflow(&definition, &BTreeMap::new(), checkpoint)
                 .await?;
             self.workspace.state_mut().browser_revision = Some(result.final_revision);
-            self.workspace.state_mut().workflow = format!("{:?}", result.status);
+            self.workspace.state_mut().workflow = result.status.label().to_string();
             self.last_workflow = Some((definition, result));
             self.status = "Workflow resumed to a terminal result".into();
             return Ok(false);
@@ -433,7 +433,7 @@ impl BrowserTui {
                 .ok_or("no workflow result to verify")?;
             self.page = format!(
                 "{} · final revision {} · {} recorded steps",
-                if format!("{:?}", result.status).eq_ignore_ascii_case("completed") {
+                if result.status.label() == "completed" {
                     "✓ verified"
                 } else {
                     "× not completed"

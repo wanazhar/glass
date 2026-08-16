@@ -979,6 +979,18 @@ pub enum WorkflowRunStatus {
     ResumeRequired,
 }
 
+impl WorkflowRunStatus {
+    /// Human-readable label for terminal and TUI surfaces.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::BudgetExhausted => "budget exhausted",
+            Self::ResumeRequired => "resume required",
+        }
+    }
+}
+
 /// Evidence that the workflow's terminal condition was satisfied.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

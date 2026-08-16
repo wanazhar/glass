@@ -1133,10 +1133,10 @@ impl DevTuiState {
                         _ => "○",
                     };
                     format!(
-                        "{} {}  {:?}  {}\n  goal {}\n  agent {} · attempt {} · model {} · thinking {}\n  depends {}\n  verification {}{}\n  evidence {}",
+                        "{} {}  {}  {}\n  goal {}\n  agent {} · attempt {} · model {} · thinking {}\n  depends {}\n  verification {}{}\n  evidence {}",
                         glyph,
                         task.id.as_str(),
-                        task.state,
+                        task.state.label(),
                         task.title,
                         task.goal,
                         task.assigned_agent
@@ -1160,7 +1160,13 @@ impl DevTuiState {
                             .iter()
                             .rev()
                             .take(3)
-                            .map(|evidence| format!("{}={:?}", evidence.kind, evidence.passed))
+                            .map(|evidence| {
+                                format!(
+                                    "{}={}",
+                                    evidence.kind,
+                                    evidence.passed.map_or("?".into(), |passed| passed.to_string())
+                                )
+                            })
                             .collect::<Vec<_>>()
                             .join(" · ")
                     )
@@ -1182,7 +1188,7 @@ impl DevTuiState {
                         .into_iter()
                         .map(|item| {
                             format!(
-                                "{} {:?} · health {:?} · pid {} · {}\n  {}",
+                                "{} {} · health {} · pid {} · {}\n  {}",
                                 if matches!(item.health, crate::development::ProcessHealth::Healthy)
                                 {
                                     "●"
@@ -1190,7 +1196,7 @@ impl DevTuiState {
                                     "○"
                                 },
                                 item.name,
-                                item.health,
+                                item.health.label(),
                                 item.pid.map_or_else(|| "—".into(), |pid| pid.to_string()),
                                 if item.pty { "PTY" } else { "pipes" },
                                 item.detected_urls
@@ -1315,14 +1321,14 @@ impl DevTuiState {
                 .iter()
                 .map(|run| {
                     format!(
-                        "{} {} · {:?} · {} ms · {} cases",
+                        "{} {} · {} · {} ms · {} cases",
                         if run.exit_code == Some(0) {
                             "✓"
                         } else {
                             "×"
                         },
                         run.suite_id,
-                        run.state,
+                        run.state.label(),
                         run.duration_ms.unwrap_or_default(),
                         run.cases.len()
                     )
@@ -1338,14 +1344,14 @@ impl DevTuiState {
                 .iter()
                 .map(|kernel| {
                     format!(
-                        "{} {} · {:?} · {} executions · rev {}",
+                        "{} {} · {} · {} executions · rev {}",
                         if matches!(kernel.state, crate::kernels::KernelState::Ready) {
                             "●"
                         } else {
                             "○"
                         },
                         kernel.name,
-                        kernel.kind,
+                        kernel.kind.label(),
                         kernel.executions,
                         kernel.workspace_revision
                     )
@@ -1519,7 +1525,7 @@ impl DevTuiState {
                     .iter()
                     .map(|experiment| {
                         format!(
-                            "{} {} · {:?} · port {} · agent {}",
+                            "{} {} · {} · port {} · agent {}",
                             if experiment.evidence.tests_failed == 0
                                 && experiment.evidence.tests_passed > 0
                             {
@@ -1528,7 +1534,7 @@ impl DevTuiState {
                                 "○"
                             },
                             experiment.id,
-                            experiment.state,
+                            experiment.state.label(),
                             experiment
                                 .port
                                 .map_or_else(|| "—".into(), |port| port.to_string()),

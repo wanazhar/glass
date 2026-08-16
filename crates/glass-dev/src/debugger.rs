@@ -111,6 +111,20 @@ pub enum DebugSessionState {
     Failed,
 }
 
+impl DebugSessionState {
+    /// Human-readable label for terminal and TUI surfaces.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Initialized => "initialized",
+            Self::Running => "running",
+            Self::Stopped => "stopped",
+            Self::Terminated => "terminated",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DebugEvent {
     pub event: String,

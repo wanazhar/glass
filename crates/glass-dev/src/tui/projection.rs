@@ -130,7 +130,10 @@ pub fn debugger(value: Option<&Value>) -> String {
     let Some(value) = value else {
         return String::new();
     };
-    let state = value.get("state").and_then(Value::as_str).unwrap_or("?");
+    let state = value
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
     let breakpoints = value
         .get("breakpoints")
         .and_then(Value::as_object)
@@ -147,7 +150,7 @@ pub fn debugger(value: Option<&Value>) -> String {
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     format!(
-        "● {:?} · pid {} · {} breakpoints · {} watches",
+        "● {} · pid {} · {} breakpoints · {} watches",
         state,
         value
             .get("adapterProcessId")

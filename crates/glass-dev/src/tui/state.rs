@@ -144,6 +144,8 @@ pub struct DevTuiState {
     pub command_history: Vec<String>,
     pub command_history_index: Option<usize>,
     pub palette_error: Option<String>,
+    pub menu_open: bool,
+    pub menu_selection: usize,
     pub composer_mode: bool,
     pub composer_input: String,
     pub composer_cursor: usize,
@@ -216,6 +218,8 @@ impl DevTuiState {
             command_history: Vec::new(),
             command_history_index: None,
             palette_error: None,
+            menu_open: false,
+            menu_selection: 0,
             composer_mode: false,
             composer_input: String::new(),
             composer_cursor: 0,
@@ -228,7 +232,7 @@ impl DevTuiState {
             status: if trust_prompt {
                 "Workspace trust required · I inspect · O untrusted · 1 trust once · T trust project".into()
             } else {
-                "Ready · : opens the command palette · q quits".into()
+                "Ready · a actions · : commands · q quits".into()
             },
             agents: String::new(),
             agent_readiness: crate::pi_runtime::pi_readiness()
@@ -279,6 +283,116 @@ impl DevTuiState {
             TuiLayout::Auto if width < 118 || height < 32 => ResponsiveClass::Compact,
             TuiLayout::Auto => ResponsiveClass::Desktop,
         }
+    }
+
+    /// Discoverable actions for the current surface. `a` opens this menu.
+    pub fn surface_actions(&self) -> Vec<(&'static str, &'static str, &'static str)> {
+        match self.surface {
+            DevSurface::Agent => vec![
+                ("Compose message", "i", ""),
+                ("Setup Pi runtime", "agent setup", ":"),
+                ("Authenticate", "agent setup login", ":"),
+                ("Readiness doctor", "agent doctor", ":"),
+                ("New conversation", "agent new", ":"),
+            ],
+            DevSurface::Code => vec![
+                ("Open selected file", "Enter", ""),
+                ("Edit file", "i", ""),
+                ("Save buffer", "Ctrl-S", ""),
+                ("Search project", "editor search QUERY", ":"),
+                ("Diagnostics", "lsp diagnostics", ":"),
+            ],
+            DevSurface::App => vec![
+                ("Start browser", "browser start", ":"),
+                ("Observe page", "browser observe", ":"),
+                ("Navigate", "n", ""),
+                ("Type into selected", "t", ""),
+                ("Targets", "browser targets", ":"),
+            ],
+            DevSurface::Terminal => vec![
+                ("Start dev server", "process start dev COMMAND", ":"),
+                ("View logs", "process logs NAME", ":"),
+                ("Stop process", "process stop NAME", ":"),
+            ],
+            DevSurface::Tasks => vec![
+                ("Create task", "task create TITLE PROMPT", ":"),
+                ("Cancel task", "task cancel TASK_ID", ":"),
+                ("Retry task", "task retry TASK_ID", ":"),
+            ],
+            DevSurface::Git => vec![
+                ("Stage all changes", "git stage .", ":"),
+                ("Commit", "git commit MESSAGE", ":"),
+                ("View diff", "git diff", ":"),
+                ("Branches", "git branches", ":"),
+            ],
+            DevSurface::Debug => vec![
+                ("Start debug session", "debug start NAME COMMAND", ":"),
+                ("Run tests", "test run RUN_ID SUITE_ID", ":"),
+                ("Test results", "test results", ":"),
+            ],
+            DevSurface::More => vec![
+                ("Experiments", "experiment create ID BRANCH", ":"),
+                ("Kernels", "kernel start NAME KIND", ":"),
+                ("Workspace state", "workspace", ":"),
+            ],
+            DevSurface::Trust => vec![
+                ("Inspect configuration", "I", ""),
+                ("Trust once", "1", ""),
+                ("Trust project", "T", ""),
+            ],
+        }
+    }
+
+    pub fn open_menu(&mut self) {
+        self.menu_open = true;
+        self.menu_selection = 0;
+        self.status = "Surface actions · Enter runs · Esc closes".into();
+    }
+
+    pub fn close_menu(&mut self) {
+        self.menu_open = false;
+    }
+
+    /// Run the selected menu action. Keyboard hints apply directly; strings
+    /// starting with ':' open the palette prefilled with the command.
+    pub fn run_menu_action(&mut self) {
+        let Some((_, hint, prefix)) = self
+            .surface_actions()
+            .get(self.menu_selection)
+            .copied()
+        else {
+            return;
+        };
+        self.menu_open = false;
+        if prefix == ":" {
+            if hint.contains(' ') {
+                // Commands with arguments open prefilled for completion.
+                self.open_palette_with(&format!("{} ", hint));
+            } else {
+                self.open_palette_with(hint);
+            }
+        } else if hint == "i" {
+            if self.surface == DevSurface::Agent {
+                self.open_composer();
+            } else {
+                self.enter_code_edit();
+            }
+        } else if hint == "Enter" {
+            if self.surface == DevSurface::Code {
+                self.open_selected_file();
+            }
+        }
+        // Single-key hints (Ctrl-S, n, t, 1, T, I) apply in navigation mode;
+        // the status line reminds the user which key to press.
+        else if !hint.is_empty() && hint.len() <= 6 {
+            self.status = format!("Press {hint} in navigation mode");
+        }
+    }
+
+    pub fn move_menu_selection(&mut self, delta: i32) {
+        let count = self.surface_actions().len() as i32;
+        self.menu_selection =
+            (self.menu_selection as i32 + delta).rem_euclid(count.max(1)) as usize;
     }
 
     pub fn open_palette(&mut self) {

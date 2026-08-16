@@ -47,6 +47,14 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             .contains(KeyModifiers::CONTROL)
                     {
                         state.quit = true;
+                    } else if state.menu_open {
+                        match key.code {
+                            KeyCode::Esc => state.close_menu(),
+                            KeyCode::Enter => state.run_menu_action(),
+                            KeyCode::Up | KeyCode::Char('k') => state.move_menu_selection(-1),
+                            KeyCode::Down | KeyCode::Char('j') => state.move_menu_selection(1),
+                            _ => {}
+                        }
                     } else if state.browser_recovery.is_some()
                         && state.surface == DevSurface::App
                     {
@@ -168,6 +176,9 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                 state.status =
                                     "Browser checkpoint reconciled · control returned to Glass"
                                         .into();
+                            }
+                            (KeyCode::Char('a'), _) if state.surface != DevSurface::App => {
+                                state.open_menu()
                             }
                             (KeyCode::Char('i'), _) if state.surface == DevSurface::Agent => {
                                 state.open_composer();

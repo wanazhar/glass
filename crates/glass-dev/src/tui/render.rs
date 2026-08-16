@@ -131,6 +131,42 @@ fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    if state.menu_open {
+        let actions = state
+            .surface_actions()
+            .iter()
+            .enumerate()
+            .map(|(index, (name, hint, prefix))| {
+                let hint_label = if *prefix == ":" {
+                    format!(":{hint}")
+                } else {
+                    (*hint).to_string()
+                };
+                format!(
+                    "{} {} · {}",
+                    if index == state.menu_selection {
+                        "◆"
+                    } else {
+                        "○"
+                    },
+                    name,
+                    hint_label
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        frame.render_widget(
+            Paragraph::new(format!(
+                "ACTIONS · {}\n\n{}\n\nj/k select · Enter runs · Esc closes",
+                state.surface.label(),
+                actions
+            ))
+            .block(Block::default().title(" Actions ").borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
     if let Some(offer) = state.browser_recovery.as_ref() {
         let actions = offer
             .actions()
@@ -542,6 +578,26 @@ mod tests {
         state.scroll_surface(3);
         assert_eq!(state.surface, surface);
         assert_eq!(state.current_scroll(), 3);
+    }
+
+    #[test]
+    fn surface_action_menu_is_discoverable_and_runs_or_prefills() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Agent;
+        state.open_menu();
+        assert!(!state.surface_actions().is_empty());
+        state.move_menu_selection(2);
+        state.run_menu_action();
+        // `agent setup login` carries an argument, so the palette opens prefilled.
+        assert!(state.command_mode);
+        assert!(state.command_input.starts_with("agent setup login"));
+        state.close_palette();
+
+        state.surface = DevSurface::App;
+        state.open_menu();
+        state.run_menu_action();
+        // `browser start` has no argument requirement in the menu, palette prefilled.
+        assert!(state.command_input.starts_with("browser start"));
     }
 
     #[test]

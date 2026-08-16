@@ -26,6 +26,20 @@ pub enum ActorRequest {
 }
 
 /// One refresh pass result. Cheap to clone; the UI keeps the latest.
+/// Browser supervision outcome for one pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum BrowserHealth {
+    #[default]
+    Unknown,
+    /// Connected and healthy.
+    Connected,
+    /// Was connected earlier; the endpoint stopped responding.
+    Crashed {
+        last_process_id: Option<u32>,
+        last_revision: Option<u64>,
+    },
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DisplaySnapshot {
     pub agents: String,
@@ -45,6 +59,8 @@ pub struct DisplaySnapshot {
     pub files: Vec<String>,
     /// Wall-clock duration of the pass, for the latency meter.
     pub duration: Duration,
+    /// Browser supervision verdict for this pass.
+    pub browser_health: BrowserHealth,
 }
 
 impl DisplaySnapshot {
@@ -155,6 +171,7 @@ fn worker_loop(
     // Seed an initial snapshot before the first draw.
     let mut seeded = false;
     let mut conversation_tail = String::new();
+    let mut last_browser: Option<(Option<u32>, Option<u64>)> = None;
     loop {
         let request = if seeded {
             match requests.recv_timeout(Duration::from_millis(250)) {
@@ -203,6 +220,43 @@ fn worker_loop(
                 let started = Instant::now();
                 let mut snapshot = compute_snapshot(&workspace, &mut seeded);
                 snapshot.duration = started.elapsed();
+                // Supervise the browser endpoint between passes.
+                let state = workspace
+                    .lock()
+                    .ok()
+                    .and_then(|locked| locked.browser().state().ok());
+                match state {
+                    Some(state) => {
+                        let connected = state
+                            .pointer("/connected")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        let pid = state
+                            .pointer("/browserProcessId")
+                            .and_then(serde_json::Value::as_u64)
+                            .map(|pid| pid as u32);
+                        let revision = state
+                            .pointer("/browserRevision")
+                            .and_then(serde_json::Value::as_u64);
+                        if connected {
+                            last_browser = Some((pid, revision));
+                            snapshot.browser_health = BrowserHealth::Connected;
+                        } else if let Some(previous) = last_browser.take() {
+                            snapshot.browser_health = BrowserHealth::Crashed {
+                                last_process_id: previous.0,
+                                last_revision: previous.1,
+                            };
+                        }
+                    }
+                    None => {
+                        if let Some(previous) = last_browser.take() {
+                            snapshot.browser_health = BrowserHealth::Crashed {
+                                last_process_id: previous.0,
+                                last_revision: previous.1,
+                            };
+                        }
+                    }
+                }
                 conversation_tail = snapshot.agent_conversation.clone();
                 if let Ok(latest) = workspace
                     .lock()

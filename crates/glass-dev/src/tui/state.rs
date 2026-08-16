@@ -1162,6 +1162,29 @@ impl DevTuiState {
     /// Apply one background snapshot without touching UI-only fields.
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
         self.refresh_latency_ms = snapshot.duration.as_millis() as u64;
+        if let super::snapshot::BrowserHealth::Crashed {
+            last_process_id,
+            last_revision,
+        } = &snapshot.browser_health
+            && self.browser_recovery.is_none()
+            && self.surface == DevSurface::App
+        {
+            let pid_label = last_process_id
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "unknown".into());
+            let revision_label = last_revision
+                .map(|revision| revision.to_string())
+                .unwrap_or_else(|| "none".into());
+            self.browser_recovery = Some(BrowserRecoveryOffer::from_error(
+                &format!(
+                    "browser endpoint crashed unexpectedly (pid {pid_label}, last revision {revision_label})"
+                ),
+                9222,
+            ));
+            self.browser_workspace
+                .disconnected("browser endpoint crashed".to_string(), true);
+            self.status = "Browser endpoint crashed · recovery choices below".into();
+        }
         self.agents = snapshot.agents.clone();
         self.agent_conversation = snapshot.agent_conversation.clone();
         self.tasks = snapshot.tasks.clone();

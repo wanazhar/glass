@@ -1,4 +1,5 @@
 use super::command;
+use crate::browser::BrowserStartConfig;
 use crate::{DevelopmentWorkspace, ExperimentComparison};
 use glass_browser::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAction, BrowserWorkspaceAdapterKind,
@@ -15,6 +16,43 @@ pub struct PendingConfirmation {
     pub call: crate::development::ToolCall,
     pub context: crate::tools::DevelopmentToolContext,
     pub summary: String,
+}
+
+/// In-TUI recovery choices offered when a browser start collides or fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserRecoveryOffer {
+    pub reason: String,
+    pub port: u16,
+    /// A healthy Chrome CDP endpoint answered on the preferred port.
+    pub compatible_endpoint: bool,
+}
+
+impl BrowserRecoveryOffer {
+    pub fn from_error(error: &str, port: u16) -> Self {
+        Self {
+            reason: error.to_string(),
+            port,
+            compatible_endpoint: error.to_lowercase().contains("attach"),
+        }
+    }
+
+    pub fn actions(&self) -> &'static [(&'static str, &'static str)] {
+        if self.compatible_endpoint {
+            &[
+                ("1", "attach to the running Chrome on this port"),
+                ("2", "launch on an automatic free port"),
+                ("3", "try an explicit port"),
+                ("Esc", "dismiss"),
+            ]
+        } else {
+            &[
+                ("1", "launch on an automatic free port"),
+                ("2", "try an explicit port"),
+                ("3", "retry the preferred port"),
+                ("Esc", "dismiss"),
+            ]
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -134,6 +172,7 @@ pub struct DevTuiState {
     pub browser: String,
     pub browser_detail: String,
     pub browser_workspace: BrowserWorkspaceController,
+    pub browser_recovery: Option<BrowserRecoveryOffer>,
     pub browser_visual_live: bool,
     pub browser_ansi: AnsiCanvas,
     pub browser_pane: Option<AnsiPane>,
@@ -218,6 +257,7 @@ impl DevTuiState {
                 },
                 BrowserWorkspaceAdapterKind::EmbeddedDevelopment,
             ),
+            browser_recovery: None,
             browser_visual_live: false,
             browser_ansi: AnsiCanvas::default(),
             browser_pane: None,
@@ -1494,6 +1534,71 @@ impl DevTuiState {
         }
     }
 
+    /// Offer in-TUI recovery whenever a browser tool fails with a launch or
+    /// connection error, so a port collision never strands the session.
+    pub fn note_browser_failure(&mut self, tool: &str, error: &str) {
+        if tool.contains("browser")
+            && (error.contains("occupied")
+                || error.contains("attach")
+                || error.contains("connect")
+                || error.contains("launch")
+                || error.contains("timeout"))
+        {
+            self.browser_recovery = Some(BrowserRecoveryOffer::from_error(
+                error,
+                self.browser_recovery
+                    .as_ref()
+                    .map_or(9222, |offer| offer.port),
+            ));
+            self.browser_workspace.disconnected(error.to_string(), true);
+        }
+    }
+
+    /// Execute a recovery choice from the offer sheet.
+    pub fn accept_browser_recovery(&mut self, choice: usize) {
+        let Some(offer) = self.browser_recovery.take() else {
+            return;
+        };
+        let result = match (offer.compatible_endpoint, choice) {
+            (true, 0) => self.workspace.browser().start(BrowserStartConfig {
+                port: offer.port,
+                attach: true,
+                ..Default::default()
+            }),
+            (true, 1) | (false, 0) | (true, 2) | (false, 1) => {
+                let port = free_local_port().unwrap_or(0);
+                if port == 0 {
+                    self.status = "No free local port was available".into();
+                    return;
+                }
+                self.workspace
+                    .browser()
+                    .start(BrowserStartConfig { port, ..Default::default() })
+            }
+            (true, 3) | (false, 2) => self
+                .workspace
+                .browser()
+                .start(BrowserStartConfig { port: offer.port, ..Default::default() }),
+            _ => {
+                self.status = "Recovery dismissed".into();
+                return;
+            }
+        };
+        match result {
+            Ok(state) => {
+                self.apply_browser_result("glass.browser.start", &state);
+                self.browser_detail =
+                    super::projection::browser_result("glass.browser.start", &state);
+                self.status = "Browser recovered · workspace state preserved".into();
+            }
+            Err(error) => {
+                let error = error.to_string();
+                self.note_browser_failure("glass.browser.start", &error);
+                self.status = format!("Recovery failed: {error}");
+            }
+        }
+    }
+
     pub fn refresh_agent_readiness(&mut self) -> Result<bool, String> {
         let readiness = crate::pi_runtime::pi_readiness().map_err(|error| error.to_string())?;
         let ready = readiness.ready;
@@ -1631,6 +1736,14 @@ fn fuzzy_contains(candidate: &str, query: &str) -> bool {
         }
     }
     false
+}
+
+/// Bind an ephemeral localhost port to discover a free one.
+fn free_local_port() -> Option<u16> {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .ok()
+        .and_then(|listener| listener.local_addr().ok())
+        .map(|address| address.port())
 }
 
 fn editor_offset(content: &str, line: u32, column: u32) -> usize {

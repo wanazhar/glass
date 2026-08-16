@@ -10,6 +10,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_TUI_TOOL: AtomicU64 = AtomicU64::new(1);
 
 pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
+    let result = execute_inner(state, input);
+    if result.is_err()
+        && let Err(error) = &result
+        && error.contains("browser")
+    {
+        state.note_browser_failure("glass.browser", error);
+    }
+    result
+}
+
+fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String> {
     let mut parts = input.split_whitespace();
     let Some(command) = parts.next() else {
         return Ok("Command palette closed".into());

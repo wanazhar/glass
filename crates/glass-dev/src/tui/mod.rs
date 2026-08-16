@@ -47,6 +47,19 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             .contains(KeyModifiers::CONTROL)
                     {
                         state.quit = true;
+                    } else if state.browser_recovery.is_some()
+                        && state.surface == DevSurface::App
+                    {
+                        match key.code {
+                            KeyCode::Esc => {
+                                state.browser_recovery = None;
+                                state.status = "Recovery dismissed".into();
+                            }
+                            KeyCode::Char('1') => state.accept_browser_recovery(0),
+                            KeyCode::Char('2') => state.accept_browser_recovery(1),
+                            KeyCode::Char('3') => state.accept_browser_recovery(2),
+                            _ => {}
+                        }
                     } else if state.pending_confirmation.is_some() {
                         match key.code {
                             KeyCode::Enter | KeyCode::Char('y' | 'Y') => {

@@ -131,6 +131,24 @@ fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    if let Some(offer) = state.browser_recovery.as_ref() {
+        let actions = offer
+            .actions()
+            .iter()
+            .map(|(key, description)| format!("[{key}] {description}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        frame.render_widget(
+            Paragraph::new(format!(
+                "BROWSER RECOVERY\n\n{}\n\n{}",
+                offer.reason, actions
+            ))
+            .block(Block::default().title(" Recovery ").borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
     if let Some(pending) = state.pending_confirmation.as_ref() {
         frame.render_widget(
             Paragraph::new(format!(

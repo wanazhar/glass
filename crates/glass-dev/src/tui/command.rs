@@ -107,7 +107,7 @@ fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
                 .apply_local_trust_decision(decision)
                 .map_err(|error| error.to_string())?;
             state.surface = DevSurface::Agent;
-            Ok(format!("Workspace trust is now {trust:?}"))
+            Ok(format!("Workspace trust is now {}", trust.label()))
         }
         _ => Err("trust actions: status, inspect, untrusted, once, project".into()),
     }
@@ -846,9 +846,25 @@ fn run_tool(
 }
 
 fn compact_result(tool: &str, value: &Value) -> String {
-    let text = serde_json::to_string(value).unwrap_or_else(|_| "result unavailable".into());
-    let preview = text.chars().take(180).collect::<String>();
-    format!("{tool}: {preview}")
+    if value.get("confirmationRequired").and_then(Value::as_bool) == Some(true) {
+        return format!("{tool} · one-use confirmation required");
+    }
+    if value.get("queued").and_then(Value::as_bool) == Some(true) {
+        return format!("{tool} · queued in background");
+    }
+    let projection = match tool {
+        name if name.starts_with("glass.browser") => super::projection::browser_result(tool, value),
+        name if name.starts_with("glass.git") => super::projection::git(Some(value)),
+        name if name.starts_with("glass.test") => super::projection::tests(Some(value)),
+        name if name.starts_with("glass.lsp") => super::projection::lsp(Some(value)),
+        name if name.starts_with("glass.debug") => super::projection::debugger(Some(value)),
+        name if name.starts_with("glass.kernel") => super::projection::kernels(Some(value)),
+        _ => super::projection::first_meaningful(value),
+    };
+    format!(
+        "{tool} · {}",
+        projection.lines().next().unwrap_or("completed")
+    )
 }
 
 fn require_trusted(state: &DevTuiState) -> Result<(), String> {

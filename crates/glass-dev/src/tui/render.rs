@@ -382,7 +382,10 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             authority
         ),
         DevSurface::Agent => {
-            let working = state.agents.lines().any(|line| line.contains("Working"));
+            let working = state
+                .agents
+                .lines()
+                .any(|line| line.to_ascii_lowercase().contains("working"));
             let model = state
                 .agents
                 .lines()
@@ -663,6 +666,7 @@ mod tests {
         let mut state = state(TuiLayout::Desktop);
         let result = super::super::command::execute(&mut state, "browser state").unwrap();
         assert!(result.contains("queued"));
+        assert!(!result.contains('{'));
         assert!(state.queued_tool_request.is_some());
     }
 

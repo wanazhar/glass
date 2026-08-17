@@ -28,7 +28,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("Glass Dev TUI requires an interactive terminal; use a CLI subcommand or --mcp for non-interactive use".into());
     }
-    let mut state = DevTuiState::open(root, layout)?;
+    let mut state = DevTuiState::open_for_tui(root, layout)?;
     let mut worker = snapshot::SnapshotWorker::spawn(&state);
     worker.request_refresh();
     let mut guard = TerminalGuard::enter()?;

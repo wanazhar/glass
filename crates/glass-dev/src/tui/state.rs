@@ -251,6 +251,24 @@ impl DevTuiState {
         root: impl AsRef<Path>,
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_internal(root, layout, true)
+    }
+
+    /// Construct the interactive TUI without doing a full synchronous
+    /// projection pass. The snapshot worker fills resident projections after
+    /// the first frame, so a large repository can show the cockpit immediately.
+    pub fn open_for_tui(
+        root: impl AsRef<Path>,
+        layout: TuiLayout,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_internal(root, layout, false)
+    }
+
+    fn open_internal(
+        root: impl AsRef<Path>,
+        layout: TuiLayout,
+        initial_refresh: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let workspace = SharedDevelopmentWorkspace::open(root)?;
         let locked = workspace.lock()?;
         let trust = locked.trust();
@@ -351,7 +369,9 @@ impl DevTuiState {
             experiment_comparison: None,
             experiments: "No experiments. :experiment create ID BRANCH [PORT]".into(),
         };
-        state.refresh();
+        if initial_refresh {
+            state.refresh();
+        }
         Ok(state)
     }
 

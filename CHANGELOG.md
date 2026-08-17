@@ -25,6 +25,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
   instead of inlining base64. Raw JSON remains available via CLI/MCP.
 - Agent conversation rendering as YOU/GLASS AGENT blocks with tool-call rows
   and state glyphs; steer (Ctrl-D) and abort (Ctrl-X) from the composer.
+- Background display snapshots and governed tool jobs keep git status, agent
+  history, browser operations, and other resident work off the terminal event
+  loop; slow refreshes expose their latency in the status bar.
+- Incremental agent event cursors, complete resident-surface snapshots, and
+  off-thread embedded browser screenshot capture.
+- Multi-buffer Code surface with `[/]` switching, syntax markers, diagnostic
+  gutter markers, inline Git diff (`d`), and a unified `?` keyboard cockpit.
 
 ### Fixed
 

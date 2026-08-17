@@ -23,6 +23,11 @@ certification; native browser/PTY support is not certified.
 The 0.3.11 release contains the post-0.3.9 TUI responsiveness, browser
 feedback, agent-composer, projection, and documentation hardening changes.
 
+Native certification run `32042409142` passed the pinned Pi SDK, automatic
+experiments, all live Chromium scenarios, and native Windows named-pipe
+lifecycle. Fuzz run `32042326767` passed all six bounded parser and semantic
+targets.
+
 The signed `v0.3.10` tag is retained as an immutable failed candidate. Its
 workflow stopped before publication because the tagged release notes contained
 forbidden pre-publication wording; no registry or GitHub Release record exists.

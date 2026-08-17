@@ -21,6 +21,11 @@ the checker to verify each tag endpoint and records `v0.3.10` as failed.
 Manual verification run `32041501320` passed the complete validation job
 `95421519847` and the corrected release-record job `95423411306`.
 
+Native certification run `32042409142` passed the pinned Pi SDK, automatic
+experiments, all live Chromium scenarios, and native Windows named-pipe
+lifecycle. Fuzz run `32042326767` passed `mcp_frame`, `cdp_message`, `ax_dom`,
+`locator`, `url_policy`, and `semantic_contracts`.
+
 ## 0.3.10 failed candidate
 
 Signed tag `v0.3.10` points to commit

@@ -966,6 +966,10 @@ mod tests {
         };
         assert!(!snapshot.files.is_empty());
         assert!(snapshot.git.contains("branch") || snapshot.git.contains("Git"));
+        assert!(snapshot.workspace_status.contains("WELCOME"));
+        assert!(!snapshot.tasks.is_empty());
+        assert!(!snapshot.processes.is_empty());
+        assert!(!snapshot.browser.is_empty());
         // The conversation cursor starts at zero and only moves when events exist.
         let cursor = worker.conversation_cursor();
         worker.request_conversation();

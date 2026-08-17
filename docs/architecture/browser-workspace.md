@@ -1,6 +1,6 @@
 # Canonical Browser Workspace
 
-Status: Implemented for 0.3.6
+Status: Current shared controller; shell-specific layouts are 0.3.9 source behavior
 
 ## Purpose and boundary
 
@@ -11,7 +11,9 @@ one way and supplies its resident browser service as an execution backend.
 
 The workspace does not replace `BrowserSession`, weaken revision guards, make
 screenshots implicit automation context, or move development state into the
-browser crate.
+browser crate. Its desktop/phone diagrams below describe the embedded Glass
+Dev App surface; the standalone Browser TUI has its own semantic page and
+command layout documented in [Terminal UI](tui.md).
 
 ```text
 BrowserSession / Glass Dev BrowserService
@@ -64,7 +66,7 @@ or a semantic-only fallback. The status always names the selected path and its
 degradation reason. Pixels use a latest-frame-only mailbox and cannot block
 semantic, control, process, or agent events.
 
-## Phone layout
+## Embedded App phone layout
 
 ```text
 ┌ APP ─ title ─ rev ─ semantic ──────────┐

@@ -1,8 +1,10 @@
 # Glass documentation
 
 These guides describe the complete Glass product in this `0.3.9` source
-checkout. `glass-browser 0.3.9` and `glass-dev 0.3.9` are the current release
-crates. `Local only` means a capability exists in the checkout but is not part
+checkout, including local unreleased UX and responsiveness repairs. Published
+release notes remain scoped to the tagged release; the working-tree changelog
+records changes after that tag. `glass-browser 0.3.9` and `glass-dev 0.3.9` are
+the current release crates. `Local only` means a capability exists in the checkout but is not part
 of the published contract.
 Platform certification remains separate from source availability; see
 [cross-platform feature parity](feature-parity.md).
@@ -157,6 +159,9 @@ current user instructions.
   WebDriver frameworks, and raw CDP.
 - [Semantic resource budgets](architecture/semantic-resource-budgets.md) —
   compiler, binding, tool gateway, broker, and file-read budgets.
+- [Coding harness architecture](harness-architecture.md) — snapshot workers,
+  bounded queues, governed jobs, event cursors, responsive rendering, and
+  shutdown behavior.
 - [Benchmark suite](../benchmarks/README.md) — methodology and reproducible
   commands.
 
@@ -179,7 +184,7 @@ current user instructions.
 - [Canonical Browser Workspace](architecture/browser-workspace.md) and
   [Glass Product Workspace](architecture/product-workspace.md) — the shared
   browser/App controller, direct Agent/Code/App UX, focus, desktop, and phone
-  interaction contracts for 0.3.6.
+  interaction contracts for the current source line.
 - [Connection-aware presentation](architecture/connection-presentation.md) and
   [browser connection/Remote View](architecture/browser-connection.md) — the
   0.3.3 environment-policy matrix, recovery controller, target picker, and

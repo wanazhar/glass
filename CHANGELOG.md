@@ -32,6 +32,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
   off-thread embedded browser screenshot capture.
 - Multi-buffer Code surface with `[/]` switching, syntax markers, diagnostic
   gutter markers, inline Git diff (`d`), and a unified `?` keyboard cockpit.
+- Phone and compact layouts now expose operation status beside their navigation
+  hints, and startup renders the cockpit before background projections hydrate.
+- Agent composer sends, aborts, Pi setup, Git diff, browser recovery, and live
+  capture use governed background paths instead of blocking terminal input.
 
 ### Fixed
 
@@ -43,6 +47,15 @@ and intends to use [Semantic Versioning](https://semver.org/).
   instead of showing only the first 24 lines.
 - Rust `{:?}` debug formatting no longer leaks into status lines, headers,
   authority footers, or trust state.
+- `Esc` closes active modals while background work runs, and `?` remains usable
+  inside the composer, command palette, and editor.
+- Phone trust controls no longer display misleading surface-navigation hints.
+  Action-menu prefills remove documentation placeholders such as `NAME` and
+  `QUERY` before opening the editable command.
+- Standalone Browser TUI semantic selection no longer sends a CDP highlight on
+  every arrow key, and its header now allocates enough rows for status feedback.
+- Live-view failure clears the active toggle and reports the failure instead of
+  leaving a stale starting message.
 
 ## [0.3.9] - 2026-08-12
 

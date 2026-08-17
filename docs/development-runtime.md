@@ -131,7 +131,7 @@ TUI editor keys:
 | `Backspace`, `Delete` | remove content |
 | `Ctrl-S` | atomically save with actor attribution |
 | `Ctrl-Z`, `Ctrl-Y` | undo or redo in the current buffer |
-| `Esc` | return focus to the command bar |
+| `Esc` | leave editor mode and return to Code navigation |
 
 Glass-native rendering remains the state owner. Neovim can act as an optional
 editing engine; it does not own project, browser, process, graph, actor, or

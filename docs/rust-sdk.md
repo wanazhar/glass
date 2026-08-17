@@ -266,7 +266,7 @@ receive a local result ID rather than an unbounded transport payload.
 | `task_compiler` | Deterministic Task Protocol to execution-plan compiler |
 | `task_protocol` | Strict authored semantic task contract |
 | `terminal_graphics` | Herdr, Kitty, ANSI, and semantic render adapters |
-| `tui` | Ratatui application, reducer, worker, layouts, and remote live view |
+| `tui` | Standalone Browser TUI reducer, responsive layouts, semantic selection, and bounded Herdr/ANSI live presentation |
 | `web_ir` | Stable Web IR reconciliation, validation, diff, and continuity |
 | `workspace` | Workspace identity, ownership, attachments, lifecycle, and persistence |
 

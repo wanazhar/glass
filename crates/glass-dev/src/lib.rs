@@ -3,6 +3,12 @@
 //! This crate owns the resident software-development workspace used by the
 //! `glass` product. Browser intelligence remains provided by the one-way
 //! `glass-browser` dependency.
+//!
+//! The interactive TUI separates terminal rendering from workspace work. A
+//! snapshot worker hydrates resident projections and executes governed browser,
+//! Git, agent, and project operations off the input loop. The UI applies
+//! versioned snapshots, keeps drafts and modal state local, and restores the
+//! terminal without waiting for an active bounded job.
 
 pub mod agents;
 pub mod browser;

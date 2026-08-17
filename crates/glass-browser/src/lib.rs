@@ -161,7 +161,8 @@
 //! - [`task_protocol`] / [`task_compiler`] — strict authored tasks and
 //!   deterministic execution plans.
 //! - [`terminal_graphics`] — Herdr, Kitty, ANSI, and semantic render adapters.
-//! - [`tui`] — Ratatui reducer, browser worker, layouts, and remote live view.
+//! - [`tui`] — standalone Ratatui reducer, responsive layouts, semantic
+//!   selection, and bounded Herdr/ANSI live presentation.
 //! - [`web_ir`] — stable reconciliation, validation, diff, and continuity.
 //! - [`workspace`] — identity, ownership, lifecycle, attachments, and
 //!   persistence.

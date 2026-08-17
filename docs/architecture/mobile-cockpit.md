@@ -1,6 +1,13 @@
 # Remote development cockpit
 
-Status: Accepted 0.3.3 redesign
+Status: Historical 0.3.3 design reference; not the current phone implementation
+
+> The card-based Overview, six-view dock, touch Send/Cancel target, `inbox`,
+> `notify`, and capsule interaction model below are retained as design history.
+> The current implementation is the five-destination geometry-responsive TUI
+> documented in [Development TUI](development-tui.md) and [Mobile and Remote
+> Development](../mobile-remote.md). Do not use this document as a current
+> command or layout reference.
 
 ## Purpose and boundaries
 

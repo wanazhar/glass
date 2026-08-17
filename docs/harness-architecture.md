@@ -65,7 +65,7 @@ The primary route is visible and keyboard-first:
 - `a` opens actions for the current surface.
 - `:` remains the expert command palette, not the only way to discover work.
 - `Ctrl-C` is a global quit reflex in every input mode.
-- `Ctrl-X` aborts the selected agent; `Ctrl-S` steers from the composer.
+- `Ctrl-X` aborts the selected agent; `Ctrl-D` toggles steer/follow-up mode in the composer.
 - `[/]` switches editor buffers; `d` opens an inline Git diff; `v` toggles
   embedded live browser pixels.
 - Paging keys and mouse wheel scroll content; clicks select navigation or
@@ -84,3 +84,7 @@ The architecture is checked at three levels:
 
 The standalone Browser TUI shares the same semantic revision/recovery contract
 and uses Herdr when available, otherwise bounded ANSI half-block rendering.
+Its semantic selection movement is local-only; it does not issue a CDP highlight
+request for every arrow key. Standalone browser controls and visual screenshots
+remain asynchronous operations in that separate TUI, while the `glass-dev`
+workspace uses `SnapshotWorker` for governed background jobs.

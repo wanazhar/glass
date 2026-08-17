@@ -40,6 +40,10 @@ DEPTH_CONTRACTS = {
         "## Recover the browser without leaving the TUI",
         "## Open the full application in Safari", "## Terminal compatibility",
     ),
+    "docs/harness-architecture.md": (
+        "## Runtime planes", "## Event and snapshot rules",
+        "## Human interaction model", "## Verification",
+    ),
     "docs/actions.md": (
         "## Choose a target", "## Guard an action", "## Failure kinds",
         "## Execution phases", "## Dispatch and idempotency", "## Troubleshooting",

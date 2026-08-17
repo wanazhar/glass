@@ -1,15 +1,14 @@
 # Mobile and Remote Development
 
-Glass has a phone-oriented terminal workspace for SSH and Mosh sessions. It is
-designed for steering an agent, reviewing changes, checking runtime state, and
-verifying the application. It does not compress the desktop workspace into
-several unreadable columns.
+Glass has a geometry-responsive terminal workspace for SSH, Mosh, and narrow
+local terminals. “Phone” means a single-pane terminal layout. It does not add a
+second mobile authority path and it does not require touch events.
 
 ## Start on an iPhone
 
-Automatic layout uses phone at 72 columns or fewer, compact at 73–109, and
-wide at 110 or more. Width is geometry only: SSH/Mosh never changes those
-breakpoints. Force a presentation when geometry is misleading:
+Automatic layout uses phone below 72 columns or 22 rows, compact below 118
+columns or 32 rows, and desktop otherwise. Force a layout when the terminal
+reports misleading geometry:
 
 ```console
 glass --tui-layout mobile
@@ -17,118 +16,113 @@ glass --tui-layout compact
 glass --tui-layout desktop
 ```
 
-The phone workspace starts in Development mode and provides six full-width
-views:
+Phone mode exposes five direct destinations:
 
 | Key | View | Purpose |
 |---|---|---|
-| `1` | Overview | Connection chips plus Live App, Agent, Understanding, and Tests & Process cards |
-| `2` | Agent | Agent activity and attributed timeline |
-| `3` | Browser | Structured semantics, live view, recovery, and Safari handoff |
-| `4` | Project | Files, editor state, diagnostics, and actors |
-| `5` | Diff | Current project and verification diff |
-| `6` | Process | PTY health and bounded output |
+| `1` | Agent | readiness, conversation, and agent controls |
+| `2` | Code | bounded files, editor buffers, and diagnostics |
+| `3` | App | semantic browser state, workflow, and live view |
+| `4` | Tasks | task state, verification, and task actions |
+| `5` | More | workspace status, kernels, experiments, and operations |
 
-`Tab` and `Shift-Tab` move between views. `Esc` returns to Overview before it
-exits, and `?` shows the phone key guide. The number keys switch views only
-while the command bar is empty, so commands and agent prompts can contain
-numbers normally. `:` or `/` opens the command-palette hint, and `Ctrl-L`
-redraws. Function keys, pointer input, and control-key chords are not required.
+`Tab` and `Shift-Tab` cycle the same phone destinations. The status footer
+shows the current operation and the navigation hints. Status and error text is
+not hidden behind the navigation row.
 
-## Native-feeling phone controls
+## Input contract
 
-Every phone view has a one-row action dock whose commands depend on the active
-surface. Browser exposes Back, Tap, live toggle, and Remote View; Agent exposes
-Back, Timeline, Abort, and Actions; Project, Diff, and Process expose their
-bounded read/verification operations. The dock is clickable when the SSH client
-forwards mouse events and remains reachable through the documented commands.
+The phone layout uses the same keyboard and authority rules as desktop:
 
-Press `:` or `/`, or tap `Actions`, to open the searchable action sheet. Type to
-filter, use Up/Down and Enter, tap a result, or press Esc to close it. Agent abort
-uses a confirmation sheet with touch and `Y`/`N` routes. The command composer has
-a real Send target which becomes Cancel while a browser operation is active.
-Up/Down recalls up to 32 commands for the current process. History and command
-drafts are deliberately memory-only because commands can contain secrets.
-Bracketed paste is enabled only while Glass owns the terminal and input remains
-bounded by the same 4 KiB composer limit.
+| Input | Behavior |
+|---|---|
+| `a` | open the current surface's action menu |
+| `:` | open the governed command palette |
+| `?` | open scrollable keyboard help in navigation mode |
+| `j`/`k`, arrows, mouse wheel | scroll content; App `j`/`k` moves semantic selection |
+| `i` on Agent | open the agent composer |
+| `Enter` on Code/App | open a file or activate the selected browser entity |
+| `d` on Git | queue and display the inline diff |
+| `v` on App | toggle the bounded ANSI live view |
+| `H` / `G` on App | take human control / reconcile Glass control |
+| `Esc` | close the active menu, composer, palette, editor, diff, recovery sheet, or confirmation |
+| `Ctrl-C` | restore the terminal and quit immediately |
 
-Glass requests mouse, focus, and bracketed-paste reporting on entry and restores
-all three on exit. Losing terminal focus suspends live acquisition; returning
-queues a fresh structured observation before treating evidence as current.
-Completed and failed operations use short-lived, bounded toasts. These behaviors
-degrade to printable keys when a mobile SSH client does not forward the optional
-terminal protocols.
+The composer, palette, and editor keep printable characters such as `?` as text.
+Action-menu commands remove documentation placeholders such as `NAME` and
+`QUERY` before opening the editable palette input. If a background operation is
+active, a new composer submission remains in the draft rather than being
+silently discarded.
 
-Overview mirrors a native mobile cockpit without inventing state: the header
-shows project, revision, connection, agent, and browser status; rounded cards
-project the latest browser, agent, semantic, and process evidence; the bordered
-composer and six navigation pills remain reachable at the bottom. Needs-attention
-state takes priority above those cards. On very short terminals, `PageUp` and
-`PageDown` move through a bounded card window instead of crushing every card into
-unreadable rows. With terminal mouse reporting, tapping the Browser, Agent,
-Understanding, or Process card opens its full view. The Browser card's
-`[ remote ]` action queues the same loopback-only `browser remote-view open`
-operation as the command bar. Enter `inbox` from any view to return to Overview. `notify on`
-enables a deduplicated terminal bell for newly observed needs-attention items;
-notifications are off by default and contain no event payload.
+Mouse input is optional. The TUI can select navigation entries and semantic
+browser entities when the terminal forwards mouse events. A mobile SSH client
+that does not forward mouse events still has complete printable-key access.
 
-Enter `tap` in Browser to replace fragile pixel targeting with up to nine numbered,
-revision-bound semantic targets. Type or tap the number to execute through the
-normal verified browser action path. `Esc` closes the overlay.
+## Responsive execution
 
-The phone layout remains semantic-first: continuous pixels are off by default,
-which saves Chrome encoding, network bandwidth, and terminal redraw work.
-`screenshot PATH` remains an explicit evidence capture. Enable an ephemeral
-terminal-native view when visual feedback is useful:
+The first cockpit frame is rendered before the initial full workspace
+projection. `SnapshotWorker` then hydrates files, conversation, tasks, Git,
+processes, browser state, and other resident surfaces. Refresh requests and
+conversation requests are coalesced, and the latest versioned snapshot wins.
 
-```console
-glass --tui-layout mobile --tui-live on --tui-live-quality data
+Git diffs, Pi runtime setup, browser recovery, agent composer operations,
+embedded screenshots, and governed tool calls do not run on the terminal input
+loop. TUI workspace callbacks use non-blocking lock attempts. When the actor is
+busy, Glass reports a wait state rather than freezing input. Active bounded
+jobs do not delay terminal restoration on quit.
+
+The terminal guard owns raw mode, alternate screen, mouse capture, focus
+reporting, and bracketed paste. It restores all of them on normal exit, error,
+Ctrl-C, and quit. It does not persist composer drafts, command input, pixels,
+cookies, temporary ports, or browser target IDs.
+
+## Recover the browser without leaving the TUI
+
+An untrusted repository starts on the Trust surface. The phone footer shows the
+actual trust actions:
+
+```text
+I inspect · O open untrusted · 1 trust once · T trust project
 ```
 
-Or enter `live on` in the command bar. Glass switches to Browser, starts a bounded
-PNG screencast, and never persists those live pixels. Returning to Overview
-suspends capture. Glass retains only the newest bounded PNG for the preview and
-decodes one small ANSI canvas on demand, including when the focused renderer was
-Herdr or Kitty; leaving Overview releases the decoded canvas while retaining the
-newest bounded source frame for a later return. Disabling live or changing
-backend releases both. Useful commands are `live status`, `live doctor`, `live
-off|auto|on`, `live backend auto|herdr|kitty|ansi`, `live quality
-auto|data|balanced|smooth`, and `live fit contain|cover|actual`.
+Trust decisions update the authority label immediately. Repository-controlled
+execution remains blocked until the local user makes a decision.
 
-`live quality auto` starts balanced, degrades under sustained frame drops, and
-recovers after stable delivery. Capture is suspended when Browser is hidden.
+A browser startup collision or disconnect keeps the project workspace alive and
+opens a recovery sheet on the App surface. Choices are attach to a compatible
+endpoint, launch on an automatic free port, try an explicit port, retry the
+preferred port, or dismiss, depending on the detected failure. Browser launch
+runs through the governed worker and the sheet never destroys files, tasks,
+agent state, or Git state.
 
-Fit controls apply to ANSI sampling. Herdr and direct Kitty use aspect-safe
-contain placement so their native overlays and browser pointer geometry remain
-aligned.
+## Live browser view
 
-`auto` only enables a native Herdr or Kitty renderer that Glass can detect.
-`on` additionally permits the portable true-color ANSI half-block renderer.
-Local balanced and smooth target 30 and 60 FPS. Verified fast remote links use
-20/24/30 FPS; constrained or unknown remote links use 3/6/12. Auto quality
-reduces capture scale before rate, settled/idle states throttle to 5/3 FPS,
-and background acquisition pauses. The Overview thumbnail does not keep
-background acquisition alive. Supply measured evidence or explicit
-overrides when auto detection cannot know:
+Semantic browser state is the default. Embedded App live view is toggled with
+`v` and uses the bounded ANSI half-block path in the current `glass-dev` TUI.
+The screenshot worker keeps only the latest frame. If capture fails, Glass
+clears the live-view toggle and shows the failure in the status footer instead
+of leaving a stale “starting” state.
+
+The standalone Browser TUI also supports explicit live presentation:
 
 ```console
-glass --tui-transport remote-fast --tui-rtt-ms 35 \
-  --tui-throughput-mbps 80 --tui-graphics kitty
+glass-browser --tui-live on
+glass-browser --tui-live-backend ansi --tui-live-quality data
 ```
 
-Graphics requires an active probe or explicit configuration; terminal names
-alone are not evidence. Mosh is semantic-only because it synchronizes cell
-state rather than graphics-protocol state.
+Herdr is used when available and ANSI is the portable fallback. Standalone
+semantic selection is local-only; moving through entities does not send a CDP
+highlight request for every arrow key. `Enter` performs the selected action
+through the normal revision guard.
+
+Continuous pixels remain off by default. Treat screenshots, DOM, profiles,
+cookies, storage, evaluated values, and diagnostic logs as sensitive. Do not
+expose Chrome CDP or Remote View publicly.
 
 ## Preserve work with Herdr
 
-[Herdr](https://herdr.dev/docs/how-to-work/) is the recommended multiplexer for
-Glass development sessions. Like tmux it owns persistent PTYs and supports
-detach/reattach, but it also exposes agent state and has its own responsive
-phone switcher. Glass detects `HERDR_ENV=1` as a multiplexer signal. Herdr,
-shell transport, layout, and graphics remain independent in diagnostics.
-
-Install Herdr on the machine where the code and credentials live, then:
+[Herdr](https://herdr.dev/docs/how-to-work/) can own the persistent PTY on the
+machine where the project and credentials live:
 
 ```console
 ssh you@workstation
@@ -138,164 +132,44 @@ herdr
 glass --tui-layout mobile
 ```
 
-Detach Herdr with `Ctrl-B`, then `q`. SSH back and run `herdr` to reattach.
-Herdr preserves the pane and the Glass process; Glass does not duplicate or
-silently manage Herdr's server.
+Herdr is optional. tmux remains compatible. Mosh can carry the terminal session
+on roaming links; use a separate SSH connection for any local port forward.
+Glass does not duplicate the multiplexer or silently manage its server.
 
-Herdr is a better default than tmux for this particular agent-oriented mobile
-workflow, not a mandatory Glass dependency. tmux remains compatible. Mosh is a
-useful outer transport on roaming or lossy networks, and Herdr remains the
-persistent PTY owner inside it:
+For a full-fidelity iPhone browser, use the stable `safari` workflow or the
+scoped `browser remote-view open` command. Both are loopback/SSH-forward
+workflows. Keep the Chrome CDP port and application server private.
 
-```console
-mosh you@workstation
-herdr
-```
+## Current limits
 
-Mosh replaces the interactive SSH transport with a UDP session after login.
-Use an SSH client or a separate SSH connection for the TCP port forward needed
-by Safari.
-
-Glass also writes a bounded reconnect capsule on clean TUI exit and restores
-the mobile view and scroll position, browser target metadata/revision, and live
-preferences on the next start. It does not persist composer drafts, command
-history, palette queries, clipboard contents, or pixels. `capsule
-save|show|clear` manages it explicitly. Running PTYs remain
-owned by the resident process or Herdr; a capsule never pretends a process
-survived a machine or Glass process crash.
-
-Herdr can also own Glass's live image layer. Enable Herdr's experimental Kitty
-graphics support in its configuration, then start Glass with `--tui-live auto`
-or `--tui-live-backend herdr`. Glass connects to the pane-local
-`HERDR_SOCKET_PATH`, opens one owned `pane.graphics.stream`, and sends raw PNG
-frames on a one-frame queue. Detaching does not write image escape sequences
-into shell history, and closing Glass releases the Herdr-owned layer. If the
-stream fails, Glass falls back to direct Kitty when detected, then ANSI for
-`live on`, and finally the semantic view.
-
-## Recover the browser without leaving the TUI
-
-A browser startup failure or disconnect becomes a Browser attention card; it
-does not stop files, PTYs, the agent, or project state. The same printable
-commands work in phone, compact, and wide layouts:
-
-```text
-browser status
-browser reconnect
-browser launch --port auto --headless
-browser launch --port 9333 --headed --profile work
-browser launch --incognito --chrome-path /opt/chrome
-browser launch --chrome-path auto
-browser targets 9222
-browser attach --port 9222 2
-browser target 2
-browser semantic-only
-```
-
-`browser targets [PORT]` performs a fresh bounded probe and shows title,
-origin, type, and target ID without retaining full URLs. Attach performs
-another probe immediately before use and refuses unrelated or unknown
-listeners. A number selects from the latest target list; an explicit ID is
-also accepted. `--chrome-path auto` restores detected-browser selection.
-`--incognito` and `--profile` are mutually exclusive in one launch request.
-`browser auto-port`, `browser retry`, `browser connect`, and `browser
-disconnect` remain compatibility aliases.
-
-On every connection transition Glass clears target, visual, and semantic
-revision state. A successful Ready transition performs a fresh observation
-before browser tools become current again.
-
-## Open the full application in Safari
-
-There are two loopback-only Safari workflows:
-
-- `safari` forwards the application server and is the simplest stable path;
-- `browser remote-view open` serves the current Glass BrowserSession frames
-  and revision-bound input without exposing CDP.
-
-For Remote View, enter `browser remote-view open`. Glass prints a random-token
-loopback URL and an `ssh -L` hint. Forward that port in the iOS SSH app, open
-the printed URL in Safari, and keep the tunnel connected. The service accepts
-at most four clients, retains only the newest frame, bounds input, and rejects
-input whose displayed browser revision is stale. `browser remote-view close`
-revokes the token and clients. The existing browser worker owns it; it never
-launches a second browser.
-
-The terminal-native view is designed for steering and verification, not as a
-replacement for a touch browser: terminal graphics support varies, ANSI frames
-trade fidelity for portability, and a remote shell cannot launch local iPhone
-Safari. The stable full-fidelity path is still an SSH local port forward.
-
-Configure `browserUrl` in `glass.toml`, or navigate to the application, then
-enter this in the Glass command bar:
-
-```text
-safari
-```
-
-Glass prints the exact local and remote ports. In the iPhone SSH client, add a
-local forwarding rule like:
-
-```text
-local port:  3000
-remote host: 127.0.0.1
-remote port: 3000
-```
-
-Keep the tunnel connected and open `http://127.0.0.1:3000` in Safari. The
-route and non-sensitive query values are preserved in the generated URL;
-credentials and secret-like query values are removed or redacted. The local
-port may be changed in the SSH client when it conflicts with another service;
-use that chosen port in Safari.
-
-Do not expose the Chrome CDP port or bind a development server publicly for
-this workflow. Herdr owns terminal persistence, while the SSH client owns the
-private Safari tunnel.
+The current phone TUI is not the earlier card-based Overview design. It has no
+six-view touch dock, `inbox`, `notify`, or touch-only action authority. Those
+concepts remain historical design material in
+[the mobile cockpit architecture note](architecture/mobile-cockpit.md); the
+implemented surface contract is documented in
+[Development TUI architecture](architecture/development-tui.md).
 
 ## Terminal compatibility
 
-- Herdr is the preferred owned graphics path. Direct Kitty is selected after a
-  bounded capability probe; forcing `--tui-live-backend kitty` is available
-  when a compatible client does not identify itself.
-- Mosh synchronizes terminal cells rather than arbitrary image protocol state.
-  It therefore remains semantic-only; use Safari over a separate SSH tunnel
-  for full fidelity.
-- tmux and other multiplexers work with ANSI. Direct Kitty passthrough depends
-  on their configuration, so `live doctor` reports what Glass actually chose.
-- iOS terminal Smart Keys can still send arrows, `Esc`, and control keys, but
-  Glass phone navigation does not depend on their arrangement.
-- Mouse or touch events are optional. Glass enables terminal mouse capture while
-  the TUI owns the screen and disables it during cleanup. The numbered navigation
-  row and Overview cards accept clicks when the client forwards mouse events;
-  every destination remains available through printable keys or commands.
-- Orientation changes are handled through terminal resize events. The layout
-  switches between phone, compact, and wide presentations in automatic mode.
-  Resize bursts are coalesced, avoiding a full frame for every intermediate
-  geometry reported while rotating a phone or dragging a local window.
-- Glass applies transport-aware presentation pacing: up to 60 cell frames per
-  second locally, 30 on a measured fast remote, and 20 on constrained, unknown,
-  or Mosh links. State and input are processed immediately between frames; the
-  cap removes redundant layout and SSH writes rather than delaying commands.
-- Terminal input uses Crossterm's asynchronous event stream. An idle cockpit no
-  longer wakes on Glass's former 50 ms polling interval; resize bursts and input
-  still update state immediately and share the next paced presentation.
-- Held keys use terminal repeat events, key releases do not trigger redraws, and
-  bracketed command paste is inserted in one bounded operation. This keeps
-  editing responsive without increasing the 4 KiB command limit.
-- Mouse movement, release, and drag noise is discarded. On phone layouts the
-  wheel scrolls cockpit content; it controls the page only while the pointer is
-  inside the live browser pane.
-- Use a UTF-8 locale. Glass uses Unicode state markers but never relies on
-  color alone for meaning.
+- Herdr, tmux, SSH, and Mosh remain transport/PTY concerns outside the TUI
+  authority model.
+- Mouse, focus, and bracketed paste are optional terminal capabilities.
+- ANSI live presentation is the portable fallback when native graphics are not
+  available.
+- Use a UTF-8 locale because the TUI uses Unicode state markers but does not
+  rely on color alone.
 
-Run the browser-free renderer benchmark on the remote machine with:
+## Open the full application in Safari
 
-```console
-GLASS_LIVE_BENCH_ITERATIONS=100 \
-  cargo run -p glass-browser --release --example terminal_live_benchmark
-```
+Use `safari` for the stable application-server iPhone workflow or
+`browser remote-view open` for the scoped current BrowserSession view. Both
+work through a private SSH local port forward; neither exposes Chrome CDP.
 
-The benchmark isolates PNG decode, ANSI sampling, and changed-cell detection.
-Kitty/Herdr transport bytes and SSH latency are intentionally outside that
-microbenchmark. Glass sends a Kitty frame once per accepted generation; ordinary
-status, input, and spinner redraws do not replay the image payload.
+## Further reading
+
+- [Development Runtime](development-runtime.md)
+- [Development TUI architecture](architecture/development-tui.md)
+- [Harness architecture](harness-architecture.md)
+- [Browser connection and Remote View](architecture/browser-connection.md)
+- [CLI reference](cli.md)
+- [Workspace trust](workspace-trust.md)

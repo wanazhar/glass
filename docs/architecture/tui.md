@@ -1,56 +1,62 @@
 # Glass terminal UI
 
-Status: Accepted
+Status: Current standalone Browser TUI reference (the separate `glass-dev`
+Development TUI is documented in [Development TUI](development-tui.md))
 
 ## Design principles
 
-- Preserve the existing two-panel interface and command-first workflow.
-- Never block input or rendering on browser I/O.
-- Retain only bounded, compact page state in the UI process.
+- Preserve the command-first workflow and semantic page projection.
+- Keep semantic selection movement local; document the async browser operations
+  that can still occupy the standalone event loop.
+- Retain only bounded page text, status, command, and visual state.
 - Make action state auditable without exposing internal decision data.
 
 ## Overall structure
 
 ```text
-┌──────────────────────────── Header: title / URL ───────────────────────────┐
-├────────────── Activity ──────────────┬────────── Structured observation ───┤
-│ completed / active / failed actions  │ compact page state; scrollable      │
-├──────────────────────────────────────┴─────────────────────────────────────┤
-│ Command input                                                               │
-├──────────────────────────── Status / keybindings ──────────────────────────┤
+┌────────────────────────────── Header (5 rows) ─────────────────────────────┐
+│ connection · revision · presentation · owner · focus · status              │
+├────────────────────────── Semantic page / help ────────────────────────────┤
+│ bounded observation, target selection, workflow state, or help             │
+├────────────────────────────── Command (3 rows) ────────────────────────────┤
+│ visual path · status · > command                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The visual layout remains unchanged. "Activity" is an auditable event stream:
-user commands, lifecycle events, action start/end, errors, and page updates.
+The semantic page and header are the primary audit surface. They show
+connection state, revision, selected entity, bounded observation, workflow
+state, and the latest operation status without exposing raw implementation
+payloads.
 
 ## Ownership and flow
 
 ```text
-crossterm input task ──> UI loop ── BrowserCommand ──> BrowserWorker
-                             ^                             │
-                             └──── BrowserEvent ────────────┘
+crossterm input ──> BrowserTui reducer ──> BrowserSession / workspace
+                         │                         │
+                         └──── Ratatui render <────┘
 ```
 
-The UI loop owns terminal state and `App`. `BrowserWorker` owns the `BrowserSession`; it accepts one operation at a time and sends lifecycle/results events through bounded Tokio channels. Neither task owns the other's state.
+The standalone Browser TUI owns its `BrowserSession`, command buffer,
+`BrowserWorkspaceController`, semantic page projection, and visual state in
+one async application object. Browser controls and command submissions are
+async methods on that object and are awaited by the event loop. This TUI does
+not expose a generic cancellation-token worker boundary for every browser
+command.
 
-The worker runs on the TUI's Tokio `LocalSet`: its browser I/O remains fully
-asynchronous and yields to the UI loop, without forcing the existing browser
-error boundary across worker threads.
-
-A small dedicated Crossterm input worker forwards key events to the UI reducer.
-The reducer may enqueue at most one active browser operation and never awaits a
-browser future. `Esc` sends cancellation for that operation's ID. Cancellation
-is best effort: it drops Glass's in-flight operation future, but cannot roll
-back a CDP input event that Chrome already received.
+Semantic selection movement is local: arrow keys, `j`/`k`, mouse wheel, and
+semantic clicks update the rendered selection without issuing a CDP highlight
+request for every movement. `Enter` performs the selected revision-guarded
+action. The `glass-dev` product uses a separate `SnapshotWorker` for governed
+background jobs; do not conflate the two implementations.
 
 ## Interactions
 
 | Input | Scope | Behavior |
 |---|---|---|
-| Enter | command input | parse and enqueue one browser command |
-| Esc | busy state | request cancellation; otherwise close error/quit |
-| q / Ctrl-C | app | request worker shutdown and exit cleanly |
-| PgUp/PgDn | observation | scroll bounded page state |
+| Enter | command input | parse and asynchronously execute one browser command |
+| Esc | command/overlay | clear the command buffer and close the active workspace overlay |
+| q / Ctrl-C | app | close the owned session and restore the terminal |
+| arrows / `j`/`k` | semantic page | move the local selected entity when the command is empty |
 
 `observe`, `dom`, and `snapshot` in the TUI all refresh compact `PageContext`.
 The TUI is an operational dashboard, so full DOM inspection remains an explicit
@@ -86,63 +92,51 @@ interface guides.
 
 ## Runtime rules
 
-- Render only when state changes, plus a bounded busy animation tick.
-- Input polling runs outside the async render loop using existing crossterm/Tokio facilities.
-- Screenshots are written to files by the worker; base64 image data is not held in `App`.
-- The right-panel string, header values, activity history, and command input
-  each have explicit bounds before they enter `App` state.
-- A terminal guard restores raw mode, alternate screen, and cursor on every
-  normal error/exit path before waiting for browser-worker shutdown.
+- The event loop renders before polling input and redraws on its bounded polling
+  cadence.
+- Browser controls and command submissions remain async, but slow browser I/O
+  can occupy the event loop while that operation is awaited.
+- Semantic selection movement is local-only and therefore remains immediate.
+- ANSI live capture samples a bounded PNG into an `AnsiPane`; Herdr frames use
+  a latest-frame queue. Live capture is explicit and disabled by default.
+- The semantic text, status, command input, and visual pane are bounded before
+  rendering.
+- A terminal guard restores raw mode, alternate screen, cursor, and graphics
+  state on normal exit, Ctrl-C, quit, and close.
 
 ## Tests
 
-Unit tests cover reducer state transitions and command parsing. A worker integration test delays a browser command and proves the UI can still process key events, render busy state, and request cancellation.
-The TUI also provides read-only local daemon inspection commands: `daemon status`,
+Unit tests cover reducer state transitions, command parsing, responsive
+classes, semantic selection, live-path choice, and visual quality bounds. The
+TUI also provides read-only local daemon inspection commands: `daemon status`,
 `daemon doctor`, `daemon logs`, and `daemon recovery`. These commands
 render bounded JSON in the inspector pane without starting a browser operation.
 
 ## Remote and phone presentation
 
-Automatic layout has three terminal-geometry classes: phone through 72
-columns, compact through 109 columns, and wide above that. SSH, Mosh, RTT,
-throughput and graphics evidence do not change those breakpoints. Users can
-select phone layout explicitly on a wide mobile terminal, and can select wide
-layout over SSH. Connection-aware pixel policy is defined separately in
-[Connection-aware browser presentation](connection-presentation.md).
+The standalone Browser TUI has three width classes: phone at 72 columns or
+fewer, compact through 109 columns, and desktop above that. Its layout contains
+a bordered five-row header, a bounded semantic/content pane, and a three-row
+command footer. The header shows connection, browser revision, presentation,
+input owner, focus, and the current status. The footer shows the visual path,
+status, and command buffer.
 
-Phone mode is a single-pane stack with Agent, Code, App, Tasks, and More plus
-an always-reachable command palette. App uses the canonical semantic selection;
-Tasks show compact verification cards, and normal shutdown writes a
-non-sensitive reconnect capsule. Terminal bell notification is explicit and
-off by default.
-Its browser worker does not start the screencast or screenshot fallback by
-default, so a semantic-only iOS terminal pays no continuous visual capture or
-transfer cost. Explicit screenshots still write requested evidence. An
-explicit `live auto|on` starts a bounded, pane-sized screencast with data,
-balanced, and smooth throttles. Delivery is latest-frame-only: Herdr uses a
-one-frame local-socket queue, Kitty uses the terminal graphics mailbox, and the
-ANSI renderer stores only sampled Ratatui cells. Live PNGs are never persisted.
+The standalone Browser TUI has no development-surface navigation. Its command
+buffer supports browser navigation, observation, semantic inspection, target
+selection, workflows, and live presentation. `j`/`k`, arrows, mouse wheel, and
+semantic clicks move local selection; `Enter` activates the selected target.
+`Alt-Left`/`Alt-Right` perform guarded history navigation and `Ctrl-R` reloads.
+`Esc` clears the command buffer and closes the current workspace overlay.
 
-Backend negotiation is conservative: owned Herdr graphics, then a direct Kitty
-environment match or bounded terminal query, then ANSI only when `on` permits
-it. Mosh suppresses native image auto-detection because it synchronizes the
-terminal grid; ANSI remains available. Backend errors degrade in that same
-order and cannot terminate the browser worker. `live doctor` exposes the
-transport signals, selected backend, throughput, FPS, and drops. The `safari`
-command remains the stable full-fidelity SSH-forward path.
+Live pixels are explicit and bounded. The visual path is selected from the CLI
+policy: Herdr when available, otherwise ANSI when allowed. ANSI decodes a
+bounded screenshot into an `AnsiPane`; Herdr receives latest-frame-only PNG
+messages. Live capture is disabled by default, and an unavailable capture
+reports a visible failure rather than silently claiming that live view is
+active. The development product's phone layout and `SnapshotWorker` are
+separate; see [Development TUI](development-tui.md).
 
-Automatic quality uses only completed metric windows. It reduces capture scale
-before active frame rate and uses the floor/profile selected from connection
-evidence. Manual quality selection disables adaptation. The low 3/6/12 FPS
-tiers belong only to constrained visual-assist policy; healthy local profiles
-target 30 or 60 FPS.
-
-Browser startup and disconnect are subsystem states. The browser connection
-controller remains alive after failure and the TUI exposes probe, launch,
-attach, target selection, reconnect, disconnect and semantic-only operations.
-See [Browser connection controller and Remote View v1](browser-connection.md).
-
-Glass reads Herdr's documented pane markers for context and, when live pixels
-are explicitly enabled, can open Herdr's experimental owned pane-graphics
-stream. Process persistence and detach/reattach remain owned by Herdr rather
-than a duplicate multiplexer inside Glass.
+The browser connection controller keeps semantic state and revision failures
+visible after a disconnect. Launch, attach, reconnect, stop, targets, and
+Remote View remain explicit commands. See [Browser connection controller and
+Remote View](connection-presentation.md) and [Mobile and Remote Development](../mobile-remote.md).

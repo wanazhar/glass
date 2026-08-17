@@ -24,7 +24,8 @@ workflow generator, cross-browser test framework, or remote browser fleet.
 
 - the source tree, editor, PTYs, diagnostics, diff, graph, and verification
   evidence should share one bounded project session;
-- an SSH or narrow-terminal workflow needs a responsive six-view cockpit;
+- an SSH or narrow-terminal workflow needs a responsive five-destination
+  development cockpit with visible background-operation status;
 - local agents should use schema-validated project and browser tools;
 - browser state should be connected to source/runtime evidence; or
 - one MCP lifecycle should own persistent project processes and browser state.

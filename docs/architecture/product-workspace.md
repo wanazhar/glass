@@ -1,6 +1,6 @@
 # Glass Product Workspace
 
-Status: Implemented for 0.3.6
+Status: Current 0.3.9 source information architecture
 
 ## Product information architecture
 
@@ -79,10 +79,11 @@ actions.
 
 ## Startup and discovery
 
-Startup detects project ecosystem, Git, workspace trust, Node/Pi readiness,
-daemon state, detected development command, process state, and App URL. It
-offers direct start/resume, Agent, Code, run-server, and App actions. Missing or
-degraded requirements always include a remediation action.
+Startup reads project identity, Git, workspace trust, and initial readiness
+metadata synchronously, then renders the cockpit before the snapshot worker
+hydrates the complete resident projections. Missing or degraded requirements
+remain visible with a remediation action; slow files, agents, Git, browser, and
+process projections do not delay the first frame.
 
 ## Palette and focus
 

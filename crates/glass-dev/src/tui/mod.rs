@@ -49,6 +49,12 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         state.quit = true;
+                    } else if state.help_open {
+                        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
+                            state.toggle_help();
+                        }
+                    } else if key.code == KeyCode::Char('?') {
+                        state.toggle_help();
                     } else if state.menu_open {
                         match key.code {
                             KeyCode::Esc => state.close_menu(),

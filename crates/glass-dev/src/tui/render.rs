@@ -7,11 +7,28 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
 pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     let area = frame.area();
+    if state.help_open {
+        render_help(frame, state, area);
+        return;
+    }
     match state.responsive_class(area.width, area.height) {
         ResponsiveClass::Desktop => render_desktop(frame, state, area),
         ResponsiveClass::Compact => render_compact(frame, state, area),
         ResponsiveClass::Phone => render_phone(frame, state, area),
     }
+}
+
+fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let content = format!(
+        "KEYBOARD COCKPIT · {}\n\nNAVIGATION\n  1–5      switch primary surfaces\n  j/k ↑/↓  move and scroll\n  PgUp/Dn  page content · Home/End bounds\n  a        current-surface actions\n  ?        this help · Esc closes overlays\n\nAGENT\n  i        compose · Ctrl-S steer · Ctrl-X abort\n  Ctrl-C   quit from every mode\n\nCODE\n  Enter    open selected file · i edit\n  [/]]     switch open buffers · Ctrl-S save\n\nAPP\n  n        navigate · Enter activate selected entity\n  t        type into selected · v live view\n  Alt-←/→  browser back/forward · Ctrl-R reload\n\nGIT\n  d        inline diff · PgUp/Dn scroll diff\n\nEXPERT ROUTE\n  :        command palette · type help for all governed routes\n\nEvery mutation shows its authority, revision, and confirmation state.",
+        state.surface.label()
+    );
+    frame.render_widget(
+        Paragraph::new(content)
+            .block(Block::default().title(" Help ").borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_desktop(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {

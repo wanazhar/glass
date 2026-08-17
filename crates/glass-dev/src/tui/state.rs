@@ -146,6 +146,7 @@ pub struct DevTuiState {
     pub palette_error: Option<String>,
     pub menu_open: bool,
     pub menu_selection: usize,
+    pub help_open: bool,
     pub composer_mode: bool,
     pub composer_input: String,
     pub composer_cursor: usize,
@@ -267,6 +268,7 @@ impl DevTuiState {
             palette_error: None,
             menu_open: false,
             menu_selection: 0,
+            help_open: false,
             composer_mode: false,
             composer_input: String::new(),
             composer_cursor: 0,
@@ -401,6 +403,15 @@ impl DevTuiState {
                 ("Trust project", "T", ""),
             ],
         }
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.help_open = !self.help_open;
+        self.status = if self.help_open {
+            "Help · ? or Esc closes".into()
+        } else {
+            "Help closed".into()
+        };
     }
 
     pub fn open_menu(&mut self) {

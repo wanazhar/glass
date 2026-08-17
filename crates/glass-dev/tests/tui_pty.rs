@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! End-to-end PTY interaction tests for the Glass Dev TUI.
 //!
 //! Opt-in like the browser smoke test: run with `GLASS_E2E=1`. These tests
@@ -25,7 +27,7 @@ impl Session {
     fn start(binary: &str, root: &std::path::Path, cols: u16, rows: u16) -> Self {
         let mut master_fd: libc::c_int = 0;
         let mut slave_fd: libc::c_int = 0;
-        let mut window = libc::winsize {
+        let window = libc::winsize {
             ws_row: rows,
             ws_col: cols,
             ws_xpixel: 0,
@@ -37,7 +39,7 @@ impl Session {
                 &mut slave_fd,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut window,
+                &window,
             )
         };
         assert_eq!(result, 0, "openpty failed");

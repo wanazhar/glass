@@ -331,7 +331,7 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         }
         .map_err(|error| error.to_string())?;
         state.surface = DevSurface::Code;
-        state.refresh();
+        state.refresh_editor_projection();
         return Ok(format!(
             "{} {} · dirty {}",
             action, result.path, result.dirty

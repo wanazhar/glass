@@ -721,7 +721,8 @@ impl DevTuiState {
             Ok(()) => self.status = format!("Aborted {}", agent.as_str()),
             Err(error) => self.status = format!("Abort failed: {error}"),
         }
-        self.refresh();
+        // The snapshot actor will refresh resident projections; do not block
+        // the input loop rebuilding the entire workspace here.
     }
 
     pub fn insert_composer_text(&mut self, text: &str) {
@@ -826,7 +827,7 @@ impl DevTuiState {
             }
             None => self.status = "Message failed · workspace or agent unavailable".into(),
         }
-        self.refresh();
+        // Agent queue state is reflected by the next worker snapshot.
     }
 
     pub fn approve_confirmation_async(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
@@ -929,21 +930,6 @@ impl DevTuiState {
                 self.status = format!("{} failed: {error}", result.tool);
             }
         }
-    }
-
-    pub fn approve_confirmation(&mut self) {
-        let Some(pending) = self.pending_confirmation.take() else {
-            return;
-        };
-        match self
-            .workspace
-            .lock()
-            .and_then(|mut workspace| workspace.execute_tool(&pending.call, &pending.context))
-        {
-            Ok(_) => self.status = format!("Approved once · {}", pending.summary),
-            Err(error) => self.status = format!("Approved action failed: {error}"),
-        }
-        self.refresh();
     }
 
     pub fn deny_confirmation(&mut self) {

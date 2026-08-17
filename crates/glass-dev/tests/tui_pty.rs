@@ -33,13 +33,19 @@ impl Session {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
+
+        #[cfg(target_os = "macos")]
+        let window_ptr: *mut libc::winsize = std::ptr::addr_of!(window).cast_mut();
+        #[cfg(not(target_os = "macos"))]
+        let window_ptr: *const libc::winsize = std::ptr::addr_of!(window);
+
         let result = unsafe {
             libc::openpty(
                 &mut master_fd,
                 &mut slave_fd,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &window,
+                window_ptr,
             )
         };
         assert_eq!(result, 0, "openpty failed");

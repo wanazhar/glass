@@ -28,6 +28,13 @@ pub struct ToolJobResult {
     pub result: Result<serde_json::Value, String>,
 }
 
+pub struct VisualJobResult {
+    pub id: u64,
+    pub columns: u16,
+    pub rows: u16,
+    pub result: Result<serde_json::Value, String>,
+}
+
 /// Commands the UI sends to the worker.
 pub enum ActorRequest {
     /// Recompute every snapshot field immediately.
@@ -35,6 +42,11 @@ pub enum ActorRequest {
     /// Recompute only conversation tail fields (cheap, high frequency).
     RefreshConversation,
     Tool(Box<ToolJob>),
+    Screenshot {
+        id: u64,
+        columns: u16,
+        rows: u16,
+    },
     ShutDown,
 }
 
@@ -101,7 +113,9 @@ pub struct SnapshotWorker {
     /// Highest agent event sequence already folded into the conversation.
     conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
     job_results: Receiver<ToolJobResult>,
+    visual_results: Receiver<VisualJobResult>,
     next_job_id: u64,
+    next_visual_id: u64,
 }
 
 impl SnapshotWorker {
@@ -111,6 +125,7 @@ impl SnapshotWorker {
         let workspace = state.workspace.clone();
         let (request_tx, request_rx) = channel::<ActorRequest>();
         let (job_result_tx, job_result_rx) = channel::<ToolJobResult>();
+        let (visual_result_tx, visual_result_rx) = channel::<VisualJobResult>();
         let snapshots = Arc::new(std::sync::Mutex::new(None::<DisplaySnapshot>));
         let dirty = Arc::new(AtomicBool::new(true));
         let snapshot_sink = Arc::clone(&snapshots);
@@ -124,6 +139,7 @@ impl SnapshotWorker {
                     workspace,
                     request_rx,
                     job_result_tx,
+                    visual_result_tx,
                     snapshot_sink,
                     dirty_flag,
                     worker_cursor,
@@ -138,7 +154,9 @@ impl SnapshotWorker {
             last_applied: None,
             conversation_cursor,
             job_results: job_result_rx,
+            visual_results: visual_result_rx,
             next_job_id: 1,
+            next_visual_id: 1,
         }
     }
 
@@ -172,6 +190,22 @@ impl SnapshotWorker {
             Ok(result) => Ok(Some(result)),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => Err("tool worker stopped".into()),
+        }
+    }
+
+    pub fn submit_screenshot(&mut self, columns: u16, rows: u16) {
+        let id = self.next_visual_id;
+        self.next_visual_id = self.next_visual_id.saturating_add(1);
+        let _ = self
+            .requests
+            .send(ActorRequest::Screenshot { id, columns, rows });
+    }
+
+    pub fn try_visual_result(&self) -> Result<Option<VisualJobResult>, String> {
+        match self.visual_results.try_recv() {
+            Ok(result) => Ok(Some(result)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Err("visual worker stopped".into()),
         }
     }
 
@@ -214,6 +248,7 @@ fn worker_loop(
     workspace: crate::SharedDevelopmentWorkspace,
     requests: Receiver<ActorRequest>,
     job_results: Sender<ToolJobResult>,
+    visual_results: Sender<VisualJobResult>,
     snapshots: Arc<std::sync::Mutex<Option<DisplaySnapshot>>>,
     dirty: Arc<AtomicBool>,
     conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
@@ -237,6 +272,18 @@ fn worker_loop(
         };
         match request {
             ActorRequest::ShutDown => break,
+            ActorRequest::Screenshot { id, columns, rows } => {
+                let result = workspace
+                    .lock()
+                    .and_then(|locked| locked.browser().screenshot())
+                    .map_err(|error| error.to_string());
+                let _ = visual_results.send(VisualJobResult {
+                    id,
+                    columns,
+                    rows,
+                    result,
+                });
+            }
             ActorRequest::Tool(job) => {
                 let tool = job.call.name.clone();
                 let result = workspace

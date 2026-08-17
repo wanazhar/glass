@@ -325,7 +325,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
         if last_refresh.elapsed() >= Duration::from_millis(250) {
             worker.request_refresh();
             if state.browser_visual_live {
-                state.refresh_app_visual(state.terminal_width / 3, state.terminal_height / 3);
+                worker.submit_screenshot(state.terminal_width / 3, state.terminal_height / 3);
             }
             last_refresh = Instant::now();
         } else if worker.is_busy() && last_render.elapsed() >= Duration::from_millis(100) {
@@ -336,6 +336,9 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
         // Apply whatever the worker finished; never block on it.
         if let Ok(Some(result)) = worker.try_job_result() {
             state.apply_tool_job_result(result);
+        }
+        if let Ok(Some(result)) = worker.try_visual_result() {
+            state.apply_visual_job_result(result);
         }
         if let Some(snapshot) = worker.take_pending() {
             state.apply_snapshot(&snapshot);

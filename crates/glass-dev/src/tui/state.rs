@@ -806,6 +806,48 @@ impl DevTuiState {
         }
     }
 
+    pub fn apply_visual_job_result(&mut self, result: super::snapshot::VisualJobResult) {
+        let png = result
+            .result
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("base64")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .and_then(|encoded| {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .ok()
+            });
+        let Some(png) = png else {
+            self.browser_visual_live = false;
+            self.browser_workspace.state_mut().presentation_reason =
+                Some("screenshot unavailable; start or observe the browser first".into());
+            return;
+        };
+        match AnsiPane::from_png(
+            &mut self.browser_ansi,
+            &png,
+            result.columns.clamp(8, 80),
+            result.rows.clamp(4, 40),
+            glass_browser::terminal_graphics::FrameFit::Contain,
+        ) {
+            Ok(pane) => {
+                self.browser_pane = Some(pane);
+                self.browser_workspace.state_mut().presentation =
+                    glass_browser::browser_workspace::BrowserPresentationPath::Ansi;
+                self.status = "Live view updated · ANSI half-block".into();
+            }
+            Err(error) => {
+                self.browser_visual_live = false;
+                self.browser_workspace.state_mut().presentation_reason = Some(error.to_string());
+            }
+        }
+    }
+
     pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
         if self.running_tool_job != Some(result.id) {
             return;

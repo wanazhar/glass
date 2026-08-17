@@ -13,14 +13,14 @@ certification; native browser/PTY support is not certified.
 
 ## 0.3.11 release candidate
 
-- [ ] Re-audit issue #36 scenarios A-J, gates 1-14, and every forbidden
+- [x] Re-audit issue #36 scenarios A-J, gates 1-14, and every forbidden
       outcome against the current source and executable tests.
-- [ ] Pass the complete local workspace, docs, package, security, fuzz, live
+- [x] Pass the complete local workspace, docs, package, security, fuzz, live
       browser, PTY, clean-install, and publish dry-run gates.
-- [ ] Verify the signed exact tag, ordered registry publication, clean registry
+- [x] Verify the signed exact tag, ordered registry publication, clean registry
       installs, native CI, fuzz, GitHub Release, and release record.
 
-The 0.3.11 candidate contains the post-0.3.9 TUI responsiveness, browser
+The 0.3.11 release contains the post-0.3.9 TUI responsiveness, browser
 feedback, agent-composer, projection, and documentation hardening changes.
 
 The signed `v0.3.10` tag is retained as an immutable failed candidate. Its

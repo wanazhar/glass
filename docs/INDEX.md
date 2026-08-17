@@ -4,7 +4,7 @@ These guides describe the complete Glass product in this `0.3.11` source
 checkout, including local unreleased UX and responsiveness repairs. Published
 release notes remain scoped to the tagged release; the working-tree changelog
 records changes after that tag. `glass-browser 0.3.11` and `glass-dev 0.3.11` are
-the current candidate crates. `Local only` means a capability exists in the checkout but is not part
+the current release crates. `Local only` means a capability exists in the checkout but is not part
 of the published contract.
 Platform certification remains separate from source availability; see
 [cross-platform feature parity](feature-parity.md).

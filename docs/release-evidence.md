@@ -4,10 +4,22 @@
 
 The candidate source commit `66d760959213aa4b7eea8d05093f8a424061fb8e` carries
 the post-0.3.9 TUI responsiveness, browser feedback, agent-composer,
-projection, and documentation hardening changes. It passed package version,
-feature-parity, documentation truth, coverage, and depth validators. Final
-exact-tag, registry, native-certification, clean-install, GitHub Release, and
-issue-closure records are recorded below after the release workflow completes.
+projection, and documentation hardening changes. Signed annotated tag `v0.3.11`
+points to commit `37507fd8c72cb2703a6ff48f4af56ad896fbeba6`; GitHub reports its
+signature as verified.
+
+Exact-tag release workflow run `32039662208` passed tag verification, all
+validation, package, clean-install, and publish-dry-run gates. Its ordered
+publication job `95419228613` published `glass-browser 0.3.11` at
+`2026-08-17T14:56:00.295932Z` and `glass-dev 0.3.11` at
+`2026-08-17T14:56:58.989380Z`; both are unyanked. The source-only GitHub
+Release is non-draft, non-prerelease, and has no assets.
+
+The first run's final record step exposed a collection-endpoint inconsistency
+and omitted the newly retained failed `v0.3.10` tag. Commit `9d985ef` changes
+the checker to verify each tag endpoint and records `v0.3.10` as failed.
+Manual verification run `32041501320` passed the complete validation job
+`95421519847` and the corrected release-record job `95423411306`.
 
 ## 0.3.10 failed candidate
 

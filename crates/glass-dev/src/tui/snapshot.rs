@@ -57,6 +57,14 @@ pub struct DisplaySnapshot {
     pub workspace_status: String,
     pub experiments: String,
     pub files: Vec<String>,
+    pub browser: String,
+    pub trust_label: String,
+    pub trust_inspection: Vec<crate::customization::CustomizationInspectionItem>,
+    pub root: String,
+    pub project_revision: u64,
+    pub generation: u64,
+    pub skills_count: usize,
+    pub tools_count: usize,
     /// Wall-clock duration of the pass, for the latency meter.
     pub duration: Duration,
     /// Browser supervision verdict for this pass.
@@ -392,9 +400,186 @@ fn compute_snapshot(
             .join("\n\n"),
         Err(error) => format!("Task scheduler failed: {error}"),
     };
+    snapshot.processes = locked
+        .project_mut()
+        .processes()
+        .list_checked()
+        .map(|items| {
+            if items.is_empty() {
+                "No managed terminals. Start the detected development command from More.".into()
+            } else {
+                items
+                    .into_iter()
+                    .map(|item| {
+                        format!(
+                            "{} {} · health {} · pid {} · {}\n  {}",
+                            if matches!(item.health, crate::development::ProcessHealth::Healthy) {
+                                "●"
+                            } else {
+                                "○"
+                            },
+                            item.name,
+                            item.health.label(),
+                            item.pid.map_or_else(|| "—".into(), |pid| pid.to_string()),
+                            if item.pty { "PTY" } else { "pipes" },
+                            item.detected_urls
+                                .first()
+                                .map_or(item.command.as_str(), String::as_str),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            }
+        })
+        .unwrap_or_else(|error| format!("Process state failed: {error}"));
+    snapshot.lsp = {
+        let language = locked.language();
+        let servers = language.names().collect::<Vec<_>>();
+        let event_count = language.events(0).len();
+        if servers.is_empty() {
+            "No language server active · diagnostics unavailable".into()
+        } else {
+            format!("● {} · {} recent events", servers.join(" · "), event_count)
+        }
+    };
+    let _ = locked.tests_mut().poll();
+    let test_runs = locked.tests().results().rev().take(32).collect::<Vec<_>>();
+    snapshot.tests = if test_runs.is_empty() {
+        "No test runs".into()
+    } else {
+        test_runs
+            .iter()
+            .map(|run| {
+                format!(
+                    "{} {} · {} · {} ms · {} cases",
+                    if run.exit_code == Some(0) {
+                        "✓"
+                    } else {
+                        "×"
+                    },
+                    run.suite_id,
+                    run.state.label(),
+                    run.duration_ms.unwrap_or_default(),
+                    run.cases.len()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let kernels = locked.kernels().snapshots().cloned().collect::<Vec<_>>();
+    snapshot.kernels = if kernels.is_empty() {
+        "No persistent kernels".into()
+    } else {
+        kernels
+            .iter()
+            .map(|kernel| {
+                format!(
+                    "{} {} · {} · {} executions · rev {}",
+                    if matches!(kernel.state, crate::kernels::KernelState::Ready) {
+                        "●"
+                    } else {
+                        "○"
+                    },
+                    kernel.name,
+                    kernel.kind.label(),
+                    kernel.executions,
+                    kernel.workspace_revision
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let debugger_names = locked
+        .debugger_names()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    snapshot.debugger = if debugger_names.is_empty() {
+        "No debugger sessions. :debug start NAME COMMAND [ARGS...]".into()
+    } else {
+        debugger_names
+            .iter()
+            .filter_map(|name| {
+                locked
+                    .debugger_mut(name)
+                    .ok()
+                    .and_then(|debugger| debugger.snapshot().ok())
+                    .map(|value| (name, value))
+            })
+            .map(|(name, value)| {
+                format!(
+                    "● {} · {} · pid {} · {} breakpoints · {} watches · {} threads/processes",
+                    name,
+                    value.state.label(),
+                    value.adapter_process_id,
+                    value.breakpoints.values().map(Vec::len).sum::<usize>(),
+                    value.watches.len(),
+                    value.debuggee_processes.len()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    snapshot.replay = locked
+        .intelligence()
+        .replay(0, 128)
+        .map(|events| {
+            if events.is_empty() {
+                "No observable replay events".into()
+            } else {
+                events
+                    .iter()
+                    .rev()
+                    .take(24)
+                    .rev()
+                    .map(|event| {
+                        format!(
+                            "{} {} · {} · {} · rev {}",
+                            event.sequence,
+                            event.actor,
+                            event.subsystem,
+                            event.kind,
+                            event.workspace_revision
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        })
+        .unwrap_or_else(|error| format!("Replay failed: {error}"));
+    snapshot.workflow = locked
+        .browser()
+        .list_workflows()
+        .map(|value| crate::tui::projection::workflow(Some(&value)))
+        .unwrap_or_else(|error| format!("Workflow state failed: {error}"));
+    snapshot.browser = locked
+        .browser()
+        .state()
+        .map(|value| {
+            let connected = value
+                .get("connected")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let revision = value
+                .get("browserRevision")
+                .and_then(serde_json::Value::as_u64)
+                .map_or_else(|| "—".into(), |value| value.to_string());
+            if connected {
+                format!("● connected · revision {revision}")
+            } else {
+                "○ detached · browser start required".into()
+            }
+        })
+        .unwrap_or_else(|error| format!("Browser state failed: {error}"));
     snapshot.editor = editor_projection(&locked);
     snapshot.git = git_projection(&mut locked);
     snapshot.workspace_status = workspace_status_projection(&mut locked);
+    snapshot.trust_label = locked.trust().label().into();
+    snapshot.trust_inspection = locked.trust_inspection();
+    snapshot.root = locked.root().display().to_string();
+    snapshot.project_revision = locked.project().revision();
+    snapshot.generation = locked.generation();
+    snapshot.skills_count = locked.customization().skills().count();
+    snapshot.tools_count = locked.customization().config().tools.len();
     snapshot
 }
 

@@ -203,11 +203,10 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     }
     let content = match state.surface {
         DevSurface::Trust => {
-            let inspection =
-                super::projection::trust_items(&state.workspace.trust_inspection_list());
+            let inspection = super::projection::trust_items(&state.snapshot_trust_inspection);
             format!(
                 "WORKSPACE TRUST\n\nThis repository contains executable Glass settings.\nCurrent state: {}\n\n[I] Inspect configuration\n[O] Open untrusted\n[1] Trust once\n[T] Trust this project\n\nCONFIGURATION BY AUTHORITY / RISK\n{}",
-                state.workspace.trust_status().label(),
+                state.snapshot_trust_label.as_str(),
                 inspection
             )
         }
@@ -336,12 +335,8 @@ fn draw_ansi_pane(
 fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let authority = format!(
         "\n\nAUTHORITY\ntrust {} · project rev {}\nmutations require revision + confirmation",
-        state.workspace.trust_status().label(),
-        state
-            .workspace
-            .lock()
-            .map(|w| w.project().revision())
-            .unwrap_or(0)
+        state.snapshot_trust_label.as_str(),
+        state.snapshot_project_revision
     );
     let content = match state.surface {
         DevSurface::Trust => format!(
@@ -456,9 +451,7 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         ),
         DevSurface::More => format!(
             "PROJECT SERVICES\n{} skills · {} custom tools{}",
-            state.workspace.customization_snapshot_counts().0,
-            state.workspace.customization_snapshot_counts().1,
-            authority
+            state.snapshot_skills_count, state.snapshot_tools_count, authority
         ),
     };
     frame.render_widget(

@@ -156,6 +156,13 @@ pub struct DevTuiState {
     pub terminal_width: u16,
     pub terminal_height: u16,
     pub status: String,
+    pub snapshot_root: String,
+    pub snapshot_trust_label: String,
+    pub snapshot_trust_inspection: Vec<crate::customization::CustomizationInspectionItem>,
+    pub snapshot_project_revision: u64,
+    pub snapshot_generation: u64,
+    pub snapshot_skills_count: usize,
+    pub snapshot_tools_count: usize,
     /// Wall-clock cost of the last background refresh pass.
     pub refresh_latency_ms: u64,
     /// Highest agent event sequence folded into the live conversation.
@@ -230,11 +237,15 @@ impl DevTuiState {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let workspace = SharedDevelopmentWorkspace::open(root)?;
         let locked = workspace.lock()?;
-        let trust_prompt = locked.trust() == crate::WorkspaceTrust::Untrusted
-            && locked
-                .trust_inspection()
-                .iter()
-                .any(|item| item.trust_required);
+        let trust = locked.trust();
+        let trust_inspection = locked.trust_inspection();
+        let snapshot_root = locked.root().display().to_string();
+        let snapshot_project_revision = locked.project().revision();
+        let snapshot_generation = locked.generation();
+        let snapshot_skills_count = locked.customization().skills().count();
+        let snapshot_tools_count = locked.customization().config().tools.len();
+        let trust_prompt = trust == crate::WorkspaceTrust::Untrusted
+            && trust_inspection.iter().any(|item| item.trust_required);
         drop(locked);
         let mut state = Self {
             workspace,
@@ -262,6 +273,13 @@ impl DevTuiState {
             surface_scroll: std::collections::BTreeMap::new(),
             terminal_width: 80,
             terminal_height: 24,
+            snapshot_root,
+            snapshot_trust_label: trust.label().into(),
+            snapshot_trust_inspection: trust_inspection,
+            snapshot_project_revision,
+            snapshot_generation,
+            snapshot_skills_count,
+            snapshot_tools_count,
             refresh_latency_ms: 0,
             conversation_cursor: 0,
             editor_buffer_index: 0,
@@ -1198,6 +1216,14 @@ impl DevTuiState {
         self.replay = snapshot.replay.clone();
         self.workflow = snapshot.workflow.clone();
         self.workspace_status = snapshot.workspace_status.clone();
+        self.browser = snapshot.browser.clone();
+        self.snapshot_root = snapshot.root.clone();
+        self.snapshot_trust_label = snapshot.trust_label.clone();
+        self.snapshot_trust_inspection = snapshot.trust_inspection.clone();
+        self.snapshot_project_revision = snapshot.project_revision;
+        self.snapshot_generation = snapshot.generation;
+        self.snapshot_skills_count = snapshot.skills_count;
+        self.snapshot_tools_count = snapshot.tools_count;
         self.experiments = snapshot.experiments.clone();
         if !snapshot.files.is_empty() {
             self.files = snapshot.files.clone();

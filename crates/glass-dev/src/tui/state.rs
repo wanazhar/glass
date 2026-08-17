@@ -956,11 +956,12 @@ impl DevTuiState {
             if let Some(decision) = decision {
                 match self
                     .workspace
-                    .lock()
+                    .try_lock()
                     .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
                 {
                     Ok(trust) => {
                         self.surface = DevSurface::Agent;
+                        self.snapshot_trust_label = trust.label().into();
                         self.status = format!("Workspace opened with {} authority", trust.label());
                     }
                     Err(error) => self.status = format!("Trust decision failed: {error}"),

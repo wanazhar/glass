@@ -94,6 +94,8 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         format!("> {}", state.composer_input)
     } else if state.command_mode {
         format!(":{}", state.command_input)
+    } else if state.surface == DevSurface::Trust {
+        "I inspect · O open untrusted · 1 trust once · T trust project".into()
     } else {
         format!(
             "1 Agent  2 Code  3 App  4 Tasks  5 More · {}",

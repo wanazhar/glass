@@ -55,6 +55,9 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                         }
                     } else if key.code == KeyCode::Char('?') {
                         state.toggle_help();
+                    } else if key.code == KeyCode::Esc && state.running_tool_job.is_some() {
+                        state.status =
+                            "Background operation is bounded; Ctrl-C exits without waiting".into();
                     } else if state.menu_open {
                         match key.code {
                             KeyCode::Esc => state.close_menu(),
@@ -69,9 +72,9 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                 state.browser_recovery = None;
                                 state.status = "Recovery dismissed".into();
                             }
-                            KeyCode::Char('1') => state.accept_browser_recovery(0),
-                            KeyCode::Char('2') => state.accept_browser_recovery(1),
-                            KeyCode::Char('3') => state.accept_browser_recovery(2),
+                            KeyCode::Char('1') => state.accept_browser_recovery(0, &mut worker),
+                            KeyCode::Char('2') => state.accept_browser_recovery(1, &mut worker),
+                            KeyCode::Char('3') => state.accept_browser_recovery(2, &mut worker),
                             _ => {}
                         }
                     } else if state.git_diff_open && state.surface == DevSurface::Git {

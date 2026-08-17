@@ -1,5 +1,4 @@
 use super::command;
-use crate::browser::BrowserStartConfig;
 use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
 use glass_browser::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAction, BrowserWorkspaceAdapterKind,
@@ -1972,6 +1971,17 @@ impl DevTuiState {
                     .collect();
                 self.browser_workspace.replace_entities(revision, entities);
             }
+        } else if tool == "glass.browser.start" {
+            let connected = result
+                .get("connected")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            let revision = result
+                .get("browserRevision")
+                .and_then(serde_json::Value::as_u64);
+            if connected {
+                self.browser_workspace.connected(true, None, revision);
+            }
         } else if tool == "glass.browser.stop" {
             self.browser_workspace.state_mut().connection = BrowserConnectionPhase::Detached;
         }
@@ -2179,55 +2189,39 @@ impl DevTuiState {
         }
     }
 
-    /// Execute a recovery choice from the offer sheet.
-    pub fn accept_browser_recovery(&mut self, choice: usize) {
+    /// Queue a recovery choice without blocking the terminal on browser launch.
+    pub fn accept_browser_recovery(
+        &mut self,
+        choice: usize,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
         let Some(offer) = self.browser_recovery.take() else {
             return;
         };
-        let result = match (offer.compatible_endpoint, choice) {
-            (true, 0) => self.workspace.lock().and_then(|workspace| {
-                workspace.browser().start(BrowserStartConfig {
-                    port: offer.port,
-                    attach: true,
-                    ..Default::default()
-                })
-            }),
-            (true, 1) | (false, 0) | (true, 2) | (false, 1) => {
-                let port = free_local_port().unwrap_or(0);
-                if port == 0 {
-                    self.status = "No free local port was available".into();
-                    return;
-                }
-                self.workspace.lock().and_then(|workspace| {
-                    workspace.browser().start(BrowserStartConfig {
-                        port,
-                        ..Default::default()
-                    })
-                })
-            }
-            (true, 3) | (false, 2) => self.workspace.lock().and_then(|workspace| {
-                workspace.browser().start(BrowserStartConfig {
-                    port: offer.port,
-                    ..Default::default()
-                })
-            }),
+        let (port, attach) = match (offer.compatible_endpoint, choice) {
+            (true, 0) => (offer.port, true),
+            (true, 1) | (false, 0) => (free_local_port().unwrap_or(0), false),
+            (true, 2) | (false, 1) => (offer.port, false),
             _ => {
                 self.status = "Recovery dismissed".into();
                 return;
             }
         };
-        match result {
-            Ok(state) => {
-                self.apply_browser_result("glass.browser.start", &state);
-                self.browser_detail =
-                    super::projection::browser_result("glass.browser.start", &state);
-                self.status = "Browser recovered · workspace state preserved".into();
+        if port == 0 {
+            self.status = "No free local port was available".into();
+            return;
+        }
+        let (call, context) = self.tool_request(
+            "glass.browser.start",
+            serde_json::json!({"port": port, "attach": attach, "incognito": true}),
+            true,
+        );
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Recovering browser on port {port} in background…");
             }
-            Err(error) => {
-                let error = error.to_string();
-                self.note_browser_failure("glass.browser.start", &error);
-                self.status = format!("Recovery failed: {error}");
-            }
+            Err(error) => self.status = format!("Could not queue recovery: {error}"),
         }
     }
 

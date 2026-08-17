@@ -818,9 +818,12 @@ mod tests {
         let output = rendered(&state, 118, 32);
         assert!(output.contains("BROWSER RECOVERY"));
         assert!(output.contains("automatic free port"));
-        // Actions are reachable without leaving the TUI.
-        state.accept_browser_recovery(1);
-        assert!(state.browser_recovery.is_none() || state.status.contains("Recovery"));
+        // Actions are reachable without leaving the TUI and launch off-thread.
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.accept_browser_recovery(1, &mut worker);
+        assert!(state.browser_recovery.is_none());
+        assert!(state.running_tool_job.is_some());
+        drop(worker);
     }
 
     #[test]

@@ -11,6 +11,9 @@ use glass_browser::terminal_graphics::AnsiCanvas;
 use glass_browser::tui::live_view::AnsiPane;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_BROWSER_TOOL: AtomicU64 = AtomicU64::new(1);
 
 pub struct PendingConfirmation {
     pub call: crate::development::ToolCall,
@@ -193,6 +196,7 @@ pub struct DevTuiState {
     pub browser_workspace: BrowserWorkspaceController,
     pub browser_recovery: Option<BrowserRecoveryOffer>,
     pub browser_visual_live: bool,
+    pub browser_observe_pending: bool,
     pub browser_ansi: AnsiCanvas,
     pub browser_pane: Option<AnsiPane>,
     pub workflow: String,
@@ -325,6 +329,7 @@ impl DevTuiState {
             ),
             browser_recovery: None,
             browser_visual_live: false,
+            browser_observe_pending: false,
             browser_ansi: AnsiCanvas::default(),
             browser_pane: None,
             workflow: "No workflow evidence yet".into(),
@@ -877,6 +882,10 @@ impl DevTuiState {
             Ok(value) => {
                 if result.tool.starts_with("glass.browser") {
                     self.apply_browser_result(&result.tool, &value);
+                    if result.tool == "glass.browser.act" || result.tool == "glass.browser.navigate"
+                    {
+                        self.browser_observe_pending = true;
+                    }
                 }
                 self.status = format!("Completed {} · workspace refreshed", result.tool);
             }
@@ -1995,7 +2004,23 @@ impl DevTuiState {
         }
     }
 
-    pub fn execute_app_intent(&mut self, intent: BrowserWorkspaceIntent) {
+    pub fn queue_browser_observe(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if !self.browser_observe_pending || self.running_tool_job.is_some() {
+            return;
+        }
+        self.browser_observe_pending = false;
+        let (call, context) =
+            self.tool_request("glass.browser.observe", serde_json::json!({}), false);
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = "Refreshing semantic browser evidence…".into();
+            }
+            Err(error) => self.status = format!("Could not refresh browser evidence: {error}"),
+        }
+    }
+
+    pub fn queue_browser_intent(&mut self, intent: BrowserWorkspaceIntent) {
         let action = match self.browser_workspace.reduce(intent) {
             Ok(Some(action)) => action,
             Ok(None) => return,
@@ -2004,42 +2029,103 @@ impl DevTuiState {
                 return;
             }
         };
-        let result = match action {
+        let (tool, arguments) = match action {
+            BrowserWorkspaceAction::Navigate {
+                url,
+                expected_revision,
+            } => (
+                "glass.browser.navigate",
+                serde_json::json!({"url": url, "browserRevision": expected_revision}),
+            ),
+            BrowserWorkspaceAction::Back { expected_revision }
+            | BrowserWorkspaceAction::Forward { expected_revision }
+            | BrowserWorkspaceAction::Reload { expected_revision }
+            | BrowserWorkspaceAction::StopLoading { expected_revision } => {
+                let action = match action {
+                    BrowserWorkspaceAction::Back { .. } => "back",
+                    BrowserWorkspaceAction::Forward { .. } => "forward",
+                    BrowserWorkspaceAction::Reload { .. } => "reload",
+                    BrowserWorkspaceAction::StopLoading { .. } => "stopLoading",
+                    _ => unreachable!(),
+                };
+                (
+                    "glass.browser.act",
+                    serde_json::json!({"action": action, "browserRevision": expected_revision}),
+                )
+            }
             BrowserWorkspaceAction::Click {
                 target,
                 expected_revision,
-            } => self
-                .workspace
-                .lock()
-                .and_then(|workspace| workspace.browser().click(target, expected_revision)),
+            } => (
+                "glass.browser.act",
+                serde_json::json!({"action":"click", "target": target, "browserRevision": expected_revision}),
+            ),
+            BrowserWorkspaceAction::Type {
+                target,
+                text,
+                expected_revision,
+            } => (
+                "glass.browser.act",
+                serde_json::json!({"action":"type", "target": target, "text": text, "browserRevision": expected_revision}),
+            ),
             BrowserWorkspaceAction::Scroll {
                 dx,
                 dy,
                 expected_revision,
-            } => self
-                .workspace
-                .lock()
-                .and_then(|workspace| workspace.browser().scroll(dx, dy, expected_revision)),
+            } => (
+                "glass.browser.act",
+                serde_json::json!({"action":"scroll", "dx": dx, "dy": dy, "browserRevision": expected_revision}),
+            ),
             _ => return,
         };
-        let observed = result.and_then(|_| {
-            self.workspace
-                .lock()
-                .and_then(|workspace| workspace.browser().observe())
+        let (call, context) = self.tool_request(tool, arguments, true);
+        self.pending_confirmation = Some(PendingConfirmation {
+            summary: format!("{tool} · browser revision guarded"),
+            call,
+            context,
         });
-        match observed {
-            Ok(observation) => {
-                self.apply_browser_result("glass.browser.observe", &observation);
-                self.browser_detail =
-                    super::projection::browser_result("glass.browser.observe", &observation);
-                self.status = "App action complete · semantic revision refreshed".into();
-            }
-            Err(error) => {
-                let stale = error.to_string().to_lowercase().contains("stale");
-                self.browser_workspace.fail_action(error.to_string(), stale);
-                self.status = format!("App action failed: {error}");
-            }
-        }
+        self.status = "Browser mutation ready · Enter approves once · Esc denies".into();
+    }
+
+    fn tool_request(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+        mutating: bool,
+    ) -> (
+        crate::development::ToolCall,
+        crate::tools::DevelopmentToolContext,
+    ) {
+        let expected_generation = self
+            .workspace
+            .lock()
+            .map(|workspace| workspace.generation())
+            .unwrap_or_default();
+        let expected_project_revision = self
+            .workspace
+            .lock()
+            .map(|workspace| workspace.project().revision())
+            .unwrap_or_default();
+        (
+            crate::development::ToolCall {
+                id: format!(
+                    "tui-browser-{}",
+                    NEXT_BROWSER_TOOL.fetch_add(1, Ordering::Relaxed)
+                ),
+                name: name.into(),
+                arguments,
+            },
+            crate::tools::DevelopmentToolContext {
+                authorization: crate::development::ToolAuthorization {
+                    actor: crate::development::Actor::local(),
+                    allow_mutation: mutating,
+                    confirmed: mutating,
+                },
+                initiator: None,
+                expected_generation,
+                expected_project_revision,
+            },
+        )
     }
 
     /// Offer in-TUI recovery whenever a browser tool fails with a launch or

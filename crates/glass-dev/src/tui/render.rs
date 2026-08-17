@@ -519,6 +519,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glass_browser::browser_workspace::BrowserWorkspaceIntent;
     use glass_browser::cli::args::TuiLayout;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -643,6 +644,17 @@ mod tests {
         state.menu_selection = 2;
         state.run_menu_action();
         assert_eq!(state.command_input, "browser navigate ");
+    }
+
+    #[test]
+    fn browser_semantic_actions_are_confirmed_before_cdp_execution() {
+        let mut state = state(TuiLayout::Desktop);
+        state
+            .browser_workspace
+            .connected(true, Some("127.0.0.1:9222".into()), Some(4));
+        state.queue_browser_intent(BrowserWorkspaceIntent::Back);
+        assert!(state.pending_confirmation.is_some());
+        assert!(state.status.contains("Enter approves once"));
     }
 
     #[test]

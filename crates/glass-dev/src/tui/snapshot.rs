@@ -120,6 +120,7 @@ pub struct SnapshotWorker {
     running_job: Arc<AtomicBool>,
     refresh_requested: Arc<AtomicBool>,
     conversation_requested: Arc<AtomicBool>,
+    visual_requested: Arc<AtomicBool>,
 }
 
 impl SnapshotWorker {
@@ -136,6 +137,8 @@ impl SnapshotWorker {
         let conversation_requested = Arc::new(AtomicBool::new(false));
         let worker_refresh_requested = Arc::clone(&refresh_requested);
         let worker_conversation_requested = Arc::clone(&conversation_requested);
+        let visual_requested = Arc::new(AtomicBool::new(false));
+        let worker_visual_requested = Arc::clone(&visual_requested);
         let snapshots = Arc::new(std::sync::Mutex::new(None::<DisplaySnapshot>));
         let dirty = Arc::new(AtomicBool::new(true));
         let snapshot_sink = Arc::clone(&snapshots);
@@ -153,6 +156,7 @@ impl SnapshotWorker {
                     worker_running_job,
                     worker_refresh_requested,
                     worker_conversation_requested,
+                    worker_visual_requested,
                     snapshot_sink,
                     dirty_flag,
                     worker_cursor,
@@ -173,6 +177,7 @@ impl SnapshotWorker {
             running_job,
             refresh_requested,
             conversation_requested,
+            visual_requested,
         }
     }
 
@@ -221,11 +226,18 @@ impl SnapshotWorker {
     }
 
     pub fn submit_screenshot(&mut self, columns: u16, rows: u16) {
+        if self.visual_requested.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let id = self.next_visual_id;
         self.next_visual_id = self.next_visual_id.saturating_add(1);
-        let _ = self
+        if self
             .requests
-            .send(ActorRequest::Screenshot { id, columns, rows });
+            .send(ActorRequest::Screenshot { id, columns, rows })
+            .is_err()
+        {
+            self.visual_requested.store(false, Ordering::Release);
+        }
     }
 
     pub fn try_visual_result(&self) -> Result<Option<VisualJobResult>, String> {
@@ -282,6 +294,7 @@ fn worker_loop(
     running_job: Arc<AtomicBool>,
     refresh_requested: Arc<AtomicBool>,
     conversation_requested: Arc<AtomicBool>,
+    visual_requested: Arc<AtomicBool>,
     snapshots: Arc<std::sync::Mutex<Option<DisplaySnapshot>>>,
     dirty: Arc<AtomicBool>,
     conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
@@ -307,6 +320,7 @@ fn worker_loop(
         match request {
             ActorRequest::ShutDown => break,
             ActorRequest::Screenshot { id, columns, rows } => {
+                visual_requested.store(false, Ordering::Release);
                 let result = workspace
                     .lock()
                     .and_then(|locked| locked.browser().screenshot())

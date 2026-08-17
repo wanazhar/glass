@@ -208,7 +208,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                 state.cycle_editor_buffer(-1)
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::App => {
-                                state.execute_app_intent(BrowserWorkspaceIntent::ActivateSelected)
+                                state.queue_browser_intent(BrowserWorkspaceIntent::ActivateSelected)
                             }
                             (KeyCode::PageUp, _) => state.scroll_surface(-10),
                             (KeyCode::PageDown, _) => state.scroll_surface(10),
@@ -230,19 +230,19 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                 if modifiers.contains(KeyModifiers::ALT)
                                     && state.surface == DevSurface::App =>
                             {
-                                state.execute_app_intent(BrowserWorkspaceIntent::Back)
+                                state.queue_browser_intent(BrowserWorkspaceIntent::Back)
                             }
                             (KeyCode::Right, modifiers)
                                 if modifiers.contains(KeyModifiers::ALT)
                                     && state.surface == DevSurface::App =>
                             {
-                                state.execute_app_intent(BrowserWorkspaceIntent::Forward)
+                                state.queue_browser_intent(BrowserWorkspaceIntent::Forward)
                             }
                             (KeyCode::Char('r'), modifiers)
                                 if modifiers.contains(KeyModifiers::CONTROL)
                                     && state.surface == DevSurface::App =>
                             {
-                                state.execute_app_intent(BrowserWorkspaceIntent::Reload)
+                                state.queue_browser_intent(BrowserWorkspaceIntent::Reload)
                             }
                             (KeyCode::Char('n'), _) if state.surface == DevSurface::App => {
                                 state.open_palette_with("browser navigate ")
@@ -329,6 +329,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
         // Apply whatever the worker finished; never block on it.
         if let Ok(Some(result)) = worker.try_job_result() {
             state.apply_tool_job_result(result);
+            state.queue_browser_observe(&mut worker);
         }
         if let Ok(Some(result)) = worker.try_visual_result() {
             state.apply_visual_job_result(result);

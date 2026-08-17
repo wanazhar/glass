@@ -12,9 +12,21 @@
 use crate::tui::state::DevTuiState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+pub struct ToolJob {
+    pub id: u64,
+    pub call: crate::development::ToolCall,
+    pub context: crate::tools::DevelopmentToolContext,
+}
+
+pub struct ToolJobResult {
+    pub id: u64,
+    pub tool: String,
+    pub result: Result<serde_json::Value, String>,
+}
 
 /// Commands the UI sends to the worker.
 pub enum ActorRequest {
@@ -22,6 +34,7 @@ pub enum ActorRequest {
     Refresh,
     /// Recompute only conversation tail fields (cheap, high frequency).
     RefreshConversation,
+    Tool(Box<ToolJob>),
     ShutDown,
 }
 
@@ -87,6 +100,8 @@ pub struct SnapshotWorker {
     last_applied: Option<DisplaySnapshot>,
     /// Highest agent event sequence already folded into the conversation.
     conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
+    job_results: Receiver<ToolJobResult>,
+    next_job_id: u64,
 }
 
 impl SnapshotWorker {
@@ -95,6 +110,7 @@ impl SnapshotWorker {
     pub fn spawn(state: &DevTuiState) -> Self {
         let workspace = state.workspace.clone();
         let (request_tx, request_rx) = channel::<ActorRequest>();
+        let (job_result_tx, job_result_rx) = channel::<ToolJobResult>();
         let snapshots = Arc::new(std::sync::Mutex::new(None::<DisplaySnapshot>));
         let dirty = Arc::new(AtomicBool::new(true));
         let snapshot_sink = Arc::clone(&snapshots);
@@ -107,6 +123,7 @@ impl SnapshotWorker {
                 worker_loop(
                     workspace,
                     request_rx,
+                    job_result_tx,
                     snapshot_sink,
                     dirty_flag,
                     worker_cursor,
@@ -120,6 +137,8 @@ impl SnapshotWorker {
             dirty,
             last_applied: None,
             conversation_cursor,
+            job_results: job_result_rx,
+            next_job_id: 1,
         }
     }
 
@@ -132,6 +151,28 @@ impl SnapshotWorker {
     /// Ask for a cheap conversation-tail pass.
     pub fn request_conversation(&self) {
         let _ = self.requests.send(ActorRequest::RefreshConversation);
+    }
+
+    /// Queue a governed tool call without occupying the terminal task.
+    pub fn submit_tool(
+        &mut self,
+        call: crate::development::ToolCall,
+        context: crate::tools::DevelopmentToolContext,
+    ) -> Result<u64, String> {
+        let id = self.next_job_id;
+        self.next_job_id = self.next_job_id.saturating_add(1);
+        self.requests
+            .send(ActorRequest::Tool(Box::new(ToolJob { id, call, context })))
+            .map_err(|_| "snapshot worker stopped".to_string())?;
+        Ok(id)
+    }
+
+    pub fn try_job_result(&self) -> Result<Option<ToolJobResult>, String> {
+        match self.job_results.try_recv() {
+            Ok(result) => Ok(Some(result)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Err("tool worker stopped".into()),
+        }
     }
 
     /// Take the freshest snapshot when one is newer than the last applied;
@@ -172,6 +213,7 @@ impl Drop for SnapshotWorker {
 fn worker_loop(
     workspace: crate::SharedDevelopmentWorkspace,
     requests: Receiver<ActorRequest>,
+    job_results: Sender<ToolJobResult>,
     snapshots: Arc<std::sync::Mutex<Option<DisplaySnapshot>>>,
     dirty: Arc<AtomicBool>,
     conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
@@ -195,6 +237,18 @@ fn worker_loop(
         };
         match request {
             ActorRequest::ShutDown => break,
+            ActorRequest::Tool(job) => {
+                let tool = job.call.name.clone();
+                let result = workspace
+                    .lock()
+                    .and_then(|mut locked| locked.execute_tool(&job.call, &job.context))
+                    .map_err(|error| error.to_string());
+                let _ = job_results.send(ToolJobResult {
+                    id: job.id,
+                    tool,
+                    result,
+                });
+            }
             ActorRequest::RefreshConversation => {
                 // Cheap fast path: fold only new events into the tail.
                 let Ok(mut locked) = workspace.lock() else {

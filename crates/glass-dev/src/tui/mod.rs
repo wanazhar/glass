@@ -71,7 +71,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                     } else if state.pending_confirmation.is_some() {
                         match key.code {
                             KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
-                                state.approve_confirmation();
+                                state.approve_confirmation_async(&mut worker);
                             }
                             KeyCode::Esc | KeyCode::Char('n' | 'N') => {
                                 state.deny_confirmation();
@@ -316,6 +316,9 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
             state.conversation_cursor = worker.conversation_cursor();
         }
         // Apply whatever the worker finished; never block on it.
+        if let Ok(Some(result)) = worker.try_job_result() {
+            state.apply_tool_job_result(result);
+        }
         if let Some(snapshot) = worker.take_pending() {
             state.apply_snapshot(&snapshot);
         }

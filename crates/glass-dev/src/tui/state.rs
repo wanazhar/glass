@@ -152,6 +152,7 @@ pub struct DevTuiState {
     pub composer_steer: bool,
     pub selected_agent: Option<crate::AgentId>,
     pub pending_confirmation: Option<PendingConfirmation>,
+    pub running_tool_job: Option<u64>,
     pub surface_scroll: std::collections::BTreeMap<DevSurface, usize>,
     pub terminal_width: u16,
     pub terminal_height: u16,
@@ -270,6 +271,7 @@ impl DevTuiState {
             composer_steer: false,
             selected_agent: None,
             pending_confirmation: None,
+            running_tool_job: None,
             surface_scroll: std::collections::BTreeMap::new(),
             terminal_width: 80,
             terminal_height: 24,
@@ -769,6 +771,43 @@ impl DevTuiState {
             None => self.status = "Message failed · workspace or agent unavailable".into(),
         }
         self.refresh();
+    }
+
+    pub fn approve_confirmation_async(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(pending) = self.pending_confirmation.take() else {
+            return;
+        };
+        match worker.submit_tool(pending.call, pending.context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!(
+                    "Running {} · Esc keeps the workspace responsive",
+                    pending.summary
+                );
+            }
+            Err(error) => self.status = format!("Could not queue mutation: {error}"),
+        }
+    }
+
+    pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
+        if self.running_tool_job != Some(result.id) {
+            return;
+        }
+        self.running_tool_job = None;
+        match result.result {
+            Ok(value) => {
+                if result.tool.starts_with("glass.browser") {
+                    self.apply_browser_result(&result.tool, &value);
+                }
+                self.status = format!("Completed {} · workspace refreshed", result.tool);
+            }
+            Err(error) => {
+                if result.tool.starts_with("glass.browser") {
+                    self.note_browser_failure(&result.tool, &error);
+                }
+                self.status = format!("{} failed: {error}", result.tool);
+            }
+        }
     }
 
     pub fn approve_confirmation(&mut self) {

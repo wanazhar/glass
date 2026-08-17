@@ -928,6 +928,47 @@ impl DevelopmentToolRouter {
                 map_service(workspace.agents().prompt(&id, string("text")?))?;
                 Ok(serde_json::json!({"queued":true}))
             }
+            "glass.agent.send" => {
+                let text = string("text")?;
+                let mode = optional_string(call, "mode").unwrap_or("follow-up");
+                let selected = optional_string(call, "agentId")
+                    .map(|value| agent_id(workspace, value))
+                    .transpose()?;
+                let agent = selected.or_else(|| {
+                    workspace
+                        .agents()
+                        .list()
+                        .ok()?
+                        .into_iter()
+                        .find(|item| {
+                            !matches!(
+                                item.status,
+                                crate::AgentStatus::Completed
+                                    | crate::AgentStatus::Failed
+                                    | crate::AgentStatus::Cancelled
+                            )
+                        })
+                        .map(|item| item.id)
+                });
+                let agent = match agent {
+                    Some(agent) => agent,
+                    None => {
+                        let id = map_service(workspace
+                            .agents()
+                            .create(crate::AgentSpec::new("assistant", text)))?;
+                        return Ok(serde_json::json!({"queued":true,"agentId":id}));
+                    }
+                };
+                let status = workspace.agents().snapshot(&agent)?.status;
+                if mode == "steer" && status == crate::AgentStatus::Working {
+                    map_service(workspace.agents().steer(&agent, text))?;
+                } else if mode == "follow-up" && status == crate::AgentStatus::Working {
+                    map_service(workspace.agents().follow_up(&agent, text))?;
+                } else {
+                    map_service(workspace.agents().prompt(&agent, text))?;
+                }
+                Ok(serde_json::json!({"queued":true,"agentId":agent}))
+            }
             "glass.agent.steer" => {
                 let id = agent_id(workspace, string("agentId")?)?;
                 map_service(workspace.agents().steer(&id, string("text")?))?;
@@ -1268,6 +1309,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.stop",
         "glass.agent.spawn",
         "glass.agent.prompt",
+        "glass.agent.send",
         "glass.agent.steer",
         "glass.agent.follow-up",
         "glass.agent.abort",

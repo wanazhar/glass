@@ -104,7 +104,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                     } else if state.composer_mode {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_composer(),
-                            (KeyCode::Enter, _) => state.submit_composer(),
+                            (KeyCode::Enter, _) => state.submit_composer(&mut worker),
                             (KeyCode::Backspace, _) => state.composer_backspace(),
                             (KeyCode::Char('u'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
@@ -130,7 +130,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             (KeyCode::Char('x'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
-                                state.abort_selected_agent();
+                                state.abort_selected_agent(&mut worker);
                             }
                             (KeyCode::Char('d'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>

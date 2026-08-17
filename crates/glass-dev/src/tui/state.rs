@@ -712,22 +712,23 @@ impl DevTuiState {
         self.composer_cursor = target;
     }
 
-    pub fn abort_selected_agent(&mut self) {
+    pub fn abort_selected_agent(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some(agent) = self.selected_agent.clone() else {
             self.status = "No active agent to abort".into();
             return;
         };
-        let outcome = self
-            .workspace
-            .lock()
-            .map_err(|e| e.to_string())
-            .and_then(|mut workspace| workspace.agents().cancel(&agent).map_err(|e| e.to_string()));
-        match outcome {
-            Ok(()) => self.status = format!("Aborted {}", agent.as_str()),
-            Err(error) => self.status = format!("Abort failed: {error}"),
+        let (call, context) = self.tool_request(
+            "glass.agent.abort",
+            serde_json::json!({"agentId": agent.as_str()}),
+            true,
+        );
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Stopping {} in background…", agent.as_str());
+            }
+            Err(error) => self.status = format!("Abort unavailable: {error}"),
         }
-        // The snapshot actor will refresh resident projections; do not block
-        // the input loop rebuilding the entire workspace here.
     }
 
     pub fn insert_composer_text(&mut self, text: &str) {
@@ -750,7 +751,7 @@ impl DevTuiState {
         self.composer_cursor = previous;
     }
 
-    pub fn submit_composer(&mut self) {
+    pub fn submit_composer(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let mut text = std::mem::take(&mut self.composer_input);
         let steer = self.composer_steer;
         self.composer_cursor = 0;
@@ -760,12 +761,7 @@ impl DevTuiState {
             self.status = "Message was empty".into();
             return;
         }
-        let trusted = self
-            .workspace
-            .lock()
-            .map(|workspace| workspace.trust().permits_project_execution())
-            .unwrap_or(false);
-        if !trusted {
+        if self.snapshot_trust_label == "untrusted" {
             self.status = "Agent requires trusted project execution · open Trust".into();
             return;
         }
@@ -777,62 +773,25 @@ impl DevTuiState {
             self.browser_workspace.state_mut().input_owner =
                 glass_browser::browser_workspace::BrowserInputOwner::Agent;
         }
-        let current = self.selected_agent.clone().or_else(|| {
-            self.workspace
-                .agents_list()
-                .into_iter()
-                .find(|agent| {
-                    !matches!(
-                        agent.status,
-                        crate::AgentStatus::Completed
-                            | crate::AgentStatus::Failed
-                            | crate::AgentStatus::Cancelled
-                    )
-                })
-                .map(|agent| agent.id)
+        let mut arguments = serde_json::json!({
+            "text": text,
+            "mode": if steer { "steer" } else { "follow-up" },
         });
-        let result = if let Some(agent) = current {
-            self.selected_agent = Some(agent.clone());
-            let status = self.workspace.lock().and_then(|mut workspace| {
-                workspace.agents().snapshot(&agent).map(|item| item.status)
-            });
-            let outcome = match status {
-                Ok(crate::AgentStatus::Working) => {
-                    self.workspace.lock().ok().and_then(|mut workspace| {
-                        if steer {
-                            workspace.agents().steer(&agent, text).ok()
-                        } else {
-                            workspace.agents().follow_up(&agent, text).ok()
-                        }
-                    })
-                }
-                Ok(_) => self
-                    .workspace
-                    .lock()
-                    .ok()
-                    .and_then(|mut workspace| workspace.agents().prompt(&agent, text).ok()),
-                Err(error) => {
-                    self.status = format!("Agent failed: {error}");
-                    None
-                }
-            };
-            outcome.map(|()| agent)
-        } else {
-            self.workspace.lock().ok().and_then(|mut workspace| {
-                workspace
-                    .agents()
-                    .create(crate::AgentSpec::new("assistant", text))
-                    .ok()
-            })
-        };
-        match result {
-            Some(agent) => {
-                self.selected_agent = Some(agent);
-                self.status = "Message queued".into();
-            }
-            None => self.status = "Message failed · workspace or agent unavailable".into(),
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
         }
-        // Agent queue state is reflected by the next worker snapshot.
+        let (call, context) = self.tool_request("glass.agent.send", arguments, true);
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = if steer {
+                    "Steering agent in background…".into()
+                } else {
+                    "Message queued in background…".into()
+                };
+            }
+            Err(error) => self.status = format!("Message unavailable: {error}"),
+        }
     }
 
     pub fn approve_confirmation_async(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
@@ -919,6 +878,17 @@ impl DevTuiState {
                     {
                         self.browser_observe_pending = true;
                     }
+                } else if result.tool == "glass.agent.send" {
+                    if let Some(agent_id) = value
+                        .get("agentId")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|value| crate::AgentId::parse(value).ok())
+                    {
+                        self.selected_agent = Some(agent_id.clone());
+                        self.status = format!("Message queued for {}", agent_id.as_str());
+                    } else {
+                        self.status = "Message queued · agent startup accepted".into();
+                    }
                 } else if result.tool.starts_with("glass.lsp") {
                     self.editor = if result.tool == "glass.lsp.diagnostics" {
                         super::projection::lsp(Some(&value))
@@ -926,7 +896,9 @@ impl DevTuiState {
                         super::projection::first_meaningful(&value)
                     };
                 }
-                self.status = format!("Completed {} · workspace refreshed", result.tool);
+                if result.tool != "glass.agent.send" {
+                    self.status = format!("Completed {} · workspace refreshed", result.tool);
+                }
             }
             Err(error) => {
                 if result.tool.starts_with("glass.browser") {

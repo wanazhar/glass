@@ -5,6 +5,14 @@ Pleiades, and zerostack: the agent conversation is a durable channel, raw
 runtime events are reduced into display state, and tools never need to occupy
 the terminal rendering task.
 
+The current Pi reference implementation was reviewed from its public SDK,
+extension, TUI, keybinding, and session-format documentation, plus the Pi
+architecture essay and community `pi-open-tui` package. The useful lessons are
+specific: lifecycle events are the source of truth; `steer` and `followUp` are
+separate queues; sessions are durable trees; custom UI components must be
+width-bounded and explicitly invalidated; and extensions expose status,
+widgets, renderers, and abort signals instead of printing implementation data.
+
 ## Runtime planes
 
 ```text

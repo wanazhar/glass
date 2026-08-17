@@ -647,6 +647,14 @@ mod tests {
     }
 
     #[test]
+    fn read_only_palette_tools_are_queued_off_the_ui_thread() {
+        let mut state = state(TuiLayout::Desktop);
+        let result = super::super::command::execute(&mut state, "browser state").unwrap();
+        assert!(result.contains("queued"));
+        assert!(state.queued_tool_request.is_some());
+    }
+
+    #[test]
     fn browser_semantic_actions_are_confirmed_before_cdp_execution() {
         let mut state = state(TuiLayout::Desktop);
         state

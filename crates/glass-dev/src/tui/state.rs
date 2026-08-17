@@ -156,6 +156,10 @@ pub struct DevTuiState {
     pub composer_steer: bool,
     pub selected_agent: Option<crate::AgentId>,
     pub pending_confirmation: Option<PendingConfirmation>,
+    pub queued_tool_request: Option<(
+        crate::development::ToolCall,
+        crate::tools::DevelopmentToolContext,
+    )>,
     pub running_tool_job: Option<u64>,
     pub surface_scroll: std::collections::BTreeMap<DevSurface, usize>,
     pub terminal_width: u16,
@@ -279,6 +283,7 @@ impl DevTuiState {
             composer_steer: false,
             selected_agent: None,
             pending_confirmation: None,
+            queued_tool_request: None,
             running_tool_job: None,
             surface_scroll: std::collections::BTreeMap::new(),
             terminal_width: 80,
@@ -508,7 +513,7 @@ impl DevTuiState {
         self.status = "Command cancelled".into();
     }
 
-    pub fn submit_palette(&mut self) {
+    pub fn submit_palette(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let input = std::mem::take(&mut self.command_input);
         self.command_cursor = 0;
         self.command_history_index = None;
@@ -529,7 +534,16 @@ impl DevTuiState {
                 self.status = format!("Error: {error}");
             }
         }
-        self.refresh();
+        if let Some((call, context)) = self.queued_tool_request.take() {
+            match worker.submit_tool(call, context) {
+                Ok(id) => {
+                    self.running_tool_job = Some(id);
+                    self.status.push_str(" · running in background");
+                }
+                Err(error) => self.status = format!("Could not queue tool: {error}"),
+            }
+        }
+        worker.request_refresh();
     }
 
     pub fn insert_palette_char(&mut self, character: char) {
@@ -873,6 +887,18 @@ impl DevTuiState {
         }
     }
 
+    pub fn queue_tool_request(
+        &mut self,
+        call: crate::development::ToolCall,
+        context: crate::tools::DevelopmentToolContext,
+    ) -> Result<(), String> {
+        if self.queued_tool_request.is_some() || self.running_tool_job.is_some() {
+            return Err("another background tool is already running".into());
+        }
+        self.queued_tool_request = Some((call, context));
+        Ok(())
+    }
+
     pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
         if self.running_tool_job != Some(result.id) {
             return;
@@ -882,10 +908,17 @@ impl DevTuiState {
             Ok(value) => {
                 if result.tool.starts_with("glass.browser") {
                     self.apply_browser_result(&result.tool, &value);
+                    self.browser_detail = super::projection::browser_result(&result.tool, &value);
                     if result.tool == "glass.browser.act" || result.tool == "glass.browser.navigate"
                     {
                         self.browser_observe_pending = true;
                     }
+                } else if result.tool.starts_with("glass.lsp") {
+                    self.editor = if result.tool == "glass.lsp.diagnostics" {
+                        super::projection::lsp(Some(&value))
+                    } else {
+                        super::projection::first_meaningful(&value)
+                    };
                 }
                 self.status = format!("Completed {} · workspace refreshed", result.tool);
             }

@@ -151,7 +151,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                     } else if state.command_mode {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_palette(),
-                            (KeyCode::Enter, _) => state.submit_palette(),
+                            (KeyCode::Enter, _) => state.submit_palette(&mut worker),
                             (KeyCode::Backspace, _) => state.palette_backspace(),
                             (KeyCode::Char('u'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>

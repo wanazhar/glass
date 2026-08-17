@@ -835,10 +835,8 @@ fn run_tool(
         });
         return Ok(json!({"confirmationRequired":true,"summary":summary}));
     }
-    state
-        .ws_mut()?
-        .execute_tool(&call, &context)
-        .map_err(|error| error.to_string())
+    state.queue_tool_request(call, context)?;
+    Ok(json!({"queued": true, "tool": name}))
 }
 
 fn compact_result(tool: &str, value: &Value) -> String {

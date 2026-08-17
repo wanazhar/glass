@@ -67,6 +67,7 @@ pub enum BrowserHealth {
 
 #[derive(Debug, Clone, Default)]
 pub struct DisplaySnapshot {
+    pub version: u64,
     pub agents: String,
     pub agent_conversation: String,
     pub tasks: String,
@@ -216,7 +217,7 @@ impl SnapshotWorker {
         let changed = self
             .last_applied
             .as_ref()
-            .is_none_or(|applied| applied.duration != latest.duration || applied.git != latest.git);
+            .is_none_or(|applied| applied.version != latest.version);
         if !changed {
             return None;
         }
@@ -257,6 +258,7 @@ fn worker_loop(
     let mut seeded = false;
     let mut conversation_tail = String::new();
     let mut last_browser: Option<(Option<u32>, Option<u64>)> = None;
+    let mut snapshot_version = 0u64;
     loop {
         let request = if seeded {
             match requests.recv_timeout(Duration::from_millis(250)) {
@@ -321,6 +323,8 @@ fn worker_loop(
                 if let Ok(mut slot) = snapshots.lock()
                     && let Some(snapshot) = slot.as_mut()
                 {
+                    snapshot_version = snapshot_version.saturating_add(1);
+                    snapshot.version = snapshot_version;
                     snapshot.agent_conversation = conversation_tail.clone();
                 }
                 dirty.store(false, Ordering::Release);
@@ -328,6 +332,8 @@ fn worker_loop(
             ActorRequest::Refresh => {
                 let started = Instant::now();
                 let mut snapshot = compute_snapshot(&workspace, &mut seeded);
+                snapshot_version = snapshot_version.saturating_add(1);
+                snapshot.version = snapshot_version;
                 snapshot.duration = started.elapsed();
                 // Supervise the browser endpoint between passes.
                 let state = workspace

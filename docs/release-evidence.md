@@ -2,10 +2,18 @@
 
 ## 0.3.10 release evidence
 
-Issue #36 was certified and released in 0.3.9. This candidate carries the
-post-release TUI responsiveness, browser feedback, agent-composer, projection,
-and documentation hardening commits; exact-tag, registry, and GitHub records
-will be recorded here after the 0.3.10 release workflow completes.
+The candidate source commit `de73ee7bd258d8897ac65e7a3d80d8cc5d444166` carries
+post-0.3.9 TUI responsiveness, browser feedback, agent-composer, projection,
+and documentation hardening changes. It passed formatting, locked all-target
+tests, warnings-denied Clippy and rustdoc, the complete documentation and
+feature-parity validators, 18 live Chromium scenarios, package verification,
+both crates.io publish dry runs, dependency/security and fuzz gates, optimized
+release/release-size binary smokes, isolated core/full clean installs and the
+published 0.3.9-to-candidate upgrade, plus TypeScript and Python client
+build/handshake smokes. `cargo audit` reported only the already allowed
+transitive `lru` advisory. Exact-tag CI, ordered publication, native
+certification, clean registry installs, and the source-only GitHub Release are
+recorded below after the tag workflow completes.
 
 ## 0.3.9 release evidence
 

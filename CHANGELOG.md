@@ -5,7 +5,7 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.3.10] - 2026-08-17
+## [0.3.11] - 2026-08-17
 
 ### Added
 
@@ -58,6 +58,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
   every arrow key, and its header now allocates enough rows for status feedback.
 - Live-view failure clears the active toggle and reports the failure instead of
   leaving a stale starting message.
+
+## [0.3.10] - 2026-08-17
+
+This signed exact-tag candidate failed release validation before publication
+because its tagged release notes contained forbidden pre-publication wording.
+The immutable v0.3.10 tag is retained as failed audit evidence; the corrected
+release is v0.3.11.
+
 
 ## [0.3.9] - 2026-08-12
 

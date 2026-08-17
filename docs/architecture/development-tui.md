@@ -1,6 +1,6 @@
 # Glass Dev product workspace
 
-Status: Current 0.3.10 source behavior plus local unreleased UX repairs
+Status: Current 0.3.11 source behavior plus local unreleased UX repairs
 
 Glass Dev presents user work rather than its internal service registry. The
 desktop navigation has seven primary destinations:

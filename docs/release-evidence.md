@@ -1,19 +1,21 @@
 # Release evidence
 
-## 0.3.10 release evidence
+## 0.3.11 release evidence
 
-The candidate source commit `de73ee7bd258d8897ac65e7a3d80d8cc5d444166` carries
-post-0.3.9 TUI responsiveness, browser feedback, agent-composer, projection,
-and documentation hardening changes. It passed formatting, locked all-target
-tests, warnings-denied Clippy and rustdoc, the complete documentation and
-feature-parity validators, 18 live Chromium scenarios, package verification,
-both crates.io publish dry runs, dependency/security and fuzz gates, optimized
-release/release-size binary smokes, isolated core/full clean installs and the
-published 0.3.9-to-candidate upgrade, plus TypeScript and Python client
-build/handshake smokes. `cargo audit` reported only the already allowed
-transitive `lru` advisory. Exact-tag CI, ordered publication, native
-certification, clean registry installs, and the source-only GitHub Release are
-recorded below after the tag workflow completes.
+The 0.3.11 candidate carries the post-0.3.9 TUI responsiveness, browser
+feedback, agent-composer, projection, and documentation hardening changes.
+Final exact-tag, registry, native-certification, clean-install, GitHub Release,
+and issue-closure records are recorded below after the release workflow
+completes.
+
+## 0.3.10 failed candidate
+
+Signed tag `v0.3.10` points to commit
+`c4334d4ae6a039bb426efc4c764803f09d1c1bd7`; local signature verification
+passed. Release workflow run `32038818476` stopped in validation because the
+tagged release notes contained forbidden pre-publication wording. No crates.io
+publication or GitHub Release was created. The tag remains immutable audit
+evidence.
 
 ## 0.3.9 release evidence
 

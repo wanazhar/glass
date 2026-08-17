@@ -882,6 +882,7 @@ fn git_projection(workspace: &mut crate::DevelopmentWorkspace) -> String {
 }
 
 fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> String {
+    let detection = workspace.project().detection().clone();
     let agent_count = workspace
         .agents()
         .list()
@@ -890,8 +891,28 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
     let task_count = workspace.tasks().map(|items| items.len()).unwrap_or(0);
     let kernel_count = workspace.kernels().snapshots().count();
     let debugger_count = workspace.debugger_names().count();
+    let project_line = if detection.languages.is_empty() {
+        "○ project type unknown".to_string()
+    } else {
+        format!("✓ {} project", detection.languages.join("/"))
+    };
+    let dev_hint = detection
+        .dev_command
+        .as_deref()
+        .map(|command| format!("● run `{command}`"))
+        .unwrap_or_else(|| "○ configure a dev command".into());
+    let app_hint = detection
+        .browser_url
+        .as_deref()
+        .map(|url| format!("● open App {url}"))
+        .unwrap_or_else(|| "○ start App after a URL is detected".into());
     format!(
-        "root {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+        "WELCOME · {}\n{}\n\n✓ workspace {}\n\nNEXT ACTIONS\n◆ [a] actions menu · per-surface flows\n◆ [i] talk to Glass Agent\n◆ [Enter] open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+        detection.git_branch.as_deref().unwrap_or("no branch"),
+        project_line,
+        workspace.trust().label(),
+        dev_hint,
+        app_hint,
         workspace.root().display(),
         workspace.generation(),
         workspace.project().revision(),

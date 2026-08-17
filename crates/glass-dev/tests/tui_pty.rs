@@ -25,18 +25,19 @@ impl Session {
     fn start(binary: &str, root: &std::path::Path, cols: u16, rows: u16) -> Self {
         let mut master_fd: libc::c_int = 0;
         let mut slave_fd: libc::c_int = 0;
+        let mut window = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
         let result = unsafe {
             libc::openpty(
                 &mut master_fd,
                 &mut slave_fd,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                &libc::winsize {
-                    ws_row: rows,
-                    ws_col: cols,
-                    ws_xpixel: 0,
-                    ws_ypixel: 0,
-                },
+                std::ptr::null_mut(),
+                &mut window,
             )
         };
         assert_eq!(result, 0, "openpty failed");

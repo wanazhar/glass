@@ -1938,7 +1938,9 @@ fn bounded_log(status: &Path) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 #[cfg(unix)]
-fn authorize_local_peer(stream: &tokio::net::UnixStream) -> Result<(), Box<dyn std::error::Error>> {
+fn authorize_local_peer(
+    _stream: &tokio::net::UnixStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
@@ -1950,7 +1952,7 @@ fn authorize_local_peer(stream: &tokio::net::UnixStream) -> Result<(), Box<dyn s
         let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
         let result = unsafe {
             libc::getsockopt(
-                stream.as_raw_fd(),
+                _stream.as_raw_fd(),
                 libc::SOL_SOCKET,
                 libc::SO_PEERCRED,
                 (&mut credentials as *mut libc::ucred).cast(),

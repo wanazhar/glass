@@ -2,11 +2,12 @@
 
 ## 0.3.11 release evidence
 
-The 0.3.11 candidate carries the post-0.3.9 TUI responsiveness, browser
-feedback, agent-composer, projection, and documentation hardening changes.
-Final exact-tag, registry, native-certification, clean-install, GitHub Release,
-and issue-closure records are recorded below after the release workflow
-completes.
+The candidate source commit `66d760959213aa4b7eea8d05093f8a424061fb8e` carries
+the post-0.3.9 TUI responsiveness, browser feedback, agent-composer,
+projection, and documentation hardening changes. It passed package version,
+feature-parity, documentation truth, coverage, and depth validators. Final
+exact-tag, registry, native-certification, clean-install, GitHub Release, and
+issue-closure records are recorded below after the release workflow completes.
 
 ## 0.3.10 failed candidate
 

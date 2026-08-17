@@ -117,6 +117,7 @@ pub struct SnapshotWorker {
     visual_results: Receiver<VisualJobResult>,
     next_job_id: u64,
     next_visual_id: u64,
+    running_job: Arc<AtomicBool>,
 }
 
 impl SnapshotWorker {
@@ -127,6 +128,8 @@ impl SnapshotWorker {
         let (request_tx, request_rx) = channel::<ActorRequest>();
         let (job_result_tx, job_result_rx) = channel::<ToolJobResult>();
         let (visual_result_tx, visual_result_rx) = channel::<VisualJobResult>();
+        let running_job = Arc::new(AtomicBool::new(false));
+        let worker_running_job = Arc::clone(&running_job);
         let snapshots = Arc::new(std::sync::Mutex::new(None::<DisplaySnapshot>));
         let dirty = Arc::new(AtomicBool::new(true));
         let snapshot_sink = Arc::clone(&snapshots);
@@ -141,6 +144,7 @@ impl SnapshotWorker {
                     request_rx,
                     job_result_tx,
                     visual_result_tx,
+                    worker_running_job,
                     snapshot_sink,
                     dirty_flag,
                     worker_cursor,
@@ -158,6 +162,7 @@ impl SnapshotWorker {
             visual_results: visual_result_rx,
             next_job_id: 1,
             next_visual_id: 1,
+            running_job,
         }
     }
 
@@ -239,17 +244,21 @@ impl SnapshotWorker {
 impl Drop for SnapshotWorker {
     fn drop(&mut self) {
         let _ = self.requests.send(ActorRequest::ShutDown);
-        if let Some(handle) = self.handle.take() {
+        if let Some(handle) = self.handle.take()
+            && !self.running_job.load(Ordering::Acquire)
+        {
             let _ = handle.join();
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn worker_loop(
     workspace: crate::SharedDevelopmentWorkspace,
     requests: Receiver<ActorRequest>,
     job_results: Sender<ToolJobResult>,
     visual_results: Sender<VisualJobResult>,
+    running_job: Arc<AtomicBool>,
     snapshots: Arc<std::sync::Mutex<Option<DisplaySnapshot>>>,
     dirty: Arc<AtomicBool>,
     conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
@@ -287,6 +296,7 @@ fn worker_loop(
                 });
             }
             ActorRequest::Tool(job) => {
+                running_job.store(true, Ordering::Release);
                 let tool = job.call.name.clone();
                 let result = workspace
                     .lock()
@@ -297,6 +307,7 @@ fn worker_loop(
                     tool,
                     result,
                 });
+                running_job.store(false, Ordering::Release);
             }
             ActorRequest::RefreshConversation => {
                 // Cheap fast path: fold only new events into the tail.

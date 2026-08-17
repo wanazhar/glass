@@ -59,7 +59,11 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             KeyCode::Home => state.help_scroll = 0,
                             _ => {}
                         }
-                    } else if key.code == KeyCode::Char('?') {
+                    } else if key.code == KeyCode::Char('?')
+                        && !state.composer_mode
+                        && !state.command_mode
+                        && !state.code_edit_mode
+                    {
                         state.toggle_help();
                     } else if state.menu_open {
                         match key.code {

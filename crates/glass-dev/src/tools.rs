@@ -916,6 +916,12 @@ impl DevelopmentToolRouter {
                 Ok(serde_json::json!({"stopped":string("session")?}))
             }
             "glass.agent.list" => map_service(workspace.agents().list()),
+            "glass.agent.setup" => map_service(crate::pi_runtime::setup_pi_runtime(
+                None,
+                None,
+                false,
+                boolean(call, "login", false),
+            )),
             "glass.agent.spawn" => {
                 let spec: AgentSpec =
                     serde_json::from_value(call.arguments.get("spec").cloned().ok_or_else(
@@ -1308,6 +1314,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.terminate",
         "glass.debug.stop",
         "glass.agent.spawn",
+        "glass.agent.setup",
         "glass.agent.prompt",
         "glass.agent.send",
         "glass.agent.steer",

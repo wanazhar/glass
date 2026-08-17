@@ -131,15 +131,9 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
         }
         "setup" => {
             let login = parts.get(1).is_some_and(|value| *value == "login");
-            crate::pi_runtime::setup_pi_runtime(None, None, false, login)
-                .map_err(|error| error.to_string())?;
-            let ready = state.refresh_agent_readiness()?;
+            let result = run_tool(state, "glass.agent.setup", json!({"login": login}), true)?;
             state.surface = DevSurface::Agent;
-            Ok(if ready {
-                "Managed Pi runtime installed and Glass Agent is ready".into()
-            } else {
-                "Managed Pi runtime installed · authentication is still required; run `agent setup login`".into()
-            })
+            Ok(compact_result("glass.agent.setup", &result))
         }
         "spawn" => {
             let role = parts.get(1).ok_or("agent spawn requires ROLE TASK")?;

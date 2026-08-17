@@ -118,6 +118,8 @@ pub struct SnapshotWorker {
     next_job_id: u64,
     next_visual_id: u64,
     running_job: Arc<AtomicBool>,
+    refresh_requested: Arc<AtomicBool>,
+    conversation_requested: Arc<AtomicBool>,
 }
 
 impl SnapshotWorker {
@@ -130,6 +132,10 @@ impl SnapshotWorker {
         let (visual_result_tx, visual_result_rx) = channel::<VisualJobResult>();
         let running_job = Arc::new(AtomicBool::new(false));
         let worker_running_job = Arc::clone(&running_job);
+        let refresh_requested = Arc::new(AtomicBool::new(false));
+        let conversation_requested = Arc::new(AtomicBool::new(false));
+        let worker_refresh_requested = Arc::clone(&refresh_requested);
+        let worker_conversation_requested = Arc::clone(&conversation_requested);
         let snapshots = Arc::new(std::sync::Mutex::new(None::<DisplaySnapshot>));
         let dirty = Arc::new(AtomicBool::new(true));
         let snapshot_sink = Arc::clone(&snapshots);
@@ -145,6 +151,8 @@ impl SnapshotWorker {
                     job_result_tx,
                     visual_result_tx,
                     worker_running_job,
+                    worker_refresh_requested,
+                    worker_conversation_requested,
                     snapshot_sink,
                     dirty_flag,
                     worker_cursor,
@@ -163,18 +171,31 @@ impl SnapshotWorker {
             next_job_id: 1,
             next_visual_id: 1,
             running_job,
+            refresh_requested,
+            conversation_requested,
         }
     }
 
     /// Ask for a full refresh pass.
     pub fn request_refresh(&self) {
-        let _ = self.requests.send(ActorRequest::Refresh);
+        if !self.refresh_requested.swap(true, Ordering::AcqRel)
+            && self.requests.send(ActorRequest::Refresh).is_err()
+        {
+            self.refresh_requested.store(false, Ordering::Release);
+        }
         self.dirty.store(true, Ordering::Release);
     }
 
     /// Ask for a cheap conversation-tail pass.
     pub fn request_conversation(&self) {
-        let _ = self.requests.send(ActorRequest::RefreshConversation);
+        if !self.conversation_requested.swap(true, Ordering::AcqRel)
+            && self
+                .requests
+                .send(ActorRequest::RefreshConversation)
+                .is_err()
+        {
+            self.conversation_requested.store(false, Ordering::Release);
+        }
     }
 
     /// Queue a governed tool call without occupying the terminal task.
@@ -259,6 +280,8 @@ fn worker_loop(
     job_results: Sender<ToolJobResult>,
     visual_results: Sender<VisualJobResult>,
     running_job: Arc<AtomicBool>,
+    refresh_requested: Arc<AtomicBool>,
+    conversation_requested: Arc<AtomicBool>,
     snapshots: Arc<std::sync::Mutex<Option<DisplaySnapshot>>>,
     dirty: Arc<AtomicBool>,
     conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
@@ -310,6 +333,7 @@ fn worker_loop(
                 running_job.store(false, Ordering::Release);
             }
             ActorRequest::RefreshConversation => {
+                conversation_requested.store(false, Ordering::Release);
                 // Cheap fast path: fold only new events into the tail.
                 let Ok(mut locked) = workspace.lock() else {
                     continue;
@@ -341,6 +365,7 @@ fn worker_loop(
                 dirty.store(false, Ordering::Release);
             }
             ActorRequest::Refresh => {
+                refresh_requested.store(false, Ordering::Release);
                 let started = Instant::now();
                 let mut snapshot = compute_snapshot(&workspace, &mut seeded);
                 snapshot_version = snapshot_version.saturating_add(1);

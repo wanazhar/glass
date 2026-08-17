@@ -42,7 +42,10 @@ CDP screenshots, or governed mutations are in flight. A refresh latency over
   process, Git, test, kernel, debugger, replay, workflow, browser, trust, and
   onboarding state.
 - Tool mutations require the existing typed authority/revision/confirmation
-  contract. Confirmed tools are queued on the actor and return a typed result.
+  contract. Confirmed tools are queued on the actor and return a typed result;
+  active jobs do not delay terminal restoration on exit.
+- Refresh and conversation requests are coalesced atomically, so a blocked
+  operation cannot create an unbounded backlog.
 - Browser screenshots use a worker visual job and latest-frame delivery; stale
   frames never queue without bound.
 

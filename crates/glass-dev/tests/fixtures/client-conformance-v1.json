@@ -55,6 +55,7 @@
     "glass.agent.name",
     "glass.agent.new-session",
     "glass.agent.prompt",
+    "glass.agent.send",
     "glass.agent.spawn",
     "glass.agent.stats",
     "glass.agent.steer",

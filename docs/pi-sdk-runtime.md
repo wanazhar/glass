@@ -23,6 +23,14 @@ the same router used by CLI, MCP, and daemon clients, preserving workspace
 trust, confinement, actor attribution, generation and project-revision guards,
 confirmation policy, browser leases, and resident service ownership.
 
+The Glass system prompt is embedded with the adapter and tells Pi to inspect
+fresh evidence, use only Glass-registered tools, treat revisions and leases as
+authority, keep responses compact, and verify effects before reporting them. It
+explicitly distinguishes queued, running, indeterminate, stale, and background
+results from completion, and limits harness commands to the workspace with a
+300-second ceiling. The prompt never grants a second ambient filesystem or
+shell authority path.
+
 The process protocol is bounded to 16 MiB per frame and a 256-frame Rust
 channel. Each agent owns one child process; dropping the owner terminates and
 reaps that child. Runtime source is embedded in the Rust crate and materialized

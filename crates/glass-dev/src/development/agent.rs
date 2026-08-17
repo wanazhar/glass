@@ -2346,6 +2346,8 @@ mod tests {
         assert!(prompt.contains("embedded inside Glass Dev"));
         assert!(prompt.contains("Structured browser observation is the default"));
         assert!(prompt.contains("per-call approval"));
+        assert!(prompt.contains("queued, running, indeterminate, stale, or background"));
+        assert!(prompt.contains("300 seconds"));
         for tool in [
             "glass_git_status",
             "glass_semantic_inspect",

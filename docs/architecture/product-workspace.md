@@ -1,6 +1,6 @@
 # Glass Product Workspace
 
-Status: Current 0.3.9 source information architecture
+Status: Current 0.3.10 source information architecture
 
 ## Product information architecture
 

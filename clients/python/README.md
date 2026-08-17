@@ -14,7 +14,7 @@ python3 -m pip install .
 ```
 
 The client does not install Chrome or Chromium.
-It is a repository client for the `0.3.9` source line and is not currently
+It is a repository client for the `0.3.10` source line and is not currently
 published to PyPI. Install it from this checkout and pair it with the exact
 matching Glass executable.
 
@@ -85,7 +85,7 @@ package version text.
 
 ## Development Runtime
 
-Glass 0.3.9 development operations use the negotiated `glass.*` catalog. Use
+Glass 0.3.10 development operations use the negotiated `glass.*` catalog. Use
 `call()` with the exact schema returned by `list_tools()`; retired `project.*`
 cockpit schemas are not negotiated by the new Glass Dev runtime:
 

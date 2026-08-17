@@ -5,6 +5,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-08-17
+
 ### Added
 
 - Discoverable per-surface action menus (`a`) so ordinary flows no longer

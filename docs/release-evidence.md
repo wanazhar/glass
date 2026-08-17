@@ -1,5 +1,12 @@
 # Release evidence
 
+## 0.3.10 release evidence
+
+Issue #36 was certified and released in 0.3.9. This candidate carries the
+post-release TUI responsiveness, browser feedback, agent-composer, projection,
+and documentation hardening commits; exact-tag, registry, and GitHub records
+will be recorded here after the 0.3.10 release workflow completes.
+
 ## 0.3.9 release evidence
 
 Issue #36 candidate evidence is recorded in

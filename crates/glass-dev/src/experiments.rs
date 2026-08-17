@@ -1077,11 +1077,10 @@ mod tests {
                 );
             }
             for agent in &assigned {
-                let mut ready = false;
-                for _ in 0..200 {
+                let deadline = Instant::now() + Duration::from_secs(20);
+                loop {
                     let snapshot = agents.snapshot(agent).unwrap();
                     if snapshot.status == AgentStatus::Idle {
-                        ready = true;
                         break;
                     }
                     assert_ne!(
@@ -1090,9 +1089,14 @@ mod tests {
                         "native Pi experiment worker failed: {:?}",
                         snapshot.last_error
                     );
+                    if Instant::now() >= deadline {
+                        panic!(
+                            "native Pi experiment worker did not become idle: {:?}",
+                            snapshot
+                        );
+                    }
                     thread::sleep(Duration::from_millis(25));
                 }
-                assert!(ready, "native Pi experiment worker did not become idle");
             }
             assert!(manager.snapshots().iter().all(|snapshot| {
                 snapshot

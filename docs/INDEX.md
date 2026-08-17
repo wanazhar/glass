@@ -1,9 +1,9 @@
 # Glass documentation
 
-These guides describe the complete Glass product in this `0.3.9` source
+These guides describe the complete Glass product in this `0.3.10` source
 checkout, including local unreleased UX and responsiveness repairs. Published
 release notes remain scoped to the tagged release; the working-tree changelog
-records changes after that tag. `glass-browser 0.3.9` and `glass-dev 0.3.9` are
+records changes after that tag. `glass-browser 0.3.10` and `glass-dev 0.3.10` are
 the current release crates. `Local only` means a capability exists in the checkout but is not part
 of the published contract.
 Platform certification remains separate from source availability; see
@@ -210,8 +210,10 @@ current user instructions.
   client, and validation evidence.
 - [Tag signing](tag-signing.md) — current `unknown_key` evidence, maintainer
   identity repair, and the GitHub-verification release gate.
-- [Glass 0.3.9 release notes](releases/0.3.9.md) — current substantive feature,
-  security, migration, limitation, and validation summary.
+- [Glass 0.3.10 release notes](releases/0.3.10.md) — current substantive
+  feature, security, migration, limitation, and validation summary.
+- [Glass 0.3.9 release notes](releases/0.3.9.md) — previous complete issue #36
+  release record.
 - [Glass 0.3.8 release notes](releases/0.3.8.md) — failed exact-tag candidate
   retained for audit evidence.
 - [Glass 0.3.7 release notes](releases/0.3.7.md) — failed exact-tag candidate
@@ -220,8 +222,10 @@ current user instructions.
   retained for audit history; it was not published to crates.io.
 - [Glass 0.3.5 release notes](releases/0.3.5.md) — previous release record.
 - [Changelog](../CHANGELOG.md) — user-visible changes.
-- [Migrate 0.3.5 to 0.3.9](migration/0.3.9.md) — BrowserWorkspace, Agent,
-  daemon, TUI, security, and exact-tag portability repairs.
+- [Migrate 0.3.9 to 0.3.10](migration/0.3.10.md) — post-0.3.9 TUI,
+  responsiveness, browser, Agent, and documentation hardening.
+- [Migrate 0.3.5 to 0.3.9](migration/0.3.9.md) — previous BrowserWorkspace,
+  Agent, daemon, TUI, security, and exact-tag portability repairs.
 - [Migrate 0.3.5 to 0.3.8](migration/0.3.8.md) — historical failed candidate.
 - [Migrate 0.3.5 to 0.3.7](migration/0.3.7.md) — historical failed candidate.
 - [Migrate 0.3.5 to 0.3.6](migration/0.3.6.md) — historical candidate guide.

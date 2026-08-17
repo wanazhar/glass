@@ -20,7 +20,7 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
 
 fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let content = format!(
-        "KEYBOARD COCKPIT · {}\n\nNAVIGATION\n  1–5      switch primary surfaces\n  j/k ↑/↓  move and scroll\n  PgUp/Dn  page content · Home/End bounds\n  a        current-surface actions\n  ?        this help · Esc closes overlays\n\nAGENT\n  i        compose · Ctrl-S steer · Ctrl-X abort\n  Ctrl-C   quit from every mode\n\nCODE\n  Enter    open selected file · i edit\n  [/]]     switch open buffers · Ctrl-S save\n\nAPP\n  n        navigate · Enter activate selected entity\n  t        type into selected · v live view\n  Alt-←/→  browser back/forward · Ctrl-R reload\n\nGIT\n  d        inline diff · PgUp/Dn scroll diff\n\nEXPERT ROUTE\n  :        command palette · type help for all governed routes\n\nEvery mutation shows its authority, revision, and confirmation state.",
+        "KEYBOARD COCKPIT · {}\n\nNAVIGATION\n  1–7      switch surfaces (phone uses 1–5)\n  j/k ↑/↓  move and scroll\n  PgUp/Dn  page content · Home/End bounds\n  a        current-surface actions\n  ?        this help · Esc closes overlays\n\nAGENT\n  i        compose · Ctrl-D steer/follow-up · Ctrl-X abort\n  Ctrl-C   quit from every mode\n\nCODE\n  Enter    open selected file · i edit\n  [/]]     switch open buffers · Ctrl-S save\n\nAPP\n  n        navigate · Enter activate selected entity\n  t        type into selected · v live view\n  Alt-←/→  browser back/forward · Ctrl-R reload\n\nGIT\n  d        inline diff · PgUp/Dn scroll diff\n\nEXPERT ROUTE\n  :        command palette · type help for all governed routes\n\nEvery mutation shows its authority, revision, and confirmation state.",
         state.surface.label()
     );
     frame.render_widget(
@@ -115,11 +115,7 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
             ),
             Span::raw(format!(
                 " {} · {} · {} · {}",
-                state
-                    .workspace
-                    .lock()
-                    .map(|w| w.root().display().to_string())
-                    .unwrap_or_default(),
+                state.snapshot_root.as_str(),
                 state.surface.label(),
                 state.product_mode().label(),
                 mode
@@ -234,7 +230,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 )
             }
             DevSurface::Agent => format!(
-                "CONVERSATION\n{}\n\n{}\n\nComposer: i compose · Enter sends · Ctrl-A abort · Ctrl-S steer · Esc returns to navigation",
+                "CONVERSATION\n{}\n\n{}\n\nComposer: i compose · Enter sends · Ctrl-X abort · Ctrl-D toggles steer/follow-up · Esc closes",
                 state.agent_readiness, state.agent_conversation
             ),
             DevSurface::Code => format!(
@@ -270,19 +266,19 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 content
             }
             DevSurface::Terminal => format!(
-                "MANAGED TERMINALS\n{}\n\nKeys: Enter start detected dev command · r restart · x stop",
+                "MANAGED TERMINALS\n{}\n\nUse a for terminal actions · : for governed process commands",
                 state.processes
             ),
             DevSurface::Tasks => format!(
-                "TASK DAG\n\n{}\n\nKeys: Enter create task · p pause · u resume · x cancel",
+                "TASK DAG\n\n{}\n\nUse a for task actions · : for dependencies, evidence, and verification",
                 state.tasks
             ),
             DevSurface::Debug => format!(
-                "DEBUG SESSIONS\n{}\n\nTESTS\n{}\n\nKeys: c continue · s step · b breakpoint",
+                "DEBUG SESSIONS\n{}\n\nTESTS\n{}\n\nUse a for debugger/test actions · : for the full route",
                 state.debugger, state.tests
             ),
             DevSurface::Git => format!(
-                "{}\n\nKeys: Enter stage/unstage selected · d diff · c commit · D discard",
+                "{}\n\nUse a for Git actions · d opens inline diff · : for staging, commits, and branches",
                 state.git
             ),
             DevSurface::More => format!(
@@ -404,7 +400,13 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 .workspace
                 .lock()
                 .ok()
-                .and_then(|workspace| workspace.project().buffers().next().cloned())
+                .and_then(|workspace| {
+                    workspace
+                        .project()
+                        .buffers()
+                        .nth(state.editor_buffer_index)
+                        .cloned()
+                })
                 .map(|buffer| (buffer.path, buffer.dirty, buffer.cursor_line));
             match selected {
                 Some((path, dirty, line)) => format!(
@@ -636,6 +638,11 @@ mod tests {
         state.run_menu_action();
         // `browser start` has no argument requirement in the menu, palette prefilled.
         assert!(state.command_input.starts_with("browser start"));
+        state.close_palette();
+        state.open_menu();
+        state.menu_selection = 2;
+        state.run_menu_action();
+        assert_eq!(state.command_input, "browser navigate ");
     }
 
     #[test]

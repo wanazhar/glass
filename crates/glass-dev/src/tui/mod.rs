@@ -188,9 +188,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                     "Browser checkpoint reconciled · control returned to Glass"
                                         .into();
                             }
-                            (KeyCode::Char('a'), _) if state.surface != DevSurface::App => {
-                                state.open_menu()
-                            }
+                            (KeyCode::Char('a'), _) => state.open_menu(),
                             (KeyCode::Char('i'), _) if state.surface == DevSurface::Agent => {
                                 state.open_composer();
                             }
@@ -219,15 +217,10 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             (KeyCode::Char('v'), _) if state.surface == DevSurface::App => {
                                 state.browser_visual_live = !state.browser_visual_live;
                                 if state.browser_visual_live {
-                                    state.refresh_app_visual(
-                                        state.terminal_width / 3,
-                                        state.terminal_height / 3,
-                                    );
                                     state.status = if state.browser_pane.is_some() {
                                         "Live view on · ANSI half-block rendering · v stops".into()
                                     } else {
-                                        state.browser_visual_live = false;
-                                        "Live view unavailable · observe the browser first".into()
+                                        "Live view starting · screenshot worker will update the pane".into()
                                     };
                                 } else {
                                     state.status = "Live view off".into();

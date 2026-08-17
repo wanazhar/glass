@@ -427,7 +427,7 @@ impl DevTuiState {
     /// Run the selected menu action. Keyboard hints apply directly; strings
     /// starting with ':' open the palette prefilled with the command.
     pub fn run_menu_action(&mut self) {
-        let Some((_, hint, prefix)) = self.surface_actions().get(self.menu_selection).copied()
+        let Some((name, hint, prefix)) = self.surface_actions().get(self.menu_selection).copied()
         else {
             return;
         };
@@ -452,10 +452,30 @@ impl DevTuiState {
         } else if hint == "d" && self.surface == DevSurface::Git {
             self.open_git_diff();
         }
-        // Single-key hints (Ctrl-S, n, t, 1, T, I) apply in navigation mode;
-        // the status line reminds the user which key to press.
-        else if !hint.is_empty() && hint.len() <= 6 {
-            self.status = format!("Press {hint} in navigation mode");
+        // Action-menu entries must do what their visible hint promises. Do not
+        // make users close the menu and repeat a key from a different mode.
+        else {
+            match hint {
+                "n" => {
+                    self.surface = DevSurface::App;
+                    self.open_palette_with("browser navigate ");
+                }
+                "t" => {
+                    self.surface = DevSurface::App;
+                    self.open_palette_with("browser type ");
+                }
+                "v" => {
+                    self.surface = DevSurface::App;
+                    self.browser_visual_live = true;
+                    self.status = "Live view starting · v stops".into();
+                }
+                "1" | "T" | "I" | "O" => self.handle_printable(hint.chars().next().unwrap()),
+                "Ctrl-S" if self.surface == DevSurface::Code => self.edit_code_key(
+                    crossterm::event::KeyCode::Char('s'),
+                    crossterm::event::KeyModifiers::CONTROL,
+                ),
+                _ => self.status = format!("{name} is available from this surface"),
+            }
         }
     }
 
@@ -1026,13 +1046,13 @@ impl DevTuiState {
         }) {
             Ok(_) => {
                 self.status = format!("Opened {path} · press i to edit");
-                self.refresh();
+                self.refresh_editor_projection();
             }
             Err(error) => self.status = format!("Open failed: {error}"),
         }
     }
 
-    /// Cycle the focused editor buffer by `delta`; wraps around.
+    /// Load the current Git diff into the inline diff surface.
     pub fn open_git_diff(&mut self) {
         let diff = self.workspace.lock().and_then(|workspace| {
             workspace
@@ -1060,6 +1080,25 @@ impl DevTuiState {
     pub fn close_git_diff(&mut self) {
         self.git_diff_open = false;
         self.status = "Git status".into();
+    }
+
+    pub fn focused_buffer(&self) -> Option<crate::development::EditorBuffer> {
+        self.workspace.lock().ok().and_then(|workspace| {
+            workspace
+                .project()
+                .buffers()
+                .nth(self.editor_buffer_index)
+                .cloned()
+        })
+    }
+
+    pub fn refresh_editor_projection(&mut self) {
+        let buffers = self
+            .workspace
+            .lock()
+            .map(|workspace| workspace.project().buffers().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        self.editor = format_editor_buffers(&buffers);
     }
 
     pub fn cycle_editor_buffer(&mut self, delta: i32) {
@@ -1090,15 +1129,11 @@ impl DevTuiState {
     }
 
     pub fn enter_code_edit(&mut self) {
-        let has_buffer = self
-            .locked(|workspace| workspace.project().buffers().next().is_some())
-            .unwrap_or(false);
+        let has_buffer = self.focused_buffer().is_some();
         if !has_buffer {
             self.open_selected_file();
         }
-        let has_buffer = self
-            .locked(|workspace| workspace.project().buffers().next().is_some())
-            .unwrap_or(false);
+        let has_buffer = self.focused_buffer().is_some();
         if has_buffer {
             self.code_edit_mode = true;
             self.status =
@@ -1116,10 +1151,7 @@ impl DevTuiState {
         code: crossterm::event::KeyCode,
         modifiers: crossterm::event::KeyModifiers,
     ) {
-        let Some(buffer) = self
-            .locked(|workspace| workspace.project().buffers().next().cloned())
-            .flatten()
-        else {
+        let Some(buffer) = self.focused_buffer() else {
             self.status = "No open buffer".into();
             return;
         };
@@ -1169,7 +1201,7 @@ impl DevTuiState {
         if let Err(error) = result {
             self.status = format!("Editor action failed: {error}");
         }
-        self.refresh();
+        self.refresh_editor_projection();
     }
 
     fn move_editor_cursor(
@@ -2135,6 +2167,50 @@ impl DevTuiState {
             }
         }
     }
+}
+
+fn format_editor_buffers(buffers: &[crate::development::EditorBuffer]) -> String {
+    if buffers.is_empty() {
+        return "No file open. Select a file below and press Enter, then i to edit.".into();
+    }
+    buffers
+        .iter()
+        .map(|buffer| {
+            let lines: Vec<&str> = buffer.content.lines().collect();
+            let cursor = buffer.cursor_line as usize;
+            let viewport_rows = 16;
+            let start = cursor
+                .saturating_sub(viewport_rows / 2)
+                .min(lines.len().saturating_sub(viewport_rows.min(lines.len())));
+            let end = (start + viewport_rows).min(lines.len());
+            let gutter_width = lines.len().to_string().len().max(3);
+            let viewport = lines[start..end]
+                .iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    let number = start + index + 1;
+                    let marker = if number == cursor { "▶" } else { " " };
+                    format!(
+                        "{marker}{:>gutter_width$} │ {line}",
+                        number,
+                        gutter_width = gutter_width
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "{}{} · cursor {}:{} · actor {} · {} lines\n{}",
+                if buffer.dirty { "● " } else { "○ " },
+                buffer.path,
+                buffer.cursor_line,
+                buffer.cursor_column,
+                buffer.actor.id,
+                lines.len(),
+                viewport
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn format_pi_readiness(readiness: &crate::PiReadiness) -> String {

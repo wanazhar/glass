@@ -178,6 +178,9 @@ pub struct DevTuiState {
     pub conversation_cursor: u64,
     /// Index of the editor buffer focused by the Code surface.
     pub editor_buffer_index: usize,
+    pub focused_editor_path: String,
+    pub focused_editor_dirty: bool,
+    pub focused_editor_line: u32,
     pub agents: String,
     pub agent_readiness: String,
     pub agent_conversation: String,
@@ -298,6 +301,9 @@ impl DevTuiState {
             refresh_latency_ms: 0,
             conversation_cursor: 0,
             editor_buffer_index: 0,
+            focused_editor_path: String::new(),
+            focused_editor_dirty: false,
+            focused_editor_line: 0,
             status: if trust_prompt {
                 "Workspace trust required · I inspect · O untrusted · 1 trust once · T trust project".into()
             } else {
@@ -1126,6 +1132,11 @@ impl DevTuiState {
             .lock()
             .map(|workspace| workspace.project().buffers().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
+        if let Some(buffer) = buffers.get(self.editor_buffer_index) {
+            self.focused_editor_path = buffer.path.clone();
+            self.focused_editor_dirty = buffer.dirty;
+            self.focused_editor_line = buffer.cursor_line;
+        }
         self.editor = format_editor_buffers(&buffers);
     }
 
@@ -1153,6 +1164,7 @@ impl DevTuiState {
                     .map(|buffer| buffer.path.clone())
             })
             .unwrap_or_default();
+        self.refresh_editor_projection();
         self.status = format!("Buffer {}/{} · {name}", self.editor_buffer_index + 1, count);
     }
 

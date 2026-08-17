@@ -374,8 +374,7 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         DevSurface::Trust => format!(
             "TRUST DECISION\n{} configuration item(s) need attention{}",
             state
-                .workspace
-                .trust_inspection_list()
+                .snapshot_trust_inspection
                 .iter()
                 .filter(|item| item.trust_required)
                 .count(),
@@ -411,18 +410,13 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             }
         }
         DevSurface::Code => {
-            let selected = state
-                .workspace
-                .lock()
-                .ok()
-                .and_then(|workspace| {
-                    workspace
-                        .project()
-                        .buffers()
-                        .nth(state.editor_buffer_index)
-                        .cloned()
-                })
-                .map(|buffer| (buffer.path, buffer.dirty, buffer.cursor_line));
+            let selected = (!state.focused_editor_path.is_empty()).then(|| {
+                (
+                    state.focused_editor_path.clone(),
+                    state.focused_editor_dirty,
+                    state.focused_editor_line,
+                )
+            });
             match selected {
                 Some((path, dirty, line)) => format!(
                     "EDITING\n{}{} · line {}\n\nLINKED APP\n{}{}",

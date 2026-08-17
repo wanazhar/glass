@@ -457,11 +457,22 @@ impl DevTuiState {
         };
         self.menu_open = false;
         if prefix == ":" {
-            if hint.contains(' ') {
-                // Commands with arguments open prefilled for completion.
-                self.open_palette_with(&format!("{} ", hint));
-            } else {
+            // Strip documentation placeholders from the editable command so
+            // users can type values immediately instead of backspacing
+            // `NAME`, `QUERY`, or `RUN_ID` out of the input line.
+            let prefill = hint
+                .split_whitespace()
+                .take_while(|token| {
+                    !token
+                        .chars()
+                        .all(|character| character.is_ascii_uppercase() || character == '_')
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if prefill.is_empty() || prefill == hint {
                 self.open_palette_with(hint);
+            } else {
+                self.open_palette_with(&format!("{prefill} "));
             }
         } else if hint == "i" {
             if self.surface == DevSurface::Agent {

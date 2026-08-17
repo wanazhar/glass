@@ -707,6 +707,11 @@ mod tests {
         state.menu_selection = 2;
         state.run_menu_action();
         assert_eq!(state.command_input, "browser navigate ");
+
+        state.surface = DevSurface::Terminal;
+        state.open_menu();
+        state.run_menu_action();
+        assert_eq!(state.command_input, "process start dev ");
     }
 
     #[test]

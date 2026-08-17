@@ -90,20 +90,36 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .split(area);
     render_header(frame, state, rows[0], "phone cockpit");
     render_surface(frame, state, rows[1]);
-    let help = if state.composer_mode {
-        format!("> {}", state.composer_input)
+    let footer_lines = if state.composer_mode {
+        vec![
+            Line::from(format!("> {}", state.composer_input)),
+            Line::from(state.status.clone()),
+        ]
     } else if state.command_mode {
-        format!(":{}", state.command_input)
+        vec![
+            Line::from(format!(":{}", state.command_input)),
+            Line::from(format!(
+                "{} · {}",
+                state.status,
+                state.palette_matches().join(" · ")
+            )),
+        ]
     } else if state.surface == DevSurface::Trust {
-        "I inspect · O open untrusted · 1 trust once · T trust project".into()
+        vec![
+            Line::from(state.status.clone()),
+            Line::from("I inspect · O open untrusted · 1 trust once · T trust project"),
+        ]
     } else {
-        format!(
-            "1 Agent  2 Code  3 App  4 Tasks  5 More · {}",
-            state.surface.label()
-        )
+        vec![
+            Line::from(state.status.clone()),
+            Line::from(format!(
+                "1 Agent  2 Code  3 App  4 Tasks  5 More · {}",
+                state.surface.label()
+            )),
+        ]
     };
     frame.render_widget(
-        Paragraph::new(help)
+        Paragraph::new(footer_lines)
             .block(Block::default().borders(Borders::TOP))
             .wrap(Wrap { trim: true }),
         rows[2],
@@ -602,9 +618,13 @@ mod tests {
     fn desktop_and_phone_prioritize_resident_workspace_state() {
         for (width, height, layout) in [(140, 40, TuiLayout::Desktop), (48, 18, TuiLayout::Mobile)]
         {
-            let state = state(layout);
+            let mut state = state(layout);
+            state.status = "ASYNC STATUS VISIBLE".into();
             let rendered = rendered(&state, width, height);
             assert!(rendered.contains("GLASS DEV"));
+            if width < 72 {
+                assert!(rendered.contains("ASYNC STATUS VISIBLE"));
+            }
             assert!(rendered.contains("Agent"));
             assert!(rendered.contains("CONVERSATION"));
         }

@@ -895,11 +895,9 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &BrowserTui) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if class == ResponsiveClass::Phone {
-                4
-            } else {
-                3
-            }),
+            // Three header lines plus a border need five rows; the previous
+            // three-row header silently clipped both status lines.
+            Constraint::Length(5),
             Constraint::Min(5),
             Constraint::Length(3),
         ])

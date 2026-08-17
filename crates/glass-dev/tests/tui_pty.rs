@@ -53,7 +53,10 @@ impl Session {
             master,
             buffer: Vec::new(),
         };
-        session.settle(Duration::from_millis(2500));
+        // CI and cold release binaries can spend a few seconds discovering
+        // the workspace before the first frame; do not send Ctrl+C into a
+        // process that has not entered its event loop yet.
+        session.settle(Duration::from_millis(4000));
         session
     }
 

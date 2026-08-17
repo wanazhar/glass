@@ -820,6 +820,12 @@ fn run_tool(
         arguments,
     };
     if mutating {
+        if state.pending_confirmation.is_some()
+            || state.running_tool_job.is_some()
+            || state.queued_tool_request.is_some()
+        {
+            return Err("another tool action is already awaiting or running".into());
+        }
         let summary = format!(
             "{} · {}",
             name,

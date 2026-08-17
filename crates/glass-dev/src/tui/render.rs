@@ -115,7 +115,7 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
             ),
             Span::raw(format!(
                 " {} · {} · {} · {}",
-                state.snapshot_root.as_str(),
+                compact_path(&state.snapshot_root, area.width.saturating_sub(38)),
                 state.surface.label(),
                 state.product_mode().label(),
                 mode
@@ -123,6 +123,18 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
         ])),
         area,
     );
+}
+
+fn compact_path(path: &str, width: u16) -> String {
+    let width = usize::from(width.max(8));
+    let chars = path.chars().collect::<Vec<_>>();
+    if chars.len() <= width {
+        return path.to_string();
+    }
+    let suffix = chars[chars.len().saturating_sub(width.saturating_sub(2))..]
+        .iter()
+        .collect::<String>();
+    format!("…{suffix}")
 }
 
 fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {

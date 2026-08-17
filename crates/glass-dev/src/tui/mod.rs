@@ -270,7 +270,8 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                     .browser_workspace
                                     .reduce(BrowserWorkspaceIntent::MoveSelection { delta: -1 });
                                 state.browser = state.browser_workspace_summary();
-                                state.highlight_app_selection();
+                                state.status =
+                                    "Selection moved · Enter activates the selected entity".into();
                             }
                             (KeyCode::Down, _) | (KeyCode::Char('j'), _)
                                 if state.surface == DevSurface::App =>
@@ -279,7 +280,8 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                     .browser_workspace
                                     .reduce(BrowserWorkspaceIntent::MoveSelection { delta: 1 });
                                 state.browser = state.browser_workspace_summary();
-                                state.highlight_app_selection();
+                                state.status =
+                                    "Selection moved · Enter activates the selected entity".into();
                             }
                             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => state.scroll_surface(-1),
                             (KeyCode::Down, _) | (KeyCode::Char('j'), _) => state.scroll_surface(1),

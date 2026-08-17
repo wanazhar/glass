@@ -2029,22 +2029,6 @@ impl DevTuiState {
         )
     }
 
-    pub fn highlight_app_selection(&mut self) {
-        let Some(entity) = self.browser_workspace.state().selected().cloned() else {
-            return;
-        };
-        let highlight = self.workspace.lock().and_then(|workspace| {
-            workspace
-                .browser()
-                .highlight(entity.reference, entity.revision)
-        });
-        if let Err(error) = highlight {
-            let stale = error.to_string().to_lowercase().contains("stale");
-            self.browser_workspace.fail_action(error.to_string(), stale);
-            self.status = format!("App highlight failed: {error}");
-        }
-    }
-
     pub fn queue_browser_observe(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         if !self.browser_observe_pending || self.running_tool_job.is_some() {
             return;

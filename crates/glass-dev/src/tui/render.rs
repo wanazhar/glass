@@ -25,7 +25,12 @@ fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     );
     frame.render_widget(
         Paragraph::new(content)
-            .block(Block::default().title(" Help ").borders(Borders::ALL))
+            .scroll((state.help_scroll, 0))
+            .block(
+                Block::default()
+                    .title(" Help · j/k scroll ")
+                    .borders(Borders::ALL),
+            )
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -104,15 +109,44 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &str) {
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                " GLASS DEV ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
+    let brand = Span::styled(
+        " GLASS DEV ",
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    let lines = if area.width < 72 {
+        vec![
+            Line::from(vec![
+                brand.clone(),
+                Span::raw(format!(" · {}", state.surface.label())),
+            ]),
+            Line::from(format!(
+                " {} · {}",
+                compact_path(&state.snapshot_root, area.width.saturating_sub(18)),
+                state.product_mode().label()
+            )),
+        ]
+    } else if area.width < 104 {
+        vec![
+            Line::from(vec![
+                brand.clone(),
+                Span::raw(format!(
+                    " · {} · {} · {}",
+                    state.surface.label(),
+                    state.product_mode().label(),
+                    mode
+                )),
+            ]),
+            Line::from(format!(
+                " {}",
+                compact_path(&state.snapshot_root, area.width.saturating_sub(4))
+            )),
+        ]
+    } else {
+        vec![Line::from(vec![
+            brand,
             Span::raw(format!(
                 " {} · {} · {} · {}",
                 compact_path(&state.snapshot_root, area.width.saturating_sub(38)),
@@ -120,9 +154,9 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
                 state.product_mode().label(),
                 mode
             )),
-        ])),
-        area,
-    );
+        ])]
+    };
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn compact_path(path: &str, width: u16) -> String {
@@ -572,6 +606,24 @@ mod tests {
             assert!(rendered.contains("Agent"));
             assert!(rendered.contains("CONVERSATION"));
         }
+    }
+
+    #[test]
+    fn help_scroll_and_git_diff_keep_small_cockpits_interactive() {
+        let mut state = state(TuiLayout::Mobile);
+        state.toggle_help();
+        state.scroll_help(8);
+        assert_eq!(state.help_scroll, 8);
+        assert!(rendered(&state, 48, 18).contains("APP"));
+
+        state.help_open = false;
+        state.surface = DevSurface::Git;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.queue_git_diff(&mut worker);
+        assert!(state.git_diff_open);
+        assert!(state.running_tool_job.is_some());
+        assert!(state.git_diff.contains("Loading"));
+        drop(worker);
     }
 
     #[test]

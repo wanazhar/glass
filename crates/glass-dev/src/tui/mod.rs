@@ -50,8 +50,14 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                     {
                         state.quit = true;
                     } else if state.help_open {
-                        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
-                            state.toggle_help();
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('?') => state.toggle_help(),
+                            KeyCode::Up | KeyCode::Char('k') => state.scroll_help(-1),
+                            KeyCode::Down | KeyCode::Char('j') => state.scroll_help(1),
+                            KeyCode::PageUp => state.scroll_help(-8),
+                            KeyCode::PageDown => state.scroll_help(8),
+                            KeyCode::Home => state.help_scroll = 0,
+                            _ => {}
                         }
                     } else if key.code == KeyCode::Char('?') {
                         state.toggle_help();
@@ -202,7 +208,7 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                                 state.open_selected_file();
                             }
                             (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
-                                state.open_git_diff()
+                                state.queue_git_diff(&mut worker)
                             }
                             (KeyCode::Char(']'), _) if state.surface == DevSurface::Code => {
                                 state.cycle_editor_buffer(1)
@@ -319,6 +325,10 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                 Event::Resize(width, height) => state.set_terminal_size(width, height),
                 Event::Key(_) | Event::Paste(_) | Event::FocusGained => {}
             }
+        }
+        if state.git_diff_requested {
+            state.git_diff_requested = false;
+            state.queue_git_diff(&mut worker);
         }
         if last_refresh.elapsed() >= Duration::from_millis(250) {
             worker.request_refresh();

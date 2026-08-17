@@ -665,6 +665,23 @@ impl SharedDevelopmentWorkspace {
         })
     }
 
+    /// Non-blocking workspace access for terminal input and render-adjacent
+    /// callbacks. A background actor may own the workspace for a long-running
+    /// browser, process, or project operation; dropping the attempt is better
+    /// than freezing the terminal.
+    pub fn try_lock(&self) -> DevelopmentResult<MutexGuard<'_, DevelopmentWorkspace>> {
+        self.inner.try_lock().map_err(|error| {
+            crate::development::DevelopmentError::Conflict(match error {
+                std::sync::TryLockError::Poisoned(_) => {
+                    "development workspace lock was poisoned".into()
+                }
+                std::sync::TryLockError::WouldBlock => {
+                    "workspace busy with a background operation; try again shortly".into()
+                }
+            })
+        })
+    }
+
     /// Snapshot helpers used by long-lived UIs: safe, bounded reads that
     /// degrade instead of poisoning the render loop.
     pub fn trust_status(&self) -> WorkspaceTrust {

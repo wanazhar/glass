@@ -149,6 +149,7 @@ pub struct DevTuiState {
     pub menu_open: bool,
     pub menu_selection: usize,
     pub help_open: bool,
+    pub help_scroll: u16,
     pub composer_mode: bool,
     pub composer_input: String,
     pub composer_cursor: usize,
@@ -193,6 +194,7 @@ pub struct DevTuiState {
     pub git: String,
     pub git_diff: String,
     pub git_diff_open: bool,
+    pub git_diff_requested: bool,
     pub tests: String,
     pub kernels: String,
     pub debugger: String,
@@ -214,12 +216,12 @@ pub struct DevTuiState {
 impl DevTuiState {
     /// Lock the shared workspace, mapping errors to strings for the palette.
     pub fn ws(&self) -> Result<std::sync::MutexGuard<'_, crate::DevelopmentWorkspace>, String> {
-        self.workspace.lock().map_err(|error| error.to_string())
+        self.workspace.try_lock().map_err(|error| error.to_string())
     }
 
     /// Lock the shared workspace for mutation, mapping errors to strings.
     pub fn ws_mut(&self) -> Result<std::sync::MutexGuard<'_, crate::DevelopmentWorkspace>, String> {
-        self.workspace.lock().map_err(|error| error.to_string())
+        self.workspace.try_lock().map_err(|error| error.to_string())
     }
 
     /// Lock the workspace for mutation inside UI callbacks; reports lock
@@ -228,7 +230,7 @@ impl DevTuiState {
     where
         F: FnOnce(&mut crate::DevelopmentWorkspace) -> T,
     {
-        match self.workspace.lock() {
+        match self.workspace.try_lock() {
             Ok(mut workspace) => Some(operation(&mut workspace)),
             Err(error) => {
                 self.status = format!("Workspace lock failed: {error}");
@@ -279,6 +281,7 @@ impl DevTuiState {
             menu_open: false,
             menu_selection: 0,
             help_open: false,
+            help_scroll: 0,
             composer_mode: false,
             composer_input: String::new(),
             composer_cursor: 0,
@@ -323,6 +326,7 @@ impl DevTuiState {
             git: String::new(),
             git_diff: String::new(),
             git_diff_open: false,
+            git_diff_requested: false,
             tests: String::new(),
             kernels: String::new(),
             debugger: String::new(),
@@ -422,11 +426,16 @@ impl DevTuiState {
 
     pub fn toggle_help(&mut self) {
         self.help_open = !self.help_open;
+        self.help_scroll = 0;
         self.status = if self.help_open {
-            "Help · ? or Esc closes".into()
+            "Help · j/k scroll · ? or Esc closes".into()
         } else {
             "Help closed".into()
         };
+    }
+
+    pub fn scroll_help(&mut self, delta: i32) {
+        self.help_scroll = (self.help_scroll as i32 + delta).max(0) as u16;
     }
 
     pub fn open_menu(&mut self) {
@@ -465,7 +474,8 @@ impl DevTuiState {
                 self.open_selected_file();
             }
         } else if hint == "d" && self.surface == DevSurface::Git {
-            self.open_git_diff();
+            self.git_diff_requested = true;
+            self.status = "Git diff queued · loading off-thread".into();
         }
         // Action-menu entries must do what their visible hint promises. Do not
         // make users close the menu and repeat a key from a different mode.
@@ -878,6 +888,14 @@ impl DevTuiState {
                     {
                         self.browser_observe_pending = true;
                     }
+                } else if result.tool == "glass.git.diff" {
+                    self.git_diff = value
+                        .as_str()
+                        .filter(|diff| !diff.trim().is_empty())
+                        .unwrap_or("Working tree clean · no diff to show")
+                        .to_string();
+                    self.git_diff_open = true;
+                    self.status = "Git diff · PgUp/PgDn scroll · Esc closes".into();
                 } else if result.tool == "glass.agent.send" {
                     if let Some(agent_id) = value
                         .get("agentId")
@@ -896,13 +914,17 @@ impl DevTuiState {
                         super::projection::first_meaningful(&value)
                     };
                 }
-                if result.tool != "glass.agent.send" {
+                if !matches!(result.tool.as_str(), "glass.agent.send" | "glass.git.diff") {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
             }
             Err(error) => {
                 if result.tool.starts_with("glass.browser") {
                     self.note_browser_failure(&result.tool, &error);
+                }
+                if result.tool == "glass.git.diff" {
+                    self.git_diff = format!("Git diff unavailable: {error}");
+                    self.git_diff_open = true;
                 }
                 self.status = format!("{} failed: {error}", result.tool);
             }
@@ -1044,7 +1066,7 @@ impl DevTuiState {
             self.status = "No project file selected".into();
             return;
         };
-        match self.workspace.lock().and_then(|mut workspace| {
+        match self.workspace.try_lock().and_then(|mut workspace| {
             workspace
                 .project_mut()
                 .open_buffer(&path, crate::development::Actor::local())
@@ -1057,9 +1079,27 @@ impl DevTuiState {
         }
     }
 
-    /// Load the current Git diff into the inline diff surface.
+    /// Load the current Git diff without blocking key handling.
+    pub fn queue_git_diff(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if self.running_tool_job.is_some() || self.queued_tool_request.is_some() {
+            self.status = "Git diff waits for the current background operation".into();
+            return;
+        }
+        let (call, context) = self.tool_request("glass.git.diff", serde_json::json!({}), false);
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.git_diff_open = true;
+                self.git_diff = "Loading Git diff…".into();
+                self.status = "Loading Git diff in background…".into();
+            }
+            Err(error) => self.status = format!("Git diff unavailable: {error}"),
+        }
+    }
+
+    /// Synchronous helper retained for callers outside the terminal event loop.
     pub fn open_git_diff(&mut self) {
-        let diff = self.workspace.lock().and_then(|workspace| {
+        let diff = self.workspace.try_lock().and_then(|workspace| {
             workspace
                 .git()
                 .ok_or_else(|| {
@@ -1084,11 +1124,12 @@ impl DevTuiState {
 
     pub fn close_git_diff(&mut self) {
         self.git_diff_open = false;
+        self.git_diff_requested = false;
         self.status = "Git status".into();
     }
 
     pub fn focused_buffer(&self) -> Option<crate::development::EditorBuffer> {
-        self.workspace.lock().ok().and_then(|workspace| {
+        self.workspace.try_lock().ok().and_then(|workspace| {
             workspace
                 .project()
                 .buffers()
@@ -1223,7 +1264,7 @@ impl DevTuiState {
     ) -> crate::development::DevelopmentResult<()> {
         let buffer = self
             .workspace
-            .lock()?
+            .try_lock()?
             .project()
             .buffer(path)
             .cloned()
@@ -1243,7 +1284,7 @@ impl DevTuiState {
             (buffer.cursor_column as i32 + column_delta).clamp(1, max_column as i32) as u32
         };
         self.workspace
-            .lock()?
+            .try_lock()?
             .project_mut()
             .set_buffer_cursor(path, line, column)
     }
@@ -1255,7 +1296,7 @@ impl DevTuiState {
     ) -> crate::development::DevelopmentResult<()> {
         let buffer = self
             .workspace
-            .lock()?
+            .try_lock()?
             .project()
             .buffer(path)
             .cloned()
@@ -1265,7 +1306,7 @@ impl DevTuiState {
         let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
         let mut content = buffer.content.clone();
         content.insert_str(offset, text);
-        self.workspace.lock()?.project_mut().edit_buffer(
+        self.workspace.try_lock()?.project_mut().edit_buffer(
             path,
             content,
             crate::development::Actor::local(),
@@ -1279,7 +1320,7 @@ impl DevTuiState {
             )
         };
         self.workspace
-            .lock()?
+            .try_lock()?
             .project_mut()
             .set_buffer_cursor(path, line, column)
     }
@@ -1306,7 +1347,7 @@ impl DevTuiState {
         let removed_newline = &buffer.content[previous..offset] == "\n";
         let mut content = buffer.content.clone();
         content.drain(previous..offset);
-        self.workspace.lock()?.project_mut().edit_buffer(
+        self.workspace.try_lock()?.project_mut().edit_buffer(
             path,
             content.clone(),
             crate::development::Actor::local(),
@@ -1326,7 +1367,7 @@ impl DevTuiState {
             )
         };
         self.workspace
-            .lock()?
+            .try_lock()?
             .project_mut()
             .set_buffer_cursor(path, line, column)
     }
@@ -1409,7 +1450,7 @@ impl DevTuiState {
     }
 
     pub fn refresh(&mut self) {
-        let Ok(mut workspace) = self.workspace.lock() else {
+        let Ok(mut workspace) = self.workspace.try_lock() else {
             self.status = "Workspace lock failed".into();
             return;
         };

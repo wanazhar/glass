@@ -689,25 +689,6 @@ impl BrowserTui {
         self.workspace.state_mut().presentation_reason = reason;
     }
 
-    async fn highlight_selected(&mut self) {
-        let Some(entity) = self.workspace.state().selected().cloned() else {
-            return;
-        };
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
-        if let Err(error) = session
-            .highlight_target_with_revision(&entity.reference, entity.revision)
-            .await
-        {
-            self.workspace.fail_action(
-                error.to_string(),
-                error.to_string().to_lowercase().contains("stale"),
-            );
-            self.status = format!("Highlight failed: {error}");
-        }
-    }
-
     fn poll_graphics(&mut self) {
         let Some(graphics) = self.graphics.as_ref() else {
             return;
@@ -836,14 +817,14 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             .workspace
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta: -1 });
                         app.page = semantic_text(&app.workspace);
-                        app.highlight_selected().await;
+                        app.status = "Selection moved · Enter activates the target".into();
                     }
                     KeyCode::Down | KeyCode::Char('j') if app.command.is_empty() => {
                         let _ = app
                             .workspace
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta: 1 });
                         app.page = semantic_text(&app.workspace);
-                        app.highlight_selected().await;
+                        app.status = "Selection moved · Enter activates the target".into();
                     }
                     KeyCode::Char(':') if app.command.is_empty() => {
                         app.status = "Command line · type help for the command reference".into();
@@ -861,14 +842,14 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             .workspace
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta: -1 });
                         app.page = semantic_text(&app.workspace);
-                        app.highlight_selected().await;
+                        app.status = "Selection moved · Enter activates the target".into();
                     }
                     crossterm::event::MouseEventKind::ScrollDown => {
                         let _ = app
                             .workspace
                             .reduce(BrowserWorkspaceIntent::MoveSelection { delta: 1 });
                         app.page = semantic_text(&app.workspace);
-                        app.highlight_selected().await;
+                        app.status = "Selection moved · Enter activates the target".into();
                     }
                     // Left click on a semantic line selects it; clicking the
                     // command row focuses nothing (keyboard-first footer).
@@ -880,7 +861,7 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             if app.workspace.state().entities.get(index).is_some() {
                                 app.workspace.state_mut().selected_entity = Some(index);
                                 app.page = semantic_text(&app.workspace);
-                                app.highlight_selected().await;
+                                app.status = "Selection moved · Enter activates the target".into();
                             }
                         }
                     }

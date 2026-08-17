@@ -181,6 +181,8 @@ pub struct DevTuiState {
     pub lsp: String,
     pub processes: String,
     pub git: String,
+    pub git_diff: String,
+    pub git_diff_open: bool,
     pub tests: String,
     pub kernels: String,
     pub debugger: String,
@@ -303,6 +305,8 @@ impl DevTuiState {
             lsp: String::new(),
             processes: String::new(),
             git: String::new(),
+            git_diff: String::new(),
+            git_diff_open: false,
             tests: String::new(),
             kernels: String::new(),
             debugger: String::new(),
@@ -378,7 +382,7 @@ impl DevTuiState {
             DevSurface::Git => vec![
                 ("Stage all changes", "git stage .", ":"),
                 ("Commit", "git commit MESSAGE", ":"),
-                ("View diff", "git diff", ":"),
+                ("View diff", "d", ""),
                 ("Branches", "git branches", ":"),
             ],
             DevSurface::Debug => vec![
@@ -434,6 +438,8 @@ impl DevTuiState {
             if self.surface == DevSurface::Code {
                 self.open_selected_file();
             }
+        } else if hint == "d" && self.surface == DevSurface::Git {
+            self.open_git_diff();
         }
         // Single-key hints (Ctrl-S, n, t, 1, T, I) apply in navigation mode;
         // the status line reminds the user which key to press.
@@ -974,6 +980,35 @@ impl DevTuiState {
     }
 
     /// Cycle the focused editor buffer by `delta`; wraps around.
+    pub fn open_git_diff(&mut self) {
+        let diff = self.workspace.lock().and_then(|workspace| {
+            workspace
+                .git()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("not a Git repository".into())
+                })?
+                .diff(false, None)
+                .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))
+        });
+        match diff {
+            Ok(diff) if diff.trim().is_empty() => {
+                self.git_diff = "Working tree clean · no diff to show".into();
+                self.git_diff_open = true;
+            }
+            Ok(diff) => {
+                self.git_diff = diff;
+                self.git_diff_open = true;
+                self.status = "Git diff · PgUp/PgDn scroll · Esc closes".into();
+            }
+            Err(error) => self.status = format!("Git diff unavailable: {error}"),
+        }
+    }
+
+    pub fn close_git_diff(&mut self) {
+        self.git_diff_open = false;
+        self.status = "Git status".into();
+    }
+
     pub fn cycle_editor_buffer(&mut self, delta: i32) {
         let count = self
             .workspace

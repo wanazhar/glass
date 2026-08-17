@@ -201,75 +201,82 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         );
         return;
     }
-    let content = match state.surface {
-        DevSurface::Trust => {
-            let inspection = super::projection::trust_items(&state.snapshot_trust_inspection);
-            format!(
-                "WORKSPACE TRUST\n\nThis repository contains executable Glass settings.\nCurrent state: {}\n\n[I] Inspect configuration\n[O] Open untrusted\n[1] Trust once\n[T] Trust this project\n\nCONFIGURATION BY AUTHORITY / RISK\n{}",
-                state.snapshot_trust_label.as_str(),
-                inspection
-            )
-        }
-        DevSurface::Agent => format!(
-            "CONVERSATION\n{}\n\n{}\n\nComposer: i compose · Enter sends · Ctrl-A abort · Ctrl-S steer · Esc returns to navigation",
-            state.agent_readiness, state.agent_conversation
-        ),
-        DevSurface::Code => format!(
-            "FILES\n{}\n\nEDITOR{}\n{}\n\nDIAGNOSTICS\n{}\n\nKeys: j/k select file · Enter open · i edit · arrows · Ctrl-S · Ctrl-Z/Y",
-            state
-                .files
-                .iter()
-                .enumerate()
-                .take(24)
-                .map(|(index, path)| format!(
-                    "{} {}",
-                    if index == state.selected_file {
-                        "◆"
-                    } else {
-                        "○"
-                    },
-                    path
-                ))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            if state.code_edit_mode { " · EDIT" } else { "" },
-            state.editor,
-            state.lsp
-        ),
-        DevSurface::App => {
-            let mut content = format!(
-                "APP WORKSPACE\n{}\n\n{}\n\nWORKFLOW\n{}\n\nKeys: j/k select · Enter activate · n address · t type · v visual · PgUp/PgDn page · H human · G Glass",
-                state.browser, state.browser_detail, state.workflow
-            );
-            if state.browser_visual_live {
-                content.push_str("\n\nLIVE VIEW · ANSI half-block rendering · v stops");
+    let content = if state.git_diff_open && state.surface == DevSurface::Git {
+        format!(
+            "GIT DIFF\n\n{}\n\nEsc closes · PgUp/PgDn scroll",
+            state.git_diff
+        )
+    } else {
+        match state.surface {
+            DevSurface::Trust => {
+                let inspection = super::projection::trust_items(&state.snapshot_trust_inspection);
+                format!(
+                    "WORKSPACE TRUST\n\nThis repository contains executable Glass settings.\nCurrent state: {}\n\n[I] Inspect configuration\n[O] Open untrusted\n[1] Trust once\n[T] Trust this project\n\nCONFIGURATION BY AUTHORITY / RISK\n{}",
+                    state.snapshot_trust_label.as_str(),
+                    inspection
+                )
             }
-            content
+            DevSurface::Agent => format!(
+                "CONVERSATION\n{}\n\n{}\n\nComposer: i compose · Enter sends · Ctrl-A abort · Ctrl-S steer · Esc returns to navigation",
+                state.agent_readiness, state.agent_conversation
+            ),
+            DevSurface::Code => format!(
+                "FILES\n{}\n\nEDITOR{}\n{}\n\nDIAGNOSTICS\n{}\n\nKeys: j/k select file · Enter open · i edit · arrows · Ctrl-S · Ctrl-Z/Y",
+                state
+                    .files
+                    .iter()
+                    .enumerate()
+                    .take(24)
+                    .map(|(index, path)| format!(
+                        "{} {}",
+                        if index == state.selected_file {
+                            "◆"
+                        } else {
+                            "○"
+                        },
+                        path
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                if state.code_edit_mode { " · EDIT" } else { "" },
+                state.editor,
+                state.lsp
+            ),
+            DevSurface::App => {
+                let mut content = format!(
+                    "APP WORKSPACE\n{}\n\n{}\n\nWORKFLOW\n{}\n\nKeys: j/k select · Enter activate · n address · t type · v visual · PgUp/PgDn page · H human · G Glass",
+                    state.browser, state.browser_detail, state.workflow
+                );
+                if state.browser_visual_live {
+                    content.push_str("\n\nLIVE VIEW · ANSI half-block rendering · v stops");
+                }
+                content
+            }
+            DevSurface::Terminal => format!(
+                "MANAGED TERMINALS\n{}\n\nKeys: Enter start detected dev command · r restart · x stop",
+                state.processes
+            ),
+            DevSurface::Tasks => format!(
+                "TASK DAG\n\n{}\n\nKeys: Enter create task · p pause · u resume · x cancel",
+                state.tasks
+            ),
+            DevSurface::Debug => format!(
+                "DEBUG SESSIONS\n{}\n\nTESTS\n{}\n\nKeys: c continue · s step · b breakpoint",
+                state.debugger, state.tests
+            ),
+            DevSurface::Git => format!(
+                "{}\n\nKeys: Enter stage/unstage selected · d diff · c commit · D discard",
+                state.git
+            ),
+            DevSurface::More => format!(
+                "{}\n\nPI READINESS\n{}\n\nKERNELS\n{}\n\nEXPERIMENTS\n{}\n\nREPLAY / OPERATIONS\n{}\n\nKeys: a actions · : expert commands",
+                state.workspace_status,
+                state.agent_readiness,
+                state.kernels,
+                state.experiments,
+                state.replay,
+            ),
         }
-        DevSurface::Terminal => format!(
-            "MANAGED TERMINALS\n{}\n\nKeys: Enter start detected dev command · r restart · x stop",
-            state.processes
-        ),
-        DevSurface::Tasks => format!(
-            "TASK DAG\n\n{}\n\nKeys: Enter create task · p pause · u resume · x cancel",
-            state.tasks
-        ),
-        DevSurface::Debug => format!(
-            "DEBUG SESSIONS\n{}\n\nTESTS\n{}\n\nKeys: c continue · s step · b breakpoint",
-            state.debugger, state.tests
-        ),
-        DevSurface::Git => format!(
-            "{}\n\nKeys: Enter stage/unstage selected · d diff · c commit · D discard",
-            state.git
-        ),
-        DevSurface::More => format!(
-            "{}\n\nPI READINESS\n{}\n\nKERNELS\n{}\n\nEXPERIMENTS\n{}\n\nREPLAY / OPERATIONS\n{}\n\nKeys: a actions · : expert commands",
-            state.workspace_status,
-            state.agent_readiness,
-            state.kernels,
-            state.experiments,
-            state.replay,
-        ),
     };
     frame.render_widget(
         Paragraph::new(content)

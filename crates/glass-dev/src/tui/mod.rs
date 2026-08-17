@@ -68,6 +68,15 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             KeyCode::Char('3') => state.accept_browser_recovery(2),
                             _ => {}
                         }
+                    } else if state.git_diff_open && state.surface == DevSurface::Git {
+                        match key.code {
+                            KeyCode::Esc => state.close_git_diff(),
+                            KeyCode::PageUp => state.scroll_surface(-10),
+                            KeyCode::PageDown => state.scroll_surface(10),
+                            KeyCode::Home => state.scroll_home(),
+                            KeyCode::End => state.scroll_end(),
+                            _ => {}
+                        }
                     } else if state.pending_confirmation.is_some() {
                         match key.code {
                             KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
@@ -184,6 +193,9 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Code => {
                                 state.open_selected_file();
+                            }
+                            (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
+                                state.open_git_diff()
                             }
                             (KeyCode::Char(']'), _) if state.surface == DevSurface::Code => {
                                 state.cycle_editor_buffer(1)

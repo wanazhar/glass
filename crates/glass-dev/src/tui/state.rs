@@ -762,6 +762,10 @@ impl DevTuiState {
     }
 
     pub fn submit_composer(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if self.running_tool_job.is_some() || self.queued_tool_request.is_some() {
+            self.status = "Background operation running · message kept in composer".into();
+            return;
+        }
         let mut text = std::mem::take(&mut self.composer_input);
         let steer = self.composer_steer;
         self.composer_cursor = 0;
@@ -2059,6 +2063,10 @@ impl DevTuiState {
     }
 
     pub fn queue_browser_intent(&mut self, intent: BrowserWorkspaceIntent) {
+        if self.running_tool_job.is_some() || self.queued_tool_request.is_some() {
+            self.status = "Browser action waits for the current background operation".into();
+            return;
+        }
         let action = match self.browser_workspace.reduce(intent) {
             Ok(Some(action)) => action,
             Ok(None) => return,
@@ -2136,12 +2144,12 @@ impl DevTuiState {
     ) {
         let expected_generation = self
             .workspace
-            .lock()
+            .try_lock()
             .map(|workspace| workspace.generation())
             .unwrap_or_default();
         let expected_project_revision = self
             .workspace
-            .lock()
+            .try_lock()
             .map(|workspace| workspace.project().revision())
             .unwrap_or_default();
         (

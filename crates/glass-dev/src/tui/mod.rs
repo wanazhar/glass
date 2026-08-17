@@ -61,9 +61,6 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                         }
                     } else if key.code == KeyCode::Char('?') {
                         state.toggle_help();
-                    } else if key.code == KeyCode::Esc && state.running_tool_job.is_some() {
-                        state.status =
-                            "Background operation is bounded; Ctrl-C exits without waiting".into();
                     } else if state.menu_open {
                         match key.code {
                             KeyCode::Esc => state.close_menu(),
@@ -178,6 +175,11 @@ pub fn run(root: impl AsRef<Path>, layout: TuiLayout) -> Result<(), Box<dyn std:
                         }
                     } else {
                         match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) if state.running_tool_job.is_some() => {
+                                state.status =
+                                    "Background operation is bounded; Ctrl-C exits without waiting"
+                                        .into();
+                            }
                             (KeyCode::Char('q'), _) => {
                                 state.quit = true;
                             }

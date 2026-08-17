@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import subprocess
 import sys
@@ -12,7 +13,7 @@ import time
 REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "wanazhar/glass")
 RELEASE_PROPAGATION_ATTEMPTS = 10
 RELEASE_PROPAGATION_DELAY_SECONDS = 3
-UNPUBLISHED_FAILED_TAGS = {"v0.3.6", "v0.3.7", "v0.3.8"}
+UNPUBLISHED_FAILED_TAGS = {"v0.3.6", "v0.3.7", "v0.3.8", "v0.3.10"}
 
 
 def gh_names(endpoint: str, query: str) -> set[str]:
@@ -35,6 +36,37 @@ def gh_names(endpoint: str, query: str) -> set[str]:
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
+def release_exists(tag: str) -> bool:
+    result = subprocess.run(
+        [
+            "gh",
+            "api",
+            f"repos/{REPOSITORY}/releases/tags/{tag}",
+            "--jq",
+            ".tag_name",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip() == tag
+    if "HTTP 404" in result.stderr:
+        return False
+    print(result.stderr.strip(), file=sys.stderr)
+    raise SystemExit(result.returncode)
+
+
+def published_release_names(tags: set[str]) -> set[str]:
+    published: set[str] = set()
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(tags)))) as pool:
+        futures = {pool.submit(release_exists, tag): tag for tag in tags}
+        for future in as_completed(futures):
+            if future.result():
+                published.add(futures[future])
+    return published
+
+
 def main() -> None:
     tags = {
         name
@@ -48,10 +80,7 @@ def main() -> None:
             + ", ".join(unknown_failed_tags)
         )
     for attempt in range(RELEASE_PROPAGATION_ATTEMPTS):
-        releases = gh_names(
-            "releases?per_page=100",
-            ".[] | select(.draft == false and .prerelease == false) | .tag_name",
-        )
+        releases = published_release_names(tags)
         unexpected_failed_releases = sorted(UNPUBLISHED_FAILED_TAGS & releases)
         if unexpected_failed_releases:
             raise SystemExit(

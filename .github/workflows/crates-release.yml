@@ -14,6 +14,11 @@ on:
         required: true
         default: false
         type: boolean
+      verify_release_records:
+        description: Verify all published and retained failed GitHub release tags
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -307,6 +312,22 @@ jobs:
             --title "Glass ${crate_version}" \
             --latest \
             --notes-file "$notes_file"
+
+      - name: Verify GitHub release records
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check-github-releases.py
+
+  verify-release-records:
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_release_records == true
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
 
       - name: Verify GitHub release records
         env:

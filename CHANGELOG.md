@@ -5,6 +5,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep the Unix-only PTY integration suite out of Windows builds and use the
+  platform-correct `openpty` window pointer ABI on macOS.
+
 ## [0.3.11] - 2026-08-17
 
 ### Added

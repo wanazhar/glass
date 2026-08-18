@@ -26,6 +26,15 @@ experiments, all live Chromium scenarios, and native Windows named-pipe
 lifecycle. Fuzz run `32042326767` passed `mcp_frame`, `cdp_message`, `ax_dom`,
 `locator`, `url_policy`, and `semantic_contracts`.
 
+Post-publication main CI run `32044348297` initially failed: the macOS
+browser-free package check exposed the `openpty` pointer ABI mismatch, the
+Windows browser-free suite had one scheduler-sensitive daemon operation
+failure, and GitHub action downloads also returned transient 429/502 errors.
+The PTY portability fixes landed in commit `5d16cb8`; the failed-job rerun
+completed successfully for the exact `5d16cb8` source (`headSha` verified).
+This is post-publication CI evidence and does not change the immutable
+`v0.3.11` tag or published crates.
+
 ## 0.3.10 failed candidate
 
 Signed tag `v0.3.10` points to commit

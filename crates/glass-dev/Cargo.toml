@@ -7,6 +7,7 @@ description = "Glass terminal-native development and browser workspace"
 license.workspace = true
 readme = "README.md"
 homepage.workspace = true
+documentation = "https://docs.rs/glass-dev"
 repository.workspace = true
 keywords = ["browser-automation", "developer-tools", "mcp", "tui"]
 categories = ["command-line-utilities", "development-tools::testing"]
@@ -21,8 +22,11 @@ name = "glass-browser"
 path = "src/browser_main.rs"
 doc = false
 
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
-glass-browser = { version = "=0.3.11", path = "../glass-browser" }
+glass-browser = { version = "=0.3.12", path = "../glass-browser" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

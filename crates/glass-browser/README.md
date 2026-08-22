@@ -148,4 +148,8 @@ agreement reports exact schema and capability status.
 - [Complete uninstall and retained state](https://github.com/wanazhar/glass/blob/main/docs/installation.md#fully-uninstall-glass)
 - [API documentation](https://docs.rs/glass-browser)
 
+The docs.rs page documents the Rust library; use the [CLI
+reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md) for
+installed command behavior.
+
 License: MIT.

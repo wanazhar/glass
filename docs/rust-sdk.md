@@ -8,6 +8,16 @@ The `glass-browser` package exports the `glass_browser` library. The library
 owns the same policy, revision, semantic, workflow, workspace, and result
 contracts used by the CLI, TUI, MCP server, and daemon.
 
+The focused browser API is documented at
+[`docs.rs/glass-browser`](https://docs.rs/glass-browser). The complete
+development workspace API is documented at
+[`docs.rs/glass-dev`](https://docs.rs/glass-dev).
+
+docs.rs renders the Rust API surface. Some benchmark-style Cargo examples use
+development-only dependencies and are therefore not scraped into the docs.rs
+example index; the checked-in runnable examples catalog remains the complete
+source-level example inventory.
+
 ## Dependency and features
 
 ```toml
@@ -287,6 +297,6 @@ artifacts unless the caller explicitly selected that evidence path.
 See [runnable examples](examples.md). Library documentation is validated with:
 
 ```console
-RUSTDOCFLAGS='-D warnings' cargo doc -p glass-browser --all-features --no-deps
-cargo test -p glass-browser --doc --all-features
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
+cargo test --workspace --doc --all-features --locked
 ```

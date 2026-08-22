@@ -5,6 +5,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-08-22
+
 ### Changed
 
 - Refreshed the Glass Dev TUI with consistent responsive panels, surface

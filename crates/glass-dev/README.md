@@ -27,6 +27,10 @@ release and `--force` only for an intentional reinstall.
 also install `glass-browser` into the same Cargo home unless you intentionally
 want that package to replace the shared `glass-browser` executable.
 
+The public Rust API is documented at [docs.rs/glass-dev](https://docs.rs/glass-dev);
+use the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md)
+for installed command behavior.
+
 Chrome or Chromium is needed only for browser-backed operations. Project
 inspection, files, search, local harness, Task Protocol/Web IR operations,
 policy preflight, and many diagnostics are browser-free.
@@ -130,7 +134,7 @@ explicit detach, eviction, server shutdown, or daemon shutdown.
 Repository TypeScript and Python clients provide typed browser/project helpers,
 cursor-bounded event subscriptions, cancellation, process-health waits,
 reconnect workflows, and mutation-lease scopes. They are not published to npm
-or PyPI in the `0.3.11` line.
+or PyPI in the `0.3.12` line.
 
 ## Agents
 

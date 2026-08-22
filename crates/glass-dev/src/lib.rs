@@ -9,6 +9,40 @@
 //! Git, agent, and project operations off the input loop. The UI applies
 //! versioned snapshots, keeps drafts and modal state local, and restores the
 //! terminal without waiting for an active bounded job.
+//!
+//! ## Public API
+//!
+//! [`DevelopmentWorkspace`] owns the resident project runtime and its trust
+//! boundary. [`SharedDevelopmentWorkspace`] is the thread-safe handle used by
+//! the TUI, daemon, MCP, and agent services. [`DevelopmentToolRouter`] exposes
+//! governed tool execution, while [`PiReadiness`] and [`PiSessionRequest`]
+//! describe the managed Pi runtime surface.
+//!
+//! The focused browser-only API lives in
+//! [`glass_browser`](https://docs.rs/glass-browser).
+//!
+//! The docs.rs page documents the Rust library API; installed command behavior
+//! is specified in the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md).
+//!
+//! ## Quick start
+//!
+//! ```rust,no_run
+//! use glass_dev::DevelopmentWorkspace;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let workspace = DevelopmentWorkspace::open(".")?;
+//! println!("{}", workspace.root().display());
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Modules
+//!
+//! [`agents`] owns resident Pi scheduling and evidence. [`browser`] provides
+//! the development browser service. [`development`] contains files, editors,
+//! processes, language services, and project execution. [`tools`] and
+//! [`trust`] enforce governed operations, while [`tui`] and [`workspace`]
+//! connect those services to the interactive product.
 
 pub mod agents;
 pub mod browser;

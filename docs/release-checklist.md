@@ -4,36 +4,31 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release checkout is `glass-browser` and `glass-dev` version `0.3.11`.
+The release checkout is `glass-browser` and `glass-dev` version `0.3.12`.
 Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
 targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
 Windows receives browser-free source checks and native named-pipe daemon
 certification; native browser/PTY support is not certified.
 
-## 0.3.11 release candidate
+## 0.3.12 release candidate
 
-- [x] Re-audit issue #36 scenarios A-J, gates 1-14, and every forbidden
+- [ ] Re-audit issue #36 scenarios A-J, gates 1-14, and every forbidden
       outcome against the current source and executable tests.
-- [x] Pass the complete local workspace, docs, package, security, fuzz, live
+- [ ] Pass the complete local workspace, docs, package, security, fuzz, live
       browser, PTY, clean-install, and publish dry-run gates.
-- [x] Verify the signed exact tag, ordered registry publication, clean registry
+- [ ] Verify the signed exact tag, ordered registry publication, clean registry
       installs, native CI, fuzz, GitHub Release, and release record.
 
-The 0.3.11 release contains the post-0.3.9 TUI responsiveness, browser
-feedback, agent-composer, projection, and documentation hardening changes.
+The 0.3.12 release contains the managed Pi runtime refresh path, in-TUI Agent
+setup/login/update and conversation recovery, responsive Glass Dev surfaces,
+browser-target selection and recovery, bounded target archiving, and
+docs.rs-discoverable package metadata.
 
-Native certification run `32042409142` passed the pinned Pi SDK, automatic
-experiments, all live Chromium scenarios, and native Windows named-pipe
-lifecycle. Fuzz run `32042326767` passed all six bounded parser and semantic
-targets.
-
-Post-publication main CI run `32044348297` initially failed on the macOS
-`openpty` ABI, one Windows scheduler-sensitive daemon test, and transient
-GitHub action download errors. The portability fixes landed in `5d16cb8`; the
-failed-job rerun passed for that exact `headSha`. See the detailed record in
-[`release-evidence.md`](release-evidence.md). This did not alter the immutable
-`v0.3.11` tag or published crates.
+Exact source CI, native certification, fuzz, publication, and GitHub Release
+records are added to [`release-evidence.md`](release-evidence.md) as each gate
+completes. The published 0.3.11 record remains historical and is not reused as
+evidence for this release.
 
 The signed `v0.3.10` tag is retained as an immutable failed candidate. Its
 workflow stopped before publication because the tagged release notes contained

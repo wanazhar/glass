@@ -3,8 +3,9 @@
 //! This module deliberately contains no browser transport, terminal, or image
 //! protocol types. A frame is metadata only: implementations may keep a
 //! transient encoded payload beside it, but this contract never owns or
-//! serializes frame bytes. The [`LatestFrameMailbox`](crate::presentation::LatestFrameMailbox) is the sole frame
-//! retention primitive and is bounded to a current frame plus one pending frame.
+//! serializes frame bytes. The [`latest-frame mailbox`](crate::presentation::LatestFrameMailbox)
+//! is the sole frame retention primitive and is bounded to a current frame plus
+//! one pending frame.
 
 use serde::de::{Deserializer, Error as DeError, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};

@@ -733,12 +733,12 @@ mod tests {
 
     #[test]
     fn issue_33_phone_design_assets_decode_with_real_dimensions() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         for (name, minimum_width, minimum_height) in [
             ("remote-ios-concept.jpg", 390, 800),
             ("remote-android-concept.jpg", 200, 400),
         ] {
-            let path = root.join("docs/design/v0.3.3").join(name);
+            let path = root.join(name);
             let size = imagesize::size(&path).unwrap_or_else(|error| {
                 panic!(
                     "{} must be a decodable release design asset: {error}",

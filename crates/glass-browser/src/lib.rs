@@ -11,6 +11,9 @@
 //! postconditions. CDP is the production backend. WebDriver BiDi remains an
 //! experimental bounded adapter.
 //!
+//! The docs.rs page documents the Rust library API; installed command behavior
+//! is specified in the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md).
+//!
 //! # Choose an entry point
 //!
 //! | Goal | Entry point |

@@ -1,6 +1,6 @@
 # Canonical Browser Workspace
 
-Status: Current shared controller; shell-specific layouts are 0.3.11 source behavior
+Status: Current shared controller; shell-specific layouts are 0.3.12 source behavior
 
 ## Purpose and boundary
 

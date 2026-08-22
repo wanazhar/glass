@@ -277,6 +277,20 @@ def main() -> None:
         if "https://github.com/wanazhar/glass/" not in text:
             failures.append(f"{relative} lacks permanent repository documentation links")
 
+    docs_rs_markers = {
+        "crates/glass-browser/Cargo.toml": 'documentation = "https://docs.rs/glass-browser"',
+        "crates/glass-dev/Cargo.toml": 'documentation = "https://docs.rs/glass-dev"',
+        "crates/glass-browser/README.md": "https://docs.rs/glass-browser",
+        "crates/glass-dev/README.md": "https://docs.rs/glass-dev",
+        "crates/glass-browser/src/lib.rs": "//! # Choose an entry point",
+        "crates/glass-dev/src/lib.rs": "//! ## Public API",
+        "docs/rust-sdk.md": "https://docs.rs/glass-dev",
+    }
+    for relative, marker in docs_rs_markers.items():
+        if marker not in (ROOT / relative).read_text(encoding="utf-8"):
+            failures.append(f"{relative} omits docs.rs marker `{marker}`")
+
+
     paths = markdown_files()
     failures.extend(check_links(paths))
     fail(failures)

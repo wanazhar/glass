@@ -1,5 +1,22 @@
 # Release evidence
 
+## 0.3.12 release evidence
+
+This record tracks the exact signed source and publication gates for the
+0.3.12 release. Fields are completed from command output, workflow records,
+registry responses, or GitHub records; prior-release evidence is not reused.
+
+- Source commit: pending release commit and exact `origin/main` verification.
+- Signed tag: pending `v0.3.12` annotated-tag verification.
+- Main CI: pending exact `headSha` and terminal conclusion.
+- Release workflow: pending exact-tag validation, ordered publication, and
+  source-only GitHub Release.
+- Registry: pending exact `glass-browser` and `glass-dev` version endpoints,
+  timestamps, and yanked state.
+- Installation: pending clean exact-version registry install smoke tests.
+- Native/fuzz: pending exact-source run IDs or explicitly bounded evidence.
+- Closure: pending final documentation validation and clean synchronized tree.
+
 ## 0.3.11 release evidence
 
 The candidate source commit `66d760959213aa4b7eea8d05093f8a424061fb8e` carries

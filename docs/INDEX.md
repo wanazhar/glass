@@ -1,11 +1,10 @@
 # Glass documentation
 
-These guides describe the complete Glass product in this `0.3.11` source
-checkout, including local unreleased UX and responsiveness repairs. Published
-release notes remain scoped to the tagged release; the working-tree changelog
-records changes after that tag. `glass-browser 0.3.11` and `glass-dev 0.3.11` are
-the current release crates. `Local only` means a capability exists in the checkout but is not part
-of the published contract.
+These guides describe the complete Glass product in this `0.3.12` source
+checkout. Published release notes remain scoped to the tagged release; the
+working-tree changelog records changes after that tag. `glass-browser 0.3.12`
+and `glass-dev 0.3.12` are the current release crates. `Local only` means a
+capability exists in the checkout but is not part of the published contract.
 Platform certification remains separate from source availability; see
 [cross-platform feature parity](feature-parity.md).
 
@@ -39,7 +38,7 @@ installation; this index owns the cross-product documentation map.
 | Auditing skills, hooks, and tools | [Customization governance](customization-governance.md) | [Workspace trust](workspace-trust.md), [Security](../SECURITY.md) |
 | Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
 | Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
-| Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [docs.rs](https://docs.rs/glass-browser) |
+| Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [glass-browser docs.rs](https://docs.rs/glass-browser), [glass-dev docs.rs](https://docs.rs/glass-dev) |
 | Building a browser workflow | [Semantic observations](semantic-observation.md) | [Actions](actions.md), [workflows](workflows.md), [semantic execution](semantic-execution.md) |
 | Operating authenticated sessions | [Profiles](profile-ergonomics.md) | [Security](../SECURITY.md), [policy](policy.md) |
 | Maintaining or releasing Glass | [Contributing](../CONTRIBUTING.md) | [Release checklist](release-checklist.md), [release evidence](release-evidence.md) |
@@ -210,8 +209,10 @@ current user instructions.
   client, and validation evidence.
 - [Tag signing](tag-signing.md) — current `unknown_key` evidence, maintainer
   identity repair, and the GitHub-verification release gate.
-- [Glass 0.3.11 release notes](releases/0.3.11.md) — current substantive
+- [Glass 0.3.12 release notes](releases/0.3.12.md) — current substantive
   feature, security, migration, limitation, and validation summary.
+- [Glass 0.3.11 release notes](releases/0.3.11.md) — previous published
+  release record.
 - [Glass 0.3.10 release notes](releases/0.3.10.md) — immutable failed
   exact-tag candidate record.
 - [Glass 0.3.9 release notes](releases/0.3.9.md) — previous complete issue #36
@@ -224,8 +225,10 @@ current user instructions.
   retained for audit history; it was not published to crates.io.
 - [Glass 0.3.5 release notes](releases/0.3.5.md) — previous release record.
 - [Changelog](../CHANGELOG.md) — user-visible changes.
-- [Migrate 0.3.9 to 0.3.11](migration/0.3.11.md) — post-0.3.9 TUI,
+- [Migrate from 0.3.11 to 0.3.12](migration/0.3.12.md) — Pi runtime, TUI,
   responsiveness, browser, Agent, and documentation hardening.
+- [Migrate from 0.3.9 to 0.3.11](migration/0.3.11.md) — previous published
+  release migration.
 - [Migrate 0.3.9 to 0.3.10](migration/0.3.10.md) — historical failed
   exact-tag candidate guidance.
 - [Migrate 0.3.5 to 0.3.9](migration/0.3.9.md) — previous BrowserWorkspace,

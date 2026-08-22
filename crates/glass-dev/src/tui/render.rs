@@ -2330,8 +2330,13 @@ mod tests {
     fn agent_landing_and_status_markers_are_scannable() {
         let mut state = state(TuiLayout::Mobile);
         let output = rendered(&state, 48, 18);
-        assert!(output.contains("START HERE"));
-        assert!(output.contains("Ask Glass Agent"));
+        if state.agent_readiness.starts_with("✓ Ready") {
+            assert!(output.contains("START HERE"));
+            assert!(output.contains("Ask Glass Agent"));
+        } else {
+            assert!(output.contains("SETUP REQUIRED"));
+            assert!(output.contains("Install/repair Pi runtime"));
+        }
         assert!(output.contains("APP · Detached · no page · idle"));
         assert!(output.contains("● Ready"));
         assert!(output.contains("─"));
@@ -2401,8 +2406,11 @@ mod tests {
         state.surface = DevSurface::Agent;
         let agent = rendered(&state, 140, 40);
         assert!(agent.contains("AGENT PROGRESS"));
-        assert!(agent.contains("ready for a prompt"));
-
+        if state.agent_readiness.starts_with("✓ Ready") {
+            assert!(agent.contains("ready for a prompt"));
+        } else {
+            assert!(agent.contains("setup required"));
+        }
         state.surface = DevSurface::App;
         let fallback = rendered(&state, 140, 40);
         assert!(fallback.contains("BROWSER PROGRESS"));

@@ -1593,7 +1593,9 @@ fn has_svg_node(node: &DomNode) -> bool {
 
 fn svg_attribute(node: &DomNode, name: &str) -> Option<String> {
     node.attributes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .find(|pair| pair[0].eq_ignore_ascii_case(name))
         .map(|pair| pair[1].clone())
 }

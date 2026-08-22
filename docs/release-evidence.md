@@ -3,19 +3,52 @@
 ## 0.3.12 release evidence
 
 This record tracks the exact signed source and publication gates for the
-0.3.12 release. Fields are completed from command output, workflow records,
+0.3.12 release. Fields below come from command output, workflow records,
 registry responses, or GitHub records; prior-release evidence is not reused.
 
-- Source commit: pending release commit and exact `origin/main` verification.
-- Signed tag: pending `v0.3.12` annotated-tag verification.
-- Main CI: pending exact `headSha` and terminal conclusion.
-- Release workflow: pending exact-tag validation, ordered publication, and
-  source-only GitHub Release.
-- Registry: pending exact `glass-browser` and `glass-dev` version endpoints,
-  timestamps, and yanked state.
-- Installation: pending clean exact-version registry install smoke tests.
-- Native/fuzz: pending exact-source run IDs or explicitly bounded evidence.
-- Closure: pending final documentation validation and clean synchronized tree.
+- Source commits: release metadata was prepared in
+  [`33ff290f601adea114df210a2def4173307ad052`](https://github.com/wanazhar/glass/commit/33ff290f601adea114df210a2def4173307ad052);
+  the cross-platform CI fixes landed in the final release source
+  [`2cf23a66625c535bd6257a2fcee45db567db2aa2`](https://github.com/wanazhar/glass/commit/2cf23a66625c535bd6257a2fcee45db567db2aa2).
+  `origin/main` and `v0.3.12` resolve to the final SHA.
+- Signed tag: local `git tag -v v0.3.12` passed with EDDSA key
+  `C7102B6A568EABDE023F818528E01A5852DB1559`; GitHub reports the annotated
+  tag object as `verified: true`, reason `valid`, and the tag commit is the
+  final SHA.
+- Main CI: the first source run
+  [`32569739176`](https://github.com/wanazhar/glass/actions/runs/32569739176)
+  tested `33ff290f601adea114df210a2def4173307ad052` and failed: Clippy
+  rejected `chunks_exact(2)` under the current toolchain and browser-free
+  macOS/Linux/Windows contract tests assumed a ready Pi runtime. The fix was
+  pushed as a new commit; final CI
+  [`32570431822`](https://github.com/wanazhar/glass/actions/runs/32570431822)
+  completed successfully with `headSha` equal to the final SHA.
+- Fuzz: exact-source Parser fuzz smoke run
+  [`32570431823`](https://github.com/wanazhar/glass/actions/runs/32570431823)
+  completed successfully with the final SHA.
+- Release workflow:
+  [`32571020731`](https://github.com/wanazhar/glass/actions/runs/32571020731)
+  completed successfully with `headSha` equal to the final SHA. Validation job
+  `97026373388`, ordered publication job `97027722571`, and GitHub Release job
+  `97028855346` all passed. The publish job completed the crate publication and
+  exact registry-install help smoke tests.
+- Registry: crates.io returned HTTP 200, exact version `0.3.12`, and
+  `yanked: false` for both crates. `glass-browser` was published at
+  `2026-08-22T11:57:17.224521Z`; `glass-dev` was published at
+  `2026-08-22T11:58:16.453206Z`.
+- Native certification: exact-tag run
+  [`32572181403`](https://github.com/wanazhar/glass/actions/runs/32572181403)
+  passed with the final SHA. Native Pi, experiments, and Chromium job
+  `97029129743` and Windows named-pipe lifecycle job `97029129786` both
+  passed.
+- GitHub Release:
+  [`v0.3.12`](https://github.com/wanazhar/glass/releases/tag/v0.3.12) is
+  non-draft, non-prerelease, latest, source-only, has no assets, and is
+  attached to the verified signed tag. It was published at
+  `2026-08-22T12:06:26Z`.
+- Closure: `python3 scripts/check-github-releases.py` passed with 38 published
+  tags and 4 retained failed candidates. Final documentation and repository
+  synchronization checks are recorded in the closing commit.
 
 ## 0.3.11 release evidence
 

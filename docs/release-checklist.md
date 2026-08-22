@@ -11,13 +11,13 @@ feature-parity matrix and native evidence recorded for each environment.
 Windows receives browser-free source checks and native named-pipe daemon
 certification; native browser/PTY support is not certified.
 
-## 0.3.12 release candidate
+## 0.3.12 release
 
-- [ ] Re-audit issue #36 scenarios A-J, gates 1-14, and every forbidden
+- [x] Re-audit issue #36 scenarios A-J, gates 1-14, and every forbidden
       outcome against the current source and executable tests.
-- [ ] Pass the complete local workspace, docs, package, security, fuzz, live
+- [x] Pass the complete local workspace, docs, package, security, fuzz, live
       browser, PTY, clean-install, and publish dry-run gates.
-- [ ] Verify the signed exact tag, ordered registry publication, clean registry
+- [x] Verify the signed exact tag, ordered registry publication, clean registry
       installs, native CI, fuzz, GitHub Release, and release record.
 
 The 0.3.12 release contains the managed Pi runtime refresh path, in-TUI Agent
@@ -26,9 +26,9 @@ browser-target selection and recovery, bounded target archiving, and
 docs.rs-discoverable package metadata.
 
 Exact source CI, native certification, fuzz, publication, and GitHub Release
-records are added to [`release-evidence.md`](release-evidence.md) as each gate
-completes. The published 0.3.11 record remains historical and is not reused as
-evidence for this release.
+records are recorded in [`release-evidence.md`](release-evidence.md). The
+published 0.3.11 record remains historical and is not reused as evidence for
+this release.
 
 The signed `v0.3.10` tag is retained as an immutable failed candidate. Its
 workflow stopped before publication because the tagged release notes contained

@@ -301,6 +301,7 @@ fn worker_loop(
 ) {
     // Seed an initial snapshot before the first draw.
     let mut seeded = false;
+    let mut conversation_events = Vec::new();
     let mut conversation_tail = String::new();
     let mut last_browser: Option<(Option<u32>, Option<u64>)> = None;
     let mut snapshot_version = 0u64;
@@ -348,26 +349,28 @@ fn worker_loop(
             }
             ActorRequest::RefreshConversation => {
                 conversation_requested.store(false, Ordering::Release);
-                // Cheap fast path: fold only new events into the tail.
+                // Cheap fast path: fold only new events, then re-render the
+                // bounded event history so streaming deltas coalesce.
                 let Ok(mut locked) = workspace.lock() else {
                     continue;
                 };
                 let cursor = conversation_cursor.load(Ordering::Acquire);
-                match locked.agents().history(cursor) {
-                    Ok(events) if !events.is_empty() => {
-                        let highest = events
-                            .iter()
-                            .map(|event| event.sequence)
-                            .max()
-                            .unwrap_or(cursor);
-                        let rendered = crate::tui::projection::conversation(&events);
-                        if !conversation_tail.is_empty() && !rendered.is_empty() {
-                            conversation_tail.push_str("\n\n");
-                        }
-                        conversation_tail.push_str(&rendered);
-                        conversation_cursor.store(highest, Ordering::Release);
-                    }
-                    _ => {}
+                if let Ok(events) = locked.agents().history(cursor)
+                    && !events.is_empty()
+                {
+                    let highest = events
+                        .iter()
+                        .map(|event| event.sequence)
+                        .max()
+                        .unwrap_or(cursor);
+                    conversation_events.extend(events);
+                    let rendered = crate::tui::projection::conversation(&conversation_events);
+                    conversation_tail = if rendered.is_empty() {
+                        "No conversation yet. Press i to compose a message.".into()
+                    } else {
+                        rendered
+                    };
+                    conversation_cursor.store(highest, Ordering::Release);
                 }
                 if let Ok(mut slot) = snapshots.lock()
                     && let Some(snapshot) = slot.as_mut()
@@ -422,14 +425,24 @@ fn worker_loop(
                         }
                     }
                 }
-                conversation_tail = snapshot.agent_conversation.clone();
                 if let Ok(latest) = workspace
                     .lock()
                     .and_then(|mut locked| locked.agents().history(0))
-                    && let Some(highest) = latest.iter().map(|event| event.sequence).max()
                 {
-                    conversation_cursor.store(highest, Ordering::Release);
+                    conversation_events = latest;
+                    let rendered = crate::tui::projection::conversation(&conversation_events);
+                    conversation_tail = if rendered.is_empty() {
+                        "No conversation yet. Press i to compose a message.".into()
+                    } else {
+                        rendered
+                    };
+                    if let Some(highest) =
+                        conversation_events.iter().map(|event| event.sequence).max()
+                    {
+                        conversation_cursor.store(highest, Ordering::Release);
+                    }
                 }
+                snapshot.agent_conversation = conversation_tail.clone();
                 if let Ok(mut slot) = snapshots.lock() {
                     *slot = Some(snapshot);
                 }
@@ -957,7 +970,7 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
         .map(|url| format!("● open App {url}"))
         .unwrap_or_else(|| "○ start App after a URL is detected".into());
     format!(
-        "WELCOME · {}\n{}\n\n✓ workspace {}\n\nNEXT ACTIONS\n◆ [a] actions menu · per-surface flows\n◆ [i] talk to Glass Agent\n◆ [Enter] open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+        "WELCOME · {}\n{}\n\n✓ workspace {}\n\nNEXT ACTIONS\n◆ [a] actions menu · per-surface flows\n◆ [1] Agent · [s] install Pi · [l] sign in\n◆ [4] Terminal · [s] start detected dev suite\n◆ [Enter] open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
         detection.git_branch.as_deref().unwrap_or("no branch"),
         project_line,
         workspace.trust().label(),

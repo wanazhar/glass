@@ -83,10 +83,11 @@ function callGlass(toolCallId, params, signal) {
 const glassTool = {
   name: "glass_tool",
   label: "Glass Tool",
-  description: "Invoke one governed Glass development or browser capability.",
-  promptSnippet: "glass_tool: call authoritative Glass workspace capabilities",
+  description: "Call one governed Glass capability by its exact glass.* name and JSON arguments. This is the only filesystem, process, browser, Git, test, debugger, and evidence tool in the session.",
+  promptSnippet: "glass_tool({name, arguments}): the only callable Glass workspace/browser capability",
   promptGuidelines: [
-    "Use Glass tools for files, processes, Git, tests, debugger, browser, and evidence.",
+    "Use glass_tool for every Glass file, process, Git, test, debugger, browser, and evidence operation.",
+    "Example: glass_tool({name: \"glass.browser.observe\", arguments: {}}).",
     "Do not claim a mutation succeeded until the Glass tool result confirms it.",
   ],
   parameters: Type.Object({
@@ -119,7 +120,8 @@ async function create(manager) {
     cwd,
     sessionManager: manager,
     resourceLoader,
-    noTools: "all",
+    noTools: "builtin",
+    tools: ["glass_tool"],
     customTools: [glassTool],
     thinkingLevel: process.env.GLASS_PI_THINKING || undefined,
   });
@@ -183,6 +185,20 @@ async function confinedSessionPath(path) {
   return canonical;
 }
 
+async function attachContext(context, deliverAs = "nextTurn") {
+  if (!context || typeof context !== "object") return;
+  const text = JSON.stringify(safe(context));
+  if (Buffer.byteLength(text, "utf8") > 64 * 1024) {
+    throw new Error("Glass context attachment exceeds 64 KiB");
+  }
+  await runtime.session.sendCustomMessage({
+    customType: "glass.context",
+    content: [{ type: "text", text }],
+    display: false,
+    details: safe(context),
+  }, { triggerTurn: false, deliverAs });
+}
+
 async function operation(name, params = {}) {
   const session = runtime.session;
   switch (name) {
@@ -197,9 +213,18 @@ async function operation(name, params = {}) {
         ],
       };
     case "state": return snapshot();
-    case "prompt": await session.prompt(params.text); return snapshot();
-    case "steer": await session.steer(params.text); return snapshot();
-    case "followUp": await session.followUp(params.text); return snapshot();
+    case "prompt":
+      await attachContext(params.context);
+      await session.prompt(params.text);
+      return snapshot();
+    case "steer":
+      await attachContext(params.context, "steer");
+      await session.steer(params.text);
+      return snapshot();
+    case "followUp":
+      await attachContext(params.context, "followUp");
+      await session.followUp(params.text);
+      return snapshot();
     case "abort": await session.abort(); return snapshot();
     case "compact": return await session.compact(params.instructions);
     case "models": return session.modelRuntime.getModels().map((model) => ({

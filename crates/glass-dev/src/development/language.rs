@@ -13,6 +13,7 @@ use std::{
 };
 
 const MAX_LSP_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+const DIAGNOSTICS_EMPTY_GRACE: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -132,7 +133,7 @@ impl LspClient {
             let wait = empty_published_at
                 .map(|published: Instant| {
                     remaining.min(
-                        (published + Duration::from_secs(5))
+                        (published + DIAGNOSTICS_EMPTY_GRACE)
                             .saturating_duration_since(Instant::now()),
                     )
                 })
@@ -163,7 +164,7 @@ impl LspClient {
                     )
                 })?;
             if diagnostics.is_empty() {
-                empty_published_at.get_or_insert_with(Instant::now);
+                empty_published_at = Some(Instant::now());
                 continue;
             }
             return diagnostics

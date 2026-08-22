@@ -69,9 +69,44 @@ Use `1`–`5` or `Tab` for Agent, Code, App, Tasks, and More. App uses the same
 revision-bound semantic selection as the desktop and standalone browser
 workspace. Continuous pixels remain off by default.
 
+First-launch agent setup stays inside the TUI. On the Agent surface, press `s`
+to install or repair the pinned managed Pi runtime, `u` to refresh that pinned
+runtime, `l` to open Pi `/login`, and `i` to start a conversation. The
+equivalent palette routes are `:agent setup` and `:agent update`. `a` opens the
+guided command center; `?` opens contextual help. Agent mutations pause on an
+inline Glass approval card: `Enter` approves the exact call once and `Esc`
+denies it.
+
+On the App surface, `T` opens a searchable page-target picker without
+changing the active page. Type a title, URL, or target ID; `j`/`k` (or the
+arrow keys) select a result and `Enter` queues an explicit, one-use target
+selection. `t` remains the shortcut for typing into the selected page.
+
+The Terminal surface is the dev-suite entrypoint: `s` starts the detected
+project command behind the same confirmation card, while `a` exposes process
+start, logs, input, and health actions. Browser start from the TUI is headed
+and persistent by default so existing authenticated profiles remain usable;
+use `:browser start --incognito --headless` for a disposable automation
+session.
+
+If Chrome is already running or its preferred CDP port is occupied, Glass
+keeps the TUI alive and shows attach, automatic-port, and retry choices. The
+recovery card explains whether the endpoint was verified before any attach
+action is queued.
+
+For a read-only inventory outside the TUI, `glass archive-targets` prints a
+bounded redacted archive; `--output targets.json` writes it to a
+policy-approved path. It never selects, closes, or captures page content.
+
+From the App surface, chat can bootstrap a browser target with `open <url>`.
+Glass attaches, navigates, and observes through the revision-bound browser
+workspace before the agent acts.
+
 `live on` enables an ephemeral terminal-native browser using Herdr-owned
-graphics, direct Kitty, or true-color ANSI. `live quality data` is intended
-for constrained links. Herdr is optional but recommended as the persistent PTY
+graphics when the native pane is available, or the bounded true-color ANSI
+half-block renderer. `--tui-live-backend kitty` is accepted for compatibility
+and currently uses the ANSI path; `live quality data` is intended for
+constrained links. Herdr is optional but recommended as the persistent PTY
 owner for detach/reattach. tmux remains compatible.
 
 The `safari` command prints the stable application-server iPhone workflow. For
@@ -106,10 +141,11 @@ Pi starts with its built-in tools disabled; its only executable capability is
 Glass's schema-validating gateway into the authoritative workspace actor.
 
 Run `glass agent doctor` or `glass agent status` before the first turn. Nothing
-is downloaded at startup. `glass agent setup` explicitly installs the exact SDK
-version pinned by this release, while `--sdk-entry` selects an existing SDK.
-`glass agent setup --login` opens Pi's provider login flow; Glass reports
-credential presence/expiry without printing secrets.
+is downloaded at startup. `glass agent setup` explicitly installs or repairs
+the exact SDK version pinned by this release; `glass agent setup --update`
+forces a reinstall of that pinned version, while `--sdk-entry` selects an
+existing SDK. `glass agent setup --login` opens Pi's provider login flow; Glass
+reports credential presence/expiry without printing secrets.
 
 Prompt text, authored task values, and tool arguments are not stored in raw
 audit events. Mutating tools require authority and explicit confirmation.
@@ -124,10 +160,14 @@ and transport/result bounds remain enforced.
 The resident Pi SDK session uses a Glass-specific system prompt and one
 Glass-owned gateway into project, runtime, diagnostic, Web IR, task, browser,
 and workflow tools. It streams completed message and tool events through the Agent view while dropping token-level redraw noise;
-steer and abort remain responsive during a running turn. Ambient Pi extensions,
-skills, context files, and themes are disabled for deterministic local-first
-behavior. Every mutation pauses on a Glass-owned confirmation sheet. `Y` or
-Enter grants one use for the already serialized call; `N` or Esc denies it.
+steer and abort remain responsive during a running turn. If a turn is
+cancelled or the worker fails, resubmitting from the composer restarts the
+selected interactive session instead of requiring a new CLI session. Unknown
+tool names are rejected once and the current turn is aborted. Ambient Pi
+extensions, skills, context files, and themes are disabled for deterministic
+local-first behavior. Every mutation pauses on a Glass-owned confirmation
+sheet. `Y` or Enter grants one use for the already serialized call; `N` or
+Esc denies it.
 Requests expire after 120 seconds, concurrent requests fail closed, and the
 one-shot/non-interactive path always denies UI requests. Exact preconditions,
 workspace confinement, atomic saves, bounded execution, actor attribution,

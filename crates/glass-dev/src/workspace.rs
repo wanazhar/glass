@@ -5,13 +5,15 @@ use crate::browser::BrowserService;
 use crate::customization::Customization;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
 use crate::development::{
-    ActorConnection, ActorKind, DevelopmentResult, ProjectWorkspace, ToolAuthorization, ToolCall,
+    Actor, ActorConnection, ActorKind, DevelopmentResult, ProjectWorkspace, ToolAuthorization,
+    ToolCall,
 };
 use crate::experiments::ExperimentManager;
 use crate::git::GitService;
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
 use crate::kernels::{KernelError, KernelExecution, KernelManager, KernelToolCall};
 use crate::lsp::LanguageService;
+use crate::pi_runtime::PiToolExecutor;
 use crate::tasks::{
     TaskId, TaskScheduler, TaskSnapshot, TaskSpec, TaskState, VerificationRequirement,
 };
@@ -649,12 +651,43 @@ fn validate_service_name(name: &str) -> DebugResult<()> {
 pub struct SharedDevelopmentWorkspace {
     inner: Arc<Mutex<DevelopmentWorkspace>>,
 }
-
 impl SharedDevelopmentWorkspace {
     pub fn open(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
-        Ok(Self {
-            inner: Arc::new(Mutex::new(DevelopmentWorkspace::open(root)?)),
-        })
+        let inner = Arc::new(Mutex::new(DevelopmentWorkspace::open(root)?));
+        let weak = Arc::downgrade(&inner);
+        let executor: PiToolExecutor = Arc::new(move |call, allow_mutation, confirmed| {
+            let inner = weak.upgrade().ok_or_else(|| {
+                crate::development::DevelopmentError::Process(
+                    "shared development workspace has closed".into(),
+                )
+            })?;
+            let mut workspace = inner.lock().map_err(|_| {
+                crate::development::DevelopmentError::Conflict(
+                    "development workspace lock was poisoned".into(),
+                )
+            })?;
+            let context = DevelopmentToolContext {
+                authorization: ToolAuthorization {
+                    actor: Actor::embedded(),
+                    allow_mutation,
+                    confirmed,
+                },
+                initiator: None,
+                expected_generation: workspace.generation(),
+                expected_project_revision: workspace.project().revision(),
+            };
+            workspace.execute_tool(call, &context)
+        });
+        inner
+            .lock()
+            .map_err(|_| {
+                crate::development::DevelopmentError::Conflict(
+                    "development workspace lock was poisoned".into(),
+                )
+            })?
+            .agents()
+            .set_local_tool_executor(executor);
+        Ok(Self { inner })
     }
 
     pub fn lock(&self) -> DevelopmentResult<MutexGuard<'_, DevelopmentWorkspace>> {

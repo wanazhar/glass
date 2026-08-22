@@ -5,10 +5,43 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed the Glass Dev TUI with consistent responsive panels, surface
+  hotkey badges, contextual action details, status colors, and bounded mobile
+  composer/palette input so onboarding and dev-suite launchers stay legible
+  on desktop and narrow terminals.
+
+- Added rounded panel frames, section rails, status glyphs, a first-step Agent
+  landing card, responsive quick-key rails, and clearer action-menu separators
+  across desktop, compact, and mobile TUI layouts.
+
+- Added a human browser-target picker on the App surface (`T`) with bounded
+  query filtering, redacted URL display, and one-use target-selection
+  confirmation. TUI browser start now defaults to headed persistent profiles;
+  `--incognito --headless` remains available for disposable sessions.
+
+- Added `glass archive-targets`, a read-only, 64 KiB-bounded JSON export of
+  redacted page-target inventory with policy-checked output paths.
+
+- Added an explicit Pi runtime refresh path: Agent surface `u`, `:agent update`,
+  `glass agent setup --update`, and the `glass.agent.setup` update flag all
+  reinstall the release-pinned SDK without silently selecting a new upstream
+  version.
+- Pinned the managed Pi AgentSession SDK to `0.84.2` after verifying the
+  unchanged Glass runtime surface with the native SDK lifecycle smoke test.
+
 ### Fixed
 
 - Keep the Unix-only PTY integration suite out of Windows builds and use the
   platform-correct `openpty` window pointer ABI on macOS.
+
+- Starting the TUI now configures the embedded Pi agent against the shared
+  Glass workspace; setup, login, chat, and governed browser tools no longer
+  require a separate CLI or daemon bootstrap.
+- Unknown Pi tool calls now emit one rejected evidence event and abort the
+  current turn instead of looping; composer retries automatically restart a
+  failed or cancelled selected agent session.
 
 ## [0.3.11] - 2026-08-17
 

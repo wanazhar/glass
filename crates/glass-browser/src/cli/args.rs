@@ -606,6 +606,13 @@ pub enum Commands {
     /// List discoverable page targets without changing the active target.
     Targets,
 
+    /// Write a bounded, redacted page-target archive without selecting or closing any target.
+    ArchiveTargets {
+        /// Optional JSON output path. Without it, print the archive to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
     /// Create a page target without selecting it.
     NewTarget { url: String },
 
@@ -1721,6 +1728,26 @@ mod tests {
                 .unwrap()
                 .command,
             Some(Commands::SelectFrame { id }) if id == "frame-1"
+        ));
+    }
+
+    #[test]
+    fn archive_targets_accepts_optional_workspace_output() {
+        let stdout = Cli::try_parse_from(["glass", "archive-targets"])
+            .unwrap()
+            .command;
+        assert!(matches!(
+            stdout,
+            Some(Commands::ArchiveTargets { output: None })
+        ));
+        let file = Cli::try_parse_from(["glass", "archive-targets", "--output", "targets.json"])
+            .unwrap()
+            .command;
+        assert!(matches!(
+            file,
+            Some(Commands::ArchiveTargets {
+                output: Some(path)
+            }) if path == std::path::Path::new("targets.json")
         ));
     }
 

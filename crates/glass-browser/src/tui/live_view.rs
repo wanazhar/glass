@@ -99,6 +99,17 @@ impl AnsiPane {
     }
 }
 
+/// Read dimensions from a PNG header without retaining decoded pixels.
+pub fn png_dimensions(png: &[u8]) -> Option<(u32, u32)> {
+    if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    Some((
+        u32::from_be_bytes(png[16..20].try_into().ok()?),
+        u32::from_be_bytes(png[20..24].try_into().ok()?),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

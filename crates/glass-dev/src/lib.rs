@@ -93,7 +93,13 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return cli::dispatch_project(action);
     }
     if cli.command.is_none() && cli.prompt.is_none() && !cli.mcp {
-        return tui::run(std::env::current_dir()?, cli.tui_layout);
+        let visual_options = tui::TuiVisualOptions {
+            mode: cli.tui_live,
+            backend: cli.tui_live_backend,
+            quality: cli.tui_live_quality,
+            fit: cli.tui_live_fit,
+        };
+        return tui::run(std::env::current_dir()?, cli.tui_layout, visual_options);
     }
     enforce_legacy_development_trust(&cli)?;
     glass_browser::cli::runner::dispatch(cli).await

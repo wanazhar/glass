@@ -131,6 +131,18 @@ The workspace retains project, process, agent, browser, revision, and
 attention state while the process is alive. A browser failure enters recovery;
 it does not terminate the editor, PTYs, agent, or project session.
 
+First-launch onboarding stays inside the TUI. On the `Agent` surface, press
+`s` to install or repair the pinned Pi runtime, `u` to refresh it, `l` to open
+Pi `/login` in the terminal, then `i` to start a conversation. Glass keeps the
+workspace trust decision and one-use mutation confirmation in the same flow; it
+does not require a separate setup command before you can inspect the project.
+Once the composer is open, `Enter` sends the draft immediately and leaves the
+composer available for the next prompt. Sent prompts stay visible as `YOU`
+messages while the resident agent streams `GLASS AGENT` text and tool activity;
+send failures keep the draft in the composer with an edit-and-retry message.
+From `Terminal`, press `s` to approve and start the detected development
+command. Use `:` for explicit process, test, LSP, and agent routes.
+
 Read the [Development Runtime guide](docs/development-runtime.md) for files,
 editor ownership, processes, LSP, source/runtime graph, timeline, replay,
 experiments, agents, and Neovim integration.
@@ -215,23 +227,31 @@ Use these guides for the complete contract:
 
 ## Browser recovery and targets
 
-An occupied or disconnected CDP endpoint does not force the TUI to exit. In
-the Browser view, inspect and choose an explicit recovery action:
+An occupied or disconnected CDP endpoint does not force the TUI to exit. On
+the App surface, press `T` for a searchable target picker or use the command
+center (`a`) and choose **Targets**. The picker filters redacted title, URL,
+and target ID text, then queues an explicit target selection after
+confirmation.
 
-```text
-browser status
-browser reconnect
-browser launch --port auto --headless
-browser targets 9222
-browser attach --port 9222 2
-browser semantic-only
+Browser startup from the TUI is headed and persistent by default:
+
+```console
+:browser start
+:browser start --incognito --headless
 ```
 
-Glass classifies the endpoint as free, verified CDP, unrelated HTTP, or
-unknown. It probes again before attachment, refuses unrelated listeners, and
-requires explicit target selection when multiple pages exist. Connecting to a
-new target invalidates old semantic and visual revisions before tools become
-available again.
+The first command preserves an authenticated profile for human interaction;
+the second is disposable. If the preferred port is occupied, Glass presents
+attach, automatic-port, and retry choices while keeping the project and Pi
+Agent surfaces available. Target inventory can be archived without selecting
+or closing pages:
+
+```console
+glass archive-targets --output targets.json
+```
+
+Archives are bounded JSON with redacted target URLs and no cookies, form
+values, or page content.
 
 Read [Browser connection and Remote View](docs/architecture/browser-connection.md)
 for the controller state machine and authority boundaries.
@@ -254,9 +274,14 @@ bounded project, browser, workflow, and resident-runtime tools:
 glass agent hello --harness pi --root .
 glass agent doctor
 glass agent setup
+glass agent setup --update
 glass agent models --root .
 glass agent prompt "Explain the failing diagnostic" --harness pi --root .
+
 ```
+
+`--update` forces a reinstall of Glass's pinned Pi SDK version; it does not
+silently select an unreviewed upstream version.
 
 For an intentionally unrestricted coding session, launch the cockpit with:
 
@@ -316,6 +341,15 @@ glass --tui-layout mobile
 The phone workspace uses purpose-built Agent, Code, App, Tasks, and More
 destinations. Structured semantic state, project files, agent activity, task
 evidence, and runtime health remain usable without continuous images.
+
+Command discovery is centralized in the TUI:
+
+- `a` opens the Command Center with launchers for the current surface;
+- `:` searches every route, with the current surface's commands first;
+- `Tab` completes route roots and `?` opens the complete keyboard guide.
+
+The Command Center shows the safe next action and an example invocation, so
+most workflows do not require memorizing the resident command inventory.
 
 Presentation is selected independently from layout:
 

@@ -65,6 +65,7 @@ runtime decision before an agent turn is attempted:
 glass agent doctor
 glass agent status
 glass agent setup
+glass agent setup --update
 glass agent setup --login
 ```
 
@@ -75,6 +76,12 @@ managed runtime lives below the platform Glass data directory at `runtime/pi`;
 setup installs the exact SDK version pinned by this release and records the
 selected entry. `--sdk-entry PATH` selects an existing SDK instead, and
 `--agent-dir PATH` selects the Pi auth/config directory explicitly.
+
+The current release pin is Pi SDK `0.84.2`; the package metadata and lockfile
+must remain aligned with this Rust readiness check.
+
+`--update` forces a reinstall of that pinned version; it is a repair/refresh
+operation, not an automatic upgrade to an unreviewed upstream release.
 
 `setup --login` starts Pi in the selected agent directory so the operator can
 run `/login`. Glass does not impersonate provider authentication and does not

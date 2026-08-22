@@ -1926,6 +1926,11 @@ fn log_path(status: &Path) -> PathBuf {
     status.with_extension("log")
 }
 
+pub fn log_tail(status_path: Option<&Path>) -> Result<String, Box<dyn std::error::Error>> {
+    let (_, default_status) = default_paths();
+    bounded_log(status_path.unwrap_or(&default_status))
+}
+
 fn bounded_log(status: &Path) -> Result<String, Box<dyn std::error::Error>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(log_path(status))?;

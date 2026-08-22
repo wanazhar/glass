@@ -11,4 +11,5 @@
 
 pub mod app;
 mod herdr_graphics;
+pub use herdr_graphics::{HerdrEnvironment, HerdrEvent, HerdrFrame, HerdrGraphicsWorker};
 pub mod live_view;

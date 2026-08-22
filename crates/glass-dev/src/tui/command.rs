@@ -1,13 +1,417 @@
 use super::projection;
 use super::state::{DevSurface, DevTuiState};
 use crate::agents::AgentSpec;
-use crate::development::{Actor, ToolAuthorization, ToolCall};
+use crate::development::{
+    Actor, SemanticBreakpoint, SemanticSnapshot, ToolAuthorization, ToolCall,
+};
 use crate::tasks::TaskSpec;
 use crate::tools::DevelopmentToolContext;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TUI_TOOL: AtomicU64 = AtomicU64::new(1);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceAction {
+    pub label: &'static str,
+    pub command: &'static str,
+    pub key: &'static str,
+    pub description: &'static str,
+}
+
+const AGENT_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Compose message",
+        command: "i",
+        key: "i",
+        description: "ask the resident Glass Agent",
+    },
+    SurfaceAction {
+        label: "Setup Pi runtime",
+        command: "agent setup",
+        key: ":",
+        description: "install or repair the pinned SDK",
+    },
+    SurfaceAction {
+        label: "Update Pi runtime",
+        command: "agent update",
+        key: "u",
+        description: "refresh the pinned managed SDK",
+    },
+    SurfaceAction {
+        label: "Authenticate",
+        command: "agent setup login",
+        key: ":",
+        description: "open Pi's provider login",
+    },
+    SurfaceAction {
+        label: "Readiness doctor",
+        command: "agent doctor",
+        key: ":",
+        description: "check Node, SDK, and auth",
+    },
+    SurfaceAction {
+        label: "New conversation",
+        command: "agent new",
+        key: ":",
+        description: "start a separate resident session",
+    },
+];
+
+const CODE_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Open selected file",
+        command: "Enter",
+        key: "Enter",
+        description: "open the focused project file",
+    },
+    SurfaceAction {
+        label: "Edit file",
+        command: "i",
+        key: "i",
+        description: "edit the focused buffer",
+    },
+    SurfaceAction {
+        label: "Save buffer",
+        command: "Ctrl-S",
+        key: "Ctrl-S",
+        description: "write the focused buffer",
+    },
+    SurfaceAction {
+        label: "Search project",
+        command: "editor search QUERY",
+        key: ":",
+        description: "find text across the repository",
+    },
+    SurfaceAction {
+        label: "Diagnostics",
+        command: "lsp diagnostics",
+        key: ":",
+        description: "refresh language-server diagnostics",
+    },
+];
+
+const APP_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Start browser",
+        command: "browser start",
+        key: ":",
+        description: "launch or attach the browser",
+    },
+    SurfaceAction {
+        label: "Observe page",
+        command: "browser observe",
+        key: ":",
+        description: "refresh semantic page state",
+    },
+    SurfaceAction {
+        label: "Navigate",
+        command: "n",
+        key: "n",
+        description: "enter a page URL",
+    },
+    SurfaceAction {
+        label: "Type into selected",
+        command: "t",
+        key: "t",
+        description: "type into the selected entity",
+    },
+    SurfaceAction {
+        label: "Targets",
+        command: "browser targets",
+        key: ":",
+        description: "inspect and select browser pages",
+    },
+    SurfaceAction {
+        label: "Live browser view",
+        command: "v",
+        key: "v",
+        description: "request native or ANSI browser pixels",
+    },
+];
+
+const TERMINAL_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Start detected suite",
+        command: "s",
+        key: "s",
+        description: "queue the project-detected development command",
+    },
+    SurfaceAction {
+        label: "Start dev server",
+        command: "process start dev COMMAND",
+        key: ":",
+        description: "run a governed project command",
+    },
+    SurfaceAction {
+        label: "View logs",
+        command: "process logs NAME",
+        key: ":",
+        description: "inspect a managed process",
+    },
+    SurfaceAction {
+        label: "Stop process",
+        command: "process stop NAME",
+        key: ":",
+        description: "stop a managed process",
+    },
+];
+
+const TASK_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Create task",
+        command: "task create TITLE PROMPT",
+        key: ":",
+        description: "queue a verified task",
+    },
+    SurfaceAction {
+        label: "Cancel task",
+        command: "task cancel TASK_ID",
+        key: ":",
+        description: "cancel a queued or running task",
+    },
+    SurfaceAction {
+        label: "Retry task",
+        command: "task retry TASK_ID",
+        key: ":",
+        description: "retry a failed task",
+    },
+];
+
+const GIT_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Stage all changes",
+        command: "git stage .",
+        key: ":",
+        description: "stage the current project diff",
+    },
+    SurfaceAction {
+        label: "Commit",
+        command: "git commit MESSAGE",
+        key: ":",
+        description: "create a governed commit",
+    },
+    SurfaceAction {
+        label: "View diff",
+        command: "d",
+        key: "d",
+        description: "open the inline diff",
+    },
+    SurfaceAction {
+        label: "Branches",
+        command: "git branches",
+        key: ":",
+        description: "list project branches",
+    },
+];
+
+const DEBUG_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Start debug session",
+        command: "debug start NAME COMMAND",
+        key: ":",
+        description: "launch a configured debugger",
+    },
+    SurfaceAction {
+        label: "Run tests",
+        command: "test run RUN_ID SUITE_ID",
+        key: ":",
+        description: "run a discovered test suite",
+    },
+    SurfaceAction {
+        label: "Test results",
+        command: "test results",
+        key: ":",
+        description: "inspect the latest test result",
+    },
+];
+
+const MORE_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Start detected suite",
+        command: "s",
+        key: "s",
+        description: "queue the project-detected development command",
+    },
+    SurfaceAction {
+        label: "Experiments",
+        command: "experiment create ID BRANCH",
+        key: ":",
+        description: "create a replayable experiment",
+    },
+    SurfaceAction {
+        label: "Kernels",
+        command: "kernel start NAME KIND",
+        key: ":",
+        description: "start a development kernel",
+    },
+    SurfaceAction {
+        label: "Workspace state",
+        command: "workspace",
+        key: ":",
+        description: "inspect resident workspace services",
+    },
+];
+
+const TRUST_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Inspect configuration",
+        command: "I",
+        key: "I",
+        description: "review executable project settings",
+    },
+    SurfaceAction {
+        label: "Trust once",
+        command: "1",
+        key: "1",
+        description: "allow this process only",
+    },
+    SurfaceAction {
+        label: "Trust project",
+        command: "T",
+        key: "T",
+        description: "remember project authority",
+    },
+];
+
+pub fn surface_actions(surface: DevSurface) -> &'static [SurfaceAction] {
+    match surface {
+        DevSurface::Trust => TRUST_ACTIONS,
+        DevSurface::Agent => AGENT_ACTIONS,
+        DevSurface::Code => CODE_ACTIONS,
+        DevSurface::App => APP_ACTIONS,
+        DevSurface::Terminal => TERMINAL_ACTIONS,
+        DevSurface::Tasks => TASK_ACTIONS,
+        DevSurface::Git => GIT_ACTIONS,
+        DevSurface::Debug => DEBUG_ACTIONS,
+        DevSurface::More => MORE_ACTIONS,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandGroup {
+    pub label: &'static str,
+    pub roots: &'static [&'static str],
+    pub example: &'static str,
+}
+
+const AGENT_ROOTS: &[&str] = &["agent"];
+const BUILD_ROOTS: &[&str] = &["project", "editor", "lsp", "git"];
+const RUN_ROOTS: &[&str] = &["browser", "workflow", "process"];
+const VERIFY_ROOTS: &[&str] = &["task", "test", "debug"];
+const WORKSPACE_ROOTS: &[&str] = &["workspace", "daemon", "kernel", "experiment"];
+const INSPECT_ROOTS: &[&str] = &["replay", "memory", "surface", "tool"];
+const CORE_ROOTS: &[&str] = &["trust", "view", "help", "quit"];
+
+pub static COMMAND_GROUPS: &[CommandGroup] = &[
+    CommandGroup {
+        label: "Agent",
+        roots: AGENT_ROOTS,
+        example: "agent prompt TEXT",
+    },
+    CommandGroup {
+        label: "Build",
+        roots: BUILD_ROOTS,
+        example: "project search QUERY",
+    },
+    CommandGroup {
+        label: "Run",
+        roots: RUN_ROOTS,
+        example: "browser navigate URL",
+    },
+    CommandGroup {
+        label: "Verify",
+        roots: VERIFY_ROOTS,
+        example: "test discover",
+    },
+    CommandGroup {
+        label: "Workspace",
+        roots: WORKSPACE_ROOTS,
+        example: "process start NAME COMMAND",
+    },
+    CommandGroup {
+        label: "Inspect",
+        roots: INSPECT_ROOTS,
+        example: "replay list",
+    },
+    CommandGroup {
+        label: "Core",
+        roots: CORE_ROOTS,
+        example: "workspace trust status",
+    },
+];
+
+pub static ROOT_COMMANDS: &[&str] = &[
+    "agent",
+    "browser",
+    "daemon",
+    "debug",
+    "editor",
+    "experiment",
+    "git",
+    "help",
+    "kernel",
+    "lsp",
+    "memory",
+    "process",
+    "project",
+    "quit",
+    "replay",
+    "surface",
+    "task",
+    "test",
+    "tool",
+    "trust",
+    "view",
+    "workflow",
+    "workspace",
+];
+
+pub fn command_group_for(surface: DevSurface) -> &'static CommandGroup {
+    let index = match surface {
+        DevSurface::Agent => 0,
+        DevSurface::Code | DevSurface::Git => 1,
+        DevSurface::App | DevSurface::Terminal => 2,
+        DevSurface::Tasks | DevSurface::Debug => 3,
+        DevSurface::More => 4,
+        DevSurface::Trust => 6,
+    };
+    COMMAND_GROUPS
+        .get(index)
+        .expect("command group index must be valid")
+}
+
+pub fn palette_order(surface: DevSurface) -> Vec<&'static str> {
+    let group = command_group_for(surface);
+    let mut ordered = Vec::new();
+    for action in surface_actions(surface) {
+        if action.key == ":"
+            && let Some(root) = action.command.split_whitespace().next()
+            && ROOT_COMMANDS.contains(&root)
+            && !ordered.contains(&root)
+        {
+            ordered.push(root);
+        }
+    }
+    for root in group.roots.iter().copied() {
+        if !ordered.contains(&root) {
+            ordered.push(root);
+        }
+    }
+    for command in ROOT_COMMANDS.iter().copied() {
+        if !ordered.contains(&command) {
+            ordered.push(command);
+        }
+    }
+    ordered
+}
+
+pub fn route_guide() -> String {
+    COMMAND_GROUPS
+        .iter()
+        .map(|group| format!("{}: {}", group.label, group.roots.join(" · ")))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
 
 pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
     let result = execute_inner(state, input);
@@ -37,7 +441,9 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
                 .collect::<Vec<_>>()
                 .join(" · ");
             Ok(format!(
-                "Routes: trust · view · editor · lsp · agent · task · process · browser · workflow · debug · kernel · git · test · experiment · replay · quit. All mutations use the resident authority/revision router. Project-provided commands: {}",
+                "Command center: `a` opens guided {} launchers; `:` searches every route. Groups: {}. `tool NAME JSON` exposes every resident tool. Mutations use one-use confirmation and revision guards. Project-provided commands: {}",
+                command_group_for(state.surface).label,
+                route_guide(),
                 if project_commands.is_empty() {
                     "none"
                 } else {
@@ -46,8 +452,8 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
             ))
         }
         "quit" | "q" => {
-            state.quit = true;
-            Ok("Closing Glass Dev".into())
+            state.request_quit();
+            Ok("Quit confirmation · Enter exits · Esc stays".into())
         }
         "view" => {
             let name = parts.next().ok_or("view requires a surface")?;
@@ -55,25 +461,23 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
             Ok(format!("Opened {}", state.surface.label()))
         }
         "trust" => execute_trust(state, parts.collect()),
+        "workspace" | "daemon" => execute_workspace(state, command, parts.collect()),
+        "project" => execute_project(state, parts.collect()),
         "agent" => execute_agent(state, parts.collect()),
         "task" | "tasks" => execute_task(state, parts.collect()),
         "editor" => execute_editor(state, parts.collect()),
         "lsp" => execute_lsp(state, parts.collect()),
         "process" => execute_process(state, parts.collect()),
         "browser" | "workflow" => execute_browser(state, command, parts.collect()),
-        "workspace" | "daemon" => {
-            state.surface = DevSurface::More;
-            Ok("Resident workspace identity and recovery state refreshed".into())
-        }
         "debug" => execute_debug(state, parts.collect()),
         "kernel" => execute_kernel(state, parts.collect()),
         "git" => execute_git(state, parts.collect()),
         "tests" | "test" => execute_test(state, parts.collect()),
         "experiment" | "experiments" => execute_experiment(state, parts.collect()),
-        "replay" => {
-            state.surface = DevSurface::More;
-            Ok("Observable replay refreshed".into())
-        }
+        "replay" => execute_replay(state, parts.collect()),
+        "memory" | "knowledge" => execute_memory(state, command, parts.collect()),
+        "surface" | "surfaces" | "backend" => execute_data_surface(state, command, parts.collect()),
+        "tool" | "tools" => execute_generic_tool(state, parts.collect()),
         _ if state.ws()?.customization().command(command).is_some() => {
             let result = run_tool(state, &format!("glass.command.{command}"), json!({}), true)?;
             Ok(format!(
@@ -82,7 +486,535 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
                 compact_result(&format!("glass.command.{command}"), &result)
             ))
         }
-        _ => Err(format!("unknown command {command}; use help")),
+        _ => Err(format!(
+            "unknown command {command}; press a for guided launchers or type help"
+        )),
+    }
+}
+
+fn execute_workspace(
+    state: &mut DevTuiState,
+    command: &str,
+    parts: Vec<&str>,
+) -> Result<String, String> {
+    let action = parts.first().copied().unwrap_or("inspect");
+    if command == "daemon" {
+        let (tool, mutating) = match action {
+            "status" | "doctor" => ("glass.daemon.status", false),
+            "start" => ("glass.daemon.start", true),
+            "stop" => ("glass.daemon.stop", true),
+            "logs" => ("glass.daemon.logs", false),
+            _ => {
+                return Err(
+                    "daemon actions: status, doctor, start, stop, logs; optional paths use `tool`"
+                        .into(),
+                );
+            }
+        };
+        return execute_named_tool(state, tool, json!({}), mutating, DevSurface::More);
+    }
+    if matches!(action, "trust" | "trust-status" | "trust-inspect") {
+        let trust_action = match action {
+            "trust-status" => "status",
+            "trust-inspect" => "inspect",
+            _ => parts.get(1).copied().unwrap_or("inspect"),
+        };
+        return execute_trust(state, vec![trust_action]);
+    }
+    if action == "tools" {
+        let tools = state
+            .ws()?
+            .tool_descriptors()
+            .into_iter()
+            .map(|tool| {
+                format!(
+                    "{} {}{}",
+                    tool.name,
+                    if tool.available { "✓" } else { "×" },
+                    if tool.mutating { " · mutating" } else { "" }
+                )
+            })
+            .collect::<Vec<_>>();
+        state.editor = tools.join("\n");
+        state.surface = DevSurface::More;
+        return Ok(format!("{} resident tools listed in Code", tools.len()));
+    }
+    let result = match action {
+        "status" => execute_named_tool(
+            state,
+            "glass.runtime.inspect",
+            json!({}),
+            false,
+            DevSurface::More,
+        )?,
+        "inspect" if parts.get(1).is_some() => execute_named_tool(
+            state,
+            "glass.workspace.inspect",
+            json!({"id":parts.get(1).copied().unwrap_or_default()}),
+            false,
+            DevSurface::More,
+        )?,
+        "inspect" => execute_named_tool(
+            state,
+            "glass.runtime.inspect",
+            json!({}),
+            false,
+            DevSurface::More,
+        )?,
+        "list" => execute_named_tool(
+            state,
+            "glass.workspace.list",
+            json!({}),
+            false,
+            DevSurface::More,
+        )?,
+        "suspend" | "resume" | "delete" => {
+            let id = parts.get(1).ok_or("workspace action requires ID")?;
+            execute_named_tool(
+                state,
+                &format!("glass.workspace.{action}"),
+                json!({"id":id}),
+                true,
+                DevSurface::More,
+            )?
+        }
+        _ => {
+            return Err(
+                "workspace actions: status, inspect, tools, list, suspend ID, resume ID, delete ID, trust"
+                    .into(),
+            );
+        }
+    };
+    Ok(result)
+}
+
+fn execute_project(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    let action = parts.first().copied().unwrap_or("inspect");
+    match action {
+        "inspect" => execute_named_tool(
+            state,
+            "glass.runtime.inspect",
+            json!({}),
+            false,
+            DevSurface::Code,
+        ),
+        "files" => execute_named_tool(
+            state,
+            "glass.file.list",
+            json!({"path":parts.get(1).copied().unwrap_or("")}),
+            false,
+            DevSurface::Code,
+        ),
+        "search" => {
+            let query = parts.get(1..).unwrap_or_default().join(" ");
+            if query.is_empty() {
+                return Err("project search requires QUERY".into());
+            }
+            execute_named_tool(
+                state,
+                "glass.file.search",
+                json!({"query":query}),
+                false,
+                DevSurface::Code,
+            )
+        }
+        "read" => execute_named_tool(
+            state,
+            "glass.file.read",
+            json!({"path":parts.get(1).ok_or("project read requires PATH")?}),
+            false,
+            DevSurface::Code,
+        ),
+        "edit" => {
+            let path = parts.get(1).ok_or("project edit requires PATH CONTENT")?;
+            let content = parts.get(2..).unwrap_or_default().join(" ");
+            if content.is_empty() {
+                return Err("project edit requires PATH CONTENT".into());
+            }
+            execute_named_tool(
+                state,
+                "glass.file.write",
+                json!({"path":path,"content":content}),
+                true,
+                DevSurface::Code,
+            )
+        }
+        "mkdir" => execute_named_tool(
+            state,
+            "glass.file.mkdir",
+            json!({"path":parts.get(1).ok_or("project mkdir requires PATH")?}),
+            true,
+            DevSurface::Code,
+        ),
+        "rename" => execute_named_tool(
+            state,
+            "glass.file.rename",
+            json!({
+                "from":parts.get(1).ok_or("project rename requires FROM TO")?,
+                "to":parts.get(2).ok_or("project rename requires FROM TO")?
+            }),
+            true,
+            DevSurface::Code,
+        ),
+        "delete" => execute_named_tool(
+            state,
+            "glass.file.delete",
+            json!({"path":parts.get(1).ok_or("project delete requires PATH")?}),
+            true,
+            DevSurface::Code,
+        ),
+        "diagnostics" => execute_named_tool(
+            state,
+            "glass.diagnostics.run",
+            json!({"path":parts.get(1).ok_or("project diagnostics requires PATH")?}),
+            false,
+            DevSurface::Code,
+        ),
+        "run" => {
+            let name = parts.get(1).ok_or("project run requires NAME COMMAND")?;
+            let command = parts.get(2..).unwrap_or_default().join(" ");
+            if command.is_empty() {
+                return Err("project run requires NAME COMMAND".into());
+            }
+            execute_named_tool(
+                state,
+                "glass.process.start",
+                json!({"name":name,"command":command}),
+                true,
+                DevSurface::Terminal,
+            )
+        }
+        "test" | "lint" => {
+            let detection = state.ws()?.project().detection().clone();
+            let command = if action == "test" {
+                detection.test_command
+            } else {
+                detection.lint_command
+            }
+            .ok_or_else(|| format!("project has no detected {action} command"))?;
+            execute_named_tool(
+                state,
+                "glass.test.run",
+                json!({"name":action,"command":command}),
+                true,
+                DevSurface::Tasks,
+            )
+        }
+        "process" => execute_process(state, parts.get(1..).unwrap_or_default().to_vec()),
+        "diff" => execute_named_tool(
+            state,
+            "glass.editor.diff",
+            json!({}),
+            false,
+            DevSurface::Git,
+        ),
+        "link" => execute_named_tool(
+            state,
+            "glass.graph.link",
+            json!({
+                "from":parts.get(1).ok_or("project link requires ENTITY PATH START_LINE END_LINE")?,
+                "to":parts.get(2).ok_or("project link requires ENTITY PATH START_LINE END_LINE")?,
+                "relation":"sourceRuntime",
+                "evidence":{"startLine":parse_u64(parts.get(3),"START_LINE")?,"endLine":parse_u64(parts.get(4),"END_LINE")?}
+            }),
+            true,
+            DevSurface::More,
+        ),
+        "graph" => execute_project_graph(state, parts.get(1..).unwrap_or_default().to_vec()),
+        "breakpoint" => execute_project_breakpoint(state, parts.get(1..).unwrap_or_default()),
+        "timeline" => execute_named_tool(
+            state,
+            "glass.replay.list",
+            json!({"since":0,"limit":512}),
+            false,
+            DevSurface::More,
+        ),
+        "replay" => execute_replay(state, parts.get(1..).unwrap_or_default().to_vec()),
+        "experiment" => execute_experiment(state, parts.get(1..).unwrap_or_default().to_vec()),
+        "attach" => {
+            let actor = parts.get(1).ok_or("project attach requires ACTOR")?;
+            execute_named_tool(
+                state,
+                "glass.project.attach",
+                json!({"actor":actor}),
+                true,
+                DevSurface::More,
+            )
+        }
+        "neovim" => execute_neovim(state, parts.get(1..).unwrap_or_default()),
+        _ => Err("project actions: inspect, files, search, read, edit, mkdir, rename, delete, diagnostics, run, test, lint, process, diff, link, graph, breakpoint, timeline, replay, neovim, experiment, attach".into()),
+    }
+}
+
+fn execute_project_graph(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("discover") {
+        "discover" => execute_named_tool(
+            state,
+            "glass.semantic.links",
+            json!({}),
+            false,
+            DevSurface::More,
+        ),
+        "entity" => execute_named_tool(
+            state,
+            "glass.graph.query",
+            json!({"id":parts.get(1).ok_or("project graph entity requires ENTITY")?}),
+            false,
+            DevSurface::More,
+        ),
+        "source" => execute_named_tool(
+            state,
+            "glass.graph.source",
+            json!({
+                "path":parts.get(1).ok_or("project graph source requires PATH")?,
+                "line":parts.get(2).map(|value| parse_u64(Some(value), "LINE")).transpose()?
+            }),
+            false,
+            DevSurface::More,
+        ),
+        _ => Err("project graph actions: discover, entity ENTITY, source PATH [LINE]".into()),
+    }
+}
+fn execute_project_breakpoint(state: &mut DevTuiState, parts: &[&str]) -> Result<String, String> {
+    require_trusted(state)?;
+    let kind = parts
+        .first()
+        .ok_or("project breakpoint requires KIND ENTITY BEFORE.json AFTER.json")?;
+    let entity = parts
+        .get(1)
+        .ok_or("project breakpoint requires KIND ENTITY BEFORE.json AFTER.json")?;
+    let before_path = parts
+        .get(2)
+        .ok_or("project breakpoint requires KIND ENTITY BEFORE.json AFTER.json")?;
+    let after_path = parts
+        .get(3)
+        .ok_or("project breakpoint requires KIND ENTITY BEFORE.json AFTER.json")?;
+    let before: SemanticSnapshot =
+        serde_json::from_value(read_project_json(state, before_path)?)
+            .map_err(|error| format!("invalid semantic snapshot {before_path}: {error}"))?;
+    let after: SemanticSnapshot = serde_json::from_value(read_project_json(state, after_path)?)
+        .map_err(|error| format!("invalid semantic snapshot {after_path}: {error}"))?;
+    let breakpoint = match *kind {
+        "disappears" => SemanticBreakpoint::EntityDisappears {
+            entity_id: (*entity).into(),
+        },
+        "name-missing" => SemanticBreakpoint::AccessibleNameMissing {
+            entity_id: Some((*entity).into()),
+        },
+        "role-changes" => SemanticBreakpoint::RoleChanges {
+            entity_id: (*entity).into(),
+        },
+        "actionability-lost" => SemanticBreakpoint::ActionabilityLost {
+            entity_id: (*entity).into(),
+        },
+        _ => {
+            return Err(
+                "breakpoint kind must be disappears, name-missing, role-changes, or actionability-lost"
+                    .into(),
+            );
+        }
+    };
+    let hits = {
+        let mut workspace = state.ws_mut()?;
+        workspace
+            .project_mut()
+            .discover_runtime_links()
+            .map_err(|error| error.to_string())?;
+        workspace
+            .project_mut()
+            .evaluate_semantic_breakpoints(&[breakpoint], &before, &after)
+            .map_err(|error| error.to_string())?
+    };
+    state.editor = serde_json::to_string_pretty(&hits).map_err(|error| error.to_string())?;
+    state.surface = DevSurface::More;
+    Ok(format!(
+        "Semantic breakpoint evaluated · {} hit(s)",
+        hits.len()
+    ))
+}
+
+fn execute_neovim(state: &mut DevTuiState, parts: &[&str]) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("probe") {
+        "probe" => {
+            let capabilities =
+                crate::development::probe_neovim().map_err(|error| error.to_string())?;
+            state.editor =
+                serde_json::to_string_pretty(&capabilities).map_err(|error| error.to_string())?;
+            state.surface = DevSurface::Code;
+            Ok("Neovim capability probe completed".into())
+        }
+        "start" => {
+            let name = parts.get(1).copied().unwrap_or("neovim");
+            let result = execute_named_tool(
+                state,
+                "glass.neovim.start",
+                json!({"name":name,"path":parts.get(2)}),
+                true,
+                DevSurface::Terminal,
+            )?;
+            Ok(result)
+        }
+        _ => Err("project neovim actions: probe, start".into()),
+    }
+}
+
+fn execute_replay(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    let action = parts.first().copied().unwrap_or("list");
+    let (tool, arguments) = match action {
+        "list" | "inspect" | "attach" => (
+            "glass.replay.list",
+            json!({
+                "since":parts.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(0),
+                "limit":parts.get(2).and_then(|value| value.parse::<u64>().ok()).unwrap_or(128)
+            }),
+        ),
+        "diff" => (
+            "glass.replay.diff",
+            json!({
+                "from":parse_u64(parts.get(1),"FROM")?,
+                "to":parse_u64(parts.get(2),"TO")?
+            }),
+        ),
+        _ => return Err("replay actions: list, inspect, diff FROM TO, attach".into()),
+    };
+    execute_named_tool(state, tool, arguments, false, DevSurface::More)
+}
+
+fn execute_memory(
+    state: &mut DevTuiState,
+    command: &str,
+    parts: Vec<&str>,
+) -> Result<String, String> {
+    if command == "knowledge" {
+        return execute_named_tool(
+            state,
+            "glass.memory.retrieve",
+            json!({"limit":parts.first().and_then(|value| value.parse::<u64>().ok()).unwrap_or(128)}),
+            false,
+            DevSurface::More,
+        );
+    }
+    match parts.first().copied().unwrap_or("status") {
+        "status" | "stats" | "list" | "export" | "reindex" => execute_named_tool(
+            state,
+            "glass.memory.retrieve",
+            json!({"limit":128}),
+            false,
+            DevSurface::More,
+        ),
+        "inspect" | "explain" => execute_named_tool(
+            state,
+            if parts.first() == Some(&"inspect") {
+                "glass.memory.retrieve"
+            } else {
+                "glass.memory.explain"
+            },
+            json!({"recordId":parts.get(1).ok_or("memory action requires RECORD_ID")?}),
+            false,
+            DevSurface::More,
+        ),
+        "forget" | "prune" => execute_named_tool(
+            state,
+            "glass.memory.forget",
+            json!({"recordId":parts.get(1).ok_or("memory forget requires RECORD_ID")?}),
+            true,
+            DevSurface::More,
+        ),
+        _ => Err("memory actions: status, list, inspect ID, explain ID, forget ID, export, prune, reindex".into()),
+    }
+}
+
+fn execute_data_surface(
+    state: &mut DevTuiState,
+    command: &str,
+    parts: Vec<&str>,
+) -> Result<String, String> {
+    let action = parts.first().copied().unwrap_or("inspect");
+    let tool = match (command, action) {
+        ("backend", "status" | "capabilities" | "test") => "glass.capabilities.inspect",
+        ("surface" | "surfaces", "inspect" | "coverage") => "glass.semantic.links",
+        _ => {
+            return Err(format!(
+                "{command} actions: {}",
+                if command == "backend" {
+                    "status INPUT, capabilities INPUT, test INPUT"
+                } else {
+                    "inspect INPUT, coverage INPUT"
+                }
+            ));
+        }
+    };
+    execute_named_tool(state, tool, json!({}), false, DevSurface::More)
+}
+
+fn execute_generic_tool(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    let name = parts.first().ok_or("tool requires NAME [JSON]")?;
+    let name = if name.starts_with("glass.") {
+        (*name).to_string()
+    } else {
+        format!("glass.{name}")
+    };
+    let descriptor = state
+        .ws()?
+        .tool_descriptors()
+        .into_iter()
+        .find(|tool| tool.name == name)
+        .ok_or_else(|| format!("unknown resident tool {name}; use workspace tools"))?;
+    if !descriptor.available {
+        return Err(descriptor
+            .unavailable_reason
+            .unwrap_or_else(|| format!("{name} is unavailable")));
+    }
+    let arguments = parts
+        .get(1..)
+        .filter(|values| !values.is_empty())
+        .map(|values| values.join(" "))
+        .map(|value| {
+            serde_json::from_str(&value)
+                .map_err(|error| format!("tool arguments must be valid JSON: {error}"))
+        })
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    let surface = surface_for_tool(&name);
+    execute_named_tool(state, &name, arguments, descriptor.mutating, surface)
+}
+
+fn execute_named_tool(
+    state: &mut DevTuiState,
+    tool: &str,
+    arguments: Value,
+    mutating: bool,
+    surface: DevSurface,
+) -> Result<String, String> {
+    let result = run_tool(state, tool, arguments, mutating)?;
+    state.surface = surface;
+    Ok(compact_result(tool, &result))
+}
+
+fn surface_for_tool(tool: &str) -> DevSurface {
+    if tool.starts_with("glass.agent") {
+        DevSurface::Agent
+    } else if tool.starts_with("glass.browser") || tool.starts_with("glass.workflow") {
+        DevSurface::App
+    } else if tool.starts_with("glass.process") {
+        DevSurface::Terminal
+    } else if tool.starts_with("glass.git") {
+        DevSurface::Git
+    } else if tool.starts_with("glass.task")
+        || tool.starts_with("glass.test")
+        || tool.starts_with("glass.eval")
+    {
+        DevSurface::Tasks
+    } else if tool.starts_with("glass.debug") {
+        DevSurface::Debug
+    } else if tool.starts_with("glass.editor")
+        || tool.starts_with("glass.file")
+        || tool.starts_with("glass.lsp")
+        || tool.starts_with("glass.diagnostics")
+    {
+        DevSurface::Code
+    } else {
+        DevSurface::More
     }
 }
 
@@ -106,6 +1038,7 @@ fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
                 .ws()?
                 .apply_local_trust_decision(decision)
                 .map_err(|error| error.to_string())?;
+            state.snapshot_trust_label = trust.label().into();
             state.surface = DevSurface::Agent;
             Ok(format!("Workspace trust is now {}", trust.label()))
         }
@@ -118,21 +1051,49 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
         state.surface = DevSurface::Agent;
         return Ok("Opened Glass Agent".into());
     };
-    require_trusted(state)?;
+    if !matches!(action, "doctor" | "status" | "setup" | "update") {
+        require_trusted(state)?;
+    }
     match action {
         "doctor" | "status" => {
             let ready = state.refresh_agent_readiness()?;
             state.surface = DevSurface::Agent;
             Ok(if ready {
-                "Glass Agent is ready".into()
+                "Glass Agent is ready · press i to start a conversation".into()
             } else {
-                "Glass Agent needs setup · run `agent setup`, then `agent status`".into()
+                "Glass Agent needs setup · press s to install, u to refresh, or l to sign in".into()
             })
         }
-        "setup" => {
-            let login = parts.get(1).is_some_and(|value| *value == "login");
-            let result = run_tool(state, "glass.agent.setup", json!({"login": login}), true)?;
+        "setup" | "update" => {
+            let options = parts.get(1..).unwrap_or_default();
+            let login = options
+                .iter()
+                .any(|value| matches!(*value, "login" | "--login"));
+            let update = action == "update"
+                || options
+                    .iter()
+                    .any(|value| matches!(*value, "update" | "--update"));
+            if options.iter().any(|value| {
+                !matches!(*value, "login" | "--login" | "update" | "--update")
+            }) {
+                return Err(
+                    "agent setup options: [login|--login] [update|--update]".into(),
+                );
+            }
+            if login && update {
+                return Err("agent setup cannot combine login and update".into());
+            }
             state.surface = DevSurface::Agent;
+            if login {
+                state.request_agent_login()?;
+                return Ok("Pi login will open in this terminal".into());
+            }
+            let result = run_tool(
+                state,
+                "glass.agent.setup",
+                json!({"login": false, "update": update}),
+                true,
+            )?;
             Ok(compact_result("glass.agent.setup", &result))
         }
         "spawn" => {
@@ -150,49 +1111,139 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             Ok(format!("Spawned {}", id.as_str()))
         }
         "prompt" | "steer" | "follow-up" => {
-            let id = parts.get(1).ok_or("agent action requires ID TEXT")?;
-            let text = parts.get(2..).unwrap_or_default().join(" ");
-            let agent = find_agent(state, id)?;
-            match action {
-                "prompt" => state.ws_mut()?.agents().prompt(&agent, text),
-                "steer" => state.ws_mut()?.agents().steer(&agent, text),
-                _ => state.ws_mut()?.agents().follow_up(&agent, text),
+            let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
+            let text_start = if offset == 1 { 2 } else { 1 };
+            let text = parts.get(text_start..).unwrap_or_default().join(" ");
+            if text.trim().is_empty() {
+                return Err(format!("agent {action} requires TEXT"));
             }
-            .map_err(|error| error.to_string())?;
+            let mode = match action {
+                "steer" => "steer",
+                "follow-up" => "follow-up",
+                _ => "prompt",
+            };
+            let mut arguments = json!({"text":text,"mode":mode});
+            if let Some(agent_id) = agent_id {
+                arguments["agentId"] = Value::String(agent_id);
+            }
+            let result = run_tool(state, "glass.agent.send", arguments, true)?;
             state.surface = DevSurface::Agent;
-            Ok(format!("Queued {action} for {id}"))
+            Ok(compact_result("glass.agent.send", &result))
         }
-        "cancel" => {
-            let id = parts.get(1).ok_or("agent cancel requires ID")?;
-            let agent = find_agent(state, id)?;
-            state
-                .ws_mut()?
-                .agents()
-                .cancel(&agent)
-                .map_err(|error| error.to_string())?;
-            Ok(format!("Cancelled {id}"))
+        "hello" | "models" => {
+            let tool = if action == "hello" {
+                "glass.agent.hello"
+            } else {
+                "glass.agent.models"
+            };
+            let result = run_tool(state, tool, json!({}), false)?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result(tool, &result))
+        }
+        "cancel" | "abort" => {
+            let (agent_id, _) = explicit_or_active_agent(state, &parts)?;
+            let agent_id = agent_id.ok_or("no active agent session")?;
+            let result = run_tool(
+                state,
+                "glass.agent.abort",
+                json!({"agentId":agent_id}),
+                true,
+            )?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result("glass.agent.abort", &result))
         }
         "compact" => agent_control(state, &parts, "glass.agent.compact", json!({})),
-        "model" => {
-            let provider = parts.get(2).ok_or("agent model requires ID PROVIDER MODEL")?;
-            let model = parts.get(3).ok_or("agent model requires ID PROVIDER MODEL")?;
-            agent_control(state, &parts, "glass.agent.model", json!({"provider":provider,"modelId":model}))
+        "model" | "set-model" => {
+            let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
+            let provider = parts
+                .get(offset + 1)
+                .ok_or("agent model requires [ID] PROVIDER MODEL")?;
+            let model = parts
+                .get(offset + 2)
+                .ok_or("agent model requires [ID] PROVIDER MODEL")?;
+            let mut arguments = json!({"provider":provider,"modelId":model});
+            if let Some(agent_id) = agent_id {
+                arguments["agentId"] = Value::String(agent_id);
+            }
+            let result = run_tool(state, "glass.agent.model", arguments, true)?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result("glass.agent.model", &result))
         }
-        "thinking" => {
-            let level = parts.get(2).ok_or("agent thinking requires ID LEVEL")?;
-            agent_control(state, &parts, "glass.agent.thinking", json!({"level":level}))
+        "thinking" | "set-thinking" => {
+            let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
+            let level = parts
+                .get(offset + 1)
+                .ok_or("agent thinking requires [ID] LEVEL")?;
+            let mut arguments = json!({"level":level});
+            if let Some(agent_id) = agent_id {
+                arguments["agentId"] = Value::String(agent_id);
+            }
+            let result = run_tool(state, "glass.agent.thinking", arguments, true)?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result("glass.agent.thinking", &result))
         }
-        "new" => agent_control(state, &parts, "glass.agent.new-session", json!({})),
-        "clone" => agent_control(state, &parts, "glass.agent.clone-session", json!({})),
+        "new" | "new-session" => agent_control(state, &parts, "glass.agent.new-session", json!({})),
+        "clone" | "clone-session" => {
+            agent_control(state, &parts, "glass.agent.clone-session", json!({}))
+        }
         "fork" => {
-            let entry = parts.get(2).ok_or("agent fork requires ID ENTRY")?;
-            agent_control(state, &parts, "glass.agent.fork", json!({"entryId":entry}))
+            let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
+            let entry = parts
+                .get(offset + 1)
+                .ok_or("agent fork requires [ID] ENTRY")?;
+            let mut arguments = json!({"entryId":entry});
+            if let Some(agent_id) = agent_id {
+                arguments["agentId"] = Value::String(agent_id);
+            }
+            let result = run_tool(state, "glass.agent.fork", arguments, true)?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result("glass.agent.fork", &result))
         }
-        "messages" => agent_control(state, &parts, "glass.agent.messages", json!({})),
-        "entries" => agent_control(state, &parts, "glass.agent.entries", json!({})),
-        "stats" => agent_control(state, &parts, "glass.agent.stats", json!({})),
-        _ => Err("agent actions: doctor, status, setup [login], spawn, prompt, steer, follow-up, cancel, compact, model, thinking, new, clone, fork, messages, entries, stats".into()),
+        "messages" | "entries" | "stats" => {
+            let tool = match action {
+                "messages" => "glass.agent.messages",
+                "entries" => "glass.agent.entries",
+                _ => "glass.agent.stats",
+            };
+            let result = run_tool(state, tool, json!({}), false)?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result(tool, &result))
+        }
+        _ => Err("agent actions: doctor, status, setup [login], hello, models, spawn, prompt, steer, follow-up, cancel, abort, compact, model, set-model, thinking, set-thinking, new, new-session, clone, clone-session, fork, messages, entries, stats".into()),
     }
+}
+
+fn explicit_or_active_agent(
+    state: &mut DevTuiState,
+    parts: &[&str],
+) -> Result<(Option<String>, usize), String> {
+    if let Some(id) = parts
+        .get(1)
+        .copied()
+        .filter(|value| value.starts_with("agent-"))
+    {
+        let agent = find_agent(state, id)?;
+        return Ok((Some(agent.as_str().to_string()), 1));
+    }
+    if let Some(id) = state.selected_agent.as_ref() {
+        return Ok((Some(id.as_str().to_string()), 0));
+    }
+    let id = state
+        .ws_mut()?
+        .agents()
+        .list()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|agent| {
+            !matches!(
+                agent.status,
+                crate::AgentStatus::Completed
+                    | crate::AgentStatus::Failed
+                    | crate::AgentStatus::Cancelled
+            )
+        })
+        .map(|agent| agent.id.as_str().to_string());
+    Ok((id, 0))
 }
 
 fn agent_control(
@@ -201,8 +1252,9 @@ fn agent_control(
     tool: &str,
     mut arguments: Value,
 ) -> Result<String, String> {
-    let id = parts.get(1).ok_or("agent action requires ID")?;
-    arguments["agentId"] = Value::String((*id).into());
+    let (id, _) = explicit_or_active_agent(state, parts)?;
+    let id = id.ok_or("no active agent session")?;
+    arguments["agentId"] = Value::String(id);
     let result = run_tool(state, tool, arguments, true)?;
     state.surface = DevSurface::Agent;
     Ok(compact_result(tool, &result))
@@ -214,10 +1266,20 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
         return Ok("Opened autonomous task DAG".into());
     };
     match action {
-        "list" | "inspect" => {
-            state.surface = DevSurface::Tasks;
-            Ok("Task prompts, dependencies, verification, and evidence refreshed".into())
-        }
+        "list" => execute_named_tool(
+            state,
+            "glass.task.list",
+            json!({}),
+            false,
+            DevSurface::Tasks,
+        ),
+        "get" | "inspect" => execute_named_tool(
+            state,
+            "glass.task.inspect",
+            json!({"taskId":parts.get(1).ok_or("task inspect requires TASK_ID")?}),
+            false,
+            DevSurface::Tasks,
+        ),
         "create" | "create-after" => {
             require_trusted(state)?;
             let offset = usize::from(action == "create-after");
@@ -231,82 +1293,79 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             let mut spec = TaskSpec::new(*title, prompt);
             if action == "create-after" {
                 spec.dependencies.push(crate::TaskId::parse(
-                    *parts.get(1).ok_or("task create-after requires DEPENDENCY TITLE PROMPT")?,
-                ).map_err(|error| error.to_string())?);
+                    *parts
+                        .get(1)
+                        .ok_or("task create-after requires DEPENDENCY TITLE PROMPT")?,
+                )
+                .map_err(|error| error.to_string())?);
             }
-            let id = state
-                .ws_mut()?
-                .create_task(spec)
-                .map_err(|error| error.to_string())?;
-            state.surface = DevSurface::Tasks;
-            Ok(format!("Created and scheduled {}", id.as_str()))
+            execute_named_tool(
+                state,
+                "glass.task.create",
+                serde_json::to_value(spec).map_err(|error| error.to_string())?,
+                true,
+                DevSurface::Tasks,
+            )
         }
         "pause" | "resume" | "cancel" | "retry" | "override" => {
             require_trusted(state)?;
-            let id = crate::TaskId::parse(
-                *parts.get(1).ok_or("task action requires TASK_ID")?,
-            )
-            .map_err(|error| error.to_string())?;
-            let result = match action {
-                "pause" => state.ws_mut()?.pause_task(&id),
-                "resume" => state.ws_mut()?.resume_task(&id),
-                "cancel" => state.ws_mut()?.cancel_task(&id),
-                "retry" => state.ws_mut()?.retry_task(&id),
-                _ => state.ws_mut()?.override_blocked_task(&id),
+            let task_id = parts.get(1).ok_or("task action requires TASK_ID")?;
+            let tool = match action {
+                "pause" => "glass.task.pause",
+                "resume" => "glass.task.resume",
+                "cancel" => "glass.task.cancel",
+                "retry" => "glass.task.retry",
+                _ => "glass.task.override-blocked",
             };
-            result.map_err(|error| error.to_string())?;
-            state.surface = DevSurface::Tasks;
-            Ok(format!("Task {}: {action}", id.as_str()))
+            execute_named_tool(
+                state,
+                tool,
+                json!({"taskId":task_id}),
+                true,
+                DevSurface::Tasks,
+            )
         }
         "reassign" => {
             require_trusted(state)?;
-            let id = crate::TaskId::parse(
-                *parts.get(1).ok_or("task reassign requires TASK_ID ROLE [MODEL] [THINKING]")?,
+            execute_named_tool(
+                state,
+                "glass.task.reassign",
+                json!({
+                    "taskId":parts.get(1).ok_or("task reassign requires TASK_ID ROLE [MODEL] [THINKING]")?,
+                    "role":parts.get(2).ok_or("task reassign requires TASK_ID ROLE [MODEL] [THINKING]")?,
+                    "model":parts.get(3),
+                    "thinking":parts.get(4)
+                }),
+                true,
+                DevSurface::Tasks,
             )
-            .map_err(|error| error.to_string())?;
-            state
-                .ws_mut()?
-                .reassign_task(
-                    &id,
-                    parts
-                        .get(2)
-                        .ok_or("task reassign requires TASK_ID ROLE [MODEL] [THINKING]")?
-                        .to_string(),
-                    parts.get(3).map(|value| (*value).to_string()),
-                    parts.get(4).map(|value| (*value).to_string()),
-                )
-                .map_err(|error| error.to_string())?;
-            state.surface = DevSurface::Tasks;
-            Ok(format!("Reassigned {}", id.as_str()))
         }
-        "evidence" => {
+        "evidence" | "verify" => {
             require_trusted(state)?;
-            let id = crate::TaskId::parse(
-                *parts.get(1).ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?,
-            )
-            .map_err(|error| error.to_string())?;
-            let kind = parts
-                .get(2)
-                .ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?;
-            let passed = parts
-                .get(3)
-                .ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?
-                .parse::<bool>()
-                .map_err(|_| "task evidence PASS must be true or false")?;
             let encoded = parts.get(4..).unwrap_or_default().join(" ");
             let details = if encoded.is_empty() {
                 Value::Null
             } else {
                 serde_json::from_str(&encoded).map_err(|error| error.to_string())?
             };
-            state
-                .ws_mut()?
-                .submit_task_evidence(&id, (*kind).into(), "local-human".into(), passed, details)
-                .map_err(|error| error.to_string())?;
-            state.surface = DevSurface::Tasks;
-            Ok(format!("Recorded {kind} evidence for {}", id.as_str()))
+            execute_named_tool(
+                state,
+                if action == "verify" {
+                    "glass.task.verify"
+                } else {
+                    "glass.task.evidence"
+                },
+                json!({
+                    "taskId":parts.get(1).ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?,
+                    "kind":parts.get(2).ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?,
+                    "passed":parts.get(3).ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?.parse::<bool>().map_err(|_| "task evidence PASS must be true or false")?,
+                    "details":details
+                }),
+                true,
+                DevSurface::Tasks,
+            )
         }
-        _ => Err("task actions: list, create, create-after, pause, resume, cancel, retry, reassign, override, evidence".into()),
+        _ => Err("task actions: list, get, inspect, create, create-after, pause, resume, cancel, retry, reassign, override, evidence, verify".into()),
     }
 }
 
@@ -419,16 +1478,51 @@ fn execute_process(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
         state.surface = DevSurface::Terminal;
         return Ok("Opened processes".into());
     };
+    if action == "list" {
+        return execute_named_tool(
+            state,
+            "glass.process.list",
+            json!({}),
+            false,
+            DevSurface::Terminal,
+        );
+    }
+    if action == "ports" {
+        return execute_named_tool(
+            state,
+            "glass.process.ports",
+            json!({}),
+            false,
+            DevSurface::Terminal,
+        );
+    }
     let name = parts.get(1).ok_or("process action requires NAME")?;
+    let detected_command = (action == "start"
+        && parts
+            .get(2..)
+            .is_none_or(|values| values.iter().all(|value| value.is_empty())))
+    .then(|| state.ws().ok()?.project().detection().dev_command.clone())
+    .flatten();
     let (tool, arguments, mutating) = match action {
-        "start" => (
-            "glass.process.start",
-            json!({"name":name,"command":parts.get(2..).unwrap_or_default().join(" ")}),
-            true,
-        ),
+        "start" => {
+            let command = parts.get(2..).unwrap_or_default().join(" ");
+            let command = if command.trim().is_empty() {
+                detected_command
+                    .as_deref()
+                    .ok_or("no detected dev command; use process start NAME COMMAND")?
+            } else {
+                command.as_str()
+            };
+            (
+                "glass.process.start",
+                json!({"name":name,"command":command}),
+                true,
+            )
+        }
         "stop" => ("glass.process.stop", json!({"name":name}), true),
         "restart" => ("glass.process.restart", json!({"name":name}), true),
-        "logs" => ("glass.process.logs", json!({"name":name}), false),
+        "remove" => ("glass.process.remove", json!({"name":name}), true),
+        "logs" | "output" => ("glass.process.logs", json!({"name":name}), false),
         "health" => ("glass.process.health", json!({"name":name}), false),
         "input" => (
             "glass.process.input",
@@ -440,16 +1534,14 @@ fn execute_process(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
             json!({"name":name,"cols":parse_u64(parts.get(2), "COLS")?,"rows":parse_u64(parts.get(3), "ROWS")?}),
             true,
         ),
-        "ports" => ("glass.process.ports", json!({}), false),
         _ => {
             return Err(
-                "process actions: start, stop, restart, logs, input, resize, health, ports".into(),
+                "process actions: list, start, stop, restart, remove, logs, output, input, resize, health, ports"
+                    .into(),
             );
         }
     };
-    let result = run_tool(state, tool, arguments, mutating)?;
-    state.surface = DevSurface::Terminal;
-    Ok(compact_result(tool, &result))
+    execute_named_tool(state, tool, arguments, mutating, DevSurface::Terminal)
 }
 
 fn execute_browser(
@@ -472,13 +1564,44 @@ fn execute_browser(
             _ => return Err("workflow actions: list, run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON], cancel, verify".into()),
         }
     } else {
+        if matches!(action, "targets" | "target") {
+            let query = parts.get(1..).unwrap_or_default().join(" ");
+            state.request_browser_target_picker(query)?;
+            state.surface = DevSurface::App;
+            return Ok("Loading browser targets…".into());
+        }
         let visible_revision = state
             .browser_workspace
             .state()
             .browser_revision
             .ok_or("observe the browser before a revision-bound action");
         match action {
-            "start" => ("glass.browser.start", json!({"port":parts.get(1).and_then(|value| value.parse::<u16>().ok()).unwrap_or(9222),"incognito":true,"chromePath":parts.get(2)}), true),
+            "start" => {
+                let port = parts
+                    .get(1)
+                    .and_then(|value| value.parse::<u16>().ok())
+                    .unwrap_or(9222);
+                let attach = parts.contains(&"--attach");
+                let incognito = parts.contains(&"--incognito");
+                let headed = !parts.contains(&"--headless");
+                let chrome_path = parts
+                    .get(2..)
+                    .unwrap_or_default()
+                    .iter()
+                    .copied()
+                    .find(|value| !value.starts_with("--"));
+                (
+                    "glass.browser.start",
+                    json!({
+                        "port": port,
+                        "attach": attach,
+                        "incognito": incognito,
+                        "headed": headed,
+                        "chromePath": chrome_path
+                    }),
+                    true,
+                )
+            }
             "stop" => ("glass.browser.stop", json!({}), true),
             "state" => ("glass.browser.state", json!({}), false),
             "observe" => ("glass.browser.observe", json!({}), false),
@@ -793,11 +1916,10 @@ fn run_tool(
     arguments: Value,
     mutating: bool,
 ) -> Result<Value, String> {
-    let expected_generation = state.ws().map(|w| w.generation()).unwrap_or_default();
-    let expected_project_revision = state
-        .ws()
-        .map(|w| w.project().revision())
-        .unwrap_or_default();
+    let workspace = state.ws()?;
+    let expected_generation = workspace.generation();
+    let expected_project_revision = workspace.project().revision();
+    drop(workspace);
     let context = DevelopmentToolContext {
         authorization: ToolAuthorization {
             actor: Actor::local(),
@@ -814,10 +1936,7 @@ fn run_tool(
         arguments,
     };
     if mutating {
-        if state.pending_confirmation.is_some()
-            || state.running_tool_job.is_some()
-            || state.queued_tool_request.is_some()
-        {
+        if state.background_action_running() {
             return Err("another tool action is already awaiting or running".into());
         }
         let summary = format!(
@@ -862,15 +1981,14 @@ fn compact_result(tool: &str, value: &Value) -> String {
 }
 
 fn require_trusted(state: &DevTuiState) -> Result<(), String> {
-    state
-        .ws_mut()?
-        .trust()
-        .permits_project_execution()
-        .then_some(())
-        .ok_or_else(|| {
+    if state.snapshot_trust_label == "untrusted" {
+        Err(
             "repository-controlled execution is blocked; inspect and trust the workspace first"
-                .into()
-        })
+                .into(),
+        )
+    } else {
+        Ok(())
+    }
 }
 
 fn parse_u64(value: Option<&&str>, label: &str) -> Result<u64, String> {
@@ -903,11 +2021,159 @@ fn parse_surface(name: &str) -> Option<DevSurface> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glass_browser::cli::args::TuiLayout;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_state(label: &str) -> (DevTuiState, PathBuf) {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "glass-tui-command-{label}-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create test root");
+        let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open state");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
+            .expect("trust project");
+        state.snapshot_trust_label = "trusted-project".into();
+        (state, root)
+    }
 
     #[test]
     fn every_major_surface_has_a_palette_route() {
         for surface in DevSurface::ALL {
             assert_eq!(parse_surface(surface.label()), Some(surface));
+        }
+    }
+
+    #[test]
+    fn help_explains_the_guided_command_center() {
+        let (mut state, root) = test_state("help");
+        let output = execute(&mut state, "help").expect("help route");
+        assert!(output.contains("`a` opens guided Agent launchers"));
+        assert!(output.contains("Agent: agent"));
+        assert!(output.contains("Build: project · editor · lsp · git"));
+        let error = execute(&mut state, "not-a-route").expect_err("unknown route");
+        assert!(error.contains("press a for guided launchers"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quit_route_requests_confirmation_without_exiting() {
+        let (mut state, root) = test_state("quit");
+        let output = execute(&mut state, "quit").expect("quit route");
+        assert!(output.contains("Enter exits"));
+        assert!(state.quit_confirmation);
+        assert!(!state.quit);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn palette_order_starts_with_current_surface_launchers() {
+        assert_eq!(palette_order(DevSurface::Agent)[0], "agent");
+        assert_eq!(palette_order(DevSurface::Terminal)[0], "process");
+        assert_eq!(palette_order(DevSurface::Code)[0], "editor");
+        assert_eq!(palette_order(DevSurface::Tasks)[0], "task");
+    }
+
+    #[test]
+    fn agent_prompt_without_id_queues_native_interactive_send() {
+        let (mut state, root) = test_state("agent");
+        execute(&mut state, "agent prompt inspect workspace").expect("queue agent prompt");
+        let pending = state.pending_confirmation.take().expect("confirmation");
+        assert_eq!(pending.call.name, "glass.agent.send");
+        assert_eq!(pending.call.arguments["text"], "inspect workspace");
+        assert!(pending.call.arguments.get("agentId").is_none());
+        assert_eq!(
+            pending.context.expected_generation,
+            state.ws().expect("workspace lock").generation()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_update_routes_forced_pinned_sdk_refresh() {
+        let (mut state, root) = test_state("agent-update");
+        let output = execute(&mut state, "agent update").expect("queue Pi update");
+        assert!(output.contains("confirmation"));
+        let pending = state.pending_confirmation.take().expect("confirmation");
+        assert_eq!(pending.call.name, "glass.agent.setup");
+        assert_eq!(pending.call.arguments["login"], false);
+        assert_eq!(pending.call.arguments["update"], true);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tool_request_uses_cached_revisions_while_workspace_refreshes() {
+        let (state, root) = test_state("busy");
+        let workspace = state.workspace.clone();
+        let _guard = workspace.lock().expect("hold workspace lock");
+        let (_, context) = state
+            .tool_request("glass.agent.send", json!({"text": "inspect"}), true)
+            .expect("chat request stays responsive during refresh");
+        assert_eq!(context.expected_generation, state.snapshot_generation);
+        assert_eq!(
+            context.expected_project_revision,
+            state.snapshot_project_revision
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn process_ports_and_task_list_need_no_placeholder_name_or_id() {
+        let (mut state, root) = test_state("read-routes");
+        execute(&mut state, "process ports").expect("queue process ports");
+        let process_call = state.queued_tool_request.take().expect("process request");
+        assert_eq!(process_call.0.name, "glass.process.ports");
+        execute(&mut state, "task list").expect("queue task list");
+        let task_call = state.queued_tool_request.take().expect("task request");
+        assert_eq!(task_call.0.name, "glass.task.list");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn every_route_family_queues_the_shared_resident_tool() {
+        let routes = [
+            ("workspace", "workspace list", "glass.workspace.list"),
+            ("project", "project files", "glass.file.list"),
+            ("agent", "agent hello", "glass.agent.hello"),
+            ("task", "task list", "glass.task.list"),
+            (
+                "editor",
+                "editor selection src/lib.rs",
+                "glass.editor.selection",
+            ),
+            ("lsp", "lsp list", "glass.lsp.list"),
+            ("process", "process ports", "glass.process.ports"),
+            ("browser", "browser state", "glass.browser.state"),
+            ("workflow", "workflow list", "glass.workflow.list"),
+            ("debug", "debug threads session", "glass.debug.threads"),
+            ("git", "git status", "glass.git.status"),
+            ("test", "test discover", "glass.test.discover"),
+            ("replay", "replay list", "glass.replay.list"),
+            ("memory", "memory status", "glass.memory.retrieve"),
+            ("surface", "surface inspect", "glass.semantic.links"),
+            ("backend", "backend status", "glass.capabilities.inspect"),
+            ("generic", "tool glass.lsp.events {}", "glass.lsp.events"),
+        ];
+        for (label, input, expected_tool) in routes {
+            let (mut state, root) = test_state(label);
+            execute(&mut state, input).unwrap_or_else(|error| {
+                panic!("{input} should route through the resident tool gateway: {error}")
+            });
+            let (call, _) = state
+                .queued_tool_request
+                .take()
+                .unwrap_or_else(|| panic!("{input} did not queue a tool"));
+            assert_eq!(call.name, expected_tool, "route {input}");
+            let _ = fs::remove_dir_all(root);
         }
     }
 }

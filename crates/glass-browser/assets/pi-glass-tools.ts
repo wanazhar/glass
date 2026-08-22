@@ -412,9 +412,10 @@ export default function (pi: ExtensionAPI) {
 
   register("glass_agent_list", "glass.agent.list", "Inspect independent Glass Agent sessions", Type.Object({}));
   register("glass_agent_spawn", "glass.agent.spawn", "Spawn an independent Pi-powered Glass Agent", Type.Object({ spec: Type.Object({}, { additionalProperties: true }) }), true);
-  register("glass_agent_prompt", "glass.agent.prompt", "Prompt an independent Glass Agent", Type.Object({ agentId: Type.String(), text: Type.String() }), true);
-  register("glass_agent_steer", "glass.agent.steer", "Steer a running Glass Agent", Type.Object({ agentId: Type.String(), text: Type.String() }), true);
-  register("glass_agent_follow_up", "glass.agent.follow-up", "Queue a Glass Agent follow-up", Type.Object({ agentId: Type.String(), text: Type.String() }), true);
+  register("glass_agent_prompt", "glass.agent.prompt", "Prompt an independent Glass Agent", Type.Object({ agentId: Type.String(), text: Type.String(), context: Type.Optional(Type.Any()) }), true);
+  register("glass_agent_steer", "glass.agent.steer", "Steer a running Glass Agent", Type.Object({ agentId: Type.String(), text: Type.String(), context: Type.Optional(Type.Any()) }), true);
+  register("glass_agent_follow_up", "glass.agent.follow-up", "Queue a Glass Agent follow-up", Type.Object({ agentId: Type.String(), text: Type.String(), context: Type.Optional(Type.Any()) }), true);
+  register("glass_agent_approve", "glass.agent.approve", "Approve or deny a pending Glass Agent tool call", Type.Object({ agentId: Type.String(), frameId: Type.String(), approved: Type.Boolean() }), true);
   register("glass_agent_abort", "glass.agent.abort", "Cancel an independent Glass Agent", Type.Object({ agentId: Type.String() }), true);
   register("glass_agent_compact", "glass.agent.compact", "Compact an independent Glass Agent session", Type.Object({ agentId: Type.String(), instructions: Type.Optional(Type.String()) }), true);
   register("glass_agent_model", "glass.agent.model", "Switch an independent Glass Agent model", Type.Object({ agentId: Type.String(), provider: Type.String(), modelId: Type.String() }), true);

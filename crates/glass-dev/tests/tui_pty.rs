@@ -80,6 +80,17 @@ impl Session {
         }
         false
     }
+    fn wait_for_exit(&mut self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.child.try_wait().unwrap_or(None).is_some() {
+                return true;
+            }
+            self.settle(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.child.try_wait().unwrap_or(None).is_some()
+    }
 
     fn set_window(&mut self, cols: u16, rows: u16) {
         unsafe {
@@ -99,6 +110,12 @@ impl Session {
     fn send(&mut self, keys: &[u8]) {
         self.master.write_all(keys).expect("write keys");
         self.master.flush().expect("flush");
+        // Let crossterm finish an isolated Escape before the next test key.
+        // Otherwise a fast Escape + printable byte can be parsed as one
+        // sequence and exercise the wrong input mode.
+        if keys.contains(&0x1b) {
+            self.settle(Duration::from_millis(150));
+        }
     }
 
     fn settle(&mut self, wait: Duration) {
@@ -130,6 +147,28 @@ impl Session {
         String::from_utf8_lossy(&self.buffer).into_owned()
     }
 
+    fn output_tail(&self) -> String {
+        let output = self.output();
+        let visible = output
+            .chars()
+            .map(|character| {
+                if character == '\n' || character == '\r' || !character.is_control() {
+                    character
+                } else {
+                    ' '
+                }
+            })
+            .collect::<String>();
+        visible
+            .chars()
+            .rev()
+            .take(3000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect()
+    }
+
     fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -157,11 +196,16 @@ fn workspace_root() -> std::path::PathBuf {
 }
 
 fn binary() -> String {
-    std::env::var("GLASS_E2E_BINARY").unwrap_or_else(|_| "target/release/glass".to_string())
+    std::env::var("GLASS_E2E_BINARY").unwrap_or_else(|_| {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/release/glass")
+            .display()
+            .to_string()
+    })
 }
 
 #[test]
-fn ctrl_c_quits_from_every_input_mode() {
+fn ctrl_c_requires_confirmation_from_every_input_mode() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
     }
@@ -170,23 +214,71 @@ fn ctrl_c_quits_from_every_input_mode() {
 
     // Plain navigation mode.
     let mut session = Session::start(&bin, &root, 100, 28);
-    session.send(b"\x03");
-    session.settle(Duration::from_millis(600));
     assert!(
-        session.child.try_wait().unwrap_or(None).is_some(),
-        "Ctrl+C must quit from navigation mode"
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "navigation frame never rendered"
+    );
+    session.send(b"\x03");
+    assert!(
+        session.wait_for("QUIT GLASS DEV?", Duration::from_secs(5)),
+        "Ctrl+C must open quit confirmation from navigation mode"
+    );
+    assert!(
+        !session.wait_for_exit(Duration::from_millis(300)),
+        "Ctrl+C must not exit before confirmation"
+    );
+    session.send(b"\x1b");
+    assert!(
+        session.wait_for("Quit dismissed", Duration::from_secs(3)),
+        "Escape must dismiss quit confirmation"
+    );
+    session.send(b"\x03");
+    assert!(
+        session.wait_for("QUIT GLASS DEV?", Duration::from_secs(3)),
+        "Ctrl+C must reopen quit confirmation"
+    );
+    session.send(b"y");
+    assert!(
+        session.wait_for_exit(Duration::from_secs(5)),
+        "confirmed quit must exit navigation mode; output bytes={}",
+        session.buffer.len()
     );
     session.kill();
 
-    // Composer mode: Ctrl+C must quit, not insert a literal 'c'.
+    // Composer mode: Ctrl+C must ask before quitting, not insert a literal 'c'.
     let mut session = Session::start(&bin, &root, 100, 28);
-    session.send(b"i");
-    session.settle(Duration::from_millis(400));
-    session.send(b"\x03");
-    session.settle(Duration::from_millis(600));
     assert!(
-        session.child.try_wait().unwrap_or(None).is_some(),
-        "Ctrl+C must quit from composer mode"
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "composer navigation frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "agent surface never rendered after trust"
+    );
+    assert!(
+        session.wait_for("✓ Ready", Duration::from_secs(5)),
+        "Pi runtime never became ready"
+    );
+    session.send(b"i");
+    assert!(
+        session.wait_for("▌", Duration::from_secs(5)),
+        "composer never opened"
+    );
+    session.send(b"\x03");
+    assert!(
+        session.wait_for("QUIT GLASS DEV?", Duration::from_secs(5)),
+        "Ctrl+C must open quit confirmation from composer mode"
+    );
+    assert!(
+        !session.wait_for_exit(Duration::from_millis(300)),
+        "Ctrl+C must not exit composer mode before confirmation"
+    );
+    session.send(b"y");
+    assert!(
+        session.wait_for_exit(Duration::from_secs(5)),
+        "confirmed quit must exit composer mode; output bytes={}",
+        session.buffer.len()
     );
     session.kill();
 }
@@ -204,7 +296,7 @@ fn action_menu_opens_and_renders_entries() {
     );
     session.send(b"a");
     assert!(
-        session.wait_for("Composer", Duration::from_secs(5)),
+        session.wait_for("Compose message", Duration::from_secs(5)),
         "action menu entries missing"
     );
     session.send(b"\x1b");
@@ -212,6 +304,62 @@ fn action_menu_opens_and_renders_entries() {
     session.kill();
 }
 
+#[test]
+fn app_target_picker_failure_keeps_tui_recoverable() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 118, 32);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface never rendered after trust"
+    );
+    session.send(b"3");
+    assert!(
+        session.wait_for("BROWSER", Duration::from_secs(5)),
+        "App surface never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("RECOVERY", Duration::from_secs(8)),
+        "target picker failure did not expose browser recovery\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    assert!(
+        session.wait_for("BROWSER", Duration::from_secs(5)),
+        "recovery dismissal did not return to the App surface"
+    );
+    session.kill();
+}
+
+#[test]
+fn agent_update_route_requires_confirmation_in_tui() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 118, 32);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.send(b":agent update\r");
+    assert!(
+        session.wait_for("CONFIRMATION", Duration::from_secs(5)),
+        "Pi update route did not open confirmation\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+    session.kill();
+}
 #[test]
 fn palette_and_help_survive_real_key_sequences() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
@@ -253,5 +401,327 @@ fn phone_size_keeps_primary_surfaces_reachable() {
         session.wait_for("Agent", Duration::from_secs(5)),
         "phone layout must keep Agent reachable"
     );
+    session.kill();
+}
+
+#[test]
+fn desktop_surface_tabs_render_every_workbench() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 118, 32);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface never rendered after trust"
+    );
+    for (key, marker) in [
+        (b'2', "FILES"),
+        (b'3', "BROWSER"),
+        (b'4', "TERMINALS"),
+        (b'5', "TASKS"),
+        (b'6', "SOURCE CONTROL"),
+        (b'7', "TEST LAB"),
+        (b'8', "PI READINESS"),
+    ] {
+        session.send(&[key]);
+        assert!(
+            session.wait_for(marker, Duration::from_secs(5)),
+            "{marker} missing after desktop surface key {}\n{}",
+            key as char,
+            session.output_tail()
+        );
+    }
+    // Tab from the overflow surface wraps back to the first primary surface.
+    session.send(b"\t");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Tab did not wrap from More to Agent"
+    );
+    session.kill();
+}
+
+#[test]
+fn phone_surface_tabs_keep_the_compact_workbench_reachable() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 48, 18);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first phone frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface never rendered after phone trust"
+    );
+    for (key, marker) in [
+        (b'2', "FILES"),
+        (b'3', "BROWSER"),
+        (b'4', "TASKS"),
+        (b'5', "PI READINESS"),
+    ] {
+        session.send(&[key]);
+        assert!(
+            session.wait_for(marker, Duration::from_secs(5)),
+            "{marker} missing after phone surface key {}\n{}",
+            key as char,
+            session.output_tail()
+        );
+    }
+    session.send(b"\t");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Tab did not wrap from phone More to Agent"
+    );
+    session.kill();
+}
+
+#[test]
+fn compact_surface_tabs_keep_primary_workbenches_reachable() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 72, 24);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first compact frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("Workspace opened with", Duration::from_secs(5)),
+        "workspace trust did not complete\n{}",
+        session.output_tail()
+    );
+    for (key, marker) in [
+        (b'2', "FILES"),
+        (b'3', "BROWSER"),
+        (b'4', "TERMINALS"),
+        (b'5', "TASKS"),
+        (b'6', "SOURCE CONTROL"),
+        (b'7', "TEST LAB"),
+    ] {
+        session.send(&[key]);
+        assert!(
+            session.wait_for(marker, Duration::from_secs(5)),
+            "{marker} missing after compact surface key {}\n{}",
+            key as char,
+            session.output_tail()
+        );
+    }
+    session.send(b"\t");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Tab did not wrap from compact Debug to Agent"
+    );
+    session.kill();
+}
+
+#[test]
+fn launcher_routes_and_surface_actions_remain_interactive() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 118, 32);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("Workspace opened with", Duration::from_secs(5)),
+        "workspace trust did not complete\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface never rendered after trust"
+    );
+
+    session.send(b"a");
+    assert!(
+        session.wait_for("Compose message", Duration::from_secs(5)),
+        "Agent launcher entries missing"
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+
+    session.send(b":");
+    assert!(
+        session.wait_for("Command search", Duration::from_secs(5)),
+        "command center did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"agent setup");
+    assert!(
+        session.wait_for("agent setup", Duration::from_secs(5)),
+        "command center route search did not render"
+    );
+    session.send(b"\t");
+    session.settle(Duration::from_millis(300));
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+
+    for (key, marker) in [
+        (b'2', "FILES"),
+        (b'3', "BROWSER"),
+        (b'4', "TERMINALS"),
+        (b'5', "TASKS"),
+        (b'6', "SOURCE CONTROL"),
+        (b'7', "TEST LAB"),
+    ] {
+        session.send(&[key]);
+        assert!(
+            session.wait_for(marker, Duration::from_secs(5)),
+            "{marker} missing before action test\n{}",
+            session.output_tail()
+        );
+        session.send(b"a");
+        assert!(
+            session.wait_for("ACTION DETAILS", Duration::from_secs(5)),
+            "launcher menu did not open on surface {}\n{}",
+            key as char,
+            session.output_tail()
+        );
+        session.send(b"\x1b");
+        session.settle(Duration::from_millis(300));
+    }
+    session.kill();
+}
+
+#[test]
+fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 118, 32);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("Workspace opened with", Duration::from_secs(5)),
+        "workspace trust did not complete\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface never rendered after trust"
+    );
+    assert!(
+        session.wait_for("✓ Ready", Duration::from_secs(5)),
+        "Pi runtime never became ready\n{}",
+        session.output_tail()
+    );
+
+    session.send(b"i");
+    assert!(
+        session.wait_for("▌", Duration::from_secs(5)),
+        "Agent composer did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+
+    session.send(b"2");
+    assert!(
+        session.wait_for("FILES", Duration::from_secs(5)),
+        "Code surface did not render\n{}",
+        session.output_tail()
+    );
+    session.send(b"i");
+    assert!(
+        session.wait_for("EDITOR", Duration::from_secs(5)),
+        "Code editor did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+
+    session.send(b"3");
+    assert!(
+        session.wait_for("BROWSER", Duration::from_secs(5)),
+        "Browser surface did not render\n{}",
+        session.output_tail()
+    );
+    session.send(b"v");
+    assert!(
+        session.wait_for("Semantic inspection", Duration::from_secs(5))
+            || session.wait_for("Live view", Duration::from_secs(1)),
+        "browser visual toggle did not report a result\n{}",
+        session.output_tail()
+    );
+
+    session.send(b"4");
+    assert!(
+        session.wait_for("TERMINALS", Duration::from_secs(5)),
+        "Terminal surface did not render\n{}",
+        session.output_tail()
+    );
+    session.send(b"s");
+    assert!(
+        session.wait_for("command detected", Duration::from_secs(5))
+            || session.wait_for("Development suite", Duration::from_secs(1)),
+        "terminal development-suite action did not report a result\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+
+    session.send(b"5");
+    assert!(
+        session.wait_for("TASKS", Duration::from_secs(5)),
+        "Tasks surface did not render\n{}",
+        session.output_tail()
+    );
+    session.send(b"a");
+    assert!(
+        session.wait_for("ACTION DETAILS", Duration::from_secs(5)),
+        "task launcher did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+
+    session.send(b"6");
+    assert!(
+        session.wait_for("SOURCE CONTROL", Duration::from_secs(5)),
+        "Git surface did not render\n{}",
+        session.output_tail()
+    );
+    session.send(b"d");
+    assert!(
+        session.wait_for("DIFF", Duration::from_secs(5)),
+        "Git diff action did not report a result\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+
+    session.send(b"7");
+    assert!(
+        session.wait_for("TEST LAB", Duration::from_secs(5)),
+        "Debug surface did not render\n{}",
+        session.output_tail()
+    );
+    session.send(b"a");
+    assert!(
+        session.wait_for("ACTION DETAILS", Duration::from_secs(5)),
+        "debug launcher did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
     session.kill();
 }

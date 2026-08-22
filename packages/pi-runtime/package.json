@@ -7,7 +7,7 @@
   "main": "src/index.mjs",
   "engines": { "node": ">=22.19.0" },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.1"
+    "@earendil-works/pi-coding-agent": "0.84.2"
   },
   "scripts": {
     "check": "node --check src/index.mjs"

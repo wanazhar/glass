@@ -94,6 +94,7 @@ accept-dialog
 dismiss-dialog
 dismiss-consent
 download DIRECTORY
+archive-targets [--output FILE]
 targets
 new-target URL
 select-target ID
@@ -238,7 +239,20 @@ glass type 'hello' --target r7:b43 --expected-revision 7
 
 Glass rejects a stale revision before it sends the browser action. The result
 contains typed status, previous and current revisions, an execution ID, and
+
 bounded verification evidence.
+
+`glass archive-targets` exports the current page-target inventory without
+selecting or closing a target:
+
+```console
+glass archive-targets
+glass archive-targets --output targets.json
+```
+
+The archive is bounded to 64 KiB and contains redacted target metadata only;
+it does not include cookies, form values, or page content. An output path is
+accepted only when the active policy permits it.
 
 The revision option is available on navigation, actions, scrolling, keyboard,
 drag, upload, popup, and form-fill commands. Existing calls without the option
@@ -357,12 +371,12 @@ glass agent steer "focus on the failing test" --root .
 The Pi path uses Glass's embedded system prompt and a single bounded SDK gateway
 rather than Pi's raw filesystem/shell implementation. Run `glass agent doctor`,
 `glass agent setup [--login]`, or `glass agent status` to install or inspect
-Node, SDK, provider/auth, and session
-readiness; run `glass agent setup` for an explicit pinned install, or
-`glass agent setup --login` for Pi's provider login flow. A one-shot Pi prompt
-(`doctor`, `setup`, and `status` are the lifecycle subcommands.)
-waits for `agent_settled`; steer, follow-up, and abort remain useful in the
-resident TUI where the same SDK session stays active. A mutation
+Node, SDK, provider/auth, and session readiness; `glass agent setup --update`
+forces a reinstall of the pinned managed SDK without selecting an unreviewed
+upstream version. `glass agent setup --login` opens Pi's provider login flow.
+A one-shot Pi prompt (`doctor`, `setup`, and `status` are the lifecycle
+subcommands.) waits for `agent_settled`; steer, follow-up, and abort remain
+useful in the resident TUI where the same SDK session stays active. A mutation
 freezes and privately serializes its exact arguments, then pauses on a Glass
 approval sheet. `Y`/Enter approves once; `N`/Esc denies. The approval expires
 after 120 seconds and cannot authorize a retry or reshaped call. Exact edits

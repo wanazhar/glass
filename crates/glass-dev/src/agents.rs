@@ -1,7 +1,7 @@
 //! Glass-owned scheduling for independent resident Pi agent sessions.
 
 use crate::development::{DevelopmentError, DevelopmentResult};
-use crate::pi_runtime::{GlassPiRuntime, PiRuntimeOptions, PiSessionRequest};
+use crate::pi_runtime::{GlassPiRuntime, PiRuntimeOptions, PiSessionRequest, PiToolExecutor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -146,6 +146,7 @@ pub struct AgentEvent {
 #[derive(Debug)]
 enum WorkerCommand {
     Request(PiSessionRequest),
+    ApproveTool { frame_id: String, approved: bool },
     Shutdown,
 }
 
@@ -169,6 +170,7 @@ struct AgentRecord {
 
 struct WorkerRuntime {
     worktree: PathBuf,
+    local_tool_executor: Option<PiToolExecutor>,
     sessions_dir: PathBuf,
     broker: Option<ResidentAgentBroker>,
     additional_system_prompt: Option<String>,
@@ -186,6 +188,7 @@ pub struct AgentRegistry {
     events_tx: SyncSender<WorkerEvent>,
     events_rx: Receiver<WorkerEvent>,
     history: VecDeque<AgentEvent>,
+    local_tool_executor: Option<PiToolExecutor>,
     next_agent: u64,
     next_event: u64,
     broker: Option<ResidentAgentBroker>,
@@ -206,6 +209,7 @@ impl AgentRegistry {
             events_tx,
             events_rx,
             history: VecDeque::new(),
+            local_tool_executor: None,
             next_agent: 1,
             next_event: 1,
             broker: None,
@@ -233,6 +237,9 @@ impl AgentRegistry {
         }
         self.broker = Some(broker);
         Ok(())
+    }
+    pub(crate) fn set_local_tool_executor(&mut self, executor: PiToolExecutor) {
+        self.local_tool_executor = Some(executor);
     }
 
     pub fn set_additional_system_prompt(
@@ -387,21 +394,84 @@ impl AgentRegistry {
     }
 
     pub fn prompt(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
+        self.prompt_with_context(id, text, None)
+    }
+
+    pub fn prompt_with_context(
+        &mut self,
+        id: &AgentId,
+        text: impl Into<String>,
+        context: Option<Value>,
+    ) -> DevelopmentResult<()> {
         let text = text.into();
         validate_text("agent prompt", &text, MAX_PROMPT_BYTES)?;
-        self.send(id, PiSessionRequest::Prompt { text })
+        validate_context_attachment(context.as_ref())?;
+        self.send(id, PiSessionRequest::Prompt { text, context })
     }
 
     pub fn steer(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
+        self.steer_with_context(id, text, None)
+    }
+
+    pub fn steer_with_context(
+        &mut self,
+        id: &AgentId,
+        text: impl Into<String>,
+        context: Option<Value>,
+    ) -> DevelopmentResult<()> {
         let text = text.into();
         validate_text("agent steering", &text, MAX_PROMPT_BYTES)?;
-        self.send(id, PiSessionRequest::Steer { text })
+        validate_context_attachment(context.as_ref())?;
+        self.send(id, PiSessionRequest::Steer { text, context })
     }
 
     pub fn follow_up(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
+        self.follow_up_with_context(id, text, None)
+    }
+
+    pub fn follow_up_with_context(
+        &mut self,
+        id: &AgentId,
+        text: impl Into<String>,
+        context: Option<Value>,
+    ) -> DevelopmentResult<()> {
         let text = text.into();
         validate_text("agent follow-up", &text, MAX_PROMPT_BYTES)?;
-        self.send(id, PiSessionRequest::FollowUp { text })
+        validate_context_attachment(context.as_ref())?;
+        self.send(id, PiSessionRequest::FollowUp { text, context })
+    }
+
+    pub fn approve_tool(
+        &mut self,
+        id: &AgentId,
+        frame_id: impl Into<String>,
+        approved: bool,
+    ) -> DevelopmentResult<()> {
+        self.refresh()?;
+        let frame_id = frame_id.into();
+        validate_text("Pi approval frame", &frame_id, 256)?;
+        let record = self.record_mut(id)?;
+        if record.snapshot.status.terminal() {
+            return Err(DevelopmentError::Conflict(format!(
+                "agent {} is already terminal",
+                id.as_str()
+            )));
+        }
+        let sender = record.command.as_ref().ok_or_else(|| {
+            DevelopmentError::Conflict(format!("agent {} is still starting", id.as_str()))
+        })?;
+        sender
+            .try_send(WorkerCommand::ApproveTool { frame_id, approved })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => DevelopmentError::Conflict(format!(
+                    "agent {} command queue is full",
+                    id.as_str()
+                )),
+                TrySendError::Disconnected(_) => DevelopmentError::Process(format!(
+                    "agent {} command channel closed",
+                    id.as_str()
+                )),
+            })
     }
 
     pub fn request(&mut self, id: &AgentId, request: PiSessionRequest) -> DevelopmentResult<()> {
@@ -440,32 +510,88 @@ impl AgentRegistry {
         self.fail_blocked_dependents();
         Ok(())
     }
+    /// Restart a failed or cancelled session under the same agent identity.
+    ///
+    /// Interactive callers keep the selected agent id, so retrying after an
+    /// aborted or crashed turn should not strand the composer on a terminal
+    /// worker. Completed sessions remain terminal by design; callers should
+    /// create a new session when they explicitly finished one.
+    pub fn restart(&mut self, id: &AgentId) -> DevelopmentResult<()> {
+        self.refresh()?;
+        let previous_status = {
+            let record = self.record_mut(id)?;
+            if !matches!(
+                record.snapshot.status,
+                AgentStatus::Failed | AgentStatus::Cancelled
+            ) {
+                return Err(DevelopmentError::Conflict(format!(
+                    "agent {} can only restart from failed or cancelled, not {:?}",
+                    id.as_str(),
+                    record.snapshot.status
+                )));
+            }
+            record.snapshot.status
+        };
+        // A failure event can be observed just before the worker thread
+        // exits. Join it here instead of making the user retry a second time.
+        self.join_worker(id, previous_status)?;
+        {
+            let record = self.record_mut(id)?;
+            record.snapshot.last_error = None;
+            record.snapshot.last_response_id = None;
+            record.awaiting_agent_settle = false;
+        }
+        self.spawn(id)?;
+        self.record_event(
+            id,
+            "restarted",
+            serde_json::json!({"previousStatus": previous_status.label()}),
+        );
+        Ok(())
+    }
 
     fn send(&mut self, id: &AgentId, request: PiSessionRequest) -> DevelopmentResult<()> {
         self.refresh()?;
-        let record = self.record_mut(id)?;
-        if record.snapshot.status.terminal() || record.snapshot.status == AgentStatus::Queued {
-            return Err(DevelopmentError::Conflict(format!(
-                "agent {} cannot accept requests while {:?}",
-                id.as_str(),
-                record.snapshot.status
-            )));
-        }
-        let sender = record.command.as_ref().ok_or_else(|| {
-            DevelopmentError::Conflict(format!("agent {} is still starting", id.as_str()))
-        })?;
-        sender
-            .try_send(WorkerCommand::Request(request))
-            .map_err(|error| match error {
-                TrySendError::Full(_) => DevelopmentError::Conflict(format!(
-                    "agent {} command queue is full",
-                    id.as_str()
-                )),
-                TrySendError::Disconnected(_) => DevelopmentError::Process(format!(
-                    "agent {} command channel closed",
-                    id.as_str()
-                )),
+        let user_event = match &request {
+            PiSessionRequest::Prompt { text, context } => Some(
+                serde_json::json!({"text": text, "mode": "prompt", "contextAttached": context.is_some()}),
+            ),
+            PiSessionRequest::Steer { text, context } => Some(
+                serde_json::json!({"text": text, "mode": "steer", "contextAttached": context.is_some()}),
+            ),
+            PiSessionRequest::FollowUp { text, context } => Some(
+                serde_json::json!({"text": text, "mode": "follow-up", "contextAttached": context.is_some()}),
+            ),
+            _ => None,
+        };
+        {
+            let record = self.record_mut(id)?;
+            if record.snapshot.status.terminal() || record.snapshot.status == AgentStatus::Queued {
+                return Err(DevelopmentError::Conflict(format!(
+                    "agent {} cannot accept requests while {:?}",
+                    id.as_str(),
+                    record.snapshot.status
+                )));
+            }
+            let sender = record.command.as_ref().ok_or_else(|| {
+                DevelopmentError::Conflict(format!("agent {} is still starting", id.as_str()))
             })?;
+            sender
+                .try_send(WorkerCommand::Request(request))
+                .map_err(|error| match error {
+                    TrySendError::Full(_) => DevelopmentError::Conflict(format!(
+                        "agent {} command queue is full",
+                        id.as_str()
+                    )),
+                    TrySendError::Disconnected(_) => DevelopmentError::Process(format!(
+                        "agent {} command channel closed",
+                        id.as_str()
+                    )),
+                })?;
+        }
+        if let Some(payload) = user_event {
+            self.record_event(id, "user", payload);
+        }
         Ok(())
     }
 
@@ -474,6 +600,7 @@ impl AgentRegistry {
         let events = self.events_tx.clone();
         let broker = self.broker.clone();
         let additional_system_prompt = self.additional_system_prompt.clone();
+        let local_tool_executor = self.local_tool_executor.clone();
         let record = self.record_mut(id)?;
         let dropped_events = Arc::clone(&record.dropped_events);
         let spec = record.spec.clone();
@@ -491,6 +618,7 @@ impl AgentRegistry {
                     worker_id,
                     spec,
                     WorkerRuntime {
+                        local_tool_executor,
                         worktree,
                         sessions_dir,
                         broker,
@@ -802,6 +930,7 @@ fn run_worker(
         model: spec.model,
         thinking: spec.thinking,
         broker: runtime.broker,
+        local_tool_executor: runtime.local_tool_executor,
         additional_system_prompt: runtime.additional_system_prompt,
         resume: false,
     };
@@ -833,6 +962,23 @@ fn run_worker(
                             );
                             return;
                         }
+                    }
+                }
+                Ok(WorkerCommand::ApproveTool { frame_id, approved }) => {
+                    if let Err(error) = harness.resolve_tool_approval(&frame_id, approved) {
+                        send_critical_worker_event(
+                            &events,
+                            WorkerEvent::Pi(
+                                id.clone(),
+                                serde_json::json!({
+                                    "type":"glass_tool_approval_resolved",
+                                    "frameId":frame_id,
+                                    "approved":approved,
+                                    "ok":false,
+                                    "error":error.to_string(),
+                                }),
+                            ),
+                        );
                     }
                 }
                 Ok(WorkerCommand::Shutdown) | Err(TryRecvError::Disconnected) => {
@@ -919,6 +1065,26 @@ fn validate_text(description: &str, text: &str, limit: usize) -> DevelopmentResu
         return Err(DevelopmentError::InvalidInput(format!(
             "{description} must contain 1..={limit} bytes without NUL"
         )));
+    }
+    Ok(())
+}
+
+fn validate_context_attachment(context: Option<&Value>) -> DevelopmentResult<()> {
+    let Some(context) = context else {
+        return Ok(());
+    };
+    if !context.is_object() {
+        return Err(DevelopmentError::InvalidInput(
+            "agent context attachment must be a JSON object".into(),
+        ));
+    }
+    let size = serde_json::to_vec(context)
+        .map_err(|error| DevelopmentError::Serialization(error.to_string()))?
+        .len();
+    if size > 64 * 1024 {
+        return Err(DevelopmentError::InvalidInput(
+            "agent context attachment exceeds 64 KiB".into(),
+        ));
     }
     Ok(())
 }
@@ -1061,7 +1227,7 @@ mod tests {
         id: &AgentId,
         expected: AgentStatus,
     ) -> AgentSnapshot {
-        for _ in 0..200 {
+        for _ in 0..800 {
             let snapshot = registry.snapshot(id).unwrap();
             if snapshot.status == expected {
                 return snapshot;
@@ -1126,11 +1292,14 @@ mod tests {
         wait_for_status(&mut registry, &second, AgentStatus::Idle);
         assert_ne!(first, second);
         registry.cancel(&second).unwrap();
-        registry.cancel(&peer).unwrap();
         assert_eq!(
             registry.snapshot(&second).unwrap().status,
             AgentStatus::Cancelled
         );
+        registry.restart(&second).unwrap();
+        wait_for_status(&mut registry, &second, AgentStatus::Idle);
+        registry.cancel(&second).unwrap();
+        registry.cancel(&peer).unwrap();
         drop(registry);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1151,5 +1320,18 @@ mod tests {
         );
         drop(registry);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn context_attachments_are_bounded_json_objects() {
+        assert!(validate_context_attachment(None).is_ok());
+        assert!(validate_context_attachment(Some(&serde_json::json!("text"))).is_err());
+        let oversized = serde_json::json!({"text": "x".repeat(64 * 1024)});
+        assert!(validate_context_attachment(Some(&oversized)).is_err());
+        let bounded = serde_json::json!({
+            "schemaVersion": "glass.agent-context.v1",
+            "browser": {"browserRevision": 12}
+        });
+        assert!(validate_context_attachment(Some(&bounded)).is_ok());
     }
 }

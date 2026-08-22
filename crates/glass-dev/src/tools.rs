@@ -15,6 +15,7 @@ use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput, Workspac
 use glass_browser::browser::session::{
     SemanticObservationLevel, WorkflowRecordingSession, record_semantic_events,
 };
+use glass_browser::workspace::{WorkspaceId, WorkspaceStore};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -290,6 +291,26 @@ impl DevelopmentToolRouter {
             "glass.editor.buffers" => Ok(serde_json::to_value(
                 workspace.project().buffers().cloned().collect::<Vec<_>>(),
             )?),
+            "glass.process.start" => map_service(workspace.project_mut().start_process(
+                string("name")?,
+                required_string(call, "command")?,
+            )),
+            "glass.process.stop" => {
+                map_service(workspace.project_mut().stop_process(string("name")?))
+            }
+            "glass.process.logs" => {
+                let name = string("name")?;
+                let processes = workspace.project_mut().processes();
+                processes.poll()?;
+                Ok(serde_json::json!({
+                    "name": name,
+                    "output": processes.output(name)?,
+                }))
+            }
+            "glass.process.list" => {
+                map_service(workspace.project_mut().processes().list_checked())
+            }
+
             "glass.process.restart" => {
                 map_service(workspace.project_mut().processes().restart(string("name")?))
             }
@@ -919,7 +940,7 @@ impl DevelopmentToolRouter {
             "glass.agent.setup" => map_service(crate::pi_runtime::setup_pi_runtime(
                 None,
                 None,
-                false,
+                boolean(call, "update", false),
                 boolean(call, "login", false),
             )),
             "glass.agent.spawn" => {
@@ -931,11 +952,17 @@ impl DevelopmentToolRouter {
             }
             "glass.agent.prompt" => {
                 let id = agent_id(workspace, string("agentId")?)?;
-                map_service(workspace.agents().prompt(&id, string("text")?))?;
+                let text = string("text")?;
+                map_service(workspace.agents().prompt_with_context(
+                    &id,
+                    text,
+                    call.arguments.get("context").cloned(),
+                ))?;
                 Ok(serde_json::json!({"queued":true}))
             }
             "glass.agent.send" => {
                 let text = string("text")?;
+                let context = call.arguments.get("context").cloned();
                 let mode = optional_string(call, "mode").unwrap_or("follow-up");
                 let selected = optional_string(call, "agentId")
                     .map(|value| agent_id(workspace, value))
@@ -959,30 +986,72 @@ impl DevelopmentToolRouter {
                 let agent = match agent {
                     Some(agent) => agent,
                     None => {
-                        let id = map_service(workspace
+                        let readiness = crate::pi_runtime::pi_readiness()?;
+                        if !readiness.ready {
+                            return Err(DevelopmentError::Conflict(
+                                "Pi is not ready; use Agent [s] to install the runtime and [l] to sign in"
+                                    .into(),
+                            ));
+                        }
+                        let id = workspace
                             .agents()
-                            .create(crate::AgentSpec::new("assistant", text)))?;
+                            .create(AgentSpec::new(
+                                "assistant",
+                                "interactive Glass Agent session",
+                            ))?;
+                        map_service(workspace.agents().prompt_with_context(&id, text, context))?;
                         return Ok(serde_json::json!({"queued":true,"agentId":id}));
                     }
                 };
-                let status = workspace.agents().snapshot(&agent)?.status;
-                if mode == "steer" && status == crate::AgentStatus::Working {
-                    map_service(workspace.agents().steer(&agent, text))?;
-                } else if mode == "follow-up" && status == crate::AgentStatus::Working {
-                    map_service(workspace.agents().follow_up(&agent, text))?;
-                } else {
-                    map_service(workspace.agents().prompt(&agent, text))?;
+                let mut status = workspace.agents().snapshot(&agent)?.status;
+                let restarted = matches!(
+                    status,
+                    crate::AgentStatus::Failed | crate::AgentStatus::Cancelled
+                );
+                if restarted {
+                    workspace.agents().restart(&agent)?;
+                    status = workspace.agents().snapshot(&agent)?.status;
                 }
-                Ok(serde_json::json!({"queued":true,"agentId":agent}))
+                if mode == "steer" && status == crate::AgentStatus::Working {
+                    map_service(workspace.agents().steer_with_context(&agent, text, context.clone()))?;
+                } else if mode == "follow-up" && status == crate::AgentStatus::Working {
+                    map_service(workspace.agents().follow_up_with_context(&agent, text, context.clone()))?;
+                } else {
+                    map_service(workspace.agents().prompt_with_context(&agent, text, context))?;
+                }
+                let mut response = serde_json::json!({"queued":true,"agentId":agent});
+                if restarted {
+                    response["restarted"] = Value::Bool(true);
+                }
+                Ok(response)
             }
             "glass.agent.steer" => {
                 let id = agent_id(workspace, string("agentId")?)?;
-                map_service(workspace.agents().steer(&id, string("text")?))?;
+                let text = string("text")?;
+                map_service(workspace.agents().steer_with_context(
+                    &id,
+                    text,
+                    call.arguments.get("context").cloned(),
+                ))?;
                 Ok(serde_json::json!({"queued":true}))
             }
             "glass.agent.follow-up" => {
                 let id = agent_id(workspace, string("agentId")?)?;
-                map_service(workspace.agents().follow_up(&id, string("text")?))?;
+                let text = string("text")?;
+                map_service(workspace.agents().follow_up_with_context(
+                    &id,
+                    text,
+                    call.arguments.get("context").cloned(),
+                ))?;
+                Ok(serde_json::json!({"queued":true}))
+            }
+            "glass.agent.approve" => {
+                let id = agent_id(workspace, string("agentId")?)?;
+                map_service(workspace.agents().approve_tool(
+                    &id,
+                    string("frameId")?,
+                    boolean(call, "approved", false),
+                ))?;
                 Ok(serde_json::json!({"queued":true}))
             }
             "glass.agent.abort" => {
@@ -1142,6 +1211,21 @@ impl DevelopmentToolRouter {
             "glass.graph.query" => Ok(serde_json::to_value(
                 workspace.intelligence().node(string("id")?),
             )?),
+            "glass.graph.source" => {
+                let line = call
+                    .arguments
+                    .get("line")
+                    .and_then(Value::as_u64)
+                    .map(u32::try_from)
+                    .transpose()
+                    .map_err(|_| DevelopmentError::InvalidInput("invalid graph line".into()))?;
+                Ok(serde_json::to_value(
+                    workspace
+                        .project()
+                        .graph()
+                        .entities_for_source(string("path")?, line),
+                )?)
+            }
             "glass.graph.path" | "glass.graph.explain" => Ok(serde_json::to_value(
                 workspace
                     .intelligence()
@@ -1182,6 +1266,91 @@ impl DevelopmentToolRouter {
                     .intelligence()
                     .replay_diff(unsigned(call, "from", 0)?, unsigned(call, "to", 1)?)?,
             )?),
+            "glass.workspace.list" => {
+                let store = WorkspaceStore::open_default()
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                Ok(serde_json::to_value(store.list().map_err(|error| {
+                    DevelopmentError::Process(error.to_string())
+                })?)?)
+            }
+            "glass.workspace.inspect" => {
+                let id = WorkspaceId::new(string("id")?)
+                    .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
+                let store = WorkspaceStore::open_default()
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                Ok(serde_json::to_value(
+                    store
+                        .open(&id)
+                        .map_err(|error| DevelopmentError::Process(error.to_string()))?,
+                )?)
+            }
+            "glass.workspace.suspend" | "glass.workspace.resume" => {
+                let id = WorkspaceId::new(string("id")?)
+                    .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
+                let store = WorkspaceStore::open_default()
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                let workspace = if call.name.ends_with("suspend") {
+                    store.suspend(&id)
+                } else {
+                    store.resume(&id)
+                }
+                .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                Ok(serde_json::to_value(workspace)?)
+            }
+            "glass.workspace.delete" => {
+                let id = WorkspaceId::new(string("id")?)
+                    .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
+                let store = WorkspaceStore::open_default()
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                store
+                    .delete(&id)
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                Ok(serde_json::json!({"id":id,"deleted":true}))
+            }
+            "glass.daemon.start" => {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                map_service(runtime.block_on(crate::daemon::start(None, None)))
+            }
+            "glass.daemon.status" | "glass.daemon.doctor" => map_service(
+                crate::daemon::read_status_checked(None, None)
+                    .map_err(|error| DevelopmentError::Process(error.to_string())),
+            ),
+            "glass.daemon.stop" => map_service(
+                crate::daemon::stop(None, None)
+                    .map(|_| serde_json::json!({"status":"stopped"}))
+                    .map_err(|error| DevelopmentError::Process(error.to_string())),
+            ),
+            "glass.daemon.logs" => map_service(
+                crate::daemon::log_tail(None)
+                    .map_err(|error| DevelopmentError::Process(error.to_string())),
+            ),
+            "glass.agent.hello" | "glass.agent.models" => {
+                let id = optional_string(call, "agentId")
+                    .map(|value| agent_id(workspace, value))
+                    .transpose()?
+                    .or_else(|| active_agent_id(workspace))
+                    .ok_or_else(|| {
+                        DevelopmentError::Conflict(
+                            "start an interactive agent session before requesting Pi state"
+                                .into(),
+                        )
+                    })?;
+                let request = if call.name.ends_with("hello") {
+                    PiSessionRequest::Hello
+                } else {
+                    PiSessionRequest::Models
+                };
+                map_service(workspace.agents().request(&id, request))?;
+                Ok(serde_json::json!({"queued":true,"agentId":id.as_str()}))
+            }
+            "glass.project.attach" => {
+                let actor = crate::development::Actor::external(string("actor")?);
+                workspace.project_mut().attach_actor(actor.clone())?;
+                Ok(serde_json::to_value(actor)?)
+            }
             "glass.workspace.trust.status" => Ok(serde_json::json!({
                 "trust":workspace.trust(),
                 "identity":workspace.trust_identity(),
@@ -1200,6 +1369,8 @@ impl DevelopmentToolRouter {
 
 fn service_descriptors() -> Vec<ToolDescriptor> {
     const READ: &[&str] = &[
+        "glass.process.list",
+        "glass.process.logs",
         "glass.git.status",
         "glass.git.diff",
         "glass.git.branches",
@@ -1211,6 +1382,15 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.test.results",
         "glass.eval.list",
         "glass.lsp.diagnostics",
+        "glass.workspace.list",
+        "glass.workspace.inspect",
+        "glass.daemon.status",
+        "glass.daemon.doctor",
+        "glass.daemon.logs",
+        "glass.agent.hello",
+        "glass.agent.models",
+        "glass.workspace.trust.status",
+        "glass.workspace.trust.inspect",
         "glass.lsp.list",
         "glass.lsp.events",
         "glass.lsp.raw",
@@ -1236,6 +1416,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.events",
         "glass.debug.inspect",
         "glass.debug.processes",
+        "glass.graph.source",
         "glass.agent.list",
         "glass.agent.messages",
         "glass.agent.entries",
@@ -1272,10 +1453,14 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.semantic.inspect",
         "glass.semantic.diff",
         "glass.semantic.links",
-        "glass.workspace.trust.status",
-        "glass.workspace.trust.inspect",
     ];
     const MUTATE: &[&str] = &[
+        "glass.workspace.suspend",
+        "glass.workspace.resume",
+        "glass.workspace.delete",
+        "glass.daemon.start",
+        "glass.daemon.stop",
+        "glass.project.attach",
         "glass.git.stage",
         "glass.git.unstage",
         "glass.git.discard",
@@ -1319,6 +1504,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.send",
         "glass.agent.steer",
         "glass.agent.follow-up",
+        "glass.agent.approve",
         "glass.agent.abort",
         "glass.agent.compact",
         "glass.agent.model",
@@ -1344,6 +1530,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.editor.open",
         "glass.editor.replace",
         "glass.editor.save",
+        "glass.process.start",
+        "glass.process.stop",
         "glass.process.restart",
         "glass.process.input",
         "glass.process.resize",
@@ -1366,6 +1554,17 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         .map(|name| service_descriptor(name, false))
         .chain(MUTATE.iter().map(|name| service_descriptor(name, true)))
         .collect()
+}
+
+pub(crate) fn tool_requires_mutation(name: &str) -> bool {
+    static MUTATING: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        service_descriptors()
+            .into_iter()
+            .filter(|descriptor| descriptor.mutating)
+            .map(|descriptor| descriptor.name)
+            .collect()
+    });
+    MUTATING.iter().any(|candidate| candidate == name)
 }
 
 fn untrusted_tool_allowed(name: &str) -> bool {
@@ -1400,6 +1599,16 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.browser.remote-view.open"
             | "glass.browser.remote-view.status"
             | "glass.browser.remote-view.revoke"
+            | "glass.agent.setup"
+            | "glass.graph.source"
+            | "glass.agent.hello"
+            | "glass.agent.models"
+            | "glass.workspace.list"
+            | "glass.workspace.inspect"
+            | "glass.daemon.status"
+            | "glass.daemon.doctor"
+            | "glass.daemon.logs"
+            | "glass.neovim.probe"
             | "glass.memory.retrieve"
             | "glass.memory.explain"
             | "glass.semantic.inspect"
@@ -1633,6 +1842,22 @@ fn agent_id(
         .find(|snapshot| snapshot.id.as_str() == value)
         .map(|snapshot| snapshot.id)
         .ok_or_else(|| DevelopmentError::NotFound(format!("agent {value}")))
+}
+fn active_agent_id(workspace: &mut DevelopmentWorkspace) -> Option<crate::agents::AgentId> {
+    workspace
+        .agents()
+        .list()
+        .ok()?
+        .into_iter()
+        .find(|snapshot| {
+            !matches!(
+                snapshot.status,
+                crate::agents::AgentStatus::Completed
+                    | crate::agents::AgentStatus::Failed
+                    | crate::agents::AgentStatus::Cancelled
+            )
+        })
+        .map(|snapshot| snapshot.id)
 }
 
 fn agent_request(
@@ -2314,11 +2539,11 @@ mod tests {
             "glass.editor.open",
             "glass.editor.replace",
             "glass.editor.save",
+            "glass.process.list",
+            "glass.process.logs",
+            "glass.process.start",
+            "glass.process.stop",
             "glass.process.restart",
-            "glass.process.input",
-            "glass.process.resize",
-            "glass.process.health",
-            "glass.process.ports",
             "glass.browser.observe",
             "glass.browser.snapshot",
             "glass.browser.attach",

@@ -15,6 +15,7 @@ use std::{
 const MAX_PI_EVENT_BYTES: usize = 512 * 1024;
 const MAX_PI_BUFFERED_EVENTS: usize = 64;
 const PI_EVENT_CHANNEL_CAPACITY: usize = 32;
+const PI_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -48,10 +49,15 @@ pub struct BrowserAgentContext {
     pub connected: bool,
     pub target_id: Option<String>,
     pub origin: Option<String>,
+    pub url: String,
     pub title: String,
     pub browser_revision: u64,
     pub semantic_summary: String,
+    pub semantic_entity_count: usize,
+    pub selected_entity: Option<Value>,
     pub workflow_state: String,
+    pub input_owner: String,
+    pub freshness: String,
     pub memory_scope: String,
 }
 
@@ -114,6 +120,10 @@ pub fn resolve_context_with_browser(
             "@page" | "@browser" => browser.map(serde_json::to_value).transpose()?.unwrap_or_else(|| serde_json::json!({
                 "status": "requires-attached-browser-workspace", "defaultObservation": "structured"
             })),
+            "@selection" => browser
+                .and_then(|value| value.selected_entity.clone())
+                .unwrap_or_else(|| serde_json::json!({"status": "not-selected"})),
+            "@file" | "@symbol" => serde_json::json!({"status": "not-selected"}),
             value if value.starts_with("@entity:") => {
                 serde_json::to_value(workspace.graph().links_for(&value[8..]))?
             }
@@ -130,7 +140,6 @@ pub fn resolve_context_with_browser(
             }
             "@workflow" => browser.map(|value| serde_json::json!({"state":value.workflow_state,"browserRevision":value.browser_revision})).unwrap_or_else(|| serde_json::json!({"status":"not-attached"})),
             "@memory" => browser.map(|value| serde_json::json!({"scope":value.memory_scope,"authoritative":false})).unwrap_or_else(|| serde_json::json!({"status":"not-attached"})),
-            "@selection" | "@file" | "@symbol" => serde_json::json!({"status": "not-selected"}),
             value => {
                 return Err(DevelopmentError::InvalidInput(format!(
                     "unsupported agent context reference: {value}"
@@ -219,6 +228,7 @@ impl AgentToolGateway {
                 descriptor.name.as_str(),
                 "glass.process.start"
                     | "glass.process.stop"
+                    | "glass.process.remove"
                     | "glass.process.logs"
                     | "glass.process.list"
             ) {
@@ -335,10 +345,15 @@ impl AgentToolGateway {
                 "structured": true,
                 "targetId": context.target_id,
                 "origin": context.origin,
+                "url": context.url,
                 "title": context.title,
                 "browserRevision": context.browser_revision,
                 "semanticSummary": context.semantic_summary,
-                "freshness": "current-context-packet"
+                "semanticEntityCount": context.semantic_entity_count,
+                "selectedEntity": context.selected_entity,
+                "workflowState": context.workflow_state,
+                "inputOwner": context.input_owner,
+                "freshness": context.freshness,
             }))),
             "glass.memory.retrieve" => Some(Ok(serde_json::json!({
                 "scope": context.memory_scope,
@@ -462,6 +477,27 @@ impl ToolRegistry {
                 "glass.process.stop",
                 "Stop a named managed process",
                 schema(serde_json::json!({"name":{"type":"string"}}), &["name"]),
+                true,
+            ),
+            descriptor(
+                "glass.process.remove",
+                "Remove a stopped managed process",
+                schema(serde_json::json!({"name":{"type":"string"}}), &["name"]),
+                true,
+            ),
+            descriptor(
+                "glass.neovim.probe",
+                "Probe the local Neovim PTY and RPC capabilities",
+                schema(serde_json::json!({}), &[]),
+                false,
+            ),
+            descriptor(
+                "glass.neovim.start",
+                "Start Neovim under Glass process ownership",
+                schema(
+                    serde_json::json!({"name":{"type":"string"},"path":{"type":"string"}}),
+                    &["name"],
+                ),
                 true,
             ),
             descriptor(
@@ -642,6 +678,15 @@ impl ToolRegistry {
                 workspace.rename_path(&from, &to, actor)?;
                 Ok(serde_json::json!({"from":from,"to":to,"renamed":true}))
             }
+            "glass.neovim.probe" => Ok(serde_json::to_value(super::probe_neovim()?)?),
+            "glass.neovim.start" => Ok(serde_json::to_value(super::start_neovim(
+                workspace.processes(),
+                string("name")?,
+                call.arguments
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(std::path::Path::new),
+            )?)?),
             "glass.file.delete" => {
                 let path = string("path")?.to_string();
                 workspace.delete_path(&path, actor)?;
@@ -652,6 +697,9 @@ impl ToolRegistry {
             )?),
             "glass.process.stop" => Ok(serde_json::to_value(
                 workspace.stop_process(string("name")?)?,
+            )?),
+            "glass.process.remove" => Ok(serde_json::to_value(
+                workspace.processes().remove(string("name")?)?,
             )?),
             "glass.process.logs" => {
                 Ok(serde_json::json!({"output": workspace.processes().output(string("name")?)?}))
@@ -1836,7 +1884,7 @@ impl PiHarness {
                 .recv_event_timeout(if response_received {
                     Duration::from_secs(120)
                 } else {
-                    Duration::from_secs(10)
+                    PI_RESPONSE_TIMEOUT
                 })?
                 .ok_or_else(|| {
                     DevelopmentError::Process(if response_received {
@@ -2794,7 +2842,7 @@ mod tests {
                     .is_some_and(|name| name.starts_with("glass.process."))
             })
             .collect::<Vec<_>>();
-        assert_eq!(processes.len(), 4);
+        assert_eq!(processes.len(), 5);
         assert!(
             processes
                 .iter()
@@ -2814,10 +2862,15 @@ mod tests {
             connected: true,
             target_id: Some("page-1".into()),
             origin: Some("https://example.test".into()),
+            url: "https://example.test/".into(),
             title: "Example".into(),
             browser_revision: 42,
             semantic_summary: "button Continue".into(),
+            semantic_entity_count: 1,
+            selected_entity: Some(serde_json::json!({"reference":"e1","name":"Continue"})),
             workflow_state: "idle".into(),
+            input_owner: "Glass".into(),
+            freshness: "current".into(),
             memory_scope: "profile/default".into(),
         }));
         let descriptor = gateway

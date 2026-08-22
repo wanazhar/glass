@@ -4,10 +4,12 @@ use crate::agents::ResidentAgentBroker;
 use crate::development::{DevelopmentError, DevelopmentResult, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const EVENT_CAPACITY: usize = 256;
 const RUNTIME_SOURCE: &str = include_str!("../assets/pi-runtime.mjs");
-pub const PINNED_PI_SDK_VERSION: &str = "0.84.1";
+pub const PINNED_PI_SDK_VERSION: &str = "0.84.2";
 const MINIMUM_NODE_VERSION: (u64, u64, u64) = (22, 19, 0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,28 +64,55 @@ struct SelectedPiRuntime {
 #[derive(Debug, Clone)]
 pub enum PiSessionRequest {
     Hello,
-    Prompt { text: String },
-    Steer { text: String },
-    FollowUp { text: String },
+    Prompt {
+        text: String,
+        context: Option<Value>,
+    },
+    Steer {
+        text: String,
+        context: Option<Value>,
+    },
+    FollowUp {
+        text: String,
+        context: Option<Value>,
+    },
     Abort,
     State,
     Models,
-    SetModel { provider: String, model_id: String },
-    SetThinking { level: String },
+    SetModel {
+        provider: String,
+        model_id: String,
+    },
+    SetThinking {
+        level: String,
+    },
     NewSession,
-    Compact { instructions: Option<String> },
+    Compact {
+        instructions: Option<String>,
+    },
     CloneSession,
-    Fork { entry_id: String },
-    SwitchSession { path: String },
+    Fork {
+        entry_id: String,
+    },
+    SwitchSession {
+        path: String,
+    },
     ListSessions,
-    Entries { since: Option<String> },
+    Entries {
+        since: Option<String>,
+    },
     Tree,
     Messages,
     SessionStats,
-    SetSessionName { name: String },
+    SetSessionName {
+        name: String,
+    },
 }
 
-#[derive(Debug, Clone, Default)]
+pub type PiToolExecutor =
+    Arc<dyn Fn(&ToolCall, bool, bool) -> DevelopmentResult<Value> + Send + Sync>;
+
+#[derive(Clone, Default)]
 pub struct PiRuntimeOptions {
     pub unrestricted: bool,
     pub session_dir: PathBuf,
@@ -91,8 +120,34 @@ pub struct PiRuntimeOptions {
     pub model: Option<String>,
     pub thinking: Option<String>,
     pub broker: Option<ResidentAgentBroker>,
+    pub local_tool_executor: Option<PiToolExecutor>,
     pub additional_system_prompt: Option<String>,
     pub resume: bool,
+}
+
+impl std::fmt::Debug for PiRuntimeOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PiRuntimeOptions")
+            .field("unrestricted", &self.unrestricted)
+            .field("session_dir", &self.session_dir)
+            .field("name", &self.name)
+            .field("model", &self.model)
+            .field("thinking", &self.thinking)
+            .field("broker", &self.broker)
+            .field(
+                "local_tool_executor",
+                &self.local_tool_executor.as_ref().map(|_| "configured"),
+            )
+            .field("additional_system_prompt", &self.additional_system_prompt)
+            .field("resume", &self.resume)
+            .finish()
+    }
+}
+
+struct PendingPiToolApproval {
+    frame_id: String,
+    call: ToolCall,
 }
 
 pub struct GlassPiRuntime {
@@ -101,8 +156,12 @@ pub struct GlassPiRuntime {
     output: Receiver<Result<Value, String>>,
     root: PathBuf,
     broker: Option<ResidentAgentBroker>,
+    local_tool_executor: Option<PiToolExecutor>,
     unrestricted: bool,
     next_id: u64,
+    host_events: VecDeque<Value>,
+    pending_tool_approval: Option<PendingPiToolApproval>,
+    aborting_turn: bool,
 }
 
 impl std::fmt::Debug for GlassPiRuntime {
@@ -174,9 +233,13 @@ impl GlassPiRuntime {
             input,
             output,
             root,
+            local_tool_executor: options.local_tool_executor,
             broker: options.broker,
             unrestricted: options.unrestricted,
             next_id: 1,
+            host_events: VecDeque::new(),
+            pending_tool_approval: None,
+            aborting_turn: false,
         };
         match runtime.recv_raw(Duration::from_secs(15))? {
             Some(value) if value.get("type").and_then(Value::as_str) == Some("ready") => {
@@ -200,18 +263,69 @@ impl GlassPiRuntime {
     }
 
     pub fn recv_event_timeout(&mut self, timeout: Duration) -> DevelopmentResult<Option<Value>> {
+        if let Some(event) = self.host_events.pop_front() {
+            return Ok(Some(event));
+        }
         let deadline = Instant::now() + timeout;
         loop {
+            if let Some(event) = self.host_events.pop_front() {
+                return Ok(Some(event));
+            }
             let Some(value) = self.recv_raw(deadline.saturating_duration_since(Instant::now()))?
             else {
                 return Ok(None);
             };
             if value.get("type").and_then(Value::as_str) == Some("toolCall") {
-                self.handle_tool_call(&value)?;
+                if let Some(event) = self.handle_tool_call(&value)? {
+                    return Ok(Some(event));
+                }
                 continue;
+            }
+            if value.get("type").and_then(Value::as_str) == Some("agent_settled") {
+                self.aborting_turn = false;
             }
             return Ok(Some(value));
         }
+    }
+
+    pub fn resolve_tool_approval(
+        &mut self,
+        frame_id: &str,
+        approved: bool,
+    ) -> DevelopmentResult<()> {
+        let pending = self.pending_tool_approval.as_ref().ok_or_else(|| {
+            DevelopmentError::Conflict("no Pi tool call is awaiting approval".into())
+        })?;
+        if pending.frame_id != frame_id {
+            return Err(DevelopmentError::Conflict(format!(
+                "Pi approval frame {} is not the pending frame",
+                frame_id
+            )));
+        }
+        let pending = self
+            .pending_tool_approval
+            .take()
+            .ok_or_else(|| DevelopmentError::Conflict("Pi approval request disappeared".into()))?;
+        let result = if approved {
+            self.execute_tool_call(&pending.call, true, true)
+        } else {
+            Err(DevelopmentError::Conflict(
+                "Glass denied this Pi tool call".into(),
+            ))
+        };
+        self.send_tool_result(&pending.frame_id, &result)?;
+        self.host_events.push_back(json!({
+            "type": "glass_tool_approval_resolved",
+            "frameId": pending.frame_id,
+            "toolName": pending.call.name,
+            "approved": approved,
+            "ok": result.is_ok(),
+        }));
+        if approved {
+            self.host_events
+                .push_back(browser_evidence(&pending.call, &result));
+        }
+        Ok(())
     }
 
     fn recv_raw(&mut self, timeout: Duration) -> DevelopmentResult<Option<Value>> {
@@ -225,7 +339,7 @@ impl GlassPiRuntime {
         }
     }
 
-    fn handle_tool_call(&mut self, value: &Value) -> DevelopmentResult<()> {
+    fn handle_tool_call(&mut self, value: &Value) -> DevelopmentResult<Option<Value>> {
         let frame_id = value
             .get("id")
             .and_then(Value::as_str)
@@ -234,22 +348,85 @@ impl GlassPiRuntime {
             serde_json::from_value(value.get("call").cloned().ok_or_else(|| {
                 DevelopmentError::Serialization("Pi tool frame has no call".into())
             })?)?;
-        let result = match &self.broker {
+        if !self.unrestricted && crate::tools::tool_requires_mutation(&call.name) {
+            if self.pending_tool_approval.is_some() {
+                return Err(DevelopmentError::Conflict(
+                    "Pi emitted a second tool call while approval was pending".into(),
+                ));
+            }
+            self.pending_tool_approval = Some(PendingPiToolApproval {
+                frame_id: frame_id.into(),
+                call: call.clone(),
+            });
+            return Ok(Some(json!({
+                "type": "glass_tool_approval_request",
+                "frameId": frame_id,
+                "toolName": call.name,
+                "arguments": redact_tool_arguments(&call.arguments),
+            })));
+        }
+        let result = self.execute_tool_call(&call, self.unrestricted, self.unrestricted);
+        let unknown_tool = is_unknown_tool_error(&result);
+        let result = if unknown_tool {
+            result.map_err(|error| {
+                DevelopmentError::InvalidInput(format!(
+                    "{error}; use a registered canonical `glass.*` capability; `glass.fs.*` is invalid"
+                ))
+            })
+        } else {
+            result
+        };
+        self.send_tool_result(frame_id, &result)?;
+        self.host_events.push_back(browser_evidence(&call, &result));
+        if unknown_tool && !self.aborting_turn {
+            self.aborting_turn = true;
+            let abort_id = self.start_request(PiSessionRequest::Abort)?;
+            self.host_events.push_back(json!({
+                "type": "glass_tool_rejected",
+                "toolName": call.name,
+                "reason": "Unknown Glass tool; the current turn was aborted instead of retrying it",
+                "abortRequestId": abort_id,
+            }));
+        }
+        Ok(None)
+    }
+
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+        allow_mutation: bool,
+        confirmed: bool,
+    ) -> DevelopmentResult<Value> {
+        if let Some(executor) = &self.local_tool_executor {
+            return executor(call, allow_mutation, confirmed);
+        }
+        match &self.broker {
             Some(broker) => {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_io()
                     .build()
                     .map_err(DevelopmentError::Io)?;
-                runtime.block_on(crate::daemon::forward_resident_tool_call_with_context(
-                    broker,
-                    &call,
-                    &self.root,
-                    self.unrestricted,
-                    self.unrestricted,
-                ))
+                runtime
+                    .block_on(crate::daemon::forward_resident_tool_call_with_context(
+                        broker,
+                        call,
+                        &self.root,
+                        allow_mutation,
+                        confirmed,
+                    ))
+                    .map_err(|error| DevelopmentError::Process(error.to_string()))
             }
-            None => Err("resident Pi has no authoritative Glass daemon broker".into()),
-        };
+            None => Err(DevelopmentError::Process(
+                "resident Pi has no authoritative Glass daemon broker".into(),
+            )),
+        }
+    }
+
+    fn send_tool_result(
+        &mut self,
+        frame_id: &str,
+        result: &DevelopmentResult<Value>,
+    ) -> DevelopmentResult<()> {
         let response = match result {
             Ok(result) => json!({
                 "operation": "toolResult", "id": frame_id, "ok": true, "result": result,
@@ -277,6 +454,127 @@ impl GlassPiRuntime {
     }
 }
 
+fn is_unknown_tool_error(result: &DevelopmentResult<Value>) -> bool {
+    matches!(
+        result,
+        Err(DevelopmentError::NotFound(message)) if message.starts_with("tool ")
+    )
+}
+fn browser_evidence(call: &ToolCall, result: &DevelopmentResult<Value>) -> Value {
+    let browser = call.name.starts_with("glass.browser.");
+    let mut evidence = serde_json::Map::new();
+    evidence.insert(
+        "type".into(),
+        Value::String(
+            if browser {
+                "glass_browser_evidence"
+            } else {
+                "glass_tool_evidence"
+            }
+            .into(),
+        ),
+    );
+    evidence.insert("toolName".into(), Value::String(call.name.clone()));
+    evidence.insert("ok".into(), Value::Bool(result.is_ok()));
+    if let Err(error) = result {
+        evidence.insert(
+            "error".into(),
+            Value::String(redact_text(&error.to_string())),
+        );
+    }
+    if let Ok(value) = result {
+        for key in [
+            "browserRevision",
+            "currentRevision",
+            "finalRevision",
+            "targetId",
+            "url",
+            "title",
+            "workflowState",
+        ] {
+            if let Some(value) = value
+                .get(key)
+                .filter(|value| value.is_string() || value.is_number() || value.is_boolean())
+            {
+                let value = if key == "url" {
+                    value
+                        .as_str()
+                        .map(redact_url)
+                        .map(Value::String)
+                        .unwrap_or_else(|| value.clone())
+                } else {
+                    value.clone()
+                };
+                evidence.insert(key.into(), value);
+            }
+        }
+        if let Some(revision) = value
+            .pointer("/accessibility/revision")
+            .and_then(Value::as_u64)
+        {
+            evidence.insert("browserRevision".into(), Value::from(revision));
+        }
+        if let Some(url) = value.pointer("/page/url").and_then(Value::as_str) {
+            evidence.insert("url".into(), Value::String(redact_url(url)));
+        }
+        if let Some(title) = value.pointer("/page/title").and_then(Value::as_str) {
+            evidence.insert("title".into(), Value::String(title.into()));
+        }
+        if let Some(count) = value
+            .pointer("/accessibility/interactive")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+        {
+            evidence.insert("semanticEntityCount".into(), Value::from(count));
+        }
+    }
+    Value::Object(evidence)
+}
+fn redact_url(url: &str) -> String {
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .chars()
+        .take(2_048)
+        .collect()
+}
+
+fn redact_tool_arguments(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| {
+                    let redacted = key.to_ascii_lowercase();
+                    let value = if [
+                        "password",
+                        "token",
+                        "secret",
+                        "cookie",
+                        "authorization",
+                        "api_key",
+                        "apikey",
+                    ]
+                    .iter()
+                    .any(|needle| redacted.contains(needle))
+                    {
+                        Value::String("[redacted]".into())
+                    } else {
+                        redact_tool_arguments(value)
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(redact_tool_arguments).collect()),
+        _ => value.clone(),
+    }
+}
+
+fn redact_text(text: &str) -> String {
+    text.chars().take(2_048).collect()
+}
+
 impl Drop for GlassPiRuntime {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -287,9 +585,15 @@ impl Drop for GlassPiRuntime {
 fn request_parts(request: PiSessionRequest) -> (&'static str, Value) {
     match request {
         PiSessionRequest::Hello => ("hello", Value::Null),
-        PiSessionRequest::Prompt { text } => ("prompt", json!({"text": text})),
-        PiSessionRequest::Steer { text } => ("steer", json!({"text": text})),
-        PiSessionRequest::FollowUp { text } => ("followUp", json!({"text": text})),
+        PiSessionRequest::Prompt { text, context } => {
+            ("prompt", json!({"text": text, "context": context}))
+        }
+        PiSessionRequest::Steer { text, context } => {
+            ("steer", json!({"text": text, "context": context}))
+        }
+        PiSessionRequest::FollowUp { text, context } => {
+            ("followUp", json!({"text": text, "context": context}))
+        }
         PiSessionRequest::Abort => ("abort", Value::Null),
         PiSessionRequest::State => ("state", Value::Null),
         PiSessionRequest::Models => ("models", Value::Null),
@@ -363,7 +667,7 @@ pub fn pi_readiness() -> DevelopmentResult<PiReadiness> {
                     detail: if compatible {
                         format!("compatible {source} Pi SDK")
                     } else {
-                        format!("{source} Pi SDK version is missing or older than 0.84.1")
+                        format!("{source} Pi SDK version is missing or older than 0.84.2")
                     },
                 },
                 agent_dir,
@@ -896,6 +1200,7 @@ fn validate_options(options: &PiRuntimeOptions) -> DevelopmentResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn response(runtime: &mut GlassPiRuntime, request: PiSessionRequest) -> Value {
         let id = runtime.start_request(request).unwrap();
@@ -917,11 +1222,20 @@ mod tests {
         assert_eq!(request_parts(PiSessionRequest::Hello).0, "hello");
         assert_eq!(
             request_parts(PiSessionRequest::FollowUp {
-                text: "next".into()
+                text: "next".into(),
+                context: None,
             })
             .0,
             "followUp"
         );
+        let (_, params) = request_parts(PiSessionRequest::Prompt {
+            text: "inspect".into(),
+            context: Some(json!({
+                "schemaVersion": "glass.agent-context.v1",
+                "browser": {"browserRevision": 7}
+            })),
+        });
+        assert_eq!(params["context"]["browser"]["browserRevision"], 7);
         assert_eq!(request_parts(PiSessionRequest::SessionStats).0, "stats");
     }
 
@@ -934,15 +1248,81 @@ mod tests {
     }
 
     #[test]
+    fn runtime_asset_registers_governed_custom_tool_without_builtins() {
+        assert!(RUNTIME_SOURCE.contains("noTools: \"builtin\""));
+        assert!(RUNTIME_SOURCE.contains("tools: [\"glass_tool\"]"));
+        assert!(RUNTIME_SOURCE.contains("customTools: [glassTool]"));
+    }
+    #[test]
+    fn unknown_tool_call_aborts_once_and_emits_rejection() {
+        if locate_sdk_entry().is_err() {
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("glass-pi-unknown-tool-test-{}", std::process::id()));
+        let sessions = root.join("sessions");
+        fs::create_dir_all(&root).unwrap();
+        let executor: PiToolExecutor =
+            Arc::new(|_, _, _| Err(DevelopmentError::NotFound("tool glass.fs.list".into())));
+        let mut runtime = GlassPiRuntime::spawn(
+            &root,
+            PiRuntimeOptions {
+                session_dir: sessions,
+                local_tool_executor: Some(executor),
+                ..PiRuntimeOptions::default()
+            },
+        )
+        .unwrap();
+        let call = serde_json::json!({
+            "type": "toolCall",
+            "id": "unknown-tool-frame",
+            "call": {"id": "unknown-tool-call", "name": "glass.fs.list", "arguments": {}}
+        });
+
+        assert!(runtime.handle_tool_call(&call).unwrap().is_none());
+        assert!(runtime.aborting_turn);
+        assert_eq!(
+            runtime
+                .host_events
+                .iter()
+                .filter(|event| event.get("type").and_then(Value::as_str)
+                    == Some("glass_tool_rejected"))
+                .count(),
+            1
+        );
+
+        assert!(runtime.handle_tool_call(&call).unwrap().is_none());
+        assert_eq!(
+            runtime
+                .host_events
+                .iter()
+                .filter(|event| event.get("type").and_then(Value::as_str)
+                    == Some("glass_tool_rejected"))
+                .count(),
+            1
+        );
+        drop(runtime);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn readiness_version_and_expiry_checks_are_deterministic() {
         assert_eq!(parse_version("v22.19.0"), Some((22, 19, 0)));
-        assert_eq!(parse_version("0.84.1-beta.1"), Some((0, 84, 1)));
+        assert_eq!(parse_version("0.84.2-beta.1"), Some((0, 84, 2)));
         assert_eq!(parse_version("invalid"), None);
         assert!(credential_expired(&serde_json::json!({"expires":1})));
         assert!(!credential_expired(&serde_json::json!({
             "expires":9_999_999_999_u64
         })));
         assert!(!credential_expired(&serde_json::json!({"type":"api_key"})));
+    }
+
+    #[test]
+    fn browser_evidence_redacts_url_query_and_fragment() {
+        assert_eq!(
+            redact_url("https://example.test/orders/7?token=secret#receipt"),
+            "https://example.test/orders/7"
+        );
     }
 
     #[test]

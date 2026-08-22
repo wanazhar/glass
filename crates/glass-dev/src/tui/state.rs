@@ -3,7 +3,7 @@ use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
 use glass_browser::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAction, BrowserWorkspaceAdapterKind,
     BrowserWorkspaceController, BrowserWorkspaceEntity, BrowserWorkspaceIntent,
-    BrowserWorkspaceLayout,
+    BrowserWorkspaceLayout, BrowserWorkspaceTarget,
 };
 use glass_browser::cli::args::TuiLayout;
 use glass_browser::terminal_graphics::AnsiCanvas;
@@ -20,6 +20,29 @@ pub struct PendingConfirmation {
     pub summary: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingAgentApproval {
+    pub agent_id: String,
+    pub frame_id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatMessageState {
+    Sending,
+    Sent,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingChatMessage {
+    pub text: String,
+    pub state: ChatMessageState,
+    pub job_id: Option<u64>,
+    pub error: Option<String>,
+}
+
 /// In-TUI recovery choices offered when a browser start collides or fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserRecoveryOffer {
@@ -31,28 +54,41 @@ pub struct BrowserRecoveryOffer {
 
 impl BrowserRecoveryOffer {
     pub fn from_error(error: &str, port: u16) -> Self {
+        let lower = error.to_ascii_lowercase();
         Self {
             reason: error.to_string(),
             port,
-            compatible_endpoint: error.to_lowercase().contains("attach"),
+            compatible_endpoint: ["attach", "devtools", "page target", "multiple page targets"]
+                .iter()
+                .any(|marker| lower.contains(marker)),
         }
     }
 
     pub fn actions(&self) -> &'static [(&'static str, &'static str)] {
         if self.compatible_endpoint {
             &[
-                ("1", "attach to the running Chrome on this port"),
-                ("2", "launch on an automatic free port"),
-                ("3", "try an explicit port"),
+                ("1", "attach after checking the running browser"),
+                ("2", "launch an isolated browser on an automatic free port"),
+                ("3", "retry the preferred port"),
                 ("Esc", "dismiss"),
             ]
         } else {
             &[
-                ("1", "launch on an automatic free port"),
-                ("2", "try an explicit port"),
-                ("3", "retry the preferred port"),
+                ("1", "launch an isolated browser on an automatic free port"),
+                ("2", "retry the preferred port"),
                 ("Esc", "dismiss"),
             ]
+        }
+    }
+
+    pub fn guidance(&self) -> &'static str {
+        let lower = self.reason.to_ascii_lowercase();
+        if self.compatible_endpoint {
+            "A DevTools endpoint answered. Attach only when its page is the intended browser; otherwise launch an isolated session."
+        } else if lower.contains("occup") || lower.contains("address") || lower.contains("port") {
+            "The preferred endpoint is busy or unavailable. Glass keeps the project and agent alive while you retry or move to an automatic free port."
+        } else {
+            "The browser did not become usable. Check Chrome/Chromium availability, then retry; the workspace remains intact."
         }
     }
 }
@@ -140,6 +176,7 @@ pub struct DevTuiState {
     pub surface: DevSurface,
     pub layout: TuiLayout,
     pub quit: bool,
+    pub quit_confirmation: bool,
     pub command_mode: bool,
     pub command_input: String,
     pub command_cursor: usize,
@@ -154,8 +191,11 @@ pub struct DevTuiState {
     pub composer_input: String,
     pub composer_cursor: usize,
     pub composer_steer: bool,
+    pub pending_chat_messages: Vec<PendingChatMessage>,
+    pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
     pub pending_confirmation: Option<PendingConfirmation>,
+    pub pending_agent_approval: Option<PendingAgentApproval>,
     pub queued_tool_request: Option<(
         crate::development::ToolCall,
         crate::tools::DevelopmentToolContext,
@@ -183,6 +223,9 @@ pub struct DevTuiState {
     pub focused_editor_line: u32,
     pub agents: String,
     pub agent_readiness: String,
+    /// Set by an in-TUI login action; the event loop temporarily hands the
+    /// terminal to Pi so `/login` can receive interactive input.
+    pub agent_login_requested: bool,
     pub agent_conversation: String,
     pub tasks: String,
     pub editor: String,
@@ -203,6 +246,10 @@ pub struct DevTuiState {
     pub browser_detail: String,
     pub browser_workspace: BrowserWorkspaceController,
     pub browser_recovery: Option<BrowserRecoveryOffer>,
+    pub browser_target_picker: bool,
+    pub browser_target_picker_requested: bool,
+    pub browser_target_query: String,
+    pub browser_target_selection: usize,
     pub browser_visual_live: bool,
     pub browser_observe_pending: bool,
     pub browser_ansi: AnsiCanvas,
@@ -290,6 +337,7 @@ impl DevTuiState {
             },
             layout,
             quit: false,
+            quit_confirmation: false,
             command_mode: false,
             command_input: String::new(),
             command_cursor: 0,
@@ -304,8 +352,11 @@ impl DevTuiState {
             composer_input: String::new(),
             composer_cursor: 0,
             composer_steer: false,
+            pending_chat_messages: Vec::new(),
+            agent_send_job: None,
             selected_agent: None,
             pending_confirmation: None,
+            pending_agent_approval: None,
             queued_tool_request: None,
             running_tool_job: None,
             surface_scroll: std::collections::BTreeMap::new(),
@@ -325,14 +376,15 @@ impl DevTuiState {
             focused_editor_dirty: false,
             focused_editor_line: 0,
             status: if trust_prompt {
-                "Workspace trust required · I inspect · O untrusted · 1 trust once · T trust project".into()
+                "Trust required · I inspect · O untrusted · 1 once · T project".into()
             } else {
-                "Ready · a actions · : commands · q quits".into()
+                "Ready · a launch · : routes · ? help".into()
             },
             agents: String::new(),
             agent_readiness: crate::pi_runtime::pi_readiness()
                 .map(|readiness| format_pi_readiness(&readiness))
                 .unwrap_or_else(|error| format!("Agent unavailable · {error}")),
+            agent_login_requested: false,
             agent_conversation: "No conversation yet. Press i to compose a message.".into(),
             tasks: String::new(),
             editor: String::new(),
@@ -360,6 +412,10 @@ impl DevTuiState {
                 BrowserWorkspaceAdapterKind::EmbeddedDevelopment,
             ),
             browser_recovery: None,
+            browser_target_picker: false,
+            browser_target_picker_requested: false,
+            browser_target_query: String::new(),
+            browser_target_selection: 0,
             browser_visual_live: false,
             browser_observe_pending: false,
             browser_ansi: AnsiCanvas::default(),
@@ -386,62 +442,32 @@ impl DevTuiState {
         }
     }
 
-    /// Discoverable actions for the current surface. `a` opens this menu.
-    pub fn surface_actions(&self) -> Vec<(&'static str, &'static str, &'static str)> {
-        match self.surface {
-            DevSurface::Agent => vec![
-                ("Compose message", "i", ""),
-                ("Setup Pi runtime", "agent setup", ":"),
-                ("Authenticate", "agent setup login", ":"),
-                ("Readiness doctor", "agent doctor", ":"),
-                ("New conversation", "agent new", ":"),
-            ],
-            DevSurface::Code => vec![
-                ("Open selected file", "Enter", ""),
-                ("Edit file", "i", ""),
-                ("Save buffer", "Ctrl-S", ""),
-                ("Search project", "editor search QUERY", ":"),
-                ("Diagnostics", "lsp diagnostics", ":"),
-            ],
-            DevSurface::App => vec![
-                ("Start browser", "browser start", ":"),
-                ("Observe page", "browser observe", ":"),
-                ("Navigate", "n", ""),
-                ("Type into selected", "t", ""),
-                ("Targets", "browser targets", ":"),
-            ],
-            DevSurface::Terminal => vec![
-                ("Start dev server", "process start dev COMMAND", ":"),
-                ("View logs", "process logs NAME", ":"),
-                ("Stop process", "process stop NAME", ":"),
-            ],
-            DevSurface::Tasks => vec![
-                ("Create task", "task create TITLE PROMPT", ":"),
-                ("Cancel task", "task cancel TASK_ID", ":"),
-                ("Retry task", "task retry TASK_ID", ":"),
-            ],
-            DevSurface::Git => vec![
-                ("Stage all changes", "git stage .", ":"),
-                ("Commit", "git commit MESSAGE", ":"),
-                ("View diff", "d", ""),
-                ("Branches", "git branches", ":"),
-            ],
-            DevSurface::Debug => vec![
-                ("Start debug session", "debug start NAME COMMAND", ":"),
-                ("Run tests", "test run RUN_ID SUITE_ID", ":"),
-                ("Test results", "test results", ":"),
-            ],
-            DevSurface::More => vec![
-                ("Experiments", "experiment create ID BRANCH", ":"),
-                ("Kernels", "kernel start NAME KIND", ":"),
-                ("Workspace state", "workspace", ":"),
-            ],
-            DevSurface::Trust => vec![
-                ("Inspect configuration", "I", ""),
-                ("Trust once", "1", ""),
-                ("Trust project", "T", ""),
-            ],
+    pub fn request_quit(&mut self) {
+        if self.quit {
+            return;
         }
+        self.quit_confirmation = true;
+        self.status = "Quit confirmation · Enter exits · Esc stays".into();
+    }
+
+    pub fn confirm_quit(&mut self) {
+        self.quit_confirmation = false;
+        self.quit = true;
+        self.status = "Closing Glass Dev".into();
+    }
+
+    pub fn cancel_quit(&mut self) {
+        self.quit_confirmation = false;
+        self.status = "Quit dismissed · workspace remains open".into();
+    }
+
+    pub fn quit_menu_index(&self) -> usize {
+        self.surface_actions().len() + 1
+    }
+
+    /// Guided launchers for the current surface. `a` opens the command center.
+    pub fn surface_actions(&self) -> &'static [command::SurfaceAction] {
+        command::surface_actions(self.surface)
     }
 
     pub fn toggle_help(&mut self) {
@@ -461,21 +487,39 @@ impl DevTuiState {
     pub fn open_menu(&mut self) {
         self.menu_open = true;
         self.menu_selection = 0;
-        self.status = "Surface actions · Enter runs · Esc closes".into();
+        self.status = format!(
+            "Command center · {} launchers first · : searches all routes · Enter runs",
+            self.surface.label()
+        );
     }
 
     pub fn close_menu(&mut self) {
         self.menu_open = false;
     }
 
-    /// Run the selected menu action. Keyboard hints apply directly; strings
-    /// starting with ':' open the palette prefilled with the command.
+    /// Run the selected command-center launcher. Keyboard hints apply
+    /// directly; strings starting with `:` open the palette prefilled with
+    /// the command.
     pub fn run_menu_action(&mut self) {
-        let Some((name, hint, prefix)) = self.surface_actions().get(self.menu_selection).copied()
-        else {
+        let search_index = self.surface_actions().len();
+        let quit_index = self.quit_menu_index();
+        if self.menu_selection == search_index {
+            self.menu_open = false;
+            self.open_palette();
+            return;
+        }
+        if self.menu_selection == quit_index {
+            self.menu_open = false;
+            self.request_quit();
+            return;
+        }
+        let Some(action) = self.surface_actions().get(self.menu_selection).copied() else {
             return;
         };
         self.menu_open = false;
+        let name = action.label;
+        let hint = action.command;
+        let prefix = action.key;
         if prefix == ":" {
             // Strip documentation placeholders from the editable command so
             // users can type values immediately instead of backspacing
@@ -508,8 +552,9 @@ impl DevTuiState {
             self.git_diff_requested = true;
             self.status = "Git diff queued · loading off-thread".into();
         }
-        // Action-menu entries must do what their visible hint promises. Do not
-        // make users close the menu and repeat a key from a different mode.
+        // Command-center entries must do what their visible hint promises.
+        // Do not make users close the center and repeat a key from another
+        // mode.
         else {
             match hint {
                 "n" => {
@@ -525,6 +570,12 @@ impl DevTuiState {
                     self.browser_visual_live = true;
                     self.status = "Live view starting · v stops".into();
                 }
+                "agent update" if self.surface == DevSurface::Agent => {
+                    self.request_agent_update();
+                }
+                "s" if matches!(self.surface, DevSurface::Terminal | DevSurface::More) => {
+                    self.request_detected_dev();
+                }
                 "1" | "T" | "I" | "O" => self.handle_printable(hint.chars().next().unwrap()),
                 "Ctrl-S" if self.surface == DevSurface::Code => self.edit_code_key(
                     crossterm::event::KeyCode::Char('s'),
@@ -536,7 +587,7 @@ impl DevTuiState {
     }
 
     pub fn move_menu_selection(&mut self, delta: i32) {
-        let count = self.surface_actions().len() as i32;
+        let count = self.surface_actions().len() as i32 + 2;
         self.menu_selection =
             (self.menu_selection as i32 + delta).rem_euclid(count.max(1)) as usize;
     }
@@ -547,7 +598,11 @@ impl DevTuiState {
         self.command_cursor = 0;
         self.command_history_index = None;
         self.palette_error = None;
-        self.status = "Command palette · type help for routes".into();
+        let group = command::command_group_for(self.surface);
+        self.status = format!(
+            "Command search · {} routes first · Tab completes · Esc closes",
+            group.label
+        );
     }
 
     pub fn close_palette(&mut self) {
@@ -556,7 +611,7 @@ impl DevTuiState {
         self.command_cursor = 0;
         self.command_history_index = None;
         self.palette_error = None;
-        self.status = "Command cancelled".into();
+        self.status = "Command search cancelled · press a for guided launchers".into();
     }
 
     pub fn submit_palette(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
@@ -679,42 +734,242 @@ impl DevTuiState {
     }
 
     pub fn palette_matches(&self) -> Vec<&'static str> {
-        const COMMANDS: [&str; 18] = [
-            "agent",
-            "browser",
-            "debug",
-            "editor",
-            "experiment",
-            "git",
-            "help",
-            "kernel",
-            "lsp",
-            "process",
-            "quit",
-            "replay",
-            "task",
-            "test",
-            "trust",
-            "view",
-            "workflow",
-            "workspace",
-        ];
         let query = self
             .command_input
             .split_whitespace()
             .next()
             .unwrap_or_default();
-        COMMANDS
+        command::palette_order(self.surface)
             .into_iter()
-            .filter(|command| fuzzy_contains(command, query))
+            .filter(|candidate| fuzzy_contains(candidate, query))
             .take(6)
             .collect()
+    }
+
+    pub fn background_action_running(&self) -> bool {
+        self.pending_confirmation.is_some()
+            || self.pending_agent_approval.is_some()
+            || self.running_tool_job.is_some()
+            || self.queued_tool_request.is_some()
+            || self.agent_send_job.is_some()
+    }
+
+    pub fn agent_browser_context(&self) -> serde_json::Value {
+        let semantic_summary = self.browser_workspace_summary();
+        let state = self.browser_workspace.state();
+        let selected_entity = state.selected().map(|entity| {
+            serde_json::json!({
+                "reference": entity.reference,
+                "role": entity.role,
+                "name": entity.name,
+                "actionable": entity.actionable,
+                "revision": entity.revision,
+            })
+        });
+        let selected_target = state
+            .targets
+            .iter()
+            .find(|target| target.selected)
+            .map(|target| {
+                serde_json::json!({
+                    "id": target.id,
+                    "title": target.title,
+                    "url": safe_browser_url(&target.url),
+                })
+            });
+        serde_json::json!({
+            "schemaVersion": "glass.agent-context.v1",
+            "browser": {
+                "attached": state.connection == glass_browser::browser_workspace::BrowserConnectionPhase::Connected,
+                "connection": serde_json::to_value(state.connection).unwrap_or(serde_json::Value::Null),
+                "targetId": selected_target.as_ref().and_then(|target| target.get("id")).cloned(),
+                "origin": page_origin(&state.url),
+                "url": safe_browser_url(&state.url),
+                "title": state.title,
+                "browserRevision": state.browser_revision,
+                "semanticSummary": semantic_summary,
+                "selectedEntity": selected_entity,
+                "workflowState": state.workflow,
+                "inputOwner": serde_json::to_value(state.input_owner).unwrap_or(serde_json::Value::Null),
+                "freshness": if state.semantic_invalidated { "stale" } else { "current" },
+                "target": selected_target,
+                "bootstrap": if state.connection == glass_browser::browser_workspace::BrowserConnectionPhase::Connected {
+                    "attached; observe before acting"
+                } else {
+                    "detached; call glass.browser.start, then navigate and observe the requested URL"
+                },
+            },
+            "authority": {
+                "source": "Glass browser workspace",
+                "mutationLeaseRequired": selected_entity.as_ref().is_some_and(|entity| {
+                    entity.get("actionable").and_then(serde_json::Value::as_bool).unwrap_or(false)
+                }),
+            },
+            "project": {
+                "root": self.snapshot_root,
+            },
+        })
+    }
+
+    pub fn browser_chat_header(&self) -> String {
+        let browser = self.browser_workspace.state();
+        let page = if browser.url.is_empty() {
+            "no page".to_string()
+        } else {
+            safe_browser_url(&browser.url).unwrap_or_else(|| "no page".into())
+        };
+        let title = browser.title.trim();
+        let include_title = !title.is_empty() && !title.eq_ignore_ascii_case(&page);
+        let revision = browser
+            .browser_revision
+            .map_or_else(|| "—".to_string(), |revision| revision.to_string());
+        let bootstrap = if browser.connection
+            == glass_browser::browser_workspace::BrowserConnectionPhase::Connected
+        {
+            "observe before acting"
+        } else {
+            "ask `open <url>` to attach"
+        };
+        let mut header = format!("APP · {}", browser.connection_label());
+        if include_title {
+            header.push_str(" · ");
+            header.push_str(title);
+        }
+        header.push_str(&format!(" · {} · rev {} · {}", page, revision, bootstrap));
+        if let Some(entity) = browser.selected() {
+            header.push_str(" · selected ");
+            header.push_str(&entity.name);
+        }
+        header
+    }
+
+    pub fn conversation_view(&self) -> String {
+        let mut conversation = if self.agent_conversation.starts_with("No conversation yet.")
+            && !self.pending_chat_messages.is_empty()
+        {
+            String::new()
+        } else {
+            self.agent_conversation.clone()
+        };
+        for message in &self.pending_chat_messages {
+            if !conversation.is_empty() {
+                conversation.push_str("\n\n");
+            }
+            conversation.push_str("YOU\n");
+            conversation.push_str(&message.text);
+            conversation.push('\n');
+            match message.state {
+                ChatMessageState::Sending => conversation.push_str("· sending…"),
+                ChatMessageState::Sent => {
+                    conversation.push_str("· sent · Glass Agent is thinking…")
+                }
+                ChatMessageState::Failed => {
+                    conversation.push_str("× send failed");
+                    if let Some(error) = message.error.as_deref() {
+                        conversation.push_str(": ");
+                        conversation.push_str(error);
+                    }
+                    conversation.push_str(" · press Enter to retry");
+                }
+            }
+        }
+        conversation
+    }
+
+    fn reconcile_pending_chat(&mut self) {
+        let conversation = self.agent_conversation.clone();
+        let mut confirmed = std::collections::BTreeMap::<String, usize>::new();
+        self.pending_chat_messages.retain(|message| {
+            if message.state == ChatMessageState::Failed {
+                return true;
+            }
+            let marker = format!("YOU\n{}", message.text);
+            let observed = conversation.matches(&marker).count();
+            let seen = confirmed.entry(message.text.clone()).or_default();
+            if *seen < observed {
+                *seen += 1;
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn open_composer(&mut self) {
         self.composer_mode = true;
         self.composer_cursor = self.composer_input.len();
-        self.status = "Agent composer · Enter sends · Esc cancels".into();
+        self.status = "Agent composer · Enter sends · draft stays open · Esc cancels".into();
+    }
+
+    pub fn toggle_composer_steer(&mut self) {
+        self.composer_steer = !self.composer_steer;
+        self.status = if self.composer_steer {
+            "Steer mode · Enter interrupts the running agent".into()
+        } else {
+            "Follow-up mode · Enter sends during or after the current turn".into()
+        };
+    }
+
+    /// Queue the managed Pi SDK install behind the same one-use confirmation
+    /// sheet used by every other mutating TUI action.
+    pub fn request_agent_setup(&mut self) {
+        self.request_agent_setup_mode(false);
+    }
+
+    /// Queue a forced reinstall of the pinned managed Pi SDK.
+    pub fn request_agent_update(&mut self) {
+        self.request_agent_setup_mode(true);
+    }
+
+    fn request_agent_setup_mode(&mut self, update: bool) {
+        if self.background_action_running() {
+            self.status = "Another background action is still running".into();
+            return;
+        }
+        let (call, context) = match self.tool_request(
+            "glass.agent.setup",
+            serde_json::json!({"login": false, "update": update}),
+            true,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = if update {
+                    format!("Pi update unavailable: {error}")
+                } else {
+                    format!("Pi setup unavailable: {error}")
+                };
+                return;
+            }
+        };
+        self.pending_confirmation = Some(PendingConfirmation {
+            call,
+            context,
+            summary: if update {
+                "Refresh the pinned managed Pi SDK".into()
+            } else {
+                "Install or repair the pinned managed Pi SDK".into()
+            },
+        });
+        self.surface = DevSurface::Agent;
+        self.status = if update {
+            "Pi update ready · Enter approves once · Esc cancels".into()
+        } else {
+            "Pi setup ready · Enter approves once · Esc cancels".into()
+        };
+    }
+
+    /// Request an interactive Pi login; the outer TUI loop performs the
+    /// terminal handoff because the login program must own stdin.
+    pub fn request_agent_login(&mut self) -> Result<(), String> {
+        if self.background_action_running() {
+            let error = "Finish the current background action before signing in".to_string();
+            self.status = error.clone();
+            return Err(error);
+        }
+        self.agent_login_requested = true;
+        self.surface = DevSurface::Agent;
+        self.status = "Pi login will open in this terminal · exit Pi to return".into();
+        Ok(())
     }
 
     pub fn close_composer(&mut self) {
@@ -758,11 +1013,17 @@ impl DevTuiState {
             self.status = "No active agent to abort".into();
             return;
         };
-        let (call, context) = self.tool_request(
+        let (call, context) = match self.tool_request(
             "glass.agent.abort",
             serde_json::json!({"agentId": agent.as_str()}),
             true,
-        );
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Abort unavailable: {error}");
+                return;
+            }
+        };
         match worker.submit_tool(call, context) {
             Ok(id) => {
                 self.running_tool_job = Some(id);
@@ -793,49 +1054,77 @@ impl DevTuiState {
     }
 
     pub fn submit_composer(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        if self.running_tool_job.is_some() || self.queued_tool_request.is_some() {
-            self.status = "Background operation running · message kept in composer".into();
-            return;
-        }
-        let mut text = std::mem::take(&mut self.composer_input);
-        let steer = self.composer_steer;
-        self.composer_cursor = 0;
-        self.composer_mode = false;
-        self.composer_steer = false;
-        if text.trim().is_empty() {
-            self.status = "Message was empty".into();
+        if self.background_action_running() {
+            self.status = if self.agent_send_job.is_some() {
+                "Sending the previous message · keep typing, then press Enter again".into()
+            } else {
+                "Background operation running · message kept in composer".into()
+            };
             return;
         }
         if self.snapshot_trust_label == "untrusted" {
-            self.status = "Agent requires trusted project execution · open Trust".into();
+            self.composer_mode = false;
+            self.surface = DevSurface::Trust;
+            self.status = "Trust this workspace before starting the Glass Agent · T or 1".into();
             return;
         }
-        if let Some(entity) = self.browser_workspace.state().selected() {
-            text.push_str(&format!(
-                "\n\n[Glass App context: {} `{}` at browser revision {}; use current browser evidence and preserve its lease/revision guards.]",
-                entity.role, entity.reference, entity.revision
-            ));
+        if !self.agent_readiness.starts_with("✓ Ready") {
+            self.status = "Pi is not ready · press Esc, then s to install or l to sign in".into();
+            return;
+        }
+        if self.composer_input.trim().is_empty() {
+            self.status = "Message is empty · type a prompt, then press Enter".into();
+            return;
+        }
+        let display_text = self.composer_input.clone();
+        let text = std::mem::take(&mut self.composer_input);
+        let steer = self.composer_steer;
+        self.composer_cursor = 0;
+        self.composer_steer = false;
+        self.composer_mode = true;
+        let context = self.agent_browser_context();
+        if context["browser"]["selectedEntity"].is_object() {
             self.browser_workspace.state_mut().input_owner =
                 glass_browser::browser_workspace::BrowserInputOwner::Agent;
         }
         let mut arguments = serde_json::json!({
             "text": text,
             "mode": if steer { "steer" } else { "follow-up" },
+            "context": context,
         });
         if let Some(agent) = self.selected_agent.as_ref() {
             arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
         }
-        let (call, context) = self.tool_request("glass.agent.send", arguments, true);
+        let (call, context) = match self.tool_request("glass.agent.send", arguments, true) {
+            Ok(request) => request,
+            Err(error) => {
+                self.composer_input = display_text;
+                self.composer_cursor = self.composer_input.len();
+                self.status = format!("Message unavailable · edit and retry: {error}");
+                return;
+            }
+        };
         match worker.submit_tool(call, context) {
             Ok(id) => {
-                self.running_tool_job = Some(id);
+                self.agent_send_job = Some(id);
+                self.pending_chat_messages.push(PendingChatMessage {
+                    text: display_text,
+                    state: ChatMessageState::Sending,
+                    job_id: Some(id),
+                    error: None,
+                });
                 self.status = if steer {
-                    "Steering agent in background…".into()
+                    "Sent · steering Glass Agent…".into()
                 } else {
-                    "Message queued in background…".into()
+                    "Sent · Glass Agent is thinking…".into()
                 };
+                worker.request_conversation();
             }
-            Err(error) => self.status = format!("Message unavailable: {error}"),
+            Err(error) => {
+                self.composer_input = display_text;
+                self.composer_cursor = self.composer_input.len();
+                self.status = format!("Message unavailable · edit and retry: {error}");
+            }
         }
     }
 
@@ -855,40 +1144,100 @@ impl DevTuiState {
         }
     }
 
-    pub fn apply_visual_job_result(&mut self, result: super::snapshot::VisualJobResult) {
-        let png = result
-            .result
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("base64")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            })
-            .and_then(|encoded| {
-                use base64::Engine as _;
-                base64::engine::general_purpose::STANDARD
-                    .decode(encoded)
-                    .ok()
-            });
-        let Some(png) = png else {
-            self.browser_visual_live = false;
-            self.browser_workspace.state_mut().presentation_reason =
-                Some("screenshot unavailable; start or observe the browser first".into());
-            self.status = "Live view unavailable · start or observe the browser first".into();
+    pub fn resolve_agent_approval(
+        &mut self,
+        approved: bool,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        let Some(pending) = self.pending_agent_approval.take() else {
             return;
+        };
+        let arguments = serde_json::json!({
+            "agentId": pending.agent_id,
+            "frameId": pending.frame_id,
+            "approved": approved,
+        });
+        let (call, context) = match self.tool_request("glass.agent.approve", arguments, true) {
+            Ok(request) => request,
+            Err(error) => {
+                self.pending_agent_approval = Some(pending);
+                self.status = format!("Agent approval unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = if approved {
+                    format!("Approved {} · Glass Agent continues…", pending.tool_name)
+                } else {
+                    format!("Denied {} · Glass Agent continues…", pending.tool_name)
+                };
+            }
+            Err(error) => {
+                self.pending_agent_approval = Some(pending);
+                self.status = format!("Could not queue agent approval: {error}");
+            }
+        }
+    }
+
+    pub fn apply_visual_job_result(&mut self, result: super::snapshot::VisualJobResult) {
+        self.apply_visual_job_result_with_fit(
+            result,
+            glass_browser::terminal_graphics::FrameFit::Contain,
+        );
+    }
+
+    pub fn apply_visual_job_result_with_fit(
+        &mut self,
+        result: super::snapshot::VisualJobResult,
+        fit: glass_browser::terminal_graphics::FrameFit,
+    ) {
+        let png = match result.result {
+            Ok(value) => {
+                let Some(encoded) = value.get("base64").and_then(serde_json::Value::as_str) else {
+                    self.browser_visual_live = false;
+                    self.browser_workspace.state_mut().presentation_reason =
+                        Some("screenshot payload did not contain base64 PNG data".into());
+                    self.status = "Live view unavailable · screenshot payload was empty".into();
+                    return;
+                };
+                use base64::Engine as _;
+                match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                    Ok(png) => png,
+                    Err(error) => {
+                        self.browser_visual_live = false;
+                        self.browser_workspace.state_mut().presentation_reason =
+                            Some(format!("screenshot payload was not valid base64: {error}"));
+                        self.status = "Live view unavailable · invalid screenshot payload".into();
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                self.browser_visual_live = false;
+                self.browser_workspace.state_mut().presentation_reason =
+                    Some(format!("browser screenshot failed: {error}"));
+                self.status = format!("Live view unavailable · {error}");
+                return;
+            }
         };
         match AnsiPane::from_png(
             &mut self.browser_ansi,
             &png,
             result.columns.clamp(8, 80),
             result.rows.clamp(4, 40),
-            glass_browser::terminal_graphics::FrameFit::Contain,
+            fit,
         ) {
             Ok(pane) => {
                 self.browser_pane = Some(pane);
-                self.browser_workspace.state_mut().presentation =
+                let browser = self.browser_workspace.state_mut();
+                browser.presentation =
                     glass_browser::browser_workspace::BrowserPresentationPath::Ansi;
+                browser.frame_revision = browser.browser_revision;
+                browser.presentation_reason = Some(
+                    "bounded ANSI half-block frame · semantic controls remain authoritative".into(),
+                );
                 self.status = "Live view updated · ANSI half-block".into();
             }
             Err(error) => {
@@ -904,7 +1253,7 @@ impl DevTuiState {
         call: crate::development::ToolCall,
         context: crate::tools::DevelopmentToolContext,
     ) -> Result<(), String> {
-        if self.queued_tool_request.is_some() || self.running_tool_job.is_some() {
+        if self.background_action_running() {
             return Err("another background tool is already running".into());
         }
         self.queued_tool_request = Some((call, context));
@@ -912,6 +1261,65 @@ impl DevTuiState {
     }
 
     pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
+        if result.tool == "glass.agent.send" && self.agent_send_job == Some(result.id) {
+            self.agent_send_job = None;
+            match result.result {
+                Ok(value) => {
+                    let agent = value
+                        .get("agentId")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|value| crate::AgentId::parse(value).ok());
+                    let restarted = value
+                        .get("restarted")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    if let Some(agent_id) = agent {
+                        self.selected_agent = Some(agent_id.clone());
+                        self.status = if restarted {
+                            format!("Restarted {} · Glass Agent is thinking…", agent_id.as_str())
+                        } else {
+                            format!("Sent to {} · Glass Agent is thinking…", agent_id.as_str())
+                        };
+                    } else {
+                        self.status = if restarted {
+                            "Restarted Glass Agent · thinking…".into()
+                        } else {
+                            "Sent · Glass Agent is thinking…".into()
+                        };
+                    }
+                    if let Some(message) = self
+                        .pending_chat_messages
+                        .iter_mut()
+                        .find(|message| message.job_id == Some(result.id))
+                    {
+                        message.state = ChatMessageState::Sent;
+                        message.job_id = None;
+                    }
+                }
+                Err(error) => {
+                    let failed_text = self
+                        .pending_chat_messages
+                        .iter_mut()
+                        .find(|message| message.job_id == Some(result.id))
+                        .map(|message| {
+                            message.state = ChatMessageState::Failed;
+                            message.job_id = None;
+                            message.error = Some(error.clone());
+                            message.text.clone()
+                        });
+                    if self.composer_input.is_empty()
+                        && let Some(text) = failed_text
+                    {
+                        self.composer_input = text;
+                        self.composer_cursor = self.composer_input.len();
+                    }
+                    self.composer_mode = true;
+                    self.status = format!("Could not send message · edit and retry: {error}");
+                }
+            }
+            return;
+        }
+
         if self.running_tool_job != Some(result.id) {
             return;
         }
@@ -933,6 +1341,19 @@ impl DevTuiState {
                         .to_string();
                     self.git_diff_open = true;
                     self.status = "Git diff · PgUp/PgDn scroll · Esc closes".into();
+                } else if result.tool == "glass.agent.setup" {
+                    match self.refresh_agent_readiness() {
+                        Ok(true) => {
+                            self.status =
+                                "Pi runtime ready · press l to sign in if no provider is selected"
+                                    .into();
+                        }
+                        Ok(false) => {
+                            self.status =
+                                "Pi runtime installed · press l to sign in, then i to chat".into();
+                        }
+                        Err(error) => self.status = format!("Pi readiness check failed: {error}"),
+                    }
                 } else if result.tool == "glass.agent.send" {
                     if let Some(agent_id) = value
                         .get("agentId")
@@ -940,9 +1361,10 @@ impl DevTuiState {
                         .and_then(|value| crate::AgentId::parse(value).ok())
                     {
                         self.selected_agent = Some(agent_id.clone());
-                        self.status = format!("Message queued for {}", agent_id.as_str());
+                        self.status =
+                            format!("Sent to {} · Glass Agent is thinking…", agent_id.as_str());
                     } else {
-                        self.status = "Message queued · agent startup accepted".into();
+                        self.status = "Sent · Glass Agent is thinking…".into();
                     }
                 } else if result.tool.starts_with("glass.lsp") {
                     self.editor = if result.tool == "glass.lsp.diagnostics" {
@@ -951,7 +1373,10 @@ impl DevTuiState {
                         super::projection::first_meaningful(&value)
                     };
                 }
-                if !matches!(result.tool.as_str(), "glass.agent.send" | "glass.git.diff") {
+                if !matches!(
+                    result.tool.as_str(),
+                    "glass.agent.send" | "glass.agent.setup" | "glass.git.diff"
+                ) {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
             }
@@ -1002,6 +1427,28 @@ impl DevTuiState {
                 return;
             }
         }
+        if self.surface == DevSurface::Agent && self.snapshot_trust_label == "untrusted" {
+            let decision = match character {
+                't' => Some(crate::LocalTrustDecision::TrustOnce),
+                'T' => Some(crate::LocalTrustDecision::TrustProject),
+                _ => None,
+            };
+            if let Some(decision) = decision {
+                match self
+                    .workspace
+                    .try_lock()
+                    .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
+                {
+                    Ok(trust) => {
+                        self.snapshot_trust_label = trust.label().into();
+                        self.status = format!("Workspace opened with {} authority", trust.label());
+                    }
+                    Err(error) => self.status = format!("Trust decision failed: {error}"),
+                }
+                return;
+            }
+        }
+
         if self.responsive_class(self.terminal_width, self.terminal_height)
             == ResponsiveClass::Phone
         {
@@ -1015,12 +1462,12 @@ impl DevTuiState {
             };
             if let Some(surface) = surface {
                 self.surface = surface;
-                self.status = format!("{} · : for actions", surface.label());
+                self.status = format!("{} · a launcher · : routes", surface.label());
                 return;
             }
         }
         let surface = match character {
-            '1' | 'a' => Some(DevSurface::Agent),
+            '1' => Some(DevSurface::Agent),
             '2' | 'c' => Some(DevSurface::Code),
             '3' | 'v' => Some(DevSurface::App),
             '4' => Some(DevSurface::Terminal),
@@ -1032,8 +1479,57 @@ impl DevTuiState {
         };
         if let Some(surface) = surface {
             self.surface = surface;
-            self.status = format!("{} · : for actions", surface.label());
+            self.status = format!("{} · a launcher · : routes", surface.label());
         }
+    }
+    /// Queue the project-detected development command without making users
+    /// copy it from project inspection into the command palette.
+    pub fn request_detected_dev(&mut self) {
+        if self.background_action_running() {
+            self.status = "Another background action is still running".into();
+            return;
+        }
+        let command_result = {
+            match self.ws() {
+                Ok(workspace) => workspace
+                    .project()
+                    .detection()
+                    .dev_command
+                    .clone()
+                    .ok_or_else(|| "no detected dev command".to_string()),
+                Err(error) => Err(error),
+            }
+        };
+        let command = match command_result {
+            Ok(command) => command,
+            Err(error) if error == "no detected dev command" => {
+                self.status =
+                    "No development command detected · use :process start NAME COMMAND".into();
+                return;
+            }
+            Err(error) => {
+                self.status = format!("Development command unavailable: {error}");
+                return;
+            }
+        };
+        let (call, context) = match self.tool_request(
+            "glass.process.start",
+            serde_json::json!({"name": "dev", "command": command}),
+            true,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Development suite unavailable: {error}");
+                return;
+            }
+        };
+        self.pending_confirmation = Some(PendingConfirmation {
+            call,
+            context,
+            summary: "Start the detected development suite".into(),
+        });
+        self.surface = DevSurface::Terminal;
+        self.status = "Development suite ready · Enter approves once · Esc cancels".into();
     }
 
     pub fn next_surface(&mut self) {
@@ -1068,8 +1564,10 @@ impl DevTuiState {
 
     /// Bounded logical height of the current surface's content, used for End.
     fn surface_content_height(&self) -> usize {
+        if self.surface == DevSurface::Agent {
+            return self.conversation_view().lines().count().max(1);
+        }
         let content = match self.surface {
-            DevSurface::Agent => &self.agent_conversation,
             DevSurface::Code => &self.editor,
             DevSurface::App => &self.browser,
             DevSurface::Terminal => &self.processes,
@@ -1077,6 +1575,7 @@ impl DevTuiState {
             DevSurface::Git => &self.git,
             DevSurface::Debug => &self.debugger,
             DevSurface::More | DevSurface::Trust => &self.workspace_status,
+            DevSurface::Agent => unreachable!("agent content handled above"),
         };
         content.lines().count().max(1)
     }
@@ -1119,11 +1618,18 @@ impl DevTuiState {
 
     /// Load the current Git diff without blocking key handling.
     pub fn queue_git_diff(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        if self.running_tool_job.is_some() || self.queued_tool_request.is_some() {
+        if self.background_action_running() {
             self.status = "Git diff waits for the current background operation".into();
             return;
         }
-        let (call, context) = self.tool_request("glass.git.diff", serde_json::json!({}), false);
+        let (call, context) =
+            match self.tool_request("glass.git.diff", serde_json::json!({}), false) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.status = format!("Git diff unavailable: {error}");
+                    return;
+                }
+            };
         match worker.submit_tool(call, context) {
             Ok(id) => {
                 self.running_tool_job = Some(id);
@@ -1434,7 +1940,6 @@ impl DevTuiState {
             last_revision,
         } = &snapshot.browser_health
             && self.browser_recovery.is_none()
-            && self.surface == DevSurface::App
         {
             let pid_label = last_process_id
                 .map(|pid| pid.to_string())
@@ -1442,6 +1947,7 @@ impl DevTuiState {
             let revision_label = last_revision
                 .map(|revision| revision.to_string())
                 .unwrap_or_else(|| "none".into());
+            self.surface = DevSurface::App;
             self.browser_recovery = Some(BrowserRecoveryOffer::from_error(
                 &format!(
                     "browser endpoint crashed unexpectedly (pid {pid_label}, last revision {revision_label})"
@@ -1454,6 +1960,7 @@ impl DevTuiState {
         }
         self.agents = snapshot.agents.clone();
         self.agent_conversation = snapshot.agent_conversation.clone();
+        self.reconcile_pending_chat();
         self.tasks = snapshot.tasks.clone();
         self.editor = snapshot.editor.clone();
         self.lsp = snapshot.lsp.clone();
@@ -1507,7 +2014,9 @@ impl DevTuiState {
         if !self.files.is_empty() {
             self.selected_file = self.selected_file.min(self.files.len() - 1);
         }
-        self.agents = match workspace.agents().list() {
+        let agent_snapshots = workspace.agents().list();
+        self.pending_agent_approval = pending_agent_approval(agent_snapshots.as_ref().ok());
+        self.agents = match agent_snapshots {
             Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
             Ok(agents) => agents
                 .iter()
@@ -1921,13 +2430,13 @@ impl DevTuiState {
             format!("✓ {} project", detection.languages.join("/"))
         };
         let workspace_line = format!("✓ workspace {}", trust.label());
-        let agent_hint = if self.agent_readiness.starts_with("✓") {
-            "✓ Glass Agent ready"
+        let agent_hint = if self.agent_readiness.starts_with("✓ Ready") {
+            "✓ Glass Agent ready · [i] chat"
         } else {
-            "○ Glass Agent needs setup (More → agent setup)"
+            "○ Pi onboarding · [s] install · [l] sign in"
         };
         self.workspace_status = format!(
-            "WELCOME · {}\n{}\n\n{}\n{}\n\nNEXT ACTIONS\n◆ [a] actions menu · per-surface flows\n◆ [i] talk to Glass Agent\n◆ [Enter] open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+            "WELCOME · {}\n{}\n\n{}\n{}\n\nNEXT ACTIONS\n◆ [a] actions menu · per-surface flows\n◆ [i] talk to Glass Agent\n◆ [4] terminal · [s] start the detected dev suite\n◆ [Enter] open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
             detection.git_branch.as_deref().unwrap_or("no branch"),
             project_line,
             agent_hint,
@@ -1979,62 +2488,133 @@ impl DevTuiState {
             };
             self.experiment_comparison = Some(experiments.compare());
         }
+        drop(workspace);
+        self.reconcile_pending_chat();
     }
 
     pub fn apply_browser_result(&mut self, tool: &str, result: &serde_json::Value) {
-        if tool == "glass.browser.observe" {
-            let revision = result
-                .pointer("/accessibility/revision")
-                .and_then(serde_json::Value::as_u64);
-            let title = result
-                .pointer("/page/title")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Untitled");
-            let url = result
-                .pointer("/page/url")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            if let Some(revision) = revision {
-                self.browser_workspace
-                    .update_page(title, url, false, Some(revision));
-                let entities = result
-                    .pointer("/accessibility/interactive")
+        match tool {
+            "glass.browser.observe" => {
+                let revision = result
+                    .pointer("/accessibility/revision")
+                    .and_then(serde_json::Value::as_u64);
+                let title = result
+                    .pointer("/page/title")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Untitled");
+                let url = result
+                    .pointer("/page/url")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let loading = result
+                    .pointer("/page/loading")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if let Some(revision) = revision {
+                    self.browser_workspace
+                        .update_page(title, url, loading, Some(revision));
+                    let entities = result
+                        .pointer("/accessibility/interactive")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|entity| {
+                            Some(BrowserWorkspaceEntity {
+                                reference: entity.get("reference")?.as_str()?.into(),
+                                role: entity
+                                    .get("role")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("unknown")
+                                    .into(),
+                                name: entity
+                                    .get("name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("unnamed")
+                                    .into(),
+                                actionable: entity
+                                    .get("actionable")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(true),
+                                revision,
+                            })
+                        })
+                        .collect();
+                    self.browser_workspace.replace_entities(revision, entities);
+                }
+            }
+            "glass.browser.targets" => {
+                let values = result
+                    .get("targets")
                     .and_then(serde_json::Value::as_array)
+                    .or_else(|| result.as_array());
+                let targets = values
                     .into_iter()
                     .flatten()
-                    .filter_map(|entity| {
-                        Some(BrowserWorkspaceEntity {
-                            reference: entity.get("reference")?.as_str()?.into(),
-                            role: entity
-                                .get("role")
+                    .filter_map(|target| {
+                        Some(BrowserWorkspaceTarget {
+                            id: target.get("id")?.as_str()?.into(),
+                            title: target
+                                .get("title")
                                 .and_then(serde_json::Value::as_str)
-                                .unwrap_or("unknown")
+                                .unwrap_or("Untitled")
                                 .into(),
-                            name: entity
-                                .get("name")
+                            url: target
+                                .get("url")
                                 .and_then(serde_json::Value::as_str)
-                                .unwrap_or("unnamed")
+                                .unwrap_or_default()
                                 .into(),
-                            actionable: true,
-                            revision,
+                            selected: target
+                                .get("active")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false),
                         })
                     })
                     .collect();
-                self.browser_workspace.replace_entities(revision, entities);
+                self.browser_workspace.replace_targets(targets);
+                if self.browser_target_picker_requested {
+                    self.browser_target_picker_requested = false;
+                    self.browser_target_picker = true;
+                    self.browser_target_selection = 0;
+                    self.status = if self.browser_workspace.state().targets.is_empty() {
+                        "No page targets found · Esc closes".into()
+                    } else {
+                        "Target picker · type to filter · j/k select · Enter choose · Esc close"
+                            .into()
+                    };
+                }
             }
-        } else if tool == "glass.browser.start" {
-            let connected = result
-                .get("connected")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true);
-            let revision = result
-                .get("browserRevision")
-                .and_then(serde_json::Value::as_u64);
-            if connected {
-                self.browser_workspace.connected(true, None, revision);
+            "glass.browser.target.select" => {
+                if let Some(target_id) = result
+                    .pointer("/target/id")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    let mut targets = self.browser_workspace.state().targets.clone();
+                    for target in &mut targets {
+                        target.selected = target.id == target_id;
+                    }
+                    self.browser_workspace.replace_targets(targets);
+                }
+                if let Some(observation) = result.get("observation") {
+                    self.apply_browser_result("glass.browser.observe", observation);
+                }
             }
-        } else if tool == "glass.browser.stop" {
-            self.browser_workspace.state_mut().connection = BrowserConnectionPhase::Detached;
+            "glass.browser.start" => {
+                let connected = result
+                    .get("connected")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+                let revision = result
+                    .get("browserRevision")
+                    .and_then(serde_json::Value::as_u64);
+                if connected {
+                    self.browser_workspace.connected(true, None, revision);
+                    self.browser_recovery = None;
+                }
+            }
+            "glass.browser.stop" => {
+                self.browser_workspace.state_mut().connection = BrowserConnectionPhase::Detached;
+            }
+            _ => {}
         }
         self.browser = self.browser_workspace_summary();
     }
@@ -2066,8 +2646,26 @@ impl DevTuiState {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        let targets = if browser.targets.is_empty() {
+            "No page targets loaded · use `browser targets`".into()
+        } else {
+            browser
+                .targets
+                .iter()
+                .take(8)
+                .map(|target| {
+                    format!(
+                        "{} {} · {}",
+                        if target.selected { "◆" } else { "○" },
+                        target.title,
+                        safe_browser_url(&target.url).unwrap_or_else(|| "no URL".into())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         format!(
-            "{} · rev {} · {} · owner {}\n{}\n{}\n\nUNDERSTANDING\n{}",
+            "{} · rev {} · {} · owner {}\n{}\n{}\n\nTARGETS\n{}\n\nUNDERSTANDING\n{}\n\nWORKFLOW\n{}",
             browser.connection_label(),
             browser
                 .browser_revision
@@ -2075,18 +2673,198 @@ impl DevTuiState {
             browser.presentation_label(),
             browser.input_owner_label(),
             browser.title,
-            browser.url,
+            safe_browser_url(&browser.url).unwrap_or_else(|| "no page".into()),
+            targets,
             entities,
+            browser.workflow
         )
     }
 
+    pub fn queue_browser_targets(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if self.background_action_running() {
+            self.status = "Target picker waits for the current background operation".into();
+            return;
+        }
+        if let Err(error) = self.request_browser_target_picker("") {
+            self.status = format!("Could not load browser targets: {error}");
+            return;
+        }
+        let Some((call, context)) = self.queued_tool_request.take() else {
+            return;
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = "Loading browser targets…".into();
+            }
+            Err(error) => {
+                self.browser_target_picker_requested = false;
+                self.status = format!("Could not load browser targets: {error}");
+            }
+        }
+    }
+
+    pub fn request_browser_target_picker(
+        &mut self,
+        query: impl Into<String>,
+    ) -> Result<(), String> {
+        if self.background_action_running() {
+            return Err("Target picker waits for the current background operation".into());
+        }
+        self.browser_target_query = query.into();
+        self.browser_target_selection = 0;
+        self.browser_target_picker = false;
+        self.browser_target_picker_requested = true;
+        let (call, context) =
+            match self.tool_request("glass.browser.targets", serde_json::json!({}), false) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.browser_target_picker_requested = false;
+                    return Err(error);
+                }
+            };
+        self.queued_tool_request = Some((call, context));
+        self.status = "Loading browser targets…".into();
+        Ok(())
+    }
+
+    pub fn close_browser_target_picker(&mut self) {
+        self.browser_target_picker = false;
+        self.browser_target_picker_requested = false;
+        self.status = "Target picker closed".into();
+    }
+
+    pub fn browser_target_matches(&self) -> Vec<usize> {
+        let query = self.browser_target_query.to_ascii_lowercase();
+        let terms = query.split_whitespace().collect::<Vec<_>>();
+        self.browser_workspace
+            .state()
+            .targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| {
+                terms.iter().all(|term| {
+                    target.id.to_ascii_lowercase().contains(term)
+                        || target.title.to_ascii_lowercase().contains(term)
+                        || target.url.to_ascii_lowercase().contains(term)
+                })
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn insert_browser_target_query(&mut self, character: char) {
+        if self.browser_target_query.len() < 512 {
+            self.browser_target_query.push(character);
+            self.browser_target_selection = 0;
+        }
+    }
+
+    pub fn browser_target_backspace(&mut self) {
+        self.browser_target_query.pop();
+        self.browser_target_selection = 0;
+    }
+
+    pub fn clear_browser_target_query(&mut self) {
+        self.browser_target_query.clear();
+        self.browser_target_selection = 0;
+    }
+
+    pub fn move_browser_target_selection(&mut self, delta: i32) {
+        let count = self.browser_target_matches().len();
+        if count == 0 {
+            self.browser_target_selection = 0;
+            return;
+        }
+        self.browser_target_selection =
+            (self.browser_target_selection as i32 + delta).rem_euclid(count as i32) as usize;
+    }
+
+    pub fn select_browser_target(&mut self) {
+        if self.background_action_running() {
+            self.status = "Finish the current browser operation before selecting a target".into();
+            return;
+        }
+        let matches = self.browser_target_matches();
+        let Some(index) = matches.get(self.browser_target_selection).copied() else {
+            self.status = "No matching browser target".into();
+            return;
+        };
+        let Some(target) = self.browser_workspace.state().targets.get(index).cloned() else {
+            self.status = "Selected browser target disappeared".into();
+            return;
+        };
+        let (call, context) = match self.tool_request(
+            "glass.browser.target.select",
+            serde_json::json!({"targetId": target.id}),
+            true,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Target selection unavailable: {error}");
+                return;
+            }
+        };
+        self.browser_target_picker = false;
+        self.pending_confirmation = Some(PendingConfirmation {
+            call,
+            context,
+            summary: format!("Select browser target · {}", target.title),
+        });
+        self.status = "Target selection ready · Enter approves once · Esc cancels".into();
+    }
+
+    pub fn browser_target_picker_view(&self) -> String {
+        let matches = self.browser_target_matches();
+        let mut lines = vec![
+            format!(
+                "FILTER  {}",
+                if self.browser_target_query.is_empty() {
+                    "all pages"
+                } else {
+                    self.browser_target_query.as_str()
+                }
+            ),
+            String::new(),
+        ];
+        if matches.is_empty() {
+            lines.push("No matching page targets.".into());
+        } else {
+            for (position, index) in matches.iter().take(16).enumerate() {
+                let Some(target) = self.browser_workspace.state().targets.get(*index) else {
+                    continue;
+                };
+                let marker = if position == self.browser_target_selection {
+                    "›"
+                } else {
+                    " "
+                };
+                let url = safe_browser_url(&target.url).unwrap_or_else(|| "no URL".into());
+                lines.push(format!(
+                    "{marker} {} · {} · {}",
+                    target.title, url, target.id
+                ));
+            }
+        }
+        lines.push(String::new());
+        lines.push("Type filters · Backspace edits · Ctrl-U clears".into());
+        lines.push("j/k or ↑/↓ selects · Enter chooses · Esc closes".into());
+        lines.join("\n")
+    }
+
     pub fn queue_browser_observe(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        if !self.browser_observe_pending || self.running_tool_job.is_some() {
+        if !self.browser_observe_pending || self.background_action_running() {
             return;
         }
         self.browser_observe_pending = false;
         let (call, context) =
-            self.tool_request("glass.browser.observe", serde_json::json!({}), false);
+            match self.tool_request("glass.browser.observe", serde_json::json!({}), false) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.status = format!("Could not refresh browser evidence: {error}");
+                    return;
+                }
+            };
         match worker.submit_tool(call, context) {
             Ok(id) => {
                 self.running_tool_job = Some(id);
@@ -2097,7 +2875,7 @@ impl DevTuiState {
     }
 
     pub fn queue_browser_intent(&mut self, intent: BrowserWorkspaceIntent) {
-        if self.running_tool_job.is_some() || self.queued_tool_request.is_some() {
+        if self.background_action_running() {
             self.status = "Browser action waits for the current background operation".into();
             return;
         }
@@ -2158,35 +2936,39 @@ impl DevTuiState {
             ),
             _ => return,
         };
-        let (call, context) = self.tool_request(tool, arguments, true);
+        let (call, context) = match self.tool_request(tool, arguments, true) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("App action unavailable: {error}");
+                return;
+            }
+        };
         self.pending_confirmation = Some(PendingConfirmation {
             summary: format!("{tool} · browser revision guarded"),
             call,
             context,
         });
-        self.status = "Browser mutation ready · Enter approves once · Esc denies".into();
+        self.status = "Browser mutation ready · Enter approves once · Esc cancels".into();
     }
 
-    fn tool_request(
+    pub(super) fn tool_request(
         &self,
         name: &str,
         arguments: serde_json::Value,
         mutating: bool,
-    ) -> (
-        crate::development::ToolCall,
-        crate::tools::DevelopmentToolContext,
-    ) {
-        let expected_generation = self
-            .workspace
-            .try_lock()
-            .map(|workspace| workspace.generation())
-            .unwrap_or_default();
-        let expected_project_revision = self
-            .workspace
-            .try_lock()
-            .map(|workspace| workspace.project().revision())
-            .unwrap_or_default();
+    ) -> Result<
         (
+            crate::development::ToolCall,
+            crate::tools::DevelopmentToolContext,
+        ),
+        String,
+    > {
+        // Snapshot refresh owns the workspace lock while it performs filesystem
+        // and process inspection. Cached revisions keep chat and actions
+        // responsive; the executor still rejects stale guards before mutation.
+        let expected_generation = self.snapshot_generation;
+        let expected_project_revision = self.snapshot_project_revision;
+        Ok((
             crate::development::ToolCall {
                 id: format!(
                     "tui-browser-{}",
@@ -2205,19 +2987,24 @@ impl DevTuiState {
                 expected_generation,
                 expected_project_revision,
             },
-        )
+        ))
     }
 
     /// Offer in-TUI recovery whenever a browser tool fails with a launch or
     /// connection error, so a port collision never strands the session.
     pub fn note_browser_failure(&mut self, tool: &str, error: &str) {
+        let lower = error.to_ascii_lowercase();
         if tool.contains("browser")
-            && (error.contains("occupied")
-                || error.contains("attach")
-                || error.contains("connect")
-                || error.contains("launch")
-                || error.contains("timeout"))
+            && (lower.contains("occupied")
+                || lower.contains("attach")
+                || lower.contains("connect")
+                || lower.contains("launch")
+                || lower.contains("timeout")
+                || lower.contains("devtools"))
         {
+            self.browser_target_picker = false;
+            self.browser_target_picker_requested = false;
+            self.surface = DevSurface::App;
             self.browser_recovery = Some(BrowserRecoveryOffer::from_error(
                 error,
                 self.browser_recovery
@@ -2242,23 +3029,34 @@ impl DevTuiState {
             (true, 1) | (false, 0) => (free_local_port().unwrap_or(0), false),
             (true, 2) | (false, 1) => (offer.port, false),
             _ => {
-                self.status = "Recovery dismissed".into();
+                self.status = "Recovery dismissed · project and agent remain available".into();
                 return;
             }
         };
         if port == 0 {
-            self.status = "No free local port was available".into();
+            self.status =
+                "No free local port was available · retry or use an existing browser".into();
             return;
         }
-        let (call, context) = self.tool_request(
+        let (call, context) = match self.tool_request(
             "glass.browser.start",
-            serde_json::json!({"port": port, "attach": attach, "incognito": true}),
+            browser_recovery_arguments(port, attach),
             true,
-        );
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Could not queue recovery: {error}");
+                return;
+            }
+        };
         match worker.submit_tool(call, context) {
             Ok(id) => {
                 self.running_tool_job = Some(id);
-                self.status = format!("Recovering browser on port {port} in background…");
+                self.status = if attach {
+                    format!("Attaching to browser on port {port} in background…")
+                } else {
+                    format!("Recovering browser on port {port} in background…")
+                };
             }
             Err(error) => self.status = format!("Could not queue recovery: {error}"),
         }
@@ -2339,7 +3137,7 @@ fn format_pi_readiness(readiness: &crate::PiReadiness) -> String {
         format!("{state_line}\nprovider {provider} · {session}")
     } else {
         format!(
-            "{state_line}\nprovider {provider} · {session}{remediation}\n\n[E] `agent setup` installs the managed runtime · `agent setup login` authenticates"
+            "{state_line}\nprovider {provider} · {session}{remediation}\n\n[s] `agent setup` repairs the pinned runtime · [u] `agent update` refreshes it · [l] opens Pi `/login`"
         )
     }
 }
@@ -2352,6 +3150,75 @@ fn component_label(component: &crate::pi_runtime::PiReadinessComponent) -> Strin
         crate::pi_runtime::PiReadinessState::Expired => "! expired".into(),
         crate::pi_runtime::PiReadinessState::Unknown => "? unknown".into(),
     }
+}
+
+fn safe_browser_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let sanitized = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .chars()
+        .take(2_048)
+        .collect::<String>();
+    (!sanitized.is_empty()).then_some(sanitized)
+}
+
+fn page_origin(url: &str) -> Option<String> {
+    let url = safe_browser_url(url)?;
+    let scheme_end = url.find("://")?;
+    let authority_start = scheme_end + 3;
+    let authority_end = url[authority_start..]
+        .find('/')
+        .map(|offset| authority_start + offset)
+        .unwrap_or(url.len());
+    Some(url[..authority_end].to_string())
+}
+
+fn pending_agent_approval(
+    agents: Option<&Vec<crate::AgentSnapshot>>,
+) -> Option<PendingAgentApproval> {
+    let agents = agents?;
+    for agent in agents {
+        let mut pending = None;
+        for event in &agent.evidence {
+            match event.get("type").and_then(serde_json::Value::as_str) {
+                Some("glass_tool_approval_request") => {
+                    let Some(frame_id) = event.get("frameId").and_then(serde_json::Value::as_str)
+                    else {
+                        continue;
+                    };
+                    pending = Some(PendingAgentApproval {
+                        agent_id: agent.id.as_str().to_string(),
+                        frame_id: frame_id.to_string(),
+                        tool_name: event
+                            .get("toolName")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unknown tool")
+                            .to_string(),
+                        arguments: event.get("arguments").cloned().unwrap_or_default(),
+                    });
+                }
+                Some("glass_tool_approval_resolved") => {
+                    let frame_id = event.get("frameId").and_then(serde_json::Value::as_str);
+                    if pending
+                        .as_ref()
+                        .is_some_and(|approval| Some(approval.frame_id.as_str()) == frame_id)
+                    {
+                        pending = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if pending.is_some() {
+            return pending;
+        }
+    }
+    None
 }
 
 fn fuzzy_contains(candidate: &str, query: &str) -> bool {
@@ -2374,6 +3241,14 @@ fn fuzzy_contains(candidate: &str, query: &str) -> bool {
         }
     }
     false
+}
+
+fn browser_recovery_arguments(port: u16, attach: bool) -> serde_json::Value {
+    serde_json::json!({
+        "port": port,
+        "attach": attach,
+        "incognito": !attach,
+    })
 }
 
 /// Bind an ephemeral localhost port to discover a free one.
@@ -2399,4 +3274,114 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
         offset += value.len();
     }
     content.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quit_confirmation_requires_explicit_follow_through() {
+        let root = std::env::temp_dir().join(format!("glass-tui-quit-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+
+        state.request_quit();
+        assert!(state.quit_confirmation);
+        assert!(!state.quit);
+        assert_eq!(state.status, "Quit confirmation · Enter exits · Esc stays");
+
+        state.cancel_quit();
+        assert!(!state.quit_confirmation);
+        assert!(!state.quit);
+
+        state.request_quit();
+        state.confirm_quit();
+        assert!(!state.quit_confirmation);
+        assert!(state.quit);
+        assert_eq!(state.status, "Closing Glass Dev");
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn browser_context_url_redaction_preserves_path_only() {
+        assert_eq!(
+            safe_browser_url("https://example.test/orders/7?token=secret#receipt"),
+            Some("https://example.test/orders/7".into())
+        );
+        assert_eq!(
+            page_origin("https://example.test/orders/7?token=secret"),
+            Some("https://example.test".into())
+        );
+        assert_eq!(safe_browser_url(""), None);
+    }
+
+    #[test]
+    fn browser_recovery_offer_explains_port_collision_choices() {
+        let offer = BrowserRecoveryOffer::from_error("address already in use on port 9222", 9222);
+        assert!(!offer.compatible_endpoint);
+        assert_eq!(offer.actions().len(), 3);
+        assert!(offer.guidance().contains("preferred endpoint"));
+
+        let attach =
+            BrowserRecoveryOffer::from_error("DevTools page target is available for attach", 9222);
+        assert!(attach.compatible_endpoint);
+        assert_eq!(attach.actions().len(), 4);
+        assert!(attach.guidance().contains("Attach"));
+    }
+
+    #[test]
+    fn browser_recovery_attach_disables_incognito() {
+        assert_eq!(
+            browser_recovery_arguments(9222, true),
+            serde_json::json!({
+                "port": 9222,
+                "attach": true,
+                "incognito": false,
+            })
+        );
+        assert_eq!(
+            browser_recovery_arguments(42123, false),
+            serde_json::json!({
+                "port": 42123,
+                "attach": false,
+                "incognito": true,
+            })
+        );
+    }
+
+    #[test]
+    fn browser_target_picker_filters_and_redacts_urls() {
+        let root = std::env::temp_dir().join(format!("glass-target-picker-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.browser_workspace.replace_targets(vec![
+            BrowserWorkspaceTarget {
+                id: "page-docs".into(),
+                title: "Project docs".into(),
+                url: "https://example.test/docs?token=secret".into(),
+                selected: false,
+            },
+            BrowserWorkspaceTarget {
+                id: "page-app".into(),
+                title: "Application".into(),
+                url: "http://localhost:3000".into(),
+                selected: false,
+            },
+        ]);
+        state
+            .request_browser_target_picker("docs")
+            .expect("queue target picker");
+        state.queued_tool_request = None;
+        let matches = state.browser_target_matches();
+        assert_eq!(matches, vec![0]);
+        let view = state.browser_target_picker_view();
+        assert!(view.contains("Project docs"));
+        assert!(view.contains("https://example.test/docs"));
+        assert!(!view.contains("token=secret"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
 }

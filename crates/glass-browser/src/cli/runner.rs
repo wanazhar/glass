@@ -2047,6 +2047,26 @@ async fn run_command(
                 .await?,
         )?,
         Commands::Targets => print_json(&session.list_targets().await?)?,
+        Commands::ArchiveTargets { output } => {
+            let targets = session.list_targets().await?;
+            let target_count = targets.len();
+            let archive = target_archive(&targets)?;
+            let bytes = serde_json::to_vec_pretty(&archive)?;
+            if let Some(output) = output {
+                let path = session.policy().require_output_path(output)?;
+                if path.is_dir() {
+                    return Err("target archive output must name a file".into());
+                }
+                tokio::fs::write(&path, &bytes).await?;
+                print_json(&serde_json::json!({
+                    "schemaVersion": "glass.target-archive.v1",
+                    "targetCount": target_count,
+                    "output": path,
+                }))?;
+            } else {
+                print_json(&archive)?;
+            }
+        }
         Commands::NewTarget { url } => print_json(&session.create_target(url).await?)?,
         Commands::SelectTarget { id } => print_json(&session.select_target(id).await?)?,
         Commands::CloseTarget { id } => {
@@ -2434,6 +2454,18 @@ async fn run_prompt(
     Ok(())
 }
 
+const MAX_TARGET_ARCHIVE_BYTES: usize = 64 * 1024;
+
+fn target_archive<T: Serialize>(targets: &[T]) -> BrowserResult<Value> {
+    let archive = serde_json::json!({
+        "schemaVersion": "glass.target-archive.v1",
+        "targets": targets,
+    });
+    if serde_json::to_vec(&archive)?.len() > MAX_TARGET_ARCHIVE_BYTES {
+        return Err("target archive exceeds the 64 KiB output bound".into());
+    }
+    Ok(archive)
+}
 fn print_json_mode<T: Serialize + ?Sized>(value: &T, mode: ResponseMode) -> BrowserResult<()> {
     let value = serde_json::to_value(value)?;
     let projected = project_and_store(value, mode, "cli", default_result_store_path())?;
@@ -2523,6 +2555,23 @@ mod tests {
         assert_eq!(parsed["items"], json!([1, 2]));
         assert!(parsed["contextCost"]["payloadBytes"].as_u64().unwrap() > 0);
         assert!(parsed["contextCost"]["estimatedTokens"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn target_archive_is_versioned_and_bounded() {
+        let archive = target_archive(&[json!({
+            "id": "page-1",
+            "url": "https://example.test/docs",
+            "title": "Docs",
+            "active": true
+        })])
+        .unwrap();
+        assert_eq!(archive["schemaVersion"], "glass.target-archive.v1");
+        assert_eq!(archive["targets"].as_array().unwrap().len(), 1);
+
+        let oversized = vec!["x".repeat(MAX_TARGET_ARCHIVE_BYTES)];
+        let error = target_archive(&oversized).unwrap_err().to_string();
+        assert!(error.contains("64 KiB"));
     }
 
     #[test]

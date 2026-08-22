@@ -40,13 +40,16 @@ does not create another editor, process, task, browser, or agent owner.
 | mouse, paste, focus, resize | processed while their terminal modes are enabled |
 
 The Agent composer creates or addresses the current assistant session without
-requiring an agent ID. The send, steer, follow-up, and abort requests use the
-governed background actor path; the input loop never performs the agent broker
-operation itself. If an App entity is selected, the composer supplies its
-reference and visible revision as bounded context and transfers mutation
-ownership to the agent. Human takeover pauses agent browser mutation until
-reconciliation. If another background job is active, submitting keeps the
-composer draft instead of dropping it.
+requiring an agent ID. `Enter` submits immediately, keeps the composer open,
+and renders the submitted text optimistically while the resident event stream
+adds assistant deltas and tool activity. The send, steer, follow-up, and abort
+requests use the governed background actor path; the input loop never performs
+the agent broker operation itself. If an App entity is selected, the composer
+supplies its reference and visible revision as bounded context and transfers
+mutation ownership to the agent. Human takeover pauses agent browser mutation
+until reconciliation. If another background job is active, submitting keeps
+the composer draft instead of dropping it; transport failures keep the draft
+and expose an edit-and-retry state.
 
 ## Designed projections
 

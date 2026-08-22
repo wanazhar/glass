@@ -206,6 +206,47 @@ pub fn lsp(value: Option<&Value>) -> String {
     first_meaningful(value)
 }
 
+/// Project the bounded browser evidence emitted after an agent tool call.
+pub fn browser_evidence(value: &Value) -> String {
+    let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let tool = value
+        .get("toolName")
+        .and_then(Value::as_str)
+        .unwrap_or("browser tool");
+    let mut lines = vec![format!(
+        "{} {} · browser evidence",
+        if ok { "✓" } else { "×" },
+        tool
+    )];
+    if let Some(title) = value.get("title").and_then(Value::as_str) {
+        lines.push(format!("  page {title}"));
+    }
+    if let Some(url) = value.get("url").and_then(Value::as_str) {
+        let url = url.split(['?', '#']).next().unwrap_or(url);
+        lines.push(format!("  url {url}"));
+    }
+    if let Some(revision) = value
+        .get("browserRevision")
+        .or_else(|| value.get("currentRevision"))
+        .and_then(Value::as_u64)
+    {
+        lines.push(format!("  browser revision {revision}"));
+    }
+    if let Some(target) = value.get("targetId").and_then(Value::as_str) {
+        lines.push(format!("  target {target}"));
+    }
+    if let Some(state) = value.get("workflowState").and_then(Value::as_str) {
+        lines.push(format!("  workflow {state}"));
+    }
+    if let Some(count) = value.get("semanticEntityCount").and_then(Value::as_u64) {
+        lines.push(format!("  semantic entities {count}"));
+    }
+    if let Some(error) = value.get("error").and_then(Value::as_str) {
+        lines.push(format!("  error {}", trimmed_lines(error, 2)));
+    }
+    lines.join("\n")
+}
+
 /// Project browser tool results. Screenshots never inline base64 payloads.
 pub fn browser_result(tool: &str, value: &Value) -> String {
     if tool.contains("screenshot") {
@@ -306,50 +347,273 @@ pub fn trimmed_lines(text: &str, limit: usize) -> String {
 }
 
 pub fn conversation(events: &[crate::AgentEvent]) -> String {
-    events
-        .iter()
-        .filter(|event| !matches!(event.kind.as_str(), "starting" | "ready" | "requestStarted"))
-        .map(agent_event)
+    let mut items = Vec::new();
+    for event in events {
+        match event.kind.as_str() {
+            "starting" | "ready" | "turn_start" | "turn_end" | "message_start"
+            | "agent_settled" => {}
+            "agent_end" => finish_streaming(&mut items),
+            "requestStarted" | "agent_start" => {
+                push_thinking(&mut items);
+            }
+            "message_update" => {
+                if let Some(delta) = message_delta(&event.payload) {
+                    push_assistant_delta(&mut items, delta);
+                }
+            }
+            "message_end" => {
+                if let Some(text) = event_text(event) {
+                    push_assistant_final(&mut items, text);
+                } else {
+                    finish_streaming(&mut items);
+                }
+            }
+            "glass_browser_evidence" => {
+                items.push(ConversationItem::Activity(browser_evidence(&event.payload)));
+            }
+            "glass_tool_rejected" => items.push(ConversationItem::Error(format!(
+                "{} · {}",
+                tool_name(&event.payload),
+                event
+                    .payload
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("turn aborted"),
+            ))),
+            "glass_tool_approval_request" => {
+                items.push(ConversationItem::Activity(format!(
+                    "⚠ {} · approval required · press Y/Enter to allow or N/Esc to deny\n  {}",
+                    tool_name(&event.payload),
+                    event
+                        .payload
+                        .get("arguments")
+                        .map(Value::to_string)
+                        .unwrap_or_else(|| "{}".into())
+                )));
+            }
+            "glass_tool_approval_resolved" => {
+                let approved = event
+                    .payload
+                    .get("approved")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                items.push(ConversationItem::Activity(format!(
+                    "{} {} · approval {}",
+                    if approved { "✓" } else { "×" },
+                    event
+                        .payload
+                        .get("toolName")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool"),
+                    if approved { "granted" } else { "denied" }
+                )));
+            }
+            "tool_execution_start" => {
+                items.push(ConversationItem::Activity(format!(
+                    "→ {} · running",
+                    tool_name(&event.payload)
+                )));
+            }
+            "tool_execution_end" => {
+                items.push(ConversationItem::Activity(format!(
+                    "✓ {} · done",
+                    tool_name(&event.payload)
+                )));
+            }
+            "completed" => {
+                if let Some(text) = event_text(event) {
+                    push_assistant_final(&mut items, text);
+                } else {
+                    items.push(ConversationItem::Activity("✓ done".into()));
+                }
+            }
+            "failed" | "workerPanicked" | "budgetExceeded" => items.push(ConversationItem::Error(
+                event_text(event)
+                    .or_else(|| {
+                        event
+                            .payload
+                            .get("error")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "failed".into()),
+            )),
+            "cancelled" => items.push(ConversationItem::Error("cancelled".into())),
+            "user" => {
+                if let Some(text) = event_text(event) {
+                    items.push(ConversationItem::User(text));
+                }
+            }
+            "response" => {
+                if let Some(text) = event_text(event) {
+                    push_assistant_final(&mut items, text);
+                }
+            }
+            _ => {
+                if let Some(text) = event_text(event) {
+                    push_assistant_final(&mut items, text);
+                } else if !event.payload.is_null() {
+                    items.push(ConversationItem::Activity(format!("· {}", event.kind)));
+                }
+            }
+        }
+    }
+    items
+        .into_iter()
+        .map(render_conversation_item)
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 
-/// Render a single agent event; tool calls collapse to activity rows.
-fn agent_event(event: &crate::AgentEvent) -> String {
-    let text = event
-        .payload
-        .pointer("/message/content")
-        .or_else(|| event.payload.pointer("/result/text"))
-        .or_else(|| event.payload.get("text"))
-        .and_then(serde_json::Value::as_str);
-    if let Some(tool) = event
-        .payload
-        .get("tool")
-        .and_then(serde_json::Value::as_str)
+#[derive(Debug)]
+enum ConversationItem {
+    User(String),
+    Assistant { text: String, streaming: bool },
+    Activity(String),
+    Error(String),
+}
+
+fn render_conversation_item(item: ConversationItem) -> String {
+    match item {
+        ConversationItem::User(text) => format!("YOU\n{}", trimmed_lines(&text, 24)),
+        ConversationItem::Assistant { text, streaming } => {
+            if text.is_empty() {
+                "GLASS AGENT\nThinking…".into()
+            } else if streaming {
+                format!("GLASS AGENT\n{}\n… streaming", trimmed_lines(&text, 24))
+            } else {
+                format!("GLASS AGENT\n{}", trimmed_lines(&text, 24))
+            }
+        }
+        ConversationItem::Activity(text) => text,
+        ConversationItem::Error(text) => format!("× {text}"),
+    }
+}
+
+fn push_thinking(items: &mut Vec<ConversationItem>) {
+    if !matches!(
+        items.last(),
+        Some(ConversationItem::Assistant {
+            streaming: true,
+            ..
+        })
+    ) {
+        items.push(ConversationItem::Assistant {
+            text: String::new(),
+            streaming: true,
+        });
+    }
+}
+
+fn push_assistant_delta(items: &mut Vec<ConversationItem>, delta: String) {
+    if delta.is_empty() {
+        return;
+    }
+    if let Some(ConversationItem::Assistant { text, streaming }) = items.last_mut()
+        && *streaming
     {
-        return format!("→ {tool} · {}", event.kind);
+        text.push_str(&delta);
+        return;
     }
-    match event.kind.as_str() {
-        "completed" => text.map_or_else(
-            || "✓ done".into(),
-            |text| format!("GLASS AGENT\n{}", trimmed_lines(text, 24)),
-        ),
-        "failed" | "workerPanicked" | "budgetExceeded" => format!(
-            "× {}",
-            text.or_else(|| event
-                .payload
-                .get("error")
-                .and_then(serde_json::Value::as_str))
-                .unwrap_or("failed")
-        ),
-        "cancelled" => "× cancelled".into(),
-        "user" => format!("YOU\n{}", text.unwrap_or_default()),
-        _ => match text {
-            Some(text) => format!("GLASS AGENT\n{}", trimmed_lines(text, 24)),
-            None if event.payload.is_null() => String::new(),
-            None => "· activity recorded".into(),
-        },
+    items.push(ConversationItem::Assistant {
+        text: delta,
+        streaming: true,
+    });
+}
+
+fn push_assistant_final(items: &mut Vec<ConversationItem>, text: String) {
+    if text.is_empty() {
+        return;
     }
+    if let Some(ConversationItem::Assistant {
+        text: current,
+        streaming,
+    }) = items.last_mut()
+        && (*streaming || current.is_empty() || current == &text)
+    {
+        current.clone_from(&text);
+        *streaming = false;
+        return;
+    }
+    items.push(ConversationItem::Assistant {
+        text,
+        streaming: false,
+    });
+}
+
+fn finish_streaming(items: &mut [ConversationItem]) {
+    if let Some(ConversationItem::Assistant { streaming, .. }) = items.last_mut() {
+        *streaming = false;
+    }
+}
+
+fn event_text(event: &crate::AgentEvent) -> Option<String> {
+    let pointers = match event.kind.as_str() {
+        "message_update" => &[
+            "/assistantMessageEvent/delta",
+            "/assistantMessageEvent/text",
+            "/delta",
+            "/text",
+        ][..],
+        _ => &[
+            "/message/content",
+            "/message/text",
+            "/result/text",
+            "/result/message/content",
+            "/text",
+            "/content",
+        ][..],
+    };
+    pointers
+        .iter()
+        .filter_map(|pointer| event.payload.pointer(pointer))
+        .find_map(text_value)
+        .filter(|text| !text.is_empty())
+}
+
+fn message_delta(payload: &serde_json::Value) -> Option<String> {
+    if payload
+        .pointer("/assistantMessageEvent/type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| kind != "text_delta")
+    {
+        return None;
+    }
+    ["/assistantMessageEvent/delta", "/delta", "/text"]
+        .iter()
+        .filter_map(|pointer| payload.pointer(pointer))
+        .find_map(text_value)
+        .filter(|text| !text.is_empty())
+}
+
+fn text_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Array(values) => {
+            let text = values.iter().filter_map(text_value).collect::<String>();
+            (!text.is_empty()).then_some(text)
+        }
+        serde_json::Value::Object(map) => ["text", "delta", "content", "message", "result"]
+            .iter()
+            .find_map(|key| map.get(*key).and_then(text_value)),
+        _ => None,
+    }
+}
+
+fn tool_name(payload: &serde_json::Value) -> String {
+    [
+        "/tool",
+        "/toolName",
+        "/tool_name",
+        "/toolCall/name",
+        "/toolCall/toolName",
+        "/name",
+    ]
+    .iter()
+    .filter_map(|pointer| payload.pointer(pointer))
+    .find_map(serde_json::Value::as_str)
+    .unwrap_or("tool")
+    .to_string()
 }
 
 #[cfg(test)]
@@ -373,6 +637,25 @@ mod tests {
         assert!(projected.contains("! executable"));
         assert!(projected.contains("authority trusted-project"));
         assert!(projected.contains("runs `echo unsafe`"));
+    }
+
+    #[test]
+    fn browser_evidence_card_is_bounded_and_revision_aware() {
+        let value = serde_json::json!({
+            "type": "glass_browser_evidence",
+            "toolName": "glass.browser.navigate",
+            "ok": true,
+            "title": "Checkout",
+            "url": "https://example.test/checkout?token=secret#payment",
+            "browserRevision": 42,
+            "targetId": "page-1",
+            "semanticEntityCount": 3,
+        });
+        let projected = browser_evidence(&value);
+        assert!(projected.contains("Checkout"));
+        assert!(projected.contains("browser revision 42"));
+        assert!(projected.contains("https://example.test/checkout"));
+        assert!(!projected.contains("token=secret"));
     }
 
     #[test]
@@ -412,5 +695,116 @@ mod tests {
         assert!(projected.contains("✓ unit · 12 ms · 1 case(s)"));
         assert!(projected.contains("× e2e · 40 ms · 0 case(s)"));
         assert!(projected.contains("→ watch running"));
+    }
+    #[test]
+    fn conversation_renders_user_messages_and_coalesces_streaming_text() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = |sequence: u64, kind: &str, payload: serde_json::Value| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: kind.into(),
+            payload,
+        };
+        let events = vec![
+            event(1, "user", serde_json::json!({"text": "fix the login bug"})),
+            event(2, "requestStarted", serde_json::json!("request-1")),
+            event(
+                3,
+                "message_update",
+                serde_json::json!({
+                    "assistantMessageEvent": {
+                        "type": "text_delta",
+                        "delta": "I will inspect "
+                    }
+                }),
+            ),
+            event(
+                4,
+                "message_update",
+                serde_json::json!({
+                    "assistantMessageEvent": {
+                        "type": "text_delta",
+                        "delta": "the failing path."
+                    }
+                }),
+            ),
+            event(
+                5,
+                "message_end",
+                serde_json::json!({
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "I will inspect the failing path."}]
+                    }
+                }),
+            ),
+            event(6, "agent_end", serde_json::json!({})),
+        ];
+        let projected = conversation(&events);
+        assert!(projected.contains("YOU\nfix the login bug"));
+        assert!(projected.contains("GLASS AGENT\nI will inspect the failing path."));
+        assert!(!projected.contains("request-1"));
+        assert!(!projected.contains("agent_end"));
+        assert!(!projected.contains("… streaming"));
+    }
+
+    #[test]
+    fn conversation_renders_agent_tool_approval_as_a_decision_card() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = crate::AgentEvent {
+            sequence: 1,
+            agent_id,
+            timestamp_ms: 0,
+            kind: "glass_tool_approval_request".into(),
+            payload: serde_json::json!({
+                "type": "glass_tool_approval_request",
+                "toolName": "glass.browser.act",
+                "arguments": {"action": "click", "target": "e12"}
+            }),
+        };
+        let projected = conversation(&[event]);
+        assert!(projected.contains("approval required"));
+        assert!(projected.contains("glass.browser.act"));
+        assert!(projected.contains("Y/Enter"));
+    }
+
+    #[test]
+    fn conversation_renders_rejected_tool_with_recovery_reason() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = crate::AgentEvent {
+            sequence: 1,
+            agent_id,
+            timestamp_ms: 0,
+            kind: "glass_tool_rejected".into(),
+            payload: serde_json::json!({
+                "toolName": "glass.fs.list",
+                "reason": "turn aborted instead of retrying",
+            }),
+        };
+        let projected = conversation(&[event]);
+        assert!(projected.contains("glass.fs.list"));
+        assert!(projected.contains("turn aborted instead of retrying"));
+    }
+
+    #[test]
+    fn conversation_renders_browser_evidence_as_an_activity_card() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = crate::AgentEvent {
+            sequence: 1,
+            agent_id,
+            timestamp_ms: 0,
+            kind: "glass_browser_evidence".into(),
+            payload: serde_json::json!({
+                "type": "glass_browser_evidence",
+                "toolName": "glass.browser.observe",
+                "ok": true,
+                "title": "Dashboard",
+                "browserRevision": 9,
+            }),
+        };
+        let projected = conversation(&[event]);
+        assert!(projected.contains("glass.browser.observe"));
+        assert!(projected.contains("browser revision 9"));
     }
 }

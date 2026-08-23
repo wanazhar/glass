@@ -6,6 +6,7 @@ mod projection;
 pub mod render;
 mod snapshot;
 pub mod state;
+mod syntax;
 
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,

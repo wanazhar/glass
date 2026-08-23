@@ -1,3 +1,4 @@
+use super::syntax::SyntaxHighlighter;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use std::collections::BTreeMap;
@@ -123,13 +124,18 @@ pub(crate) fn render_editor(path: &str, content: &str) -> Text<'static> {
         return Text::from(lines);
     }
     let mut current_kind = fallback_kind;
+    let mut highlighter = SyntaxHighlighter::for_path(path);
     let mut lines = Vec::new();
     let mut saw_editor_header = false;
     let mut markdown_fence = None;
+    let mut markdown_highlighter = None;
 
     for line in content.lines() {
         if let Some(header_path) = editor_header_path(line) {
             current_kind = classify(header_path);
+            highlighter = SyntaxHighlighter::for_path(header_path);
+            markdown_fence = None;
+            markdown_highlighter = None;
             saw_editor_header = true;
             lines.push(Line::from(vec![
                 Span::styled("▎ ", Style::default().fg(ACCENT)),
@@ -155,6 +161,8 @@ pub(crate) fn render_editor(path: &str, content: &str) -> Text<'static> {
                 current_kind,
                 source,
                 &mut markdown_fence,
+                &mut markdown_highlighter,
+                &mut highlighter,
             ));
             lines.push(Line::from(rendered));
         } else if line.trim().is_empty() {
@@ -164,12 +172,16 @@ pub(crate) fn render_editor(path: &str, content: &str) -> Text<'static> {
                 current_kind,
                 line,
                 &mut markdown_fence,
+                &mut markdown_highlighter,
+                &mut highlighter,
             )));
         } else {
             lines.push(Line::from(editor_source_spans(
                 fallback_kind,
                 line,
                 &mut markdown_fence,
+                &mut markdown_highlighter,
+                &mut highlighter,
             )));
         }
     }
@@ -204,12 +216,27 @@ fn editor_source_spans(
     kind: FileKind,
     line: &str,
     markdown_fence: &mut Option<FileKind>,
+    markdown_highlighter: &mut Option<SyntaxHighlighter>,
+    highlighter: &mut SyntaxHighlighter,
 ) -> Vec<Span<'static>> {
     match kind {
-        FileKind::Markdown => render_markdown_line(line, markdown_fence).spans,
+        FileKind::Markdown => {
+            render_markdown_line(line, markdown_fence, markdown_highlighter).spans
+        }
         FileKind::Mermaid => render_mermaid_source_line(line).spans,
-        _ => source_line_spans(kind, line, None),
+        _ => highlight_or_manual(highlighter, kind, line, None),
     }
+}
+
+fn highlight_or_manual(
+    highlighter: &mut SyntaxHighlighter,
+    kind: FileKind,
+    line: &str,
+    background: Option<Color>,
+) -> Vec<Span<'static>> {
+    highlighter
+        .highlight(line, background)
+        .unwrap_or_else(|| source_line_spans(kind, line, background))
 }
 
 pub(crate) fn render_source(path: &str, content: &str) -> Text<'static> {
@@ -221,12 +248,16 @@ pub(crate) fn render_source(path: &str, content: &str) -> Text<'static> {
     }
 
     let mut lines = Vec::new();
+    let mut highlighter = SyntaxHighlighter::for_path(path);
     let mut markdown_fence = None;
+    let mut markdown_highlighter = None;
     for line in content.lines() {
         let rendered = match kind {
-            FileKind::Markdown => render_markdown_line(line, &mut markdown_fence),
+            FileKind::Markdown => {
+                render_markdown_line(line, &mut markdown_fence, &mut markdown_highlighter)
+            }
             FileKind::Mermaid => render_mermaid_source_line(line),
-            _ => Line::from(source_line_spans(kind, line, None)),
+            _ => Line::from(highlight_or_manual(&mut highlighter, kind, line, None)),
         };
         lines.push(rendered);
     }
@@ -240,11 +271,12 @@ pub(crate) fn render_diff(path: &str, content: &str) -> Text<'static> {
     let mut old_line = 0u32;
     let mut new_line = 0u32;
     let mut active_path = path.to_string();
+    let mut highlighter = SyntaxHighlighter::for_path(path);
     let mut lines = Vec::new();
-
     for line in content.lines() {
         if let Some(header_path) = diff_file_path(line) {
             active_path = header_path;
+            highlighter = SyntaxHighlighter::for_path(&active_path);
         }
         if line.starts_with("@@") {
             old_line = diff_hunk_start(line, '-').unwrap_or(0);
@@ -313,7 +345,8 @@ pub(crate) fn render_diff(path: &str, content: &str) -> Text<'static> {
                     .add_modifier(Modifier::BOLD),
             ),
         ];
-        rendered.extend(source_line_spans(
+        rendered.extend(highlight_or_manual(
+            &mut highlighter,
             classify(&active_path),
             body,
             Some(background),
@@ -359,6 +392,9 @@ fn diff_hunk_start(line: &str, marker: char) -> Option<u32> {
 }
 
 fn source_line_spans(kind: FileKind, line: &str, background: Option<Color>) -> Vec<Span<'static>> {
+    if kind == FileKind::Plain {
+        return vec![span(line.to_string(), TEXT, background, Modifier::empty())];
+    }
     let chars = line.chars().collect::<Vec<_>>();
     let mut spans = Vec::new();
     let mut index = 0;
@@ -792,11 +828,16 @@ fn is_keyword(kind: FileKind, token: &str) -> bool {
         .any(|keyword| keyword.eq_ignore_ascii_case(token))
 }
 
-fn render_markdown_line(line: &str, fence: &mut Option<FileKind>) -> Line<'static> {
+fn render_markdown_line(
+    line: &str,
+    fence: &mut Option<FileKind>,
+    fence_highlighter: &mut Option<SyntaxHighlighter>,
+) -> Line<'static> {
     let trimmed = line.trim_start();
     if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
         if fence.is_some() {
             *fence = None;
+            *fence_highlighter = None;
         } else {
             let language = trimmed
                 .trim_start_matches(['`', '~'])
@@ -804,6 +845,7 @@ fn render_markdown_line(line: &str, fence: &mut Option<FileKind>) -> Line<'stati
                 .next()
                 .unwrap_or_default();
             *fence = Some(classify(language));
+            *fence_highlighter = Some(SyntaxHighlighter::for_token(language));
         }
         return Line::from(Span::styled(
             line.to_string(),
@@ -811,6 +853,9 @@ fn render_markdown_line(line: &str, fence: &mut Option<FileKind>) -> Line<'stati
         ));
     }
     if let Some(kind) = *fence {
+        if let Some(highlighter) = fence_highlighter.as_mut() {
+            return Line::from(highlight_or_manual(highlighter, kind, line, None));
+        }
         return Line::from(source_line_spans(kind, line, None));
     }
     if trimmed.starts_with('#') {
@@ -1139,6 +1184,32 @@ mod tests {
         assert_eq!(classify("README.md"), FileKind::Markdown);
         assert_eq!(classify("docs/architecture.mmd"), FileKind::Mermaid);
         assert_eq!(classify("config/unknown.data"), FileKind::Plain);
+    }
+    #[test]
+    fn renders_path_selected_syntax_for_common_ecosystems() {
+        let fixtures = [
+            ("web/app.tsx", "const answer = 42;"),
+            ("service.swift", "let answer = 42"),
+            ("android/MainActivity.kt", "val answer = 42"),
+            ("tools/build.dart", "final answer = 42;"),
+            ("infra/Dockerfile", "FROM alpine\nRUN echo ok"),
+        ];
+        for (path, source) in fixtures {
+            let rendered = render_source(path, source);
+            assert_eq!(symbols(rendered.clone()), source, "{path} content changed");
+            assert!(
+                rendered.lines.iter().any(|line| line.spans.len() > 1),
+                "{path} did not receive token-level styling"
+            );
+        }
+    }
+    #[test]
+    fn unknown_format_keeps_plain_text_fallback() {
+        let source = "opaque syntax { still visible: true }";
+        let rendered = render_source("notes/example.unknown-glass-format", source);
+        assert_eq!(symbols(rendered.clone()), source);
+        assert_eq!(rendered.lines.len(), 1);
+        assert_eq!(rendered.lines[0].spans.len(), 1);
     }
 
     #[test]

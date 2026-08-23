@@ -144,7 +144,7 @@ impl BrowserTui {
             mode: WorkspaceMode::Browser,
             command: String::new(),
             status: "Ready · structured observation is the default".into(),
-            page: "No browser session. Enter `navigate https://example.com`.".into(),
+            page: "No browser session.\n\nSTART HERE\n  [l] launch a local browser on a free port\n  [a] attach an existing Chrome on a DevTools port\n  [n] enter an address to navigate\n  [?] show the command reference".into(),
             session: None,
             workspace: BrowserWorkspaceController::for_adapter(
                 BrowserWorkspaceLayout::Desktop,
@@ -260,18 +260,19 @@ impl BrowserTui {
                 .state()
                 .targets
                 .iter()
-                .map(|target| {
+                .enumerate()
+                .map(|(index, target)| {
                     format!(
-                        "{} {} · {}\n  {}",
+                        "[{}] {} {} · {}\n  {}",
+                        index + 1,
                         if target.selected { "◆" } else { "○" },
-                        target.id,
                         target.title,
-                        target.url
+                        target.url,
+                        target.id
                     )
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            self.status = format!("{} bounded targets", self.workspace.state().targets.len());
             return Ok(false);
         }
         if let Some(target_id) = command.strip_prefix("select ") {
@@ -486,7 +487,7 @@ impl BrowserTui {
                 headed: cli.headed,
                 interaction_mode: cli.interaction,
                 audit: cli.audit,
-                policy: None,
+                policy: Some(crate::cli::runner::policy_from_cli(cli)?),
             };
             self.session = Some(BrowserSession::start(&options).await?);
             self.workspace
@@ -779,7 +780,32 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                     }
                     KeyCode::Esc => {
                         app.command.clear();
-                        let _ = app.workspace.reduce(BrowserWorkspaceIntent::CloseOverlay);
+                        if app.mode != WorkspaceMode::Browser {
+                            app.mode = WorkspaceMode::Browser;
+                            app.status = "Browser view restored".into();
+                        } else {
+                            let _ = app.workspace.reduce(BrowserWorkspaceIntent::CloseOverlay);
+                        }
+                    }
+                    KeyCode::Char('?') if app.command.is_empty() => {
+                        app.mode = WorkspaceMode::Help;
+                        app.status = "Browser TUI command reference · Esc returns".into();
+                    }
+                    KeyCode::Char('l') if app.command.is_empty() => {
+                        app.command = "launch auto".into();
+                        match app.submit(cli).await {
+                            Ok(true) | Ok(false) => {}
+                            Err(error) => {
+                                app.workspace.disconnected(error.to_string(), true);
+                                app.status = format!(
+                                    "Launch failed: {error} · press l to retry or a to attach"
+                                );
+                            }
+                        }
+                    }
+                    KeyCode::Char('a') if app.command.is_empty() => {
+                        app.command = "attach ".into();
+                        app.status = "Attach entry · type a DevTools port · Enter connects".into();
                     }
                     KeyCode::Char('n') if app.command.is_empty() => {
                         app.command = "navigate ".into();
@@ -933,7 +959,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &BrowserTui) {
         rows[0],
     );
     let content = if app.mode == WorkspaceMode::Help {
-        "navigate URL  start/navigate browser\nobserve       structured accessibility evidence\nsemantic      structured semantic view\ntargets       bounded page targets\nselect ID     change target and invalidate evidence\nstate         connection/revision status\nreconnect     recover in place\nattach PORT   attach verified DevTools\nlaunch auto   recover on a free port\nlaunch PORT   recover on an explicit port\nstop          stop browser, keep workspace\nscreenshot    explicit frame capture\nlive on|off   continuous pixels (Herdr or ANSI per policy)\nworkflow list|run FILE|pause|resume FILE|cancel|verify\nquit          close owned browser and exit"
+        "START HERE\n[l] launch auto · [a] attach PORT · [n] navigate URL · [t] type text\n[j/k] select semantic target · Enter activate · Esc return\n\nCOMMANDS\nnavigate URL  start/navigate browser\nobserve       structured accessibility evidence\nsemantic      structured semantic view\ntargets       bounded page targets\nselect ID     change target and invalidate evidence\nstate         connection/revision status\nreconnect     recover in place\nattach PORT   attach verified DevTools\nlaunch auto   recover on a free port\nlaunch PORT   recover on an explicit port\nstop          stop browser, keep workspace\nscreenshot    explicit frame capture\nlive on|off   continuous pixels (Herdr or ANSI per policy)\nworkflow list|run FILE|pause|resume FILE|cancel|verify\nquit          close owned browser and exit"
     } else {
         app.page.as_str()
     };
@@ -1015,15 +1041,15 @@ fn semantic_text(workspace: &BrowserWorkspaceController) -> String {
         .take(32)
         .map(|(index, entity)| {
             format!(
-                "{} {} · {} · {}",
+                "[{}] {} {} · {}",
+                index + 1,
                 if Some(index) == state.selected_entity {
                     "◆"
                 } else {
                     "○"
                 },
                 entity.name,
-                entity.role,
-                entity.reference
+                entity.role
             )
         })
         .collect::<Vec<_>>()
@@ -1109,6 +1135,30 @@ mod tests {
         assert!(app.session.is_none());
         assert_eq!(app.mode, WorkspaceMode::Browser);
         assert!(!app.visual.live);
+    }
+
+    #[test]
+    fn browser_tui_welcome_shows_launch_attach_and_navigation_actions() {
+        let app = BrowserTui::new(&test_cli(&[], TuiLiveMode::Off));
+        assert!(app.page.contains("[l] launch a local browser"));
+        assert!(app.page.contains("[a] attach an existing Chrome"));
+        assert!(app.page.contains("[n] enter an address"));
+    }
+
+    #[test]
+    fn semantic_entities_use_compact_local_refs_for_humans() {
+        let mut app = BrowserTui::new(&test_cli(&[], TuiLiveMode::Off));
+        app.workspace.replace_entities(
+            7,
+            vec![BrowserWorkspaceEntity {
+                reference: "r7:b42".into(),
+                role: "button".into(),
+                name: "Save".into(),
+                actionable: true,
+                revision: 7,
+            }],
+        );
+        assert_eq!(semantic_text(&app.workspace), "[1] ◆ Save · button");
     }
 
     #[test]

@@ -581,6 +581,12 @@ impl DevelopmentWorkspace {
         router.execute(self, call, context)
     }
 
+    /// Return task-loop state while allowing the scheduler to refresh its
+    /// agent-backed transitions.
+    pub fn task_snapshots(&mut self) -> DevelopmentResult<Vec<TaskSnapshot>> {
+        self.tasks.list(&mut self.agents)
+    }
+
     /// Advance the generation after replacing resident service ownership.
     pub fn advance_generation(&mut self) -> DevelopmentResult<u64> {
         self.generation = self.generation.checked_add(1).ok_or_else(|| {

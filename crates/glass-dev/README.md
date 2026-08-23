@@ -1,9 +1,10 @@
 # glass-dev
 
-`glass-dev` installs `glass` and `glass-browser`, the full terminal-native Glass environment. It
-combines the browser control plane from `glass-browser` with a bounded project
-runtime, Ratatui development workspace, local agent harness, MCP server, and
-phone-oriented remote cockpit.
+`glass-dev` installs `glass` and `glass-browser`, the full terminal-native Glass
+coding environment. The coding workspace is the primary surface: it combines a
+bounded project runtime, Ratatui editor, local agent harness, MCP server, PTYs,
+tests, diagnostics, Git diff, and a phone-oriented remote cockpit. The browser
+control plane is an integrated optional app surface for UI work and verification.
 
 Use `glass-browser` instead when you need only the browser CLI or reusable Rust
 library.
@@ -42,7 +43,7 @@ cd /path/to/project
 glass
 ```
 
-Desktop mode exposes browser and Development workspaces. The Development view
+Desktop mode opens the Development coding workspace by default. The workspace
 owns a bounded file tree, native editor, PTY processes, diagnostics, actors,
 timeline, source/runtime graph, diff, replay, and optional Pi/Neovim adapters.
 
@@ -92,6 +93,13 @@ start, logs, input, and health actions. Browser start from the TUI is headed
 and persistent by default so existing authenticated profiles remain usable;
 use `:browser start --incognito --headless` for a disposable automation
 session.
+
+The Agent surface also owns the task loop: use `:task list` to inspect work,
+`:task create TITLE PROMPT` to queue a verified task, and `:task resume TASK_ID`
+to continue a paused task. From `More`, `:cockpit start` opens a tokenized
+loopback-only URL for remote inspection of the same workspace; `:cockpit stop`
+closes it with the TUI. On `Git`, `:github review` is read-only and
+`:github ship TITLE` is confirmation-gated.
 
 If Chrome is already running or its preferred CDP port is occupied, Glass
 keeps the TUI alive and shows attach, automatic-port, and retry choices. The

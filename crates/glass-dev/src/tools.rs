@@ -482,6 +482,17 @@ impl DevelopmentToolRouter {
                 "nodes":workspace.intelligence().nodes().collect::<Vec<_>>(),
                 "edges":workspace.intelligence().edges().collect::<Vec<_>>()
             })),
+            "glass.github.review" => Ok(serde_json::to_value(crate::github::review(
+                workspace.root(),
+            )?)?),
+            "glass.github.ship" => {
+                let request: crate::github::GitHubShipRequest =
+                    serde_json::from_value(call.arguments.clone())?;
+                Ok(serde_json::to_value(crate::github::ship(
+                    workspace.root(),
+                    &request,
+                )?)?)
+            }
             "glass.git.status" => git_value(workspace.git(), |git| git.status()),
             "glass.git.diff" => git_value(workspace.git(), |git| {
                 git.diff(
@@ -1096,6 +1107,13 @@ impl DevelopmentToolRouter {
             "glass.agent.clone-session" => {
                 agent_request(workspace, call, PiSessionRequest::CloneSession)
             }
+            "glass.agent.rewind" => agent_request(
+                workspace,
+                call,
+                PiSessionRequest::Rewind {
+                    entry_id: string("entryId")?.into(),
+                },
+            ),
             "glass.agent.fork" => agent_request(
                 workspace,
                 call,
@@ -1110,6 +1128,8 @@ impl DevelopmentToolRouter {
                     path: string("path")?.into(),
                 },
             ),
+            "glass.agent.sessions" => agent_request(workspace, call, PiSessionRequest::ListSessions),
+            "glass.agent.tree" => agent_request(workspace, call, PiSessionRequest::Tree),
             "glass.agent.messages" => agent_request(workspace, call, PiSessionRequest::Messages),
             "glass.agent.entries" => agent_request(
                 workspace,
@@ -1371,8 +1391,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
     const READ: &[&str] = &[
         "glass.process.list",
         "glass.process.logs",
+        "glass.github.review",
         "glass.git.status",
-        "glass.git.diff",
         "glass.git.branches",
         "glass.git.blame",
         "glass.git.conflicts",
@@ -1408,19 +1428,17 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.lsp.range_formatting",
         "glass.lsp.semantic_tokens",
         "glass.lsp.rename",
-        "glass.debug.stack",
-        "glass.debug.threads",
-        "glass.debug.scopes",
-        "glass.debug.variables",
-        "glass.debug.evaluate",
-        "glass.debug.events",
-        "glass.debug.inspect",
-        "glass.debug.processes",
-        "glass.graph.source",
         "glass.agent.list",
+        "glass.agent.sessions",
+        "glass.agent.tree",
         "glass.agent.messages",
         "glass.agent.entries",
         "glass.agent.stats",
+        "glass.debug.events",
+        "glass.debug.inspect",
+        "glass.debug.processes",
+        "glass.debug.threads",
+        "glass.graph.source",
         "glass.task.list",
         "glass.task.get",
         "glass.task.inspect",
@@ -1461,8 +1479,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.daemon.start",
         "glass.daemon.stop",
         "glass.project.attach",
+        "glass.github.ship",
         "glass.git.stage",
-        "glass.git.unstage",
         "glass.git.discard",
         "glass.git.push",
         "glass.git.commit",
@@ -1511,6 +1529,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.thinking",
         "glass.agent.new-session",
         "glass.agent.clone-session",
+        "glass.agent.rewind",
         "glass.agent.fork",
         "glass.agent.switch-session",
         "glass.agent.name",
@@ -1575,6 +1594,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.file.search"
             | "glass.file.grep"
             | "glass.file.find"
+            | "glass.github.review"
             | "glass.git.status"
             | "glass.git.diff"
             | "glass.git.branches"
@@ -1600,6 +1620,12 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.browser.remote-view.status"
             | "glass.browser.remote-view.revoke"
             | "glass.agent.setup"
+            | "glass.agent.list"
+            | "glass.agent.sessions"
+            | "glass.agent.tree"
+            | "glass.agent.messages"
+            | "glass.agent.entries"
+            | "glass.agent.stats"
             | "glass.graph.source"
             | "glass.agent.hello"
             | "glass.agent.models"
@@ -2542,6 +2568,8 @@ mod tests {
             "glass.process.list",
             "glass.process.logs",
             "glass.process.start",
+            "glass.github.review",
+            "glass.github.ship",
             "glass.process.stop",
             "glass.process.restart",
             "glass.browser.observe",
@@ -2593,8 +2621,11 @@ mod tests {
             "glass.agent.thinking",
             "glass.agent.new-session",
             "glass.agent.clone-session",
+            "glass.agent.rewind",
             "glass.agent.fork",
             "glass.agent.switch-session",
+            "glass.agent.sessions",
+            "glass.agent.tree",
             "glass.agent.messages",
             "glass.agent.entries",
             "glass.agent.stats",

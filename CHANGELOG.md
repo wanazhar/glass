@@ -5,6 +5,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Reframed the Glass Dev TUI and embedded Pi prompt around a coding workspace:
+  the Agent landing surface now presents repository changes, checks, and the
+  optional browser app view alongside the conversation. Browser automation
+  remains an explicit UI-work surface instead of the product's default.
+
 ## [0.3.12] - 2026-08-22
 
 ### Changed

@@ -118,7 +118,7 @@ impl DevSurface {
         Self::More,
     ];
 
-    pub const PRIMARY: [Self; 7] = [
+    pub const PRIMARY: [Self; 8] = [
         Self::Agent,
         Self::Code,
         Self::App,
@@ -126,6 +126,7 @@ impl DevSurface {
         Self::Tasks,
         Self::Git,
         Self::Debug,
+        Self::More,
     ];
 
     pub const PHONE: [Self; 5] = [Self::Agent, Self::Code, Self::App, Self::Tasks, Self::More];
@@ -223,9 +224,13 @@ pub struct DevTuiState {
     pub focused_editor_line: u32,
     pub agents: String,
     pub agent_readiness: String,
+    pub harnesses: String,
     /// Set by an in-TUI login action; the event loop temporarily hands the
     /// terminal to Pi so `/login` can receive interactive input.
     pub agent_login_requested: bool,
+    /// Set by a palette action; the event loop hands the terminal to the
+    /// selected external harness and resumes Glass after it exits.
+    pub harness_launch_requested: Option<String>,
     pub agent_conversation: String,
     pub tasks: String,
     pub editor: String,
@@ -235,6 +240,11 @@ pub struct DevTuiState {
     pub lsp: String,
     pub processes: String,
     pub git: String,
+    pub git_entries: Vec<crate::git::GitStatusEntry>,
+    pub github: crate::github::GitHubStatus,
+    pub github_review: String,
+    pub selected_git_file: usize,
+    pub git_diff_path: Option<String>,
     pub git_diff: String,
     pub git_diff_open: bool,
     pub git_diff_requested: bool,
@@ -258,6 +268,8 @@ pub struct DevTuiState {
     pub workspace_status: String,
     pub experiment_comparison: Option<ExperimentComparison>,
     pub experiments: String,
+    pub cockpit_url: String,
+    pub private_cockpit: Option<crate::development::LocalCockpit>,
 }
 
 impl DevTuiState {
@@ -378,14 +390,17 @@ impl DevTuiState {
             status: if trust_prompt {
                 "Trust required · I inspect · O untrusted · 1 once · T project".into()
             } else {
-                "Ready · a launch · : routes · ? help".into()
+                "Ready · describe a coding task · a actions · : commands · ? help".into()
             },
             agents: String::new(),
             agent_readiness: crate::pi_runtime::pi_readiness()
                 .map(|readiness| format_pi_readiness(&readiness))
                 .unwrap_or_else(|error| format!("Agent unavailable · {error}")),
+            harnesses: crate::harness::summary(),
             agent_login_requested: false,
-            agent_conversation: "No conversation yet. Press i to compose a message.".into(),
+            harness_launch_requested: None,
+            agent_conversation:
+                "No conversation yet. Press Enter or start typing to compose a message.".into(),
             tasks: String::new(),
             editor: String::new(),
             files: Vec::new(),
@@ -394,6 +409,11 @@ impl DevTuiState {
             lsp: String::new(),
             processes: String::new(),
             git: String::new(),
+            git_entries: Vec::new(),
+            github: crate::github::GitHubStatus::default(),
+            github_review: "No GitHub review yet".into(),
+            selected_git_file: 0,
+            git_diff_path: None,
             git_diff: String::new(),
             git_diff_open: false,
             git_diff_requested: false,
@@ -424,6 +444,8 @@ impl DevTuiState {
             workspace_status: String::new(),
             experiment_comparison: None,
             experiments: "No experiments. :experiment create ID BRANCH [PORT]".into(),
+            cockpit_url: String::new(),
+            private_cockpit: None,
         };
         if initial_refresh {
             state.refresh();
@@ -488,13 +510,42 @@ impl DevTuiState {
         self.menu_open = true;
         self.menu_selection = 0;
         self.status = format!(
-            "Command center · {} launchers first · : searches all routes · Enter runs",
+            "Command center · {} · ↑↓ move · Enter run · Esc close",
             self.surface.label()
         );
     }
 
     pub fn close_menu(&mut self) {
         self.menu_open = false;
+    }
+
+    pub fn start_private_cockpit(&mut self) -> Result<String, String> {
+        if let Some(cockpit) = self.private_cockpit.as_ref() {
+            return Ok(cockpit.local_url());
+        }
+        let cockpit = crate::development::LocalCockpit::start(self.workspace.clone())
+            .map_err(|error| error.to_string())?;
+        let url = cockpit.local_url();
+        self.cockpit_url = url.clone();
+        self.private_cockpit = Some(cockpit);
+        self.status = format!("Private cockpit ready · {url}");
+        Ok(url)
+    }
+
+    pub fn stop_private_cockpit(&mut self) {
+        if self.private_cockpit.take().is_some() {
+            self.cockpit_url.clear();
+            self.status = "Private cockpit stopped".into();
+        } else {
+            self.status = "Private cockpit is not running".into();
+        }
+    }
+
+    pub fn private_cockpit_status(&self) -> String {
+        self.private_cockpit
+            .as_ref()
+            .map(|cockpit| format!("running · {}", cockpit.local_url()))
+            .unwrap_or_else(|| "not running · use `cockpit start`".into())
     }
 
     /// Run the selected command-center launcher. Keyboard hints apply
@@ -894,11 +945,84 @@ impl DevTuiState {
             }
         });
     }
+    /// Start the shortest in-TUI path to a usable agent conversation.
+    pub fn start_agent_interaction(&mut self) {
+        if self.snapshot_trust_label == "untrusted" {
+            self.surface = DevSurface::Trust;
+            self.status = "Trust this workspace before starting the Glass Agent · T or 1".into();
+            return;
+        }
+        match crate::pi_runtime::pi_readiness() {
+            Ok(readiness) if readiness.ready => self.open_composer(),
+            Ok(readiness)
+                if readiness.node.state != crate::pi_runtime::PiReadinessState::Ready
+                    || readiness.sdk.state != crate::pi_runtime::PiReadinessState::Ready =>
+            {
+                self.request_agent_setup();
+            }
+            Ok(_) => {
+                let _ = self.request_agent_login();
+            }
+            Err(error) => {
+                self.status = format!("Pi readiness unavailable · press s to set up: {error}");
+            }
+        }
+    }
+
+    /// Select a resident agent without forcing the user through the command
+    /// palette. The selected agent becomes the target for follow-up and
+    /// session-control actions.
+    pub fn cycle_agent_selection(&mut self, delta: i32) {
+        let agents = match self.workspace.try_lock() {
+            Ok(mut workspace) => match workspace.agents().list() {
+                Ok(agents) => agents,
+                Err(error) => {
+                    self.status = format!("Agent list unavailable: {error}");
+                    return;
+                }
+            },
+            Err(error) => {
+                self.status = format!("Agent list unavailable: {error}");
+                return;
+            }
+        };
+        if agents.is_empty() {
+            self.selected_agent = None;
+            self.status = "No resident agents · Enter starts the Glass Agent".into();
+            return;
+        }
+        let current = self
+            .selected_agent
+            .as_ref()
+            .and_then(|selected| agents.iter().position(|agent| &agent.id == selected))
+            .unwrap_or(0);
+        let next = if delta.is_negative() {
+            (current + agents.len() - (delta.unsigned_abs() as usize % agents.len())) % agents.len()
+        } else {
+            (current + (delta as usize % agents.len())) % agents.len()
+        };
+        let selected = agents[next].id.clone();
+        self.selected_agent = Some(selected.clone());
+        self.status = format!(
+            "Selected {} · Enter chats · ]/[ switches agent",
+            selected.as_str()
+        );
+    }
 
     pub fn open_composer(&mut self) {
         self.composer_mode = true;
         self.composer_cursor = self.composer_input.len();
         self.status = "Agent composer · Enter sends · draft stays open · Esc cancels".into();
+    }
+
+    /// Prepare an editable review prompt using the current workspace evidence.
+    pub fn prepare_review_prompt(&mut self) {
+        self.composer_input = "Review the current workspace changes. Inspect the Git diff, changed files, diagnostics, and latest test results. Report concrete correctness, security, regression, and missing-test risks. Do not edit files until I approve a fix.".into();
+        self.composer_cursor = self.composer_input.len();
+        self.composer_steer = false;
+        self.open_composer();
+        self.status =
+            "Review prompt ready · edit it, then press Enter to ask the Glass Agent".into();
     }
 
     pub fn toggle_composer_steer(&mut self) {
@@ -1334,23 +1458,32 @@ impl DevTuiState {
                         self.browser_observe_pending = true;
                     }
                 } else if result.tool == "glass.git.diff" {
-                    self.git_diff = value
-                        .as_str()
-                        .filter(|diff| !diff.trim().is_empty())
-                        .unwrap_or("Working tree clean · no diff to show")
-                        .to_string();
+                    let empty = value.as_str().is_none_or(|diff| diff.trim().is_empty());
+                    self.git_diff = if empty {
+                        self.git_diff_path
+                            .as_deref()
+                            .map(|path| format!("{path}\n\nNo tracked diff for this file."))
+                            .unwrap_or_else(|| "Working tree clean · no diff to show".into())
+                    } else {
+                        value.as_str().unwrap_or_default().to_string()
+                    };
                     self.git_diff_open = true;
-                    self.status = "Git diff · PgUp/PgDn scroll · Esc closes".into();
+                    self.status = self
+                        .git_diff_path
+                        .as_deref()
+                        .map(|path| format!("Git diff · {path} · PgUp/PgDn scroll · Esc closes"))
+                        .unwrap_or_else(|| "Git diff · PgUp/PgDn scroll · Esc closes".into());
                 } else if result.tool == "glass.agent.setup" {
                     match self.refresh_agent_readiness() {
                         Ok(true) => {
+                            self.open_composer();
                             self.status =
-                                "Pi runtime ready · press l to sign in if no provider is selected"
-                                    .into();
+                                "Pi runtime ready · type a prompt, then press Enter".into();
                         }
                         Ok(false) => {
                             self.status =
-                                "Pi runtime installed · press l to sign in, then i to chat".into();
+                                "Pi runtime installed · press l to sign in, then Enter to chat"
+                                    .into();
                         }
                         Err(error) => self.status = format!("Pi readiness check failed: {error}"),
                     }
@@ -1366,6 +1499,28 @@ impl DevTuiState {
                     } else {
                         self.status = "Sent · Glass Agent is thinking…".into();
                     }
+                } else if result.tool == "glass.github.review" {
+                    match serde_json::from_value::<crate::github::GitHubReview>(value) {
+                        Ok(review) => {
+                            self.github = crate::github::GitHubStatus {
+                                repository: review.repository.clone(),
+                                availability: review.availability,
+                            };
+                            self.github_review = review.display();
+                            self.surface = DevSurface::Git;
+                            self.status = "GitHub review refreshed".into();
+                        }
+                        Err(error) => {
+                            self.status = format!("GitHub review response invalid: {error}");
+                        }
+                    }
+                } else if result.tool == "glass.github.ship" {
+                    self.surface = DevSurface::Git;
+                    self.status = value
+                        .get("url")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|url| format!("Pull request created · {url}"))
+                        .unwrap_or_else(|| "Pull request created · review GitHub status".into());
                 } else if result.tool.starts_with("glass.lsp") {
                     self.editor = if result.tool == "glass.lsp.diagnostics" {
                         super::projection::lsp(Some(&value))
@@ -1375,7 +1530,11 @@ impl DevTuiState {
                 }
                 if !matches!(
                     result.tool.as_str(),
-                    "glass.agent.send" | "glass.agent.setup" | "glass.git.diff"
+                    "glass.agent.send"
+                        | "glass.agent.setup"
+                        | "glass.git.diff"
+                        | "glass.github.review"
+                        | "glass.github.ship"
                 ) {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
@@ -1449,6 +1608,24 @@ impl DevTuiState {
             }
         }
 
+        // Agent text wins over legacy single-letter surface aliases. The
+        // event loop already consumes global shortcuts (a, s, l, :, etc.);
+        // digits remain the explicit phone/desktop surface shortcuts.
+        if self.surface == DevSurface::Agent
+            && self.snapshot_trust_label != "untrusted"
+            && !character.is_ascii_digit()
+        {
+            if self.agent_readiness.starts_with("✓ Ready") {
+                self.open_composer();
+            } else {
+                self.start_agent_interaction();
+            }
+            if self.composer_mode {
+                self.insert_composer_text(&character.to_string());
+            }
+            return;
+        }
+
         if self.responsive_class(self.terminal_width, self.terminal_height)
             == ResponsiveClass::Phone
         {
@@ -1462,7 +1639,7 @@ impl DevTuiState {
             };
             if let Some(surface) = surface {
                 self.surface = surface;
-                self.status = format!("{} · a launcher · : routes", surface.label());
+                self.status = format!("{} selected · Enter open", surface.label());
                 return;
             }
         }
@@ -1479,7 +1656,10 @@ impl DevTuiState {
         };
         if let Some(surface) = surface {
             self.surface = surface;
-            self.status = format!("{} · a launcher · : routes", surface.label());
+            self.status = format!("{} selected · Enter open", surface.label());
+        } else if self.surface == DevSurface::Agent && self.snapshot_trust_label != "untrusted" {
+            self.open_composer();
+            self.insert_composer_text(&character.to_string());
         }
     }
     /// Queue the project-detected development command without making users
@@ -1546,6 +1726,7 @@ impl DevTuiState {
             .position(|surface| *surface == self.surface)
             .unwrap_or(0);
         self.surface = surfaces[(index + 1) % surfaces.len()];
+        self.status = format!("{} selected · Enter open", self.surface.label());
     }
 
     pub fn scroll_surface(&mut self, delta: i32) {
@@ -1597,6 +1778,23 @@ impl DevTuiState {
             .clamp(0, self.files.len().saturating_sub(1) as i32)
             as usize;
     }
+    pub fn move_git_selection(&mut self, delta: i32) {
+        if self.git_entries.is_empty() {
+            self.selected_git_file = 0;
+            self.status = "No changed files selected".into();
+            return;
+        }
+        self.selected_git_file = (self.selected_git_file as i32 + delta)
+            .clamp(0, self.git_entries.len().saturating_sub(1) as i32)
+            as usize;
+        if let Some(entry) = self.git_entries.get(self.selected_git_file) {
+            self.status = format!("{} · Enter diff", entry.path);
+        }
+    }
+
+    pub fn selected_git_entry(&self) -> Option<&crate::git::GitStatusEntry> {
+        self.git_entries.get(self.selected_git_file)
+    }
 
     pub fn open_selected_file(&mut self) {
         let Some(path) = self.files.get(self.selected_file).cloned() else {
@@ -1622,20 +1820,50 @@ impl DevTuiState {
             self.status = "Git diff waits for the current background operation".into();
             return;
         }
-        let (call, context) =
-            match self.tool_request("glass.git.diff", serde_json::json!({}), false) {
-                Ok(request) => request,
-                Err(error) => {
-                    self.status = format!("Git diff unavailable: {error}");
-                    return;
-                }
-            };
+        let selected = self.selected_git_entry().map(|entry| {
+            (
+                entry.path.clone(),
+                entry.untracked,
+                entry.index_status,
+                entry.worktree_status,
+            )
+        });
+        if let Some((path, true, _, _)) = selected.as_ref() {
+            self.git_diff_path = Some(path.clone());
+            self.git_diff = format!(
+                "{path}\n\nUntracked file · Git has no tracked diff yet.\nUse Enter on Code to inspect the file."
+            );
+            self.git_diff_open = true;
+            self.surface_scroll.insert(DevSurface::Git, 0);
+            self.status = format!("{path} is untracked · no Git diff to show");
+            return;
+        }
+        let staged = selected
+            .as_ref()
+            .is_some_and(|(_, _, index, worktree)| *index != ' ' && *worktree == ' ');
+        let mut arguments = serde_json::json!({"staged": staged});
+        if let Some((path, _, _, _)) = selected.as_ref() {
+            arguments["path"] = serde_json::Value::String(path.clone());
+        }
+        let (call, context) = match self.tool_request("glass.git.diff", arguments, false) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Git diff unavailable: {error}");
+                return;
+            }
+        };
         match worker.submit_tool(call, context) {
             Ok(id) => {
                 self.running_tool_job = Some(id);
+                self.git_diff_path = selected.map(|(path, _, _, _)| path);
                 self.git_diff_open = true;
+                self.surface_scroll.insert(DevSurface::Git, 0);
                 self.git_diff = "Loading Git diff…".into();
-                self.status = "Loading Git diff in background…".into();
+                self.status = self
+                    .git_diff_path
+                    .as_deref()
+                    .map(|path| format!("Loading diff for {path} in background…"))
+                    .unwrap_or_else(|| "Loading full worktree diff in background…".into());
             }
             Err(error) => self.status = format!("Git diff unavailable: {error}"),
         }
@@ -1652,14 +1880,18 @@ impl DevTuiState {
                 .diff(false, None)
                 .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))
         });
+        self.git_diff_path = None;
         match diff {
             Ok(diff) if diff.trim().is_empty() => {
                 self.git_diff = "Working tree clean · no diff to show".into();
                 self.git_diff_open = true;
+                self.surface_scroll.insert(DevSurface::Git, 0);
+                self.status = "Git diff · no changes".into();
             }
             Ok(diff) => {
                 self.git_diff = diff;
                 self.git_diff_open = true;
+                self.surface_scroll.insert(DevSurface::Git, 0);
                 self.status = "Git diff · PgUp/PgDn scroll · Esc closes".into();
             }
             Err(error) => self.status = format!("Git diff unavailable: {error}"),
@@ -1669,7 +1901,9 @@ impl DevTuiState {
     pub fn close_git_diff(&mut self) {
         self.git_diff_open = false;
         self.git_diff_requested = false;
-        self.status = "Git status".into();
+        self.git_diff_path = None;
+        self.surface_scroll.insert(DevSurface::Git, 0);
+        self.status = "Git status · select a file with ↑/↓".into();
     }
 
     pub fn focused_buffer(&self) -> Option<crate::development::EditorBuffer> {
@@ -1930,6 +2164,7 @@ impl DevTuiState {
             .position(|surface| *surface == self.surface)
             .unwrap_or(0);
         self.surface = surfaces[(index + surfaces.len() - 1) % surfaces.len()];
+        self.status = format!("{} selected · Enter open", self.surface.label());
     }
 
     /// Apply one background snapshot without touching UI-only fields.
@@ -1958,14 +2193,27 @@ impl DevTuiState {
                 .disconnected("browser endpoint crashed".to_string(), true);
             self.status = "Browser endpoint crashed · recovery choices below".into();
         }
+        self.harnesses = snapshot.harnesses.clone();
         self.agents = snapshot.agents.clone();
         self.agent_conversation = snapshot.agent_conversation.clone();
         self.reconcile_pending_chat();
         self.tasks = snapshot.tasks.clone();
-        self.editor = snapshot.editor.clone();
+        if !snapshot.editor.is_empty() {
+            self.editor = snapshot.editor.clone();
+        }
         self.lsp = snapshot.lsp.clone();
         self.processes = snapshot.processes.clone();
         self.git = snapshot.git.clone();
+        self.git_entries = snapshot.git_entries.clone();
+        self.github = snapshot.github.clone();
+        self.github_review = snapshot.github_review.clone();
+        if self.git_entries.is_empty() {
+            self.selected_git_file = 0;
+        } else {
+            self.selected_git_file = self
+                .selected_git_file
+                .min(self.git_entries.len().saturating_sub(1));
+        }
         self.tests = snapshot.tests.clone();
         self.kernels = snapshot.kernels.clone();
         self.debugger = snapshot.debugger.clone();
@@ -1995,6 +2243,7 @@ impl DevTuiState {
     }
 
     pub fn refresh(&mut self) {
+        self.harnesses = crate::harness::summary();
         let Ok(mut workspace) = self.workspace.try_lock() else {
             self.status = "Workspace lock failed".into();
             return;
@@ -2053,7 +2302,7 @@ impl DevTuiState {
         };
         self.agent_conversation = match workspace.agents().history(0) {
             Ok(events) if events.is_empty() => {
-                "No conversation yet. Press i to compose a message.".into()
+                "No conversation yet. Press Enter or start typing to compose a message.".into()
             }
             Ok(events) => super::projection::conversation(
                 &events
@@ -2212,43 +2461,56 @@ impl DevTuiState {
                 format!("● {} · {} recent events", servers.join(" · "), event_count)
             }
         };
-        self.git = workspace
-            .git()
-            .map(|git| match git.status() {
-                Ok(status) => {
-                    let header = format!(
-                        "branch {} · ↑{} ↓{} · upstream {}",
-                        status.branch.as_deref().unwrap_or("detached"),
-                        status.ahead,
-                        status.behind,
-                        status.upstream.as_deref().unwrap_or("none")
-                    );
-                    let entries = status
-                        .entries
-                        .iter()
-                        .map(|entry| {
-                            format!(
-                                "{}{} {}{}",
-                                if entry.untracked { "?" } else { "●" },
-                                if status.conflicts.contains(&entry.path) {
-                                    "!"
-                                } else {
-                                    " "
-                                },
-                                entry.index_status,
-                                entry.path
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    if entries.is_empty() {
-                        format!("{header}\n✓ working tree clean")
-                    } else {
-                        format!("{header}\n{}", entries.join("\n"))
-                    }
+        let git_status = workspace.git().map(|git| git.status());
+        self.git = match git_status {
+            Some(Ok(status)) => {
+                self.git_entries = status.entries.clone();
+                let header = format!(
+                    "branch {} · ↑{} ↓{} · upstream {}",
+                    status.branch.as_deref().unwrap_or("detached"),
+                    status.ahead,
+                    status.behind,
+                    status.upstream.as_deref().unwrap_or("none")
+                );
+                let entries = status
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        format!(
+                            "{}{} {}{}",
+                            if entry.untracked { "?" } else { "●" },
+                            if status.conflicts.contains(&entry.path) {
+                                "!"
+                            } else {
+                                " "
+                            },
+                            entry.index_status,
+                            entry.path
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if entries.is_empty() {
+                    format!("{header}\n✓ working tree clean")
+                } else {
+                    format!("{header}\n{}", entries.join("\n"))
                 }
-                Err(error) => format!("Git state failed: {error}"),
-            })
-            .unwrap_or_else(|| "Not a Git repository".into());
+            }
+            Some(Err(error)) => {
+                self.git_entries.clear();
+                format!("Git state failed: {error}")
+            }
+            None => {
+                self.git_entries.clear();
+                "Not a Git repository".into()
+            }
+        };
+        if self.git_entries.is_empty() {
+            self.selected_git_file = 0;
+        } else {
+            self.selected_git_file = self
+                .selected_git_file
+                .min(self.git_entries.len().saturating_sub(1));
+        }
         let _ = workspace.tests_mut().poll();
         let test_runs = workspace
             .tests()
@@ -3382,6 +3644,54 @@ mod tests {
         assert!(view.contains("Project docs"));
         assert!(view.contains("https://example.test/docs"));
         assert!(!view.contains("token=secret"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+    #[test]
+    fn agent_typing_opens_composer_before_surface_aliases() {
+        let root = std::env::temp_dir().join(format!("glass-agent-compose-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.surface = DevSurface::Agent;
+        state.snapshot_trust_label = "trusted".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.2 · auth ✓".into();
+
+        state.handle_printable('c');
+
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "c");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn arrow_surface_cycle_matches_layout_order() {
+        let root =
+            std::env::temp_dir().join(format!("glass-surface-arrows-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut desktop =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open desktop workspace");
+        desktop.surface = DevSurface::Agent;
+        desktop.next_surface();
+        assert_eq!(desktop.surface, DevSurface::Code);
+        assert!(desktop.status.contains("Enter open"));
+        desktop.previous_surface();
+        assert_eq!(desktop.surface, DevSurface::Agent);
+        desktop.surface = DevSurface::Debug;
+        desktop.next_surface();
+        assert_eq!(desktop.surface, DevSurface::More);
+        desktop.next_surface();
+        assert_eq!(desktop.surface, DevSurface::Agent);
+
+        let mut phone =
+            DevTuiState::open_for_tui(&root, TuiLayout::Mobile).expect("open phone workspace");
+        phone.surface = DevSurface::Agent;
+        phone.previous_surface();
+        assert_eq!(phone.surface, DevSurface::More);
+        assert!(phone.status.contains("Enter open"));
+        phone.next_surface();
+        assert_eq!(phone.surface, DevSurface::Agent);
+
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 }

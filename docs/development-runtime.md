@@ -295,6 +295,15 @@ It supports prompt, steer, follow-up, model discovery/selection, thinking
 level, abort, resume, clone, fork, compaction, and history. Pi is not required
 for project or browser use.
 
+The TUI Agent surface keeps this path in one terminal: `Enter` or `i` opens
+the resident Pi composer, `s`/`u` queue runtime setup or update, and `l` hands
+the terminal to Pi for interactive provider login. `review` pre-fills an
+evidence-aware review prompt without editing files. `harness list` discovers
+fixed external coding-harness binaries on `PATH`; `harness start NAME` hands
+the terminal to one installed harness and resumes Glass after it exits. The
+handoff never interpolates a user-supplied shell command and remains behind
+workspace trust.
+
 Glass loads the release-pinned SDK through private length-prefixed IPC, with
 built-in tools, ambient extensions, skills, prompt templates, themes, and
 context-file discovery disabled. The embedded

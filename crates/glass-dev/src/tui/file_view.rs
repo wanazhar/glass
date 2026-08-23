@@ -1,0 +1,1204 @@
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use std::collections::BTreeMap;
+
+const TEXT: Color = Color::Rgb(230, 237, 243);
+const MUTED: Color = Color::Rgb(139, 148, 158);
+const ACCENT: Color = Color::Rgb(88, 166, 255);
+const ACCENT_BRIGHT: Color = Color::Rgb(121, 192, 255);
+const SUCCESS: Color = Color::Rgb(126, 231, 135);
+const WARNING: Color = Color::Rgb(210, 153, 34);
+const ERROR: Color = Color::Rgb(255, 123, 114);
+const PURPLE: Color = Color::Rgb(210, 168, 255);
+const PANEL_INSET: Color = Color::Rgb(13, 17, 23);
+const ACTIVE_BACKGROUND: Color = Color::Rgb(31, 50, 72);
+const DIFF_ADD: Color = Color::Rgb(20, 64, 39);
+const DIFF_REMOVE: Color = Color::Rgb(75, 32, 32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileKind {
+    Rust,
+    JavaScript,
+    TypeScript,
+    Python,
+    Go,
+    Java,
+    CLike,
+    Shell,
+    Json,
+    Toml,
+    Yaml,
+    Markdown,
+    Mermaid,
+    Html,
+    Css,
+    Sql,
+    Plain,
+}
+
+pub(crate) fn classify(path: &str) -> FileKind {
+    let lower = path.to_ascii_lowercase();
+    if let Some(kind) = match lower.as_str() {
+        "rust" | "rs" => Some(FileKind::Rust),
+        "javascript" | "js" => Some(FileKind::JavaScript),
+        "typescript" | "ts" => Some(FileKind::TypeScript),
+        "python" | "py" => Some(FileKind::Python),
+        "golang" | "go" => Some(FileKind::Go),
+        "shell" | "bash" | "sh" => Some(FileKind::Shell),
+        "json" => Some(FileKind::Json),
+        "toml" => Some(FileKind::Toml),
+        "yaml" | "yml" => Some(FileKind::Yaml),
+        "markdown" | "md" => Some(FileKind::Markdown),
+        "mermaid" | "mmd" => Some(FileKind::Mermaid),
+        "html" => Some(FileKind::Html),
+        "css" => Some(FileKind::Css),
+        "sql" => Some(FileKind::Sql),
+        _ => None,
+    } {
+        return kind;
+    }
+    let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    if file_name == "dockerfile" || file_name.starts_with("dockerfile.") {
+        return FileKind::Shell;
+    }
+    if file_name == "makefile" || file_name == "justfile" {
+        return FileKind::Shell;
+    }
+    if file_name == "cargo.toml" || file_name == "pyproject.toml" {
+        return FileKind::Toml;
+    }
+    if file_name == "readme" || file_name.starts_with("readme.") {
+        return FileKind::Markdown;
+    }
+    let extension = lower.rsplit('.').next().unwrap_or_default();
+    match extension {
+        "rs" => FileKind::Rust,
+        "js" | "jsx" | "mjs" | "cjs" => FileKind::JavaScript,
+        "ts" | "tsx" | "mts" | "cts" => FileKind::TypeScript,
+        "py" | "pyw" => FileKind::Python,
+        "go" => FileKind::Go,
+        "java" | "kt" | "kts" | "scala" => FileKind::Java,
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" => FileKind::CLike,
+        "sh" | "bash" | "zsh" | "fish" | "ps1" => FileKind::Shell,
+        "json" | "jsonc" | "json5" => FileKind::Json,
+        "toml" => FileKind::Toml,
+        "yaml" | "yml" => FileKind::Yaml,
+        "md" | "markdown" | "mdx" => FileKind::Markdown,
+        "mmd" | "mermaid" => FileKind::Mermaid,
+        "html" | "htm" | "xml" | "svg" => FileKind::Html,
+        "css" | "scss" | "less" => FileKind::Css,
+        "sql" => FileKind::Sql,
+        _ => FileKind::Plain,
+    }
+}
+
+pub(crate) fn render_editor(path: &str, content: &str) -> Text<'static> {
+    if !content
+        .lines()
+        .any(|line| editor_header_path(line).is_some())
+    {
+        return render_source(path, content);
+    }
+    let fallback_kind = classify(path);
+    if fallback_kind == FileKind::Mermaid
+        && let Some(source) = editor_source_for_path(path, content)
+        && let Some(diagram) = render_mermaid(&source)
+    {
+        let mut lines = Vec::with_capacity(diagram.len() + 1);
+        if let Some(header) = content
+            .lines()
+            .find(|line| editor_header_path(line) == Some(path))
+        {
+            lines.push(Line::from(vec![
+                Span::styled("▎ ", Style::default().fg(ACCENT)),
+                Span::styled(
+                    header.to_string(),
+                    Style::default()
+                        .fg(ACCENT_BRIGHT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
+        lines.extend(diagram);
+        return Text::from(lines);
+    }
+    let mut current_kind = fallback_kind;
+    let mut lines = Vec::new();
+    let mut saw_editor_header = false;
+    let mut markdown_fence = None;
+
+    for line in content.lines() {
+        if let Some(header_path) = editor_header_path(line) {
+            current_kind = classify(header_path);
+            saw_editor_header = true;
+            lines.push(Line::from(vec![
+                Span::styled("▎ ", Style::default().fg(ACCENT)),
+                Span::styled(
+                    line.to_string(),
+                    Style::default()
+                        .fg(ACCENT_BRIGHT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            continue;
+        }
+        if let Some((gutter, source)) = line.split_once(" │ ") {
+            let mut rendered = vec![Span::styled(
+                format!("{gutter} │ "),
+                Style::default().fg(if gutter.trim_start().starts_with('▶') {
+                    SUCCESS
+                } else {
+                    MUTED
+                }),
+            )];
+            rendered.extend(editor_source_spans(
+                current_kind,
+                source,
+                &mut markdown_fence,
+            ));
+            lines.push(Line::from(rendered));
+        } else if line.trim().is_empty() {
+            lines.push(Line::default());
+        } else if saw_editor_header {
+            lines.push(Line::from(editor_source_spans(
+                current_kind,
+                line,
+                &mut markdown_fence,
+            )));
+        } else {
+            lines.push(Line::from(editor_source_spans(
+                fallback_kind,
+                line,
+                &mut markdown_fence,
+            )));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No file open · choose a file from the list",
+            Style::default().fg(MUTED),
+        )));
+    }
+    Text::from(lines)
+}
+
+fn editor_source_for_path(path: &str, content: &str) -> Option<String> {
+    let mut current_path = None;
+    let mut source = Vec::new();
+    for line in content.lines() {
+        if let Some(header_path) = editor_header_path(line) {
+            current_path = Some(header_path);
+            continue;
+        }
+        if current_path == Some(path)
+            && let Some((_, line)) = line.split_once(" │ ")
+        {
+            source.push(line);
+        }
+    }
+    (!source.is_empty()).then(|| source.join("\n"))
+}
+
+fn editor_source_spans(
+    kind: FileKind,
+    line: &str,
+    markdown_fence: &mut Option<FileKind>,
+) -> Vec<Span<'static>> {
+    match kind {
+        FileKind::Markdown => render_markdown_line(line, markdown_fence).spans,
+        FileKind::Mermaid => render_mermaid_source_line(line).spans,
+        _ => source_line_spans(kind, line, None),
+    }
+}
+
+pub(crate) fn render_source(path: &str, content: &str) -> Text<'static> {
+    let kind = classify(path);
+    if kind == FileKind::Mermaid
+        && let Some(diagram) = render_mermaid(content)
+    {
+        return Text::from(diagram);
+    }
+
+    let mut lines = Vec::new();
+    let mut markdown_fence = None;
+    for line in content.lines() {
+        let rendered = match kind {
+            FileKind::Markdown => render_markdown_line(line, &mut markdown_fence),
+            FileKind::Mermaid => render_mermaid_source_line(line),
+            _ => Line::from(source_line_spans(kind, line, None)),
+        };
+        lines.push(rendered);
+    }
+    if lines.is_empty() {
+        lines.push(Line::default());
+    }
+    Text::from(lines)
+}
+
+pub(crate) fn render_diff(path: &str, content: &str) -> Text<'static> {
+    let mut old_line = 0u32;
+    let mut new_line = 0u32;
+    let mut active_path = path.to_string();
+    let mut lines = Vec::new();
+
+    for line in content.lines() {
+        if let Some(header_path) = diff_file_path(line) {
+            active_path = header_path;
+        }
+        if line.starts_with("@@") {
+            old_line = diff_hunk_start(line, '-').unwrap_or(0);
+            new_line = diff_hunk_start(line, '+').unwrap_or(0);
+            lines.push(Line::from(Span::styled(
+                format!("        {line}"),
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .bg(ACTIVE_BACKGROUND)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            continue;
+        }
+
+        let (gutter, marker, body, background, marker_color) =
+            if line.starts_with('+') && !line.starts_with("+++") {
+                let number = format!("     {new_line:>4} ");
+                new_line = new_line.saturating_add(1);
+                (
+                    number,
+                    "+",
+                    line.strip_prefix('+').unwrap_or_default(),
+                    DIFF_ADD,
+                    SUCCESS,
+                )
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                let number = format!("{old_line:>4}      ");
+                old_line = old_line.saturating_add(1);
+                (
+                    number,
+                    "-",
+                    line.strip_prefix('-').unwrap_or_default(),
+                    DIFF_REMOVE,
+                    ERROR,
+                )
+            } else if line.starts_with(' ') {
+                let number = format!("{old_line:>4} {new_line:>4} ");
+                old_line = old_line.saturating_add(1);
+                new_line = new_line.saturating_add(1);
+                (
+                    number,
+                    " ",
+                    line.strip_prefix(' ').unwrap_or_default(),
+                    PANEL_INSET,
+                    MUTED,
+                )
+            } else {
+                lines.push(Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(if line.starts_with("diff ") {
+                        ACCENT_BRIGHT
+                    } else {
+                        MUTED
+                    }),
+                )));
+                continue;
+            };
+
+        let mut rendered = vec![
+            Span::styled(gutter, Style::default().fg(MUTED).bg(background)),
+            Span::styled(
+                marker,
+                Style::default()
+                    .fg(marker_color)
+                    .bg(background)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+        rendered.extend(source_line_spans(
+            classify(&active_path),
+            body,
+            Some(background),
+        ));
+        lines.push(Line::from(rendered));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No diff",
+            Style::default().fg(MUTED),
+        )));
+    }
+    Text::from(lines)
+}
+
+fn editor_header_path(line: &str) -> Option<&str> {
+    let line = line
+        .strip_prefix("● ")
+        .or_else(|| line.strip_prefix("○ "))?;
+    let end = line.find(" · cursor ")?;
+    Some(&line[..end])
+}
+
+fn diff_file_path(line: &str) -> Option<String> {
+    let raw = line
+        .strip_prefix("+++ ")
+        .or_else(|| line.strip_prefix("--- "))?;
+    if raw == "/dev/null" {
+        return None;
+    }
+    Some(
+        raw.strip_prefix("a/")
+            .or_else(|| raw.strip_prefix("b/"))
+            .unwrap_or(raw)
+            .to_string(),
+    )
+}
+
+fn diff_hunk_start(line: &str, marker: char) -> Option<u32> {
+    let offset = line.find(marker)? + 1;
+    line[offset..].split([',', ' ', '@']).next()?.parse().ok()
+}
+
+fn source_line_spans(kind: FileKind, line: &str, background: Option<Color>) -> Vec<Span<'static>> {
+    let chars = line.chars().collect::<Vec<_>>();
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if let Some(end) = comment_end(kind, &chars, index) {
+            spans.push(span(
+                chars[index..end].iter().collect::<String>(),
+                MUTED,
+                background,
+                Modifier::ITALIC,
+            ));
+            index = end;
+            continue;
+        }
+        let character = chars[index];
+        if matches!(character, '\'' | '"' | '`') {
+            let quote = character;
+            let mut end = index + 1;
+            let mut escaped = false;
+            while end < chars.len() {
+                let current = chars[end];
+                if escaped {
+                    escaped = false;
+                } else if current == '\\' {
+                    escaped = true;
+                } else if current == quote {
+                    end += 1;
+                    break;
+                }
+                end += 1;
+            }
+            spans.push(span(
+                chars[index..end].iter().collect::<String>(),
+                SUCCESS,
+                background,
+                Modifier::empty(),
+            ));
+            index = end;
+            continue;
+        }
+        if character.is_ascii_digit()
+            && (index == 0 || !is_identifier_char(chars[index.saturating_sub(1)]))
+        {
+            let mut end = index + 1;
+            while end < chars.len()
+                && (chars[end].is_ascii_alphanumeric() || matches!(chars[end], '.' | '_'))
+            {
+                end += 1;
+            }
+            spans.push(span(
+                chars[index..end].iter().collect::<String>(),
+                PURPLE,
+                background,
+                Modifier::empty(),
+            ));
+            index = end;
+            continue;
+        }
+        if is_identifier_start(character) {
+            let mut end = index + 1;
+            while end < chars.len() && is_identifier_char(chars[end]) {
+                end += 1;
+            }
+            let token = chars[index..end].iter().collect::<String>();
+            let color = if is_keyword(kind, &token) {
+                ACCENT_BRIGHT
+            } else {
+                TEXT
+            };
+            let modifier = if is_keyword(kind, &token) {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            };
+            spans.push(span(token, color, background, modifier));
+            index = end;
+            continue;
+        }
+        if is_punctuation(character) {
+            spans.push(span(
+                character.to_string(),
+                ACCENT,
+                background,
+                Modifier::empty(),
+            ));
+            index += 1;
+            continue;
+        }
+
+        let mut end = index + 1;
+        while end < chars.len()
+            && !is_identifier_start(chars[end])
+            && !chars[end].is_ascii_digit()
+            && !matches!(chars[end], '\'' | '"' | '`')
+            && !is_punctuation(chars[end])
+            && comment_end(kind, &chars, end).is_none()
+        {
+            end += 1;
+        }
+        spans.push(span(
+            chars[index..end].iter().collect::<String>(),
+            TEXT,
+            background,
+            Modifier::empty(),
+        ));
+        index = end;
+    }
+    if spans.is_empty() {
+        spans.push(span(String::new(), TEXT, background, Modifier::empty()));
+    }
+    spans
+}
+
+fn span(
+    text: String,
+    foreground: Color,
+    background: Option<Color>,
+    modifier: Modifier,
+) -> Span<'static> {
+    let mut style = Style::default().fg(foreground).add_modifier(modifier);
+    if let Some(background) = background {
+        style = style.bg(background);
+    }
+    Span::styled(text, style)
+}
+
+fn is_identifier_start(character: char) -> bool {
+    character.is_ascii_alphabetic() || character == '_'
+}
+
+fn is_identifier_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
+}
+
+fn is_punctuation(character: char) -> bool {
+    matches!(
+        character,
+        '{' | '}'
+            | '['
+            | ']'
+            | '('
+            | ')'
+            | '<'
+            | '>'
+            | ':'
+            | ';'
+            | ','
+            | '.'
+            | '='
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '!'
+            | '?'
+            | '|'
+            | '&'
+            | '@'
+    )
+}
+
+fn comment_end(kind: FileKind, chars: &[char], index: usize) -> Option<usize> {
+    let slash_comment = matches!(
+        kind,
+        FileKind::Rust
+            | FileKind::JavaScript
+            | FileKind::TypeScript
+            | FileKind::Go
+            | FileKind::Java
+            | FileKind::CLike
+            | FileKind::Css
+            | FileKind::Json
+    ) && starts_with(chars, index, &['/', '/']);
+    let hash_comment = matches!(
+        kind,
+        FileKind::Python | FileKind::Shell | FileKind::Toml | FileKind::Yaml
+    ) && chars.get(index) == Some(&'#');
+    let sql_comment = kind == FileKind::Sql && starts_with(chars, index, &['-', '-']);
+    let block_comment = matches!(
+        kind,
+        FileKind::Rust
+            | FileKind::JavaScript
+            | FileKind::TypeScript
+            | FileKind::Go
+            | FileKind::Java
+            | FileKind::CLike
+            | FileKind::Css
+    ) && starts_with(chars, index, &['/', '*']);
+    if slash_comment || hash_comment || sql_comment || block_comment {
+        Some(chars.len())
+    } else {
+        None
+    }
+}
+
+fn starts_with(chars: &[char], index: usize, expected: &[char]) -> bool {
+    chars.get(index..index.saturating_add(expected.len())) == Some(expected)
+}
+
+fn is_keyword(kind: FileKind, token: &str) -> bool {
+    let keywords: &[&str] = match kind {
+        FileKind::Rust => &[
+            "as", "async", "await", "const", "crate", "else", "enum", "fn", "for", "if", "impl",
+            "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self",
+            "Self", "static", "struct", "trait", "type", "unsafe", "use", "where", "while", "dyn",
+            "true", "false",
+        ],
+        FileKind::JavaScript | FileKind::TypeScript => &[
+            "as",
+            "async",
+            "await",
+            "break",
+            "case",
+            "catch",
+            "class",
+            "const",
+            "continue",
+            "debugger",
+            "default",
+            "delete",
+            "else",
+            "export",
+            "extends",
+            "false",
+            "finally",
+            "for",
+            "from",
+            "function",
+            "if",
+            "import",
+            "in",
+            "instanceof",
+            "let",
+            "new",
+            "null",
+            "of",
+            "return",
+            "static",
+            "switch",
+            "this",
+            "throw",
+            "true",
+            "try",
+            "typeof",
+            "undefined",
+            "var",
+            "void",
+            "while",
+            "with",
+            "yield",
+            "interface",
+            "type",
+        ],
+        FileKind::Python => &[
+            "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
+            "elif", "else", "False", "finally", "for", "from", "global", "if", "import", "in",
+            "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
+            "try", "while", "with", "yield",
+        ],
+        FileKind::Go => &[
+            "break",
+            "case",
+            "chan",
+            "const",
+            "continue",
+            "default",
+            "defer",
+            "else",
+            "fallthrough",
+            "for",
+            "func",
+            "go",
+            "goto",
+            "if",
+            "import",
+            "interface",
+            "map",
+            "package",
+            "range",
+            "return",
+            "select",
+            "struct",
+            "switch",
+            "type",
+            "var",
+            "true",
+            "false",
+            "nil",
+        ],
+        FileKind::Java => &[
+            "abstract",
+            "boolean",
+            "break",
+            "case",
+            "catch",
+            "class",
+            "const",
+            "continue",
+            "default",
+            "do",
+            "else",
+            "enum",
+            "extends",
+            "final",
+            "finally",
+            "for",
+            "if",
+            "implements",
+            "import",
+            "instanceof",
+            "interface",
+            "native",
+            "new",
+            "null",
+            "package",
+            "private",
+            "protected",
+            "public",
+            "return",
+            "static",
+            "super",
+            "switch",
+            "this",
+            "throw",
+            "throws",
+            "transient",
+            "try",
+            "void",
+            "volatile",
+            "while",
+            "true",
+            "false",
+        ],
+        FileKind::CLike => &[
+            "auto",
+            "bool",
+            "break",
+            "case",
+            "catch",
+            "class",
+            "const",
+            "continue",
+            "default",
+            "delete",
+            "do",
+            "else",
+            "enum",
+            "extern",
+            "false",
+            "for",
+            "if",
+            "include",
+            "inline",
+            "namespace",
+            "new",
+            "nullptr",
+            "private",
+            "protected",
+            "public",
+            "return",
+            "sizeof",
+            "static",
+            "struct",
+            "switch",
+            "template",
+            "this",
+            "throw",
+            "true",
+            "try",
+            "typedef",
+            "typename",
+            "using",
+            "virtual",
+            "void",
+            "volatile",
+            "while",
+        ],
+        FileKind::Shell => &[
+            "case", "do", "done", "elif", "else", "esac", "export", "fi", "for", "function", "if",
+            "in", "local", "readonly", "select", "then", "time", "until", "while",
+        ],
+        FileKind::Json | FileKind::Toml | FileKind::Yaml => &["true", "false", "null"],
+        FileKind::Sql => &[
+            "alter",
+            "and",
+            "as",
+            "begin",
+            "by",
+            "case",
+            "create",
+            "delete",
+            "distinct",
+            "drop",
+            "else",
+            "end",
+            "from",
+            "group",
+            "having",
+            "insert",
+            "into",
+            "join",
+            "left",
+            "limit",
+            "not",
+            "null",
+            "on",
+            "or",
+            "order",
+            "primary",
+            "references",
+            "select",
+            "set",
+            "table",
+            "then",
+            "union",
+            "update",
+            "values",
+            "when",
+            "where",
+            "with",
+        ],
+        FileKind::Html
+        | FileKind::Css
+        | FileKind::Markdown
+        | FileKind::Mermaid
+        | FileKind::Plain => &[],
+    };
+    keywords
+        .iter()
+        .any(|keyword| keyword.eq_ignore_ascii_case(token))
+}
+
+fn render_markdown_line(line: &str, fence: &mut Option<FileKind>) -> Line<'static> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        if fence.is_some() {
+            *fence = None;
+        } else {
+            let language = trimmed
+                .trim_start_matches(['`', '~'])
+                .split_whitespace()
+                .next()
+                .unwrap_or_default();
+            *fence = Some(classify(language));
+        }
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(kind) = *fence {
+        return Line::from(source_line_spans(kind, line, None));
+    }
+    if trimmed.starts_with('#') {
+        return Line::from(vec![
+            Span::styled("▎ ", Style::default().fg(ACCENT)),
+            Span::styled(
+                line.to_string(),
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+    if trimmed.starts_with('>') {
+        return Line::from(vec![
+            Span::styled("> ", Style::default().fg(PURPLE)),
+            Span::styled(
+                trimmed.trim_start_matches('>').trim_start().to_string(),
+                Style::default().fg(PURPLE).add_modifier(Modifier::ITALIC),
+            ),
+        ]);
+    }
+    if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+        return Line::from(Span::styled(line.to_string(), Style::default().fg(MUTED)));
+    }
+    let indent = &line[..line.len() - trimmed.len()];
+    let marker_len = trimmed
+        .find(|character: char| {
+            !matches!(character, '-' | '*' | '+' | ' ' | '\t' | '0'..='9' | '.')
+        })
+        .unwrap_or(0);
+    if marker_len > 0 {
+        let marker = &trimmed[..marker_len];
+        let body = &trimmed[marker_len..];
+        let mut spans = vec![Span::styled(
+            format!("{indent}{marker}"),
+            Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(markdown_inline_spans(body));
+        return Line::from(spans);
+    }
+    Line::from(markdown_inline_spans(line))
+}
+
+fn markdown_inline_spans(line: &str) -> Vec<Span<'static>> {
+    let chars = line.chars().collect::<Vec<_>>();
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '`'
+            && let Some(end) = chars[index + 1..]
+                .iter()
+                .position(|character| *character == '`')
+        {
+            let end = index + end + 2;
+            spans.push(span(
+                chars[index..end].iter().collect::<String>(),
+                WARNING,
+                None,
+                Modifier::empty(),
+            ));
+            index = end;
+            continue;
+        }
+        if chars[index] == '['
+            && let Some(close) = chars[index + 1..]
+                .iter()
+                .position(|character| *character == ']')
+        {
+            let close = index + close + 1;
+            if chars.get(close + 1) == Some(&'(')
+                && let Some(end) = chars[close + 2..]
+                    .iter()
+                    .position(|character| *character == ')')
+            {
+                let end = close + end + 3;
+                spans.push(span(
+                    chars[index..end].iter().collect::<String>(),
+                    ACCENT,
+                    None,
+                    Modifier::UNDERLINED,
+                ));
+                index = end;
+                continue;
+            }
+        }
+        let mut end = index + 1;
+        while end < chars.len() && chars[end] != '`' && chars[end] != '[' {
+            end += 1;
+        }
+        spans.push(span(
+            chars[index..end].iter().collect::<String>(),
+            TEXT,
+            None,
+            Modifier::empty(),
+        ));
+        index = end;
+    }
+    if spans.is_empty() {
+        spans.push(span(String::new(), TEXT, None, Modifier::empty()));
+    }
+    spans
+}
+
+fn render_mermaid_source_line(line: &str) -> Line<'static> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("%%") {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+        ));
+    }
+    if trimmed.starts_with("flowchart")
+        || trimmed.starts_with("graph")
+        || trimmed.starts_with("sequenceDiagram")
+        || trimmed.starts_with("classDiagram")
+    {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    let mut spans = Vec::new();
+    for token in line.split_inclusive(|character: char| character.is_whitespace()) {
+        let color = if token.contains("-->") || token.contains("->") || token.contains("==") {
+            SUCCESS
+        } else if token.contains('[') || token.contains('{') || token.contains('(') {
+            ACCENT
+        } else {
+            TEXT
+        };
+        spans.push(Span::styled(token.to_string(), Style::default().fg(color)));
+    }
+    Line::from(spans)
+}
+
+fn render_mermaid(content: &str) -> Option<Vec<Line<'static>>> {
+    let mut nonempty = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = nonempty.next()?;
+    if first.starts_with("sequenceDiagram") {
+        let rows = content
+            .lines()
+            .filter_map(parse_sequence_edge)
+            .map(|(from, to, label)| {
+                Line::from(vec![
+                    Span::styled(format!("{from:<16}"), Style::default().fg(ACCENT_BRIGHT)),
+                    Span::styled(
+                        " ──▶ ",
+                        Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("{to:<16}"), Style::default().fg(ACCENT_BRIGHT)),
+                    Span::styled(label, Style::default().fg(TEXT)),
+                ])
+            })
+            .collect::<Vec<_>>();
+        return (!rows.is_empty()).then_some(rows);
+    }
+    if !(first.starts_with("flowchart") || first.starts_with("graph")) {
+        return None;
+    }
+    let direction = first.split_whitespace().nth(1).unwrap_or("TD");
+    let mut nodes = BTreeMap::<String, String>::new();
+    let mut edges = Vec::new();
+    for line in content.lines().skip(1) {
+        if let Some((from, to, label)) = parse_flow_edge(line) {
+            let from_node = parse_mermaid_node(&from);
+            let to_node = parse_mermaid_node(&to);
+            nodes
+                .entry(from_node.0.clone())
+                .or_insert(from_node.1.clone());
+            nodes.entry(to_node.0.clone()).or_insert(to_node.1.clone());
+            edges.push((from_node.0, to_node.0, label));
+        }
+    }
+    if edges.is_empty() {
+        return None;
+    }
+
+    let mut rows = vec![Line::from(vec![
+        Span::styled(
+            "DIAGRAM ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(direction.to_string(), Style::default().fg(MUTED)),
+    ])];
+    for (from, to, label) in edges {
+        let from_label = nodes.get(&from).map(String::as_str).unwrap_or(&from);
+        let to_label = nodes.get(&to).map(String::as_str).unwrap_or(&to);
+        let arrow = if direction.eq_ignore_ascii_case("LR") {
+            " ──▶ "
+        } else if direction.eq_ignore_ascii_case("RL") {
+            " ◀── "
+        } else if direction.eq_ignore_ascii_case("BT") {
+            " ▲ "
+        } else {
+            " ▼ "
+        };
+        let mut line = vec![
+            Span::styled(
+                format!("[{}]", from_label),
+                Style::default().fg(ACCENT_BRIGHT),
+            ),
+            Span::styled(
+                arrow.to_string(),
+                Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("[{}]", to_label),
+                Style::default().fg(ACCENT_BRIGHT),
+            ),
+        ];
+        if let Some(label) = label {
+            line.push(Span::styled(
+                format!("  {label}"),
+                Style::default().fg(PURPLE),
+            ));
+        }
+        rows.push(Line::from(line));
+    }
+    Some(rows)
+}
+
+fn parse_sequence_edge(line: &str) -> Option<(String, String, String)> {
+    let arrows = ["-->>", "->>", "-->", "->", "-)"];
+    let (index, arrow) = arrows
+        .iter()
+        .filter_map(|arrow| line.find(arrow).map(|index| (index, *arrow)))
+        .min_by_key(|(index, _)| *index)?;
+    let from = line[..index].trim();
+    let rest = line[index + arrow.len()..].trim();
+    let (to, label) = rest.split_once(':').unwrap_or((rest, ""));
+    if from.is_empty() || to.trim().is_empty() {
+        return None;
+    }
+    Some((
+        from.to_string(),
+        to.trim().to_string(),
+        if label.is_empty() {
+            String::new()
+        } else {
+            format!("  · {}", label.trim())
+        },
+    ))
+}
+
+fn parse_flow_edge(line: &str) -> Option<(String, String, Option<String>)> {
+    let arrows = ["-.->", "==>", "-->", "---"];
+    let (index, arrow) = arrows
+        .iter()
+        .filter_map(|arrow| line.find(arrow).map(|index| (index, *arrow)))
+        .min_by_key(|(index, _)| *index)?;
+    let from = line[..index].trim();
+    let rest = line[index + arrow.len()..].trim();
+    if from.is_empty() || rest.is_empty() {
+        return None;
+    }
+    let (to, label) = if let Some(rest) = rest.strip_prefix('|') {
+        let (label, rest) = rest.split_once('|')?;
+        (rest.trim(), Some(label.trim().to_string()))
+    } else {
+        (rest.split_whitespace().next().unwrap_or_default(), None)
+    };
+    if to.is_empty() {
+        None
+    } else {
+        Some((from.to_string(), to.to_string(), label))
+    }
+}
+
+fn parse_mermaid_node(raw: &str) -> (String, String) {
+    let raw = raw.trim().trim_end_matches(';');
+    let mut id_end = 0;
+    for (index, character) in raw.char_indices() {
+        if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+            id_end = index + character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let id = if id_end == 0 { raw } else { &raw[..id_end] };
+    let remainder = raw[id_end..].trim();
+    let label = if remainder.len() >= 2 {
+        let pairs = [('[', ']'), ('{', '}'), ('(', ')')];
+        pairs
+            .iter()
+            .find(|(open, close)| remainder.starts_with(*open) && remainder.ends_with(*close))
+            .map(|(open, close)| {
+                remainder
+                    .trim_start_matches(*open)
+                    .trim_end_matches(*close)
+                    .to_string()
+            })
+            .unwrap_or_else(|| id.to_string())
+    } else {
+        id.to_string()
+    };
+    (id.to_string(), label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn symbols(text: Text<'static>) -> String {
+        text.lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn classifies_common_development_files() {
+        assert_eq!(classify("src/lib.rs"), FileKind::Rust);
+        assert_eq!(classify("web/app.tsx"), FileKind::TypeScript);
+        assert_eq!(classify("README.md"), FileKind::Markdown);
+        assert_eq!(classify("docs/architecture.mmd"), FileKind::Mermaid);
+        assert_eq!(classify("config/unknown.data"), FileKind::Plain);
+    }
+
+    #[test]
+    fn markdown_renderer_preserves_content_and_marks_fenced_code() {
+        let output = symbols(render_source(
+            "README.md",
+            "# Title\n\n- item with `code`\n\n```rust\nlet answer = 42;\n```",
+        ));
+        assert!(output.contains("# Title"));
+        assert!(output.contains("- item with `code`"));
+        assert!(output.contains("let answer = 42;"));
+    }
+
+    #[test]
+    fn mermaid_flowchart_gets_a_terminal_representation() {
+        let output = symbols(render_source(
+            "docs/flow.mmd",
+            "flowchart LR\n  start[Start] --> finish{Done}",
+        ));
+        assert!(output.contains("DIAGRAM LR"));
+        assert!(output.contains("[Start]"));
+        assert!(output.contains("[Done]"));
+        assert!(output.contains("──▶"));
+    }
+
+    #[test]
+    fn editor_renderer_keeps_gutters_and_highlights_source() {
+        let output = render_editor(
+            "src/main.rs",
+            "○ src/main.rs · cursor 1:1 · actor local · 1 lines\n▶  1 │ fn main() { true }",
+        );
+        assert_eq!(output.lines.len(), 2);
+        assert!(output.lines[1].spans[0].content.contains('1'));
+        assert!(
+            output.lines[1]
+                .spans
+                .iter()
+                .any(|span| span.content == "fn")
+        );
+    }
+
+    #[test]
+    fn formatted_mermaid_editor_projection_renders_the_diagram() {
+        let output = symbols(render_editor(
+            "docs/flow.mmd",
+            "○ docs/flow.mmd · cursor 1:1 · actor local · 2 lines\n  1 │ flowchart LR\n  2 │ start[Start] --> finish{Done}",
+        ));
+        assert!(output.contains("DIAGRAM LR"));
+        assert!(output.contains("[Start]"));
+        assert!(output.contains("[Done]"));
+    }
+
+    #[test]
+    fn diff_renderer_tracks_file_headers_and_line_numbers() {
+        let output = symbols(render_diff(
+            "src/lib.rs",
+            "diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new() {}",
+        ));
+        assert!(output.contains("fn old() {}"));
+        assert!(output.contains("fn new() {}"));
+        assert!(output.contains("1"));
+    }
+}

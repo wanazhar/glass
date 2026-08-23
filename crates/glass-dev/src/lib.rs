@@ -53,6 +53,8 @@ pub mod debugger;
 pub mod development;
 pub mod experiments;
 pub mod git;
+pub mod github;
+pub mod harness;
 pub mod intelligence;
 pub mod kernels;
 pub mod lsp;
@@ -126,17 +128,29 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         enforce_legacy_development_trust(&cli)?;
         return cli::dispatch_project(action);
     }
+    if cli.prompt.is_none()
+        && matches!(
+            cli.command.as_ref(),
+            Some(glass_browser::cli::args::Commands::Tui)
+        )
+    {
+        return run_development_tui(&cli);
+    }
     if cli.command.is_none() && cli.prompt.is_none() && !cli.mcp {
-        let visual_options = tui::TuiVisualOptions {
-            mode: cli.tui_live,
-            backend: cli.tui_live_backend,
-            quality: cli.tui_live_quality,
-            fit: cli.tui_live_fit,
-        };
-        return tui::run(std::env::current_dir()?, cli.tui_layout, visual_options);
+        return run_development_tui(&cli);
     }
     enforce_legacy_development_trust(&cli)?;
     glass_browser::cli::runner::dispatch(cli).await
+}
+
+fn run_development_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let visual_options = tui::TuiVisualOptions {
+        mode: cli.tui_live,
+        backend: cli.tui_live_backend,
+        quality: cli.tui_live_quality,
+        fit: cli.tui_live_fit,
+    };
+    tui::run(std::env::current_dir()?, cli.tui_layout, visual_options)
 }
 
 fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {

@@ -1,6 +1,7 @@
 //! Decomposed full Glass Dev terminal application.
 
 mod command;
+mod file_view;
 mod projection;
 pub mod render;
 mod snapshot;
@@ -26,6 +27,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{self, IsTerminal};
 use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub use state::{DevSurface, DevTuiState, ProductMode, ResponsiveClass};
@@ -270,6 +272,11 @@ pub fn run(
                     } else if state.git_diff_open && state.surface == DevSurface::Git {
                         match key.code {
                             KeyCode::Esc => state.close_git_diff(),
+                            KeyCode::Up | KeyCode::Char('k') => state.scroll_surface(-1),
+                            KeyCode::Down | KeyCode::Char('j') => state.scroll_surface(1),
+                            KeyCode::Enter | KeyCode::Char('d') => {
+                                state.queue_git_diff(&mut worker)
+                            }
                             KeyCode::PageUp => state.scroll_surface(-10),
                             KeyCode::PageDown => state.scroll_surface(10),
                             KeyCode::Home => state.scroll_home(),
@@ -407,34 +414,39 @@ pub fn run(
                             (KeyCode::Char('s'), _) if state.surface == DevSurface::Terminal => {
                                 state.request_detected_dev();
                             }
-                            (KeyCode::Char('i'), _)
-                                if state.surface == DevSurface::Agent
-                                    && state.snapshot_trust_label == "untrusted" =>
-                            {
-                                state.surface = DevSurface::Trust;
-                                state.status =
-                                    "Trust this workspace before starting the Glass Agent · T or 1"
-                                        .into();
-                            }
-                            (KeyCode::Char('i'), _)
-                                if state.surface == DevSurface::Agent
-                                    && !state.agent_readiness.starts_with("✓ Ready") =>
-                            {
-                                state.status =
-                                    "Pi is not ready · press s to install, u to refresh, or l to sign in"
-                                        .into();
-                            }
                             (KeyCode::Char('i'), _) if state.surface == DevSurface::Agent => {
-                                state.open_composer();
+                                state.start_agent_interaction();
                             }
                             (KeyCode::Char('i'), _) if state.surface == DevSurface::Code => {
                                 state.enter_code_edit();
                             }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::Agent => {
+                                state.start_agent_interaction();
+                            }
+                            (KeyCode::Up | KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Git =>
+                            {
+                                state.move_git_selection(-1);
+                            }
+                            (KeyCode::Down | KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Git =>
+                            {
+                                state.move_git_selection(1);
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::Git => {
+                                state.queue_git_diff(&mut worker);
+                            }
+                            (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
+                                state.queue_git_diff(&mut worker);
+                            }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Code => {
                                 state.open_selected_file();
                             }
-                            (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
-                                state.queue_git_diff(&mut worker)
+                            (KeyCode::Char(']'), _) if state.surface == DevSurface::Agent => {
+                                state.cycle_agent_selection(1)
+                            }
+                            (KeyCode::Char('['), _) if state.surface == DevSurface::Agent => {
+                                state.cycle_agent_selection(-1)
                             }
                             (KeyCode::Char(']'), _) if state.surface == DevSurface::Code => {
                                 state.cycle_editor_buffer(1)
@@ -480,6 +492,16 @@ pub fn run(
                                         }
                                     };
                                 }
+                            }
+                            (KeyCode::Left, modifiers)
+                                if !modifiers.contains(KeyModifiers::ALT) =>
+                            {
+                                state.previous_surface()
+                            }
+                            (KeyCode::Right, modifiers)
+                                if !modifiers.contains(KeyModifiers::ALT) =>
+                            {
+                                state.next_surface()
                             }
                             (KeyCode::Left, modifiers)
                                 if modifiers.contains(KeyModifiers::ALT)
@@ -558,7 +580,7 @@ pub fn run(
                             navigation_surface_at(state.terminal_width, mouse.column, mouse.row)
                         {
                             state.surface = surface;
-                            state.status = format!("{} · : for actions", surface.label());
+                            state.status = format!("{} selected · Enter open", surface.label());
                         }
                     }
                     _ => {}
@@ -575,6 +597,10 @@ pub fn run(
         if state.agent_login_requested {
             state.agent_login_requested = false;
             run_agent_login(&mut state, &mut guard);
+            worker.request_refresh();
+        }
+        if let Some(name) = state.harness_launch_requested.take() {
+            run_external_harness(&mut state, &mut guard, &name);
             worker.request_refresh();
         }
 
@@ -711,11 +737,12 @@ fn run_agent_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
     match (result, resume) {
         (Ok(_), Ok(())) => match state.refresh_agent_readiness() {
             Ok(true) => {
-                state.status = "Pi is ready · press i to start a conversation".into();
+                state.status = "Pi is ready · press Enter or start typing to chat".into();
             }
             Ok(false) => {
                 state.status =
-                    "Pi login finished, but readiness is incomplete · press l to retry".into();
+                    "Pi needs setup · press Enter to install/sign in, or s/u/l for direct actions"
+                        .into();
             }
             Err(error) => state.status = format!("Pi readiness check failed: {error}"),
         },
@@ -728,6 +755,64 @@ fn run_agent_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
         }
         (Err(error), Err(resume_error)) => {
             state.status = format!("Pi login failed: {error}; TUI resume failed: {resume_error}");
+            state.quit = true;
+        }
+    }
+}
+
+fn run_external_harness(state: &mut DevTuiState, guard: &mut TerminalGuard, name: &str) {
+    let resolved = match crate::harness::resolve(name) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            state.status = format!("Harness launch unavailable · {error}");
+            return;
+        }
+    };
+    let root = state.ws().map(|workspace| workspace.root().to_path_buf());
+    let root = match root {
+        Ok(root) => root,
+        Err(error) => {
+            state.status = format!("Harness launch unavailable · {error}");
+            return;
+        }
+    };
+    if let Err(error) = guard.suspend() {
+        state.status = format!(
+            "Could not hand the terminal to {}: {error}",
+            resolved.spec.label
+        );
+        return;
+    }
+    let result = Command::new(&resolved.path).current_dir(root).status();
+    let resume = guard.resume();
+    match (result, resume) {
+        (Ok(status), Ok(())) if status.success() => {
+            state.status = format!("{} exited · Glass workspace resumed", resolved.spec.label);
+        }
+        (Ok(status), Ok(())) => {
+            state.status = format!(
+                "{} exited with {} · Glass workspace resumed",
+                resolved.spec.label,
+                status
+                    .code()
+                    .map_or_else(|| "a signal".into(), |code| format!("status {code}"))
+            );
+        }
+        (Err(error), Ok(())) => {
+            state.status = format!("{} failed to start: {error}", resolved.spec.label);
+        }
+        (Ok(_), Err(error)) => {
+            state.status = format!(
+                "{} exited, but Glass could not resume: {error}",
+                resolved.spec.label
+            );
+            state.quit = true;
+        }
+        (Err(error), Err(resume_error)) => {
+            state.status = format!(
+                "{} failed to start: {error}; Glass resume failed: {resume_error}",
+                resolved.spec.label
+            );
             state.quit = true;
         }
     }

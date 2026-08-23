@@ -69,12 +69,16 @@ pub enum BrowserHealth {
 pub struct DisplaySnapshot {
     pub version: u64,
     pub agents: String,
+    pub harnesses: String,
     pub agent_conversation: String,
     pub tasks: String,
     pub editor: String,
     pub lsp: String,
     pub processes: String,
     pub git: String,
+    pub git_entries: Vec<crate::git::GitStatusEntry>,
+    pub github: crate::github::GitHubStatus,
+    pub github_review: String,
     pub tests: String,
     pub kernels: String,
     pub debugger: String,
@@ -299,10 +303,13 @@ fn worker_loop(
     dirty: Arc<AtomicBool>,
     conversation_cursor: Arc<std::sync::atomic::AtomicU64>,
 ) {
-    // Seed an initial snapshot before the first draw.
+    // GitHub review probes are cached independently of cheap local snapshots;
+    // this keeps the render loop local while still refreshing remote state.
+    let mut github_review = crate::github::GitHubReviewCache::default();
     let mut seeded = false;
     let mut conversation_events = Vec::new();
     let mut conversation_tail = String::new();
+    let mut github_probe = crate::github::GitHubProbeCache::default();
     let mut last_browser: Option<(Option<u32>, Option<u64>)> = None;
     let mut snapshot_version = 0u64;
     loop {
@@ -366,7 +373,8 @@ fn worker_loop(
                     conversation_events.extend(events);
                     let rendered = crate::tui::projection::conversation(&conversation_events);
                     conversation_tail = if rendered.is_empty() {
-                        "No conversation yet. Press i to compose a message.".into()
+                        "No conversation yet. Press Enter or start typing to compose a message."
+                            .into()
                     } else {
                         rendered
                     };
@@ -384,7 +392,12 @@ fn worker_loop(
             ActorRequest::Refresh => {
                 refresh_requested.store(false, Ordering::Release);
                 let started = Instant::now();
-                let mut snapshot = compute_snapshot(&workspace, &mut seeded);
+                let mut snapshot = compute_snapshot(
+                    &workspace,
+                    &mut seeded,
+                    &mut github_probe,
+                    &mut github_review,
+                );
                 snapshot_version = snapshot_version.saturating_add(1);
                 snapshot.version = snapshot_version;
                 snapshot.duration = started.elapsed();
@@ -432,7 +445,8 @@ fn worker_loop(
                     conversation_events = latest;
                     let rendered = crate::tui::projection::conversation(&conversation_events);
                     conversation_tail = if rendered.is_empty() {
-                        "No conversation yet. Press i to compose a message.".into()
+                        "No conversation yet. Press Enter or start typing to compose a message."
+                            .into()
                     } else {
                         rendered
                     };
@@ -457,6 +471,8 @@ fn worker_loop(
 fn compute_snapshot(
     workspace: &crate::SharedDevelopmentWorkspace,
     seeded: &mut bool,
+    github_probe: &mut crate::github::GitHubProbeCache,
+    github_review: &mut crate::github::GitHubReviewCache,
 ) -> DisplaySnapshot {
     let mut snapshot = DisplaySnapshot::default();
     let Ok(mut locked) = workspace.lock() else {
@@ -476,6 +492,7 @@ fn compute_snapshot(
                 .collect()
         })
         .unwrap_or_default();
+    snapshot.harnesses = crate::harness::summary();
     snapshot.agents = match locked.agents().list() {
         Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
         Ok(agents) => agents
@@ -513,7 +530,7 @@ fn compute_snapshot(
     };
     snapshot.agent_conversation = match locked.agents().history(0) {
         Ok(events) if events.is_empty() => {
-            "No conversation yet. Press i to compose a message.".into()
+            "No conversation yet. Press Enter or start typing to compose a message.".into()
         }
         Ok(events) => crate::tui::projection::conversation(&events),
         Err(error) => format!("Conversation unavailable: {error}"),
@@ -740,175 +757,32 @@ fn compute_snapshot(
             }
         })
         .unwrap_or_else(|error| format!("Browser state failed: {error}"));
-    snapshot.editor = editor_projection(&locked);
-    snapshot.git = git_projection(&mut locked);
+    let (git, git_entries) = git_projection(&mut locked);
+    snapshot.git = git;
+    snapshot.git_entries = git_entries;
     snapshot.workspace_status = workspace_status_projection(&mut locked);
     snapshot.trust_label = locked.trust().label().into();
     snapshot.trust_inspection = locked.trust_inspection();
-    snapshot.root = locked.root().display().to_string();
+    let root = locked.root().to_path_buf();
+    snapshot.root = root.display().to_string();
     snapshot.project_revision = locked.project().revision();
     snapshot.generation = locked.generation();
     snapshot.skills_count = locked.customization().skills().count();
     snapshot.tools_count = locked.customization().config().tools.len();
+    drop(locked);
+    snapshot.github = github_probe.probe(&root);
+    snapshot.github_review = github_review.review(&root).display();
     snapshot
 }
 
-fn editor_projection(workspace: &crate::DevelopmentWorkspace) -> String {
-    let buffers: Vec<_> = workspace.project().buffers().cloned().collect();
-    if buffers.is_empty() {
-        return "No file open. Select a file below and press Enter, then i to edit.\n\nBUFFERS\nnone open · ] opens the next buffer".into();
-    }
-    let diagnostics = workspace.project().diagnostics();
-    let mut body = String::new();
-    for (position, buffer) in buffers.iter().enumerate() {
-        let lines: Vec<&str> = buffer.content.lines().collect();
-        let cursor = buffer.cursor_line as usize;
-        let viewport_rows = 16;
-        let start = cursor
-            .saturating_sub(viewport_rows / 2)
-            .min(lines.len().saturating_sub(viewport_rows.min(lines.len())));
-        let end = (start + viewport_rows).min(lines.len());
-        let gutter_width = lines.len().to_string().len().max(3);
-        // Mark lines that carry diagnostics for this buffer.
-        let file_diagnostics: Vec<_> = diagnostics
-            .get(&buffer.path)
-            .map(|items| items.as_slice())
-            .unwrap_or(&[])
-            .to_vec();
-        let flagged: std::collections::BTreeSet<u32> = file_diagnostics
-            .iter()
-            .map(|item| item.start.line)
-            .collect();
-        let extension = buffer
-            .path
-            .rsplit('.')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let spans = crate::development::editor::syntax_spans(&buffer.content, &extension);
-        let viewport = lines[start..end]
-            .iter()
-            .enumerate()
-            .map(|(index, line)| {
-                let number = start + index + 1;
-                let marker = if number == cursor {
-                    "▶"
-                } else if flagged.contains(&(number as u32)) {
-                    "!"
-                } else {
-                    " "
-                };
-                let byte_offset = lines[..start + index]
-                    .iter()
-                    .map(|prefix| prefix.len() + 1)
-                    .sum::<usize>();
-                let highlighted = highlight_line(line, byte_offset, &spans);
-                format!(
-                    "{marker}{:>gutter_width$} │ {highlighted}",
-                    number,
-                    gutter_width = gutter_width
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if position > 0 {
-            body.push_str("\n\n");
-        }
-        let diagnostic_summary = if file_diagnostics.is_empty() {
-            String::new()
-        } else {
-            format!(" · {} diagnostics", file_diagnostics.len())
-        };
-        body.push_str(&format!(
-            "{}{} · cursor {}:{} · actor {} · {} lines{}\n{viewport}",
-            if buffer.dirty { "● " } else { "○ " },
-            buffer.path,
-            buffer.cursor_line,
-            buffer.cursor_column,
-            buffer.actor.id,
-            lines.len(),
-            diagnostic_summary,
-        ));
-    }
-    let list = buffers
-        .iter()
-        .enumerate()
-        .map(|(index, buffer)| {
-            format!(
-                "{} {}{}",
-                if index == 0 { "▶" } else { " " },
-                buffer.path,
-                if buffer.dirty { " ●" } else { "" }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("{body}\n\nBUFFERS · ]/[ switch\n{list}")
-}
-
-/// Apply span markers to one line. Spans are byte offsets over the whole
-/// buffer; only spans intersecting this line leave a marker.
-fn highlight_line(
-    line: &str,
-    byte_offset: usize,
-    spans: &[crate::development::editor::SyntaxSpan],
-) -> String {
-    let line_start = byte_offset;
-    let line_end = byte_offset + line.len();
-    let mut markers = String::new();
-    let mut any = false;
-    for span in spans {
-        if span.end > line_start && span.start < line_end {
-            any = true;
-            break;
-        }
-    }
-    if !any {
-        return line.to_string();
-    }
-    // Mark keyword spans with guillemets so the projection stays plain text
-    // while visibly distinguishing syntax kinds.
-    let mut chars = line.char_indices().peekable();
-    let mut output = String::new();
-    while let Some((offset, character)) = chars.next() {
-        let absolute = line_start + offset;
-        let in_keyword = spans.iter().any(|span| {
-            span.kind == crate::development::editor::SyntaxKind::Keyword
-                && absolute >= span.start
-                && absolute < span.end
-        });
-        if in_keyword {
-            output.push('«');
-            output.push(character);
-            // consume the rest of the keyword run
-            while let Some(&(next_offset, next_character)) = chars.peek() {
-                let next_absolute = line_start + next_offset;
-                let still = spans.iter().any(|span| {
-                    span.kind == crate::development::editor::SyntaxKind::Keyword
-                        && next_absolute >= span.start
-                        && next_absolute < span.end
-                });
-                if still {
-                    output.push(next_character);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            output.push('»');
-        } else {
-            output.push(character);
-        }
-    }
-    markers.push_str(&output);
-    markers
-}
-
-fn git_projection(workspace: &mut crate::DevelopmentWorkspace) -> String {
+fn git_projection(
+    workspace: &mut crate::DevelopmentWorkspace,
+) -> (String, Vec<crate::git::GitStatusEntry>) {
     workspace
         .git()
         .map(|git| match git.status() {
             Ok(status) => {
+                let entries = status.entries.clone();
                 let header = format!(
                     "branch {} · ↑{} ↓{} · upstream {}",
                     status.branch.as_deref().unwrap_or("detached"),
@@ -916,7 +790,7 @@ fn git_projection(workspace: &mut crate::DevelopmentWorkspace) -> String {
                     status.behind,
                     status.upstream.as_deref().unwrap_or("none")
                 );
-                let entries = status
+                let lines = status
                     .entries
                     .iter()
                     .map(|entry| {
@@ -933,15 +807,16 @@ fn git_projection(workspace: &mut crate::DevelopmentWorkspace) -> String {
                         )
                     })
                     .collect::<Vec<_>>();
-                if entries.is_empty() {
+                let text = if lines.is_empty() {
                     format!("{header}\n✓ working tree clean")
                 } else {
-                    format!("{header}\n{}", entries.join("\n"))
-                }
+                    format!("{header}\n{}", lines.join("\n"))
+                };
+                (text, entries)
             }
-            Err(error) => format!("Git state failed: {error}"),
+            Err(error) => (format!("Git state failed: {error}"), Vec::new()),
         })
-        .unwrap_or_else(|| "Not a Git repository".into())
+        .unwrap_or_else(|| ("Not a Git repository".into(), Vec::new()))
 }
 
 fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> String {

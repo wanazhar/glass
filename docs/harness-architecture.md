@@ -68,6 +68,8 @@ The primary route is visible and keyboard-first:
 - `Ctrl-X` aborts the selected agent; `Ctrl-D` toggles steer/follow-up mode in the composer.
 - `[/]` switches editor buffers; `d` opens an inline Git diff; `v` toggles
   embedded live browser pixels.
+- `review` prepares a bounded evidence-aware review prompt; `harness list` and
+  `harness start NAME` expose safe handoff to installed external harnesses.
 - Paging keys and mouse wheel scroll content; clicks select navigation or
   semantic browser entities.
 

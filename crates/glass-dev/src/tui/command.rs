@@ -55,6 +55,66 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
         key: ":",
         description: "start a separate resident session",
     },
+    SurfaceAction {
+        label: "List Pi sessions",
+        command: "agent sessions",
+        key: ":",
+        description: "discover resumable conversations",
+    },
+    SurfaceAction {
+        label: "Inspect Pi session tree",
+        command: "agent tree",
+        key: ":",
+        description: "inspect branchable conversation entries",
+    },
+    SurfaceAction {
+        label: "Rewind Pi session",
+        command: "agent rewind ENTRY_ID",
+        key: ":",
+        description: "branch the selected agent from an earlier entry",
+    },
+    SurfaceAction {
+        label: "Task loop",
+        command: "task list",
+        key: ":",
+        description: "inspect autonomous tasks and verification state",
+    },
+    SurfaceAction {
+        label: "Create task",
+        command: "task create TITLE PROMPT",
+        key: ":",
+        description: "queue a verified development task",
+    },
+    SurfaceAction {
+        label: "Resume task",
+        command: "task resume TASK_ID",
+        key: ":",
+        description: "resume a paused or blocked task",
+    },
+    SurfaceAction {
+        label: "GitHub status",
+        command: "github status",
+        key: ":",
+        description: "check the GitHub origin and gh authentication",
+    },
+    SurfaceAction {
+        label: "Review workspace changes",
+        command: "review",
+        key: ":",
+        description: "prepare an evidence-aware agent review",
+    },
+    SurfaceAction {
+        label: "List external harnesses",
+        command: "harness list",
+        key: ":",
+        description: "see coding harnesses available on PATH",
+    },
+    SurfaceAction {
+        label: "Launch external harness",
+        command: "harness start NAME",
+        key: ":",
+        description: "hand this terminal to an installed coding harness",
+    },
 ];
 
 const CODE_ACTIONS: &[SurfaceAction] = &[
@@ -191,16 +251,28 @@ const GIT_ACTIONS: &[SurfaceAction] = &[
         description: "create a governed commit",
     },
     SurfaceAction {
-        label: "View diff",
+        label: "View selected file diff",
         command: "d",
-        key: "d",
-        description: "open the inline diff",
+        key: "Enter / d",
+        description: "open the focused file diff",
     },
     SurfaceAction {
         label: "Branches",
         command: "git branches",
         key: ":",
         description: "list project branches",
+    },
+    SurfaceAction {
+        label: "Review pull request",
+        command: "github review",
+        key: ":",
+        description: "inspect the current branch PR and checks",
+    },
+    SurfaceAction {
+        label: "Ship pull request",
+        command: "github ship TITLE",
+        key: ":",
+        description: "create a PR after one-use confirmation",
     },
 ];
 
@@ -250,6 +322,18 @@ const MORE_ACTIONS: &[SurfaceAction] = &[
         key: ":",
         description: "inspect resident workspace services",
     },
+    SurfaceAction {
+        label: "Start private cockpit",
+        command: "cockpit start",
+        key: ":",
+        description: "open the loopback development cockpit",
+    },
+    SurfaceAction {
+        label: "Cockpit status",
+        command: "cockpit status",
+        key: ":",
+        description: "show the private cockpit URL",
+    },
 ];
 
 const TRUST_ACTIONS: &[SurfaceAction] = &[
@@ -294,11 +378,11 @@ pub struct CommandGroup {
     pub example: &'static str,
 }
 
-const AGENT_ROOTS: &[&str] = &["agent"];
-const BUILD_ROOTS: &[&str] = &["project", "editor", "lsp", "git"];
+const AGENT_ROOTS: &[&str] = &["agent", "harness"];
+const BUILD_ROOTS: &[&str] = &["project", "editor", "github", "lsp", "git"];
 const RUN_ROOTS: &[&str] = &["browser", "workflow", "process"];
-const VERIFY_ROOTS: &[&str] = &["task", "test", "debug"];
-const WORKSPACE_ROOTS: &[&str] = &["workspace", "daemon", "kernel", "experiment"];
+const VERIFY_ROOTS: &[&str] = &["task", "test", "debug", "review"];
+const WORKSPACE_ROOTS: &[&str] = &["cockpit", "workspace", "daemon", "kernel", "experiment"];
 const INSPECT_ROOTS: &[&str] = &["replay", "memory", "surface", "tool"];
 const CORE_ROOTS: &[&str] = &["trust", "view", "help", "quit"];
 
@@ -343,11 +427,14 @@ pub static COMMAND_GROUPS: &[CommandGroup] = &[
 pub static ROOT_COMMANDS: &[&str] = &[
     "agent",
     "browser",
+    "cockpit",
     "daemon",
     "debug",
     "editor",
     "experiment",
     "git",
+    "github",
+    "harness",
     "help",
     "kernel",
     "lsp",
@@ -356,6 +443,7 @@ pub static ROOT_COMMANDS: &[&str] = &[
     "project",
     "quit",
     "replay",
+    "review",
     "surface",
     "task",
     "test",
@@ -451,6 +539,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
                 }
             ))
         }
+        "cockpit" => execute_cockpit(state, parts.collect()),
         "quit" | "q" => {
             state.request_quit();
             Ok("Quit confirmation · Enter exits · Esc stays".into())
@@ -469,6 +558,9 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         "lsp" => execute_lsp(state, parts.collect()),
         "process" => execute_process(state, parts.collect()),
         "browser" | "workflow" => execute_browser(state, command, parts.collect()),
+        "github" | "gh" => execute_github(state, parts.collect()),
+        "harness" => execute_harness(state, parts.collect()),
+        "review" => execute_review(state, parts.collect()),
         "debug" => execute_debug(state, parts.collect()),
         "kernel" => execute_kernel(state, parts.collect()),
         "git" => execute_git(state, parts.collect()),
@@ -489,6 +581,106 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         _ => Err(format!(
             "unknown command {command}; press a for guided launchers or type help"
         )),
+    }
+}
+
+fn execute_cockpit(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("status") {
+        "start" | "open" | "reconnect" => {
+            let url = state.start_private_cockpit()?;
+            state.surface = DevSurface::More;
+            Ok(format!("Private cockpit ready · {url}"))
+        }
+        "status" => Ok(format!(
+            "Private cockpit · {}",
+            state.private_cockpit_status()
+        )),
+        "stop" | "close" => {
+            state.stop_private_cockpit();
+            Ok("Private cockpit stopped".into())
+        }
+        _ => Err("cockpit actions: start, status, stop".into()),
+    }
+}
+
+fn execute_github(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("status") {
+        "status" => Ok(format!(
+            "GitHub · {}\n{}",
+            state.github.summary(),
+            state.github_review
+        )),
+        "review" | "checks" => {
+            let result = run_tool(state, "glass.github.review", json!({}), false)?;
+            state.surface = DevSurface::Git;
+            Ok(compact_result("glass.github.review", &result))
+        }
+        "ship" | "create" => {
+            require_trusted(state)?;
+            let mut title_parts = parts.get(1..).unwrap_or_default().to_vec();
+            let draft = title_parts.last().copied() == Some("--draft");
+            if draft {
+                title_parts.pop();
+            }
+            let title = title_parts.join(" ");
+            if title.is_empty() {
+                return Err("github ship requires TITLE; append --draft for a draft PR".into());
+            }
+            let result = run_tool(
+                state,
+                "glass.github.ship",
+                json!({"title":title,"draft":draft}),
+                true,
+            )?;
+            state.surface = DevSurface::Git;
+            Ok(compact_result("glass.github.ship", &result))
+        }
+        _ => Err("GitHub actions: status, review, ship TITLE [--draft]".into()),
+    }
+}
+
+fn execute_review(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    if parts.iter().any(|part| *part != "changes") {
+        return Err("review accepts no arguments (or the alias `review changes`)".into());
+    }
+    require_trusted(state)?;
+    state.surface = DevSurface::Agent;
+    state.prepare_review_prompt();
+    Ok("Review prompt prepared in the Agent composer".into())
+}
+
+fn execute_harness(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("list") {
+        "list" | "status" => {
+            state.surface = DevSurface::Agent;
+            Ok(format!(
+                "External harnesses · ● installed · ○ unavailable\n{}\n\n`harness start NAME` hands the terminal to a selected installed harness",
+                state.harnesses
+            ))
+        }
+        "start" | "open" => {
+            require_trusted(state)?;
+            if state.background_action_running() {
+                return Err(
+                    "finish the current Glass action before launching an external harness".into(),
+                );
+            }
+            let name = parts
+                .get(1)
+                .ok_or("harness start requires NAME; use `harness list`")?;
+            let resolved = crate::harness::resolve(name)?;
+            state.harness_launch_requested = Some(resolved.spec.id.into());
+            state.surface = DevSurface::Agent;
+            state.status = format!(
+                "{} ready · Enter will hand the terminal to {}",
+                resolved.spec.id, resolved.spec.label
+            );
+            Ok(format!(
+                "{} ready · Glass will resume after the external session exits",
+                resolved.spec.label
+            ))
+        }
+        _ => Err("harness actions: list, status, start NAME".into()),
     }
 }
 
@@ -1059,9 +1251,9 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             let ready = state.refresh_agent_readiness()?;
             state.surface = DevSurface::Agent;
             Ok(if ready {
-                "Glass Agent is ready · press i to start a conversation".into()
+                "Glass Agent is ready · press Enter or type to start a conversation".into()
             } else {
-                "Glass Agent needs setup · press s to install, u to refresh, or l to sign in".into()
+                "Glass Agent needs setup · press Enter to install/sign in, or s/u/l for direct actions".into()
             })
         }
         "setup" | "update" => {
@@ -1182,9 +1374,24 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             state.surface = DevSurface::Agent;
             Ok(compact_result("glass.agent.thinking", &result))
         }
-        "new" | "new-session" => agent_control(state, &parts, "glass.agent.new-session", json!({})),
+        "new" | "new-session" => {
+            agent_control(state, &parts, "glass.agent.new-session", json!({}))
+        }
         "clone" | "clone-session" => {
             agent_control(state, &parts, "glass.agent.clone-session", json!({}))
+        }
+        "rewind" => {
+            let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
+            let entry = parts
+                .get(offset + 1)
+                .ok_or("agent rewind requires [ID] ENTRY")?;
+            let mut arguments = json!({"entryId":entry});
+            if let Some(agent_id) = agent_id {
+                arguments["agentId"] = Value::String(agent_id);
+            }
+            let result = run_tool(state, "glass.agent.rewind", arguments, true)?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result("glass.agent.rewind", &result))
         }
         "fork" => {
             let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
@@ -1199,17 +1406,42 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             state.surface = DevSurface::Agent;
             Ok(compact_result("glass.agent.fork", &result))
         }
-        "messages" | "entries" | "stats" => {
+        "switch" | "switch-session" => {
+            let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
+            let path = parts
+                .get(offset + 1)
+                .ok_or("agent switch requires [ID] SESSION_PATH")?;
+            let mut arguments = json!({"path":path});
+            if let Some(agent_id) = agent_id {
+                arguments["agentId"] = Value::String(agent_id);
+            }
+            let result = run_tool(state, "glass.agent.switch-session", arguments, true)?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result("glass.agent.switch-session", &result))
+        }
+        "sessions" | "list-sessions" | "tree" | "messages" | "entries" | "stats" => {
             let tool = match action {
+                "sessions" | "list-sessions" => "glass.agent.sessions",
+                "tree" => "glass.agent.tree",
                 "messages" => "glass.agent.messages",
                 "entries" => "glass.agent.entries",
                 _ => "glass.agent.stats",
             };
-            let result = run_tool(state, tool, json!({}), false)?;
+            let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
+            let mut arguments = json!({});
+            if let Some(agent_id) = agent_id {
+                arguments["agentId"] = Value::String(agent_id);
+            }
+            if action == "entries"
+                && let Some(since) = parts.get(offset + 1)
+            {
+                arguments["since"] = Value::String((*since).into());
+            }
+            let result = run_tool(state, tool, arguments, false)?;
             state.surface = DevSurface::Agent;
             Ok(compact_result(tool, &result))
         }
-        _ => Err("agent actions: doctor, status, setup [login], hello, models, spawn, prompt, steer, follow-up, cancel, abort, compact, model, set-model, thinking, set-thinking, new, new-session, clone, clone-session, fork, messages, entries, stats".into()),
+        _ => Err("agent actions: doctor, status, setup [login], hello, models, spawn, prompt, steer, follow-up, cancel, abort, compact, model, set-model, thinking, set-thinking, new, new-session, clone, clone-session, rewind, fork, switch, sessions, tree, messages, entries, stats".into()),
     }
 }
 
@@ -2059,7 +2291,7 @@ mod tests {
         let output = execute(&mut state, "help").expect("help route");
         assert!(output.contains("`a` opens guided Agent launchers"));
         assert!(output.contains("Agent: agent"));
-        assert!(output.contains("Build: project · editor · lsp · git"));
+        assert!(output.contains("Build: project · editor · github · lsp · git"));
         let error = execute(&mut state, "not-a-route").expect_err("unknown route");
         assert!(error.contains("press a for guided launchers"));
         let _ = fs::remove_dir_all(root);
@@ -2107,6 +2339,56 @@ mod tests {
         assert_eq!(pending.call.name, "glass.agent.setup");
         assert_eq!(pending.call.arguments["login"], false);
         assert_eq!(pending.call.arguments["update"], true);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn review_route_prefills_evidence_aware_agent_prompt() {
+        let (mut state, root) = test_state("review");
+        let output = execute(&mut state, "review").expect("review route");
+        assert!(output.contains("Review prompt prepared"));
+        assert!(state.composer_mode);
+        assert!(state.composer_input.contains("Git diff"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn harness_list_route_exposes_the_external_bridge_without_launching() {
+        let (mut state, root) = test_state("harness-list");
+        let output = execute(&mut state, "harness list").expect("harness list route");
+        assert!(output.contains("External harnesses"));
+        assert!(output.contains("harness start NAME"));
+        assert_eq!(state.surface, DevSurface::Agent);
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn cockpit_routes_start_status_and_stop_without_leaving_the_tui() {
+        let (mut state, root) = test_state("cockpit");
+        let started = execute(&mut state, "cockpit start").expect("start cockpit");
+        assert!(started.starts_with("Private cockpit ready · http://127.0.0.1:"));
+        let status = execute(&mut state, "cockpit status").expect("cockpit status");
+        assert!(status.contains("running · http://127.0.0.1:"));
+        execute(&mut state, "cockpit stop").expect("stop cockpit");
+        assert!(state.private_cockpit.is_none());
+        assert!(state.private_cockpit_status().contains("not running"));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn github_routes_review_and_confirmation_gated_ship() {
+        let (mut state, root) = test_state("github-routes");
+        execute(&mut state, "github review").expect("queue GitHub review");
+        let review = state
+            .queued_tool_request
+            .take()
+            .expect("GitHub review request");
+        assert_eq!(review.0.name, "glass.github.review");
+        execute(&mut state, "github ship release").expect("queue GitHub ship");
+        let ship = state
+            .pending_confirmation
+            .take()
+            .expect("ship confirmation");
+        assert_eq!(ship.call.name, "glass.github.ship");
+        assert_eq!(ship.call.arguments["title"], "release");
         let _ = fs::remove_dir_all(root);
     }
 

@@ -1,10 +1,10 @@
 # Glass
 
-Glass is a local-first terminal workspace for developing, operating, and
-verifying applications with humans and agents. It combines a bounded project
-runtime, native terminal UI, local agent harness, browser intelligence, Model
-Context Protocol (MCP) server, and reusable Rust library in one revision-aware
-workspace.
+Glass is a local-first coding workspace for developing, operating, and
+verifying applications with humans and agents. Coding is the primary workflow:
+the native terminal UI, local agent harness, files, editor, PTYs, tests,
+diagnostics, and Git diff live together in one revision-aware workspace. Browser
+intelligence is an integrated optional app surface for UI work and verification.
 
 The complete product is `glass-dev`, which installs both `glass` and
 `glass-browser`. The focused `glass-browser` package provides the standalone
@@ -141,7 +141,17 @@ composer available for the next prompt. Sent prompts stay visible as `YOU`
 messages while the resident agent streams `GLASS AGENT` text and tool activity;
 send failures keep the draft in the composer with an edit-and-retry message.
 From `Terminal`, press `s` to approve and start the detected development
-command. Use `:` for explicit process, test, LSP, and agent routes.
+command. Use `:` for explicit process, test, LSP, and agent routes. On the
+`Agent` surface, `a` exposes the task loop (`task list`, `task create`,
+`task resume`) and Pi session controls without leaving the TUI. The `More`
+surface can start the private loopback cockpit with `:cockpit start`; it
+returns a tokenized `127.0.0.1` URL for state, task, Git, and agent inspection.
+The cockpit stops with the TUI and never binds a public interface.
+
+On the `Git` surface, choose **Review pull request** or **Ship pull request**,
+or use `:github review` and `:github ship TITLE`. Review is read-only; ship
+requires GitHub CLI authentication and the same one-use confirmation used by
+other mutations.
 
 Read the [Development Runtime guide](docs/development-runtime.md) for files,
 editor ownership, processes, LSP, source/runtime graph, timeline, replay,

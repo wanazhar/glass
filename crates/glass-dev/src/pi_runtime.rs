@@ -91,6 +91,9 @@ pub enum PiSessionRequest {
         instructions: Option<String>,
     },
     CloneSession,
+    Rewind {
+        entry_id: String,
+    },
     Fork {
         entry_id: String,
     },
@@ -162,6 +165,7 @@ pub struct GlassPiRuntime {
     host_events: VecDeque<Value>,
     pending_tool_approval: Option<PendingPiToolApproval>,
     aborting_turn: bool,
+    unknown_tool_failures: u8,
 }
 
 impl std::fmt::Debug for GlassPiRuntime {
@@ -240,6 +244,7 @@ impl GlassPiRuntime {
             host_events: VecDeque::new(),
             pending_tool_approval: None,
             aborting_turn: false,
+            unknown_tool_failures: 0,
         };
         match runtime.recv_raw(Duration::from_secs(15))? {
             Some(value) if value.get("type").and_then(Value::as_str) == Some("ready") => {
@@ -283,6 +288,7 @@ impl GlassPiRuntime {
             }
             if value.get("type").and_then(Value::as_str) == Some("agent_settled") {
                 self.aborting_turn = false;
+                self.unknown_tool_failures = 0;
             }
             return Ok(Some(value));
         }
@@ -344,10 +350,11 @@ impl GlassPiRuntime {
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| DevelopmentError::Serialization("Pi tool frame has no id".into()))?;
-        let call: ToolCall =
-            serde_json::from_value(value.get("call").cloned().ok_or_else(|| {
+        let call: ToolCall = normalize_tool_call(serde_json::from_value(
+            value.get("call").cloned().ok_or_else(|| {
                 DevelopmentError::Serialization("Pi tool frame has no call".into())
-            })?)?;
+            })?,
+        )?);
         if !self.unrestricted && crate::tools::tool_requires_mutation(&call.name) {
             if self.pending_tool_approval.is_some() {
                 return Err(DevelopmentError::Conflict(
@@ -370,7 +377,7 @@ impl GlassPiRuntime {
         let result = if unknown_tool {
             result.map_err(|error| {
                 DevelopmentError::InvalidInput(format!(
-                    "{error}; use a registered canonical `glass.*` capability; `glass.fs.*` is invalid"
+                    "{error}; use a registered Glass capability such as `read`, `edit`, `bash`, `grep`, or `glass_tool`"
                 ))
             })
         } else {
@@ -379,14 +386,27 @@ impl GlassPiRuntime {
         self.send_tool_result(frame_id, &result)?;
         self.host_events.push_back(browser_evidence(&call, &result));
         if unknown_tool && !self.aborting_turn {
-            self.aborting_turn = true;
-            let abort_id = self.start_request(PiSessionRequest::Abort)?;
-            self.host_events.push_back(json!({
-                "type": "glass_tool_rejected",
-                "toolName": call.name,
-                "reason": "Unknown Glass tool; the current turn was aborted instead of retrying it",
-                "abortRequestId": abort_id,
-            }));
+            self.unknown_tool_failures = self.unknown_tool_failures.saturating_add(1);
+            if self.unknown_tool_failures >= 3 {
+                self.aborting_turn = true;
+                let abort_id = self.start_request(PiSessionRequest::Abort)?;
+                self.host_events.push_back(json!({
+                    "type": "glass_tool_rejected",
+                    "toolName": call.name,
+                    "reason": "Repeated unknown Glass tool calls; the turn was aborted after three recoverable failures",
+                    "recoverable": false,
+                    "attempt": self.unknown_tool_failures,
+                    "abortRequestId": abort_id,
+                }));
+            } else {
+                self.host_events.push_back(json!({
+                    "type": "glass_tool_rejected",
+                    "toolName": call.name,
+                    "reason": "Glass returned an unknown tool error; the tool result was returned so Pi can retry with a registered tool",
+                    "recoverable": true,
+                    "attempt": self.unknown_tool_failures,
+                }));
+            }
         }
         Ok(None)
     }
@@ -452,6 +472,54 @@ impl GlassPiRuntime {
         self.input.flush()?;
         Ok(())
     }
+}
+
+fn normalize_tool_call(mut call: ToolCall) -> ToolCall {
+    let requested_name = call.name.clone();
+    let canonical = match requested_name.as_str() {
+        "read" | "glass.fs.read" => Some("glass.file.read"),
+        "ls" | "glass.fs.list" => Some("glass.file.list"),
+        "grep" | "glass.fs.grep" => Some("glass.file.grep"),
+        "find" | "glass.fs.find" => Some("glass.file.find"),
+        "write" | "glass.fs.write" => Some("glass.file.write"),
+        "edit" | "glass.fs.edit" => Some("glass.file.edit"),
+        "glass.fs.patch" => Some("glass.file.patch"),
+        "glass.fs.mkdir" => Some("glass.file.mkdir"),
+        "glass.fs.rename" => Some("glass.file.rename"),
+        "glass.fs.delete" | "glass.fs.remove" => Some("glass.file.delete"),
+        "bash" | "shell" | "terminal" | "glass.fs.shell" => Some("glass.command.run"),
+        _ => None,
+    };
+    let Some(canonical) = canonical else {
+        return call;
+    };
+    call.name = canonical.into();
+    if canonical == "glass.command.run" {
+        let mut arguments = match call.arguments {
+            Value::Object(arguments) => arguments,
+            _ => serde_json::Map::new(),
+        };
+        if !arguments.contains_key("name") {
+            let id = call
+                .id
+                .chars()
+                .map(|character| {
+                    if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                        character
+                    } else {
+                        '-'
+                    }
+                })
+                .take(48)
+                .collect::<String>();
+            arguments.insert("name".into(), Value::String(format!("pi-{id}")));
+        }
+        if let Some(timeout) = arguments.remove("timeout") {
+            arguments.insert("timeoutSeconds".into(), timeout);
+        }
+        call.arguments = Value::Object(arguments);
+    }
+    call
 }
 
 fn is_unknown_tool_error(result: &DevelopmentResult<Value>) -> bool {
@@ -607,6 +675,7 @@ fn request_parts(request: PiSessionRequest) -> (&'static str, Value) {
             ("compact", json!({"instructions": instructions}))
         }
         PiSessionRequest::CloneSession => ("cloneSession", Value::Null),
+        PiSessionRequest::Rewind { entry_id } => ("rewind", json!({"entryId": entry_id})),
         PiSessionRequest::Fork { entry_id } => ("fork", json!({"entryId": entry_id})),
         PiSessionRequest::SwitchSession { path } => ("switchSession", json!({"path": path})),
         PiSessionRequest::ListSessions => ("listSessions", Value::Null),
@@ -1216,6 +1285,15 @@ mod tests {
             }
         }
     }
+    fn unknown_tool_rejection_count(runtime: &GlassPiRuntime) -> usize {
+        runtime
+            .host_events
+            .iter()
+            .filter(|event| {
+                event.get("type").and_then(Value::as_str) == Some("glass_tool_rejected")
+            })
+            .count()
+    }
 
     #[test]
     fn request_mapping_uses_native_sdk_operations() {
@@ -1248,13 +1326,13 @@ mod tests {
     }
 
     #[test]
-    fn runtime_asset_registers_governed_custom_tool_without_builtins() {
+    fn runtime_asset_registers_governed_custom_tools_without_builtins() {
         assert!(RUNTIME_SOURCE.contains("noTools: \"builtin\""));
-        assert!(RUNTIME_SOURCE.contains("tools: [\"glass_tool\"]"));
-        assert!(RUNTIME_SOURCE.contains("customTools: [glassTool]"));
+        assert!(RUNTIME_SOURCE.contains("tools: [\"glass_tool\", \"read\""));
+        assert!(RUNTIME_SOURCE.contains("customTools: [glassTool, ...nativeTools]"));
     }
     #[test]
-    fn unknown_tool_call_aborts_once_and_emits_rejection() {
+    fn unknown_tool_call_recovers_then_aborts_once() {
         if locate_sdk_entry().is_err() {
             return;
         }
@@ -1280,27 +1358,33 @@ mod tests {
         });
 
         assert!(runtime.handle_tool_call(&call).unwrap().is_none());
-        assert!(runtime.aborting_turn);
+        assert!(!runtime.aborting_turn);
+        assert_eq!(unknown_tool_rejection_count(&runtime), 1);
         assert_eq!(
             runtime
                 .host_events
-                .iter()
-                .filter(|event| event.get("type").and_then(Value::as_str)
-                    == Some("glass_tool_rejected"))
-                .count(),
-            1
+                .back()
+                .and_then(|event| event.get("attempt")),
+            Some(&json!(1))
         );
 
         assert!(runtime.handle_tool_call(&call).unwrap().is_none());
+        assert!(!runtime.aborting_turn);
+        assert_eq!(unknown_tool_rejection_count(&runtime), 2);
+
+        assert!(runtime.handle_tool_call(&call).unwrap().is_none());
+        assert!(runtime.aborting_turn);
+        assert_eq!(unknown_tool_rejection_count(&runtime), 3);
         assert_eq!(
             runtime
                 .host_events
-                .iter()
-                .filter(|event| event.get("type").and_then(Value::as_str)
-                    == Some("glass_tool_rejected"))
-                .count(),
-            1
+                .back()
+                .and_then(|event| event.get("recoverable")),
+            Some(&json!(false))
         );
+
+        assert!(runtime.handle_tool_call(&call).unwrap().is_none());
+        assert_eq!(unknown_tool_rejection_count(&runtime), 3);
         drop(runtime);
         fs::remove_dir_all(&root).unwrap();
     }

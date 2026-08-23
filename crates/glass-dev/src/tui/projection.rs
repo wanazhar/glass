@@ -369,19 +369,51 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                 }
             }
             "glass_browser_evidence" => {
-                items.push(ConversationItem::Activity(browser_evidence(&event.payload)));
+                items.push(ConversationItem::System(browser_evidence(&event.payload)));
             }
-            "glass_tool_rejected" => items.push(ConversationItem::Error(format!(
-                "{} · {}",
-                tool_name(&event.payload),
-                event
+            "glass_tool_evidence" => {
+                let name = tool_name(&event.payload);
+                if event
                     .payload
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("turn aborted"),
-            ))),
+                    .get("ok")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    items.push(ConversationItem::System(format!("✓ {name} · done")));
+                } else {
+                    items.push(ConversationItem::Error(format!(
+                        "{name} · {}",
+                        event
+                            .payload
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool failed")
+                    )));
+                }
+            }
+            "glass_tool_rejected" => {
+                let recoverable = event
+                    .payload
+                    .get("recoverable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                items.push(ConversationItem::Error(format!(
+                    "{} · {}{}",
+                    tool_name(&event.payload),
+                    event
+                        .payload
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool rejected"),
+                    if recoverable {
+                        " · retrying with registered Glass tools"
+                    } else {
+                        " · turn stopped"
+                    }
+                )));
+            }
             "glass_tool_approval_request" => {
-                items.push(ConversationItem::Activity(format!(
+                items.push(ConversationItem::Alert(format!(
                     "⚠ {} · approval required · press Y/Enter to allow or N/Esc to deny\n  {}",
                     tool_name(&event.payload),
                     event
@@ -397,7 +429,7 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                     .get("approved")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                items.push(ConversationItem::Activity(format!(
+                items.push(ConversationItem::System(format!(
                     "{} {} · approval {}",
                     if approved { "✓" } else { "×" },
                     event
@@ -409,13 +441,13 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                 )));
             }
             "tool_execution_start" => {
-                items.push(ConversationItem::Activity(format!(
+                items.push(ConversationItem::System(format!(
                     "→ {} · running",
                     tool_name(&event.payload)
                 )));
             }
             "tool_execution_end" => {
-                items.push(ConversationItem::Activity(format!(
+                items.push(ConversationItem::System(format!(
                     "✓ {} · done",
                     tool_name(&event.payload)
                 )));
@@ -424,7 +456,7 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                 if let Some(text) = event_text(event) {
                     push_assistant_final(&mut items, text);
                 } else {
-                    items.push(ConversationItem::Activity("✓ done".into()));
+                    items.push(ConversationItem::System("✓ done".into()));
                 }
             }
             "failed" | "workerPanicked" | "budgetExceeded" => items.push(ConversationItem::Error(
@@ -453,7 +485,7 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                 if let Some(text) = event_text(event) {
                     push_assistant_final(&mut items, text);
                 } else if !event.payload.is_null() {
-                    items.push(ConversationItem::Activity(format!("· {}", event.kind)));
+                    items.push(ConversationItem::System(format!("· {}", event.kind)));
                 }
             }
         }
@@ -469,7 +501,8 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
 enum ConversationItem {
     User(String),
     Assistant { text: String, streaming: bool },
-    Activity(String),
+    System(String),
+    Alert(String),
     Error(String),
 }
 
@@ -485,8 +518,9 @@ fn render_conversation_item(item: ConversationItem) -> String {
                 format!("GLASS AGENT\n{}", trimmed_lines(&text, 24))
             }
         }
-        ConversationItem::Activity(text) => text,
-        ConversationItem::Error(text) => format!("× {text}"),
+        ConversationItem::System(text) => format!("SYSTEM\n{}", trimmed_lines(&text, 24)),
+        ConversationItem::Alert(text) => format!("ALERT\n{}", trimmed_lines(&text, 24)),
+        ConversationItem::Error(text) => format!("ERROR\n× {}", trimmed_lines(&text, 24)),
     }
 }
 
@@ -766,6 +800,7 @@ mod tests {
         let projected = conversation(&[event]);
         assert!(projected.contains("approval required"));
         assert!(projected.contains("glass.browser.act"));
+        assert!(projected.contains("ALERT"));
         assert!(projected.contains("Y/Enter"));
     }
 
@@ -784,6 +819,7 @@ mod tests {
         };
         let projected = conversation(&[event]);
         assert!(projected.contains("glass.fs.list"));
+        assert!(projected.contains("ERROR"));
         assert!(projected.contains("turn aborted instead of retrying"));
     }
 
@@ -805,6 +841,7 @@ mod tests {
         };
         let projected = conversation(&[event]);
         assert!(projected.contains("glass.browser.observe"));
+        assert!(projected.contains("SYSTEM"));
         assert!(projected.contains("browser revision 9"));
     }
 }

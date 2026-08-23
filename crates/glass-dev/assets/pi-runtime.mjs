@@ -80,13 +80,25 @@ function callGlass(toolCallId, params, signal) {
   });
 }
 
+function toolResult(result) {
+  const payload = result?.ok === true && Object.hasOwn(result, "result")
+    ? result.result
+    : result;
+  const text = JSON.stringify(payload);
+  return {
+    content: [{ type: "text", text }],
+    details: payload,
+    ...(result?.ok === false ? { isError: true } : {}),
+  };
+}
+
 const glassTool = {
   name: "glass_tool",
   label: "Glass Tool",
-  description: "Call one governed Glass capability by its exact glass.* name and JSON arguments. This is the only filesystem, process, browser, Git, test, debugger, and evidence tool in the session.",
-  promptSnippet: "glass_tool({name, arguments}): the only callable Glass workspace/browser capability",
+  description: "Call one governed Glass capability by its exact glass.* name and JSON arguments. Use this for browser, Git, processes, tests, debugging, workflows, and other Glass services.",
+  promptSnippet: "glass_tool({name, arguments}): governed Glass workspace/browser capability",
   promptGuidelines: [
-    "Use glass_tool for every Glass file, process, Git, test, debugger, browser, and evidence operation.",
+    "Use the familiar Glass-backed coding tools for local source work; use glass_tool for browser, Git, process, test, debugger, and evidence operations.",
     "Example: glass_tool({name: \"glass.browser.observe\", arguments: {}}).",
     "Do not claim a mutation succeeded until the Glass tool result confirms it.",
   ],
@@ -96,13 +108,115 @@ const glassTool = {
   }, { additionalProperties: false }),
   executionMode: "sequential",
   async execute(toolCallId, params, signal) {
-    const result = await callGlass(toolCallId, params, signal);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result) }],
-      details: result,
-    };
+    return toolResult(await callGlass(toolCallId, params, signal));
   },
 };
+
+function glassBackedTool(name, label, description, parameters, mapArguments) {
+  return {
+    name,
+    label,
+    description,
+    promptSnippet: `${name}({ ... }): Glass-governed workspace operation`,
+    parameters,
+    executionMode: "sequential",
+    async execute(toolCallId, params, signal) {
+      return toolResult(await callGlass(toolCallId, {
+        name: mapArguments.name,
+        arguments: mapArguments.arguments(params, toolCallId),
+      }, signal));
+    },
+  };
+}
+
+const nativeTools = [
+  glassBackedTool(
+    "read",
+    "Read",
+    "Read a bounded UTF-8 project file through Glass. Paths stay inside the current workspace.",
+    Type.Object({
+      path: Type.String({ minLength: 1 }),
+      offset: Type.Optional(Type.Integer({ minimum: 1 })),
+      limit: Type.Optional(Type.Integer({ minimum: 1 })),
+    }, { additionalProperties: false }),
+    { name: "glass.file.read", arguments: (params) => params },
+  ),
+  glassBackedTool(
+    "write",
+    "Write",
+    "Create or replace a bounded project file through Glass. Mutations require Glass approval.",
+    Type.Object({
+      path: Type.String({ minLength: 1 }),
+      content: Type.String(),
+    }, { additionalProperties: false }),
+    { name: "glass.file.write", arguments: (params) => params },
+  ),
+  glassBackedTool(
+    "edit",
+    "Edit",
+    "Apply exact non-overlapping oldText/newText replacements through Glass. Mutations require Glass approval.",
+    Type.Object({
+      path: Type.String({ minLength: 1 }),
+      edits: Type.Array(Type.Object({
+        oldText: Type.String(),
+        newText: Type.String(),
+      }, { additionalProperties: false })),
+    }, { additionalProperties: false }),
+    { name: "glass.file.edit", arguments: (params) => params },
+  ),
+  glassBackedTool(
+    "bash",
+    "Bash",
+    "Run one bounded workspace-confined command through Glass. Mutations require Glass approval.",
+    Type.Object({
+      command: Type.String({ minLength: 1 }),
+      timeout: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })),
+    }, { additionalProperties: false }),
+    {
+      name: "glass.command.run",
+      arguments: (params, toolCallId) => ({
+        name: `pi-${toolCallId.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 48)}`,
+        command: params.command,
+        timeoutSeconds: params.timeout,
+      }),
+    },
+  ),
+  glassBackedTool(
+    "grep",
+    "Grep",
+    "Search bounded UTF-8 project files through Glass.",
+    Type.Object({
+      pattern: Type.String({ minLength: 1 }),
+      path: Type.Optional(Type.String()),
+      glob: Type.Optional(Type.String()),
+      ignoreCase: Type.Optional(Type.Boolean()),
+      context: Type.Optional(Type.Integer({ minimum: 0, maximum: 20 })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 512 })),
+    }, { additionalProperties: false }),
+    { name: "glass.file.grep", arguments: (params) => params },
+  ),
+  glassBackedTool(
+    "find",
+    "Find",
+    "Find bounded project paths through Glass using shell-style matching.",
+    Type.Object({
+      pattern: Type.String({ minLength: 1 }),
+      path: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 512 })),
+    }, { additionalProperties: false }),
+    { name: "glass.file.find", arguments: (params) => params },
+  ),
+  glassBackedTool(
+    "ls",
+    "List files",
+    "List bounded project files through Glass.",
+    Type.Object({
+      path: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 512 })),
+    }, { additionalProperties: false }),
+    { name: "glass.file.list", arguments: (params) => params },
+  ),
+];
 
 async function create(manager) {
   const resourceLoader = new DefaultResourceLoader({
@@ -121,8 +235,8 @@ async function create(manager) {
     sessionManager: manager,
     resourceLoader,
     noTools: "builtin",
-    tools: ["glass_tool"],
-    customTools: [glassTool],
+    tools: ["glass_tool", "read", "write", "edit", "bash", "grep", "find", "ls"],
+    customTools: [glassTool, ...nativeTools],
     thinkingLevel: process.env.GLASS_PI_THINKING || undefined,
   });
   const configuredModel = process.env.GLASS_PI_MODEL;
@@ -208,8 +322,9 @@ async function operation(name, params = {}) {
         sdk: "AgentSession",
         capabilities: [
           "prompt", "steer", "followUp", "abort", "compact", "models",
-          "thinking", "newSession", "cloneSession", "fork", "switchSession",
-          "messages", "entries", "tree", "stats", "name", "glassTool",
+          "thinking", "newSession", "cloneSession", "rewind", "fork",
+          "switchSession", "messages", "entries", "tree", "stats", "name",
+          "glassTool",
         ],
       };
     case "state": return snapshot();
@@ -244,6 +359,11 @@ async function operation(name, params = {}) {
     case "cloneSession": {
       if (!session.sessionFile) throw new Error("current Pi session is not persisted");
       return await replace(SessionManager.forkFrom(session.sessionFile, cwd, sessionDir));
+    }
+    case "rewind": {
+      const path = session.sessionManager.createBranchedSession(params.entryId);
+      if (!path) throw new Error("Pi could not persist the rewind branch");
+      return await replace(SessionManager.open(path, sessionDir, cwd));
     }
     case "fork": {
       const path = session.sessionManager.createBranchedSession(params.entryId);

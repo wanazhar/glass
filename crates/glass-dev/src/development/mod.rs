@@ -45,7 +45,7 @@ pub use agent::{
     ToolDescriptor, ToolRegistry, resolve_context, resolve_context_with_browser,
 };
 pub use cockpit::{
-    AttentionItem, AttentionState, ReconnectCapsule, ReconnectCapsuleStore,
+    AttentionItem, AttentionState, LocalCockpit, ReconnectCapsule, ReconnectCapsuleStore,
     ResidentDevelopmentSessions, VerificationCard, VerificationCheck, attention_inbox,
 };
 pub use collaboration::{CollaborationBus, CollaborationEvent, EditAccess, EditClaim};

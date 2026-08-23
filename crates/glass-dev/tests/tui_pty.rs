@@ -80,6 +80,51 @@ impl Session {
         }
         false
     }
+
+    fn wait_for_visible(&mut self, probe: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.settle(Duration::from_millis(200));
+            if self.visible_output().contains(probe) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn visible_output(&self) -> String {
+        let raw = String::from_utf8_lossy(&self.buffer);
+        let mut visible = String::with_capacity(raw.len());
+        let mut characters = raw.chars();
+        while let Some(character) = characters.next() {
+            if character != '\x1b' {
+                if character == '\r' {
+                    visible.push('\n');
+                } else if !character.is_control() {
+                    visible.push(character);
+                }
+                continue;
+            }
+            let Some(next) = characters.next() else {
+                break;
+            };
+            if next == '[' {
+                for sequence_character in characters.by_ref() {
+                    if ('@'..='~').contains(&sequence_character) {
+                        break;
+                    }
+                }
+            } else if next == ']' {
+                for sequence_character in characters.by_ref() {
+                    if sequence_character == '\x07' {
+                        break;
+                    }
+                }
+            }
+        }
+        visible
+    }
+
     fn wait_for_exit(&mut self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -195,6 +240,42 @@ fn workspace_root() -> std::path::PathBuf {
     root
 }
 
+fn git_workspace_root() -> std::path::PathBuf {
+    let root = workspace_root();
+    for (args, message) in [
+        (vec!["init", "-q"], "git init"),
+        (
+            vec!["config", "user.email", "glass@example.test"],
+            "git email",
+        ),
+        (vec!["config", "user.name", "Glass E2E"], "git name"),
+    ] {
+        let status = Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .status()
+            .unwrap_or_else(|error| panic!("{message} failed to start: {error}"));
+        assert!(status.success(), "{message} failed with {status}");
+    }
+    std::fs::write(root.join("a-first.txt"), "before\n").unwrap();
+    std::fs::write(root.join("b-second.txt"), "before\n").unwrap();
+    let status = Command::new("git")
+        .current_dir(&root)
+        .args(["add", "."])
+        .status()
+        .expect("git add failed to start");
+    assert!(status.success(), "git add failed with {status}");
+    let status = Command::new("git")
+        .current_dir(&root)
+        .args(["commit", "-qm", "initial"])
+        .status()
+        .expect("git commit failed to start");
+    assert!(status.success(), "git commit failed with {status}");
+    std::fs::write(root.join("a-first.txt"), "before\na-first change\n").unwrap();
+    std::fs::write(root.join("b-second.txt"), "before\nb-second change\n").unwrap();
+    root
+}
+
 fn binary() -> String {
     std::env::var("GLASS_E2E_BINARY").unwrap_or_else(|_| {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -220,7 +301,7 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
     );
     session.send(b"\x03");
     assert!(
-        session.wait_for("QUIT GLASS DEV?", Duration::from_secs(5)),
+        session.wait_for("QUIT?", Duration::from_secs(5)),
         "Ctrl+C must open quit confirmation from navigation mode"
     );
     assert!(
@@ -234,7 +315,7 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
     );
     session.send(b"\x03");
     assert!(
-        session.wait_for("QUIT GLASS DEV?", Duration::from_secs(3)),
+        session.wait_for("QUIT?", Duration::from_secs(3)),
         "Ctrl+C must reopen quit confirmation"
     );
     session.send(b"y");
@@ -267,7 +348,7 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
     );
     session.send(b"\x03");
     assert!(
-        session.wait_for("QUIT GLASS DEV?", Duration::from_secs(5)),
+        session.wait_for("QUIT?", Duration::from_secs(5)),
         "Ctrl+C must open quit confirmation from composer mode"
     );
     assert!(
@@ -322,7 +403,7 @@ fn app_target_picker_failure_keeps_tui_recoverable() {
     );
     session.send(b"3");
     assert!(
-        session.wait_for("BROWSER", Duration::from_secs(5)),
+        session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
         "App surface never rendered"
     );
     session.send(b"T");
@@ -333,8 +414,48 @@ fn app_target_picker_failure_keeps_tui_recoverable() {
     );
     session.send(b"\x1b");
     assert!(
-        session.wait_for("BROWSER", Duration::from_secs(5)),
+        session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
         "recovery dismissal did not return to the App surface"
+    );
+    session.kill();
+}
+
+#[test]
+fn agent_enter_and_typing_open_composer_without_cli_setup() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 118, 32);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface never rendered after trust"
+    );
+    assert!(
+        session.wait_for("✓ Ready", Duration::from_secs(5)),
+        "Pi runtime never became ready\n{}",
+        session.output_tail()
+    );
+
+    session.send(b"c");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "typing on Agent must open the composer instead of switching surfaces\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+
+    session.send(b"\r");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Enter on Agent must open the composer\n{}",
+        session.output_tail()
     );
     session.kill();
 }
@@ -379,7 +500,7 @@ fn palette_and_help_survive_real_key_sequences() {
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
     // Surfaces switch with number keys and each renders its header.
-    for (key, header) in [('2', "FILES"), ('3', "APP"), ('4', "Task")] {
+    for (key, header) in [('2', "FILES"), ('3', "VISUAL PLANE"), ('4', "Task")] {
         session.send(&[key as u8]);
         assert!(
             session.wait_for(header, Duration::from_secs(5)),
@@ -422,12 +543,12 @@ fn desktop_surface_tabs_render_every_workbench() {
     );
     for (key, marker) in [
         (b'2', "FILES"),
-        (b'3', "BROWSER"),
-        (b'4', "TERMINALS"),
-        (b'5', "TASKS"),
-        (b'6', "SOURCE CONTROL"),
-        (b'7', "TEST LAB"),
-        (b'8', "PI READINESS"),
+        (b'3', "VISUAL PLANE"),
+        (b'4', "TERMINAL"),
+        (b'5', "SUMMARY"),
+        (b'6', "GIT"),
+        (b'7', "TESTS"),
+        (b'8', "ROUTES"),
     ] {
         session.send(&[key]);
         assert!(
@@ -464,9 +585,9 @@ fn phone_surface_tabs_keep_the_compact_workbench_reachable() {
     );
     for (key, marker) in [
         (b'2', "FILES"),
-        (b'3', "BROWSER"),
-        (b'4', "TASKS"),
-        (b'5', "PI READINESS"),
+        (b'3', "VISUAL PLANE"),
+        (b'4', "SUMMARY"),
+        (b'5', "ROUTES"),
     ] {
         session.send(&[key]);
         assert!(
@@ -480,6 +601,45 @@ fn phone_surface_tabs_keep_the_compact_workbench_reachable() {
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Tab did not wrap from phone More to Agent"
+    );
+    session.kill();
+}
+
+#[test]
+fn arrow_keys_cycle_surfaces_without_numeric_shortcuts() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 118, 32);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.settle(Duration::from_millis(600));
+    session.send(b"T");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface never rendered after trust"
+    );
+
+    session.send(b"\x1b[C");
+    assert!(
+        session.wait_for("FILES", Duration::from_secs(5)),
+        "Right arrow did not move to Code\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b[C");
+    assert!(
+        session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
+        "Right arrow did not move to App\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b[D");
+    assert!(
+        session.wait_for("FILES", Duration::from_secs(5)),
+        "Left arrow did not return to Code\n{}",
+        session.output_tail()
     );
     session.kill();
 }
@@ -503,11 +663,11 @@ fn compact_surface_tabs_keep_primary_workbenches_reachable() {
     );
     for (key, marker) in [
         (b'2', "FILES"),
-        (b'3', "BROWSER"),
-        (b'4', "TERMINALS"),
-        (b'5', "TASKS"),
-        (b'6', "SOURCE CONTROL"),
-        (b'7', "TEST LAB"),
+        (b'3', "VISUAL PLANE"),
+        (b'4', "TERMINAL"),
+        (b'5', "SUMMARY"),
+        (b'6', "GIT"),
+        (b'7', "TESTS"),
     ] {
         session.send(&[key]);
         assert!(
@@ -564,7 +724,8 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
     session.send(b"agent setup");
     assert!(
         session.wait_for("agent setup", Duration::from_secs(5)),
-        "command center route search did not render"
+        "command center route search did not render\n{}",
+        session.output_tail()
     );
     session.send(b"\t");
     session.settle(Duration::from_millis(300));
@@ -573,11 +734,11 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
 
     for (key, marker) in [
         (b'2', "FILES"),
-        (b'3', "BROWSER"),
-        (b'4', "TERMINALS"),
-        (b'5', "TASKS"),
-        (b'6', "SOURCE CONTROL"),
-        (b'7', "TEST LAB"),
+        (b'3', "VISUAL PLANE"),
+        (b'4', "TERMINAL"),
+        (b'5', "SUMMARY"),
+        (b'6', "GIT"),
+        (b'7', "TESTS"),
     ] {
         session.send(&[key]);
         assert!(
@@ -587,7 +748,7 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
         );
         session.send(b"a");
         assert!(
-            session.wait_for("ACTION DETAILS", Duration::from_secs(5)),
+            session.wait_for("DETAILS", Duration::from_secs(5)),
             "launcher menu did not open on surface {}\n{}",
             key as char,
             session.output_tail()
@@ -651,7 +812,7 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
 
     session.send(b"3");
     assert!(
-        session.wait_for("BROWSER", Duration::from_secs(5)),
+        session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
         "Browser surface did not render\n{}",
         session.output_tail()
     );
@@ -665,13 +826,13 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
 
     session.send(b"4");
     assert!(
-        session.wait_for("TERMINALS", Duration::from_secs(5)),
+        session.wait_for("TERMINAL", Duration::from_secs(5)),
         "Terminal surface did not render\n{}",
         session.output_tail()
     );
     session.send(b"s");
     assert!(
-        session.wait_for("command detected", Duration::from_secs(5))
+        session.wait_for("No deve", Duration::from_secs(5))
             || session.wait_for("Development suite", Duration::from_secs(1)),
         "terminal development-suite action did not report a result\n{}",
         session.output_tail()
@@ -681,13 +842,13 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
 
     session.send(b"5");
     assert!(
-        session.wait_for("TASKS", Duration::from_secs(5)),
+        session.wait_for("SUMMARY", Duration::from_secs(5)),
         "Tasks surface did not render\n{}",
         session.output_tail()
     );
     session.send(b"a");
     assert!(
-        session.wait_for("ACTION DETAILS", Duration::from_secs(5)),
+        session.wait_for("DETAILS", Duration::from_secs(5)),
         "task launcher did not open\n{}",
         session.output_tail()
     );
@@ -696,7 +857,7 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
 
     session.send(b"6");
     assert!(
-        session.wait_for("SOURCE CONTROL", Duration::from_secs(5)),
+        session.wait_for("GIT", Duration::from_secs(5)),
         "Git surface did not render\n{}",
         session.output_tail()
     );
@@ -711,17 +872,66 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
 
     session.send(b"7");
     assert!(
-        session.wait_for("TEST LAB", Duration::from_secs(5)),
+        session.wait_for("TESTS", Duration::from_secs(5)),
         "Debug surface did not render\n{}",
         session.output_tail()
     );
     session.send(b"a");
     assert!(
-        session.wait_for("ACTION DETAILS", Duration::from_secs(5)),
+        session.wait_for("DETAILS", Duration::from_secs(5)),
         "debug launcher did not open\n{}",
         session.output_tail()
     );
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
+    session.kill();
+}
+
+#[test]
+fn git_file_selection_opens_the_focused_diff_in_place() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = git_workspace_root();
+    let mut session = Session::start(&binary(), &root, 118, 32);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for_visible("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface never rendered after trust\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_visible("✓ Ready", Duration::from_secs(5)),
+        "Pi runtime never became ready\n{}",
+        session.output_tail()
+    );
+
+    session.send(b"6");
+    assert!(
+        session.wait_for_visible("a-first.txt", Duration::from_secs(8)),
+        "Git file list never rendered\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b[B");
+    session.send(b"\r");
+    assert!(
+        session.wait_for_visible("b-second change", Duration::from_secs(8)),
+        "Enter did not load the focused second-file diff\n{}",
+        session.output_tail()
+    );
+
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+    session.send(b"\x1b[A");
+    session.send(b"\r");
+    assert!(
+        session.wait_for_visible("a-first change", Duration::from_secs(8)),
+        "Up and Enter did not load the first-file diff\n{}",
+        session.output_tail()
+    );
     session.kill();
 }

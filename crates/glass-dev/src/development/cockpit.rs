@@ -1,13 +1,21 @@
 use super::{
-    DEVELOPMENT_SCHEMA_VERSION, DevelopmentError, DevelopmentEvent, DevelopmentEventKind,
-    DevelopmentResult, LocalHarness, ProjectDiff, ProjectWorkspace, Timeline,
+    Actor, DEVELOPMENT_SCHEMA_VERSION, DevelopmentError, DevelopmentEvent, DevelopmentEventKind,
+    DevelopmentResult, LocalHarness, ProjectDiff, ProjectWorkspace, Timeline, ToolAuthorization,
+    ToolCall,
 };
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -553,6 +561,377 @@ impl VerificationCard {
         Ok(())
     }
 }
+const MAX_COCKPIT_REQUEST_BYTES: usize = 128 * 1024;
+const MAX_COCKPIT_RESPONSE_BYTES: usize = 512 * 1024;
+
+/// A loopback-only HTTP cockpit for private local inspection and commands.
+///
+/// The token is part of the URL, the listener binds only to `127.0.0.1`, and
+/// every request is bounded before it reaches the resident workspace. This is
+/// intentionally not a public remote-view transport; use SSH/Mosh port
+/// forwarding when the operator is remote.
+#[derive(Debug)]
+pub struct LocalCockpit {
+    address: SocketAddr,
+    token: String,
+    stop: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl LocalCockpit {
+    pub fn start(workspace: crate::SharedDevelopmentWorkspace) -> DevelopmentResult<Self> {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        let token = cockpit_token()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread_token = token.clone();
+        let join = thread::Builder::new()
+            .name("glass-private-cockpit".into())
+            .spawn(move || cockpit_loop(listener, workspace, thread_token, thread_stop))
+            .map_err(|error| {
+                DevelopmentError::Process(format!("failed to start private cockpit: {error}"))
+            })?;
+        Ok(Self {
+            address,
+            token,
+            stop,
+            join: Some(join),
+        })
+    }
+
+    pub fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub fn local_url(&self) -> String {
+        format!("http://{}/{}/", self.address, self.token)
+    }
+
+    pub fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+impl Drop for LocalCockpit {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CockpitCommandRequest {
+    name: String,
+    #[serde(default)]
+    arguments: serde_json::Value,
+    #[serde(default)]
+    allow_mutation: bool,
+    #[serde(default)]
+    confirmed: bool,
+    expected_generation: Option<u64>,
+    expected_project_revision: Option<u64>,
+}
+
+fn cockpit_loop(
+    listener: TcpListener,
+    workspace: crate::SharedDevelopmentWorkspace,
+    token: String,
+    stop: Arc<AtomicBool>,
+) {
+    let mut github_probe = crate::github::GitHubProbeCache::default();
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let response =
+                    handle_cockpit_connection(&mut stream, &workspace, &token, &mut github_probe);
+                write_http_response(&mut stream, response);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn handle_cockpit_connection(
+    stream: &mut TcpStream,
+    workspace: &crate::SharedDevelopmentWorkspace,
+    token: &str,
+    github_probe: &mut crate::github::GitHubProbeCache,
+) -> (u16, &'static str, Vec<u8>) {
+    let request = match read_http_request(stream) {
+        Ok(request) => request,
+        Err(error) => return json_http(400, serde_json::json!({"error":error})),
+    };
+    let (method, path, body) = request;
+    let prefix = format!("/{token}");
+    if !path.starts_with(&prefix) || !path[prefix.len()..].strip_prefix('/').is_some_and(|_| true) {
+        return json_http(
+            401,
+            serde_json::json!({"error":"private cockpit token required"}),
+        );
+    }
+    let endpoint = path[prefix.len()..].split('?').next().unwrap_or_default();
+    match (method.as_str(), endpoint) {
+        ("GET", "/") => (
+            200,
+            "text/html; charset=utf-8",
+            cockpit_html(&format!("/{token}/")).into_bytes(),
+        ),
+        ("GET", "/v1/health") => json_http(200, serde_json::json!({"ok":true})),
+        ("GET", "/v1/state") => match cockpit_state(workspace, github_probe) {
+            Ok(value) => json_http(200, value),
+            Err(error) => json_http(503, serde_json::json!({"error":error.to_string()})),
+        },
+        ("POST", "/v1/command") => match cockpit_command(workspace, &body) {
+            Ok(value) => json_http(200, value),
+            Err(error) => {
+                let status = if matches!(error, DevelopmentError::Conflict(_)) {
+                    409
+                } else {
+                    400
+                };
+                json_http(status, serde_json::json!({"error":error.to_string()}))
+            }
+        },
+        _ => json_http(
+            404,
+            serde_json::json!({"error":"cockpit endpoint not found"}),
+        ),
+    }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), String> {
+    let mut bytes = Vec::with_capacity(4096);
+    let mut chunk = [0_u8; 4096];
+    let header_end = loop {
+        let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if read == 0 {
+            return Err("request ended before headers".into());
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if bytes.len() > MAX_COCKPIT_REQUEST_BYTES {
+            return Err("request exceeds the private cockpit limit".into());
+        }
+        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index + 4;
+        }
+    };
+    let header = std::str::from_utf8(&bytes[..header_end])
+        .map_err(|_| "request headers are not UTF-8".to_string())?;
+    let mut lines = header.split("\r\n");
+    let request_line = lines.next().ok_or("request line missing")?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .ok_or("request method missing")?
+        .to_string();
+    let path = request_parts
+        .next()
+        .ok_or("request path missing")?
+        .to_string();
+    if request_parts.next().is_none() {
+        return Err("HTTP version missing".into());
+    }
+    let mut content_length = 0usize;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length = value
+                .trim()
+                .parse()
+                .map_err(|_| "invalid content length".to_string())?;
+        }
+    }
+    if content_length > MAX_COCKPIT_REQUEST_BYTES - header_end {
+        return Err("request body exceeds the private cockpit limit".into());
+    }
+    while bytes.len() < header_end + content_length {
+        let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if read == 0 {
+            return Err("request ended before body".into());
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    Ok((
+        method,
+        path,
+        bytes[header_end..header_end + content_length].to_vec(),
+    ))
+}
+
+fn cockpit_state(
+    workspace: &crate::SharedDevelopmentWorkspace,
+    github_probe: &mut crate::github::GitHubProbeCache,
+) -> DevelopmentResult<serde_json::Value> {
+    let (root, generation, revision, trust, agents, tasks, git) = {
+        let mut locked = workspace.lock()?;
+        let root = locked.root().display().to_string();
+        let generation = locked.generation();
+        let revision = locked.project().revision();
+        let trust = locked.trust().label().to_string();
+        let agents = locked.agents().list().map_err(|error| error.to_string());
+        let tasks = locked.task_snapshots().map_err(|error| error.to_string());
+        let git = locked
+            .git()
+            .map(|git| git.status().map_err(|error| error.to_string()));
+        (root, generation, revision, trust, agents, tasks, git)
+    };
+    let github = github_probe.probe(Path::new(&root));
+    let agents = match agents {
+        Ok(value) => serde_json::to_value(value)?,
+        Err(error) => serde_json::json!({"error":error}),
+    };
+    let tasks = match tasks {
+        Ok(value) => serde_json::to_value(value)?,
+        Err(error) => serde_json::json!({"error":error}),
+    };
+    let git = match git {
+        Some(Ok(value)) => serde_json::to_value(value)?,
+        Some(Err(error)) => serde_json::json!({"error":error}),
+        None => serde_json::Value::Null,
+    };
+    Ok(serde_json::json!({
+        "schemaVersion": super::DEVELOPMENT_COCKPIT_SCHEMA_VERSION,
+        "root": root,
+        "generation": generation,
+        "projectRevision": revision,
+        "trust": trust,
+        "agents": agents,
+        "tasks": tasks,
+        "git": git,
+        "github": github,
+    }))
+}
+fn cockpit_command(
+    workspace: &crate::SharedDevelopmentWorkspace,
+    body: &[u8],
+) -> DevelopmentResult<serde_json::Value> {
+    let request: CockpitCommandRequest = serde_json::from_slice(body)?;
+    if request.name.is_empty()
+        || request.name.len() > 128
+        || !request
+            .name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(DevelopmentError::InvalidInput(
+            "cockpit command names must be bounded tool identifiers".into(),
+        ));
+    }
+    let mut locked = workspace.lock()?;
+    let call = ToolCall {
+        id: format!("cockpit-{}", now_ms()),
+        name: request.name,
+        arguments: request.arguments,
+    };
+    let expected_generation = request.expected_generation.unwrap_or(locked.generation());
+    let expected_project_revision = request
+        .expected_project_revision
+        .unwrap_or_else(|| locked.project().revision());
+    let context = crate::tools::DevelopmentToolContext {
+        authorization: ToolAuthorization {
+            actor: Actor::external("cockpit"),
+            allow_mutation: request.allow_mutation && request.confirmed,
+            confirmed: request.confirmed,
+        },
+        initiator: None,
+        expected_generation,
+        expected_project_revision,
+    };
+    let result = locked.execute_tool(&call, &context)?;
+    Ok(serde_json::json!({"ok":true,"tool":call.name,"result":result}))
+}
+
+fn write_http_response(stream: &mut TcpStream, response: (u16, &'static str, Vec<u8>)) {
+    let (status, content_type, body) = response;
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        409 => "Conflict",
+        503 => "Service Unavailable",
+        _ => "Error",
+    };
+    let header = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(&body);
+}
+
+fn json_http(status: u16, value: serde_json::Value) -> (u16, &'static str, Vec<u8>) {
+    let body = serde_json::to_vec(&value)
+        .unwrap_or_else(|_| b"{\"error\":\"serialization failure\"}".to_vec());
+    if body.len() > MAX_COCKPIT_RESPONSE_BYTES {
+        return (
+            503,
+            "application/json",
+            b"{\"error\":\"cockpit response exceeded its limit\"}".to_vec(),
+        );
+    }
+    (status, "application/json", body)
+}
+
+fn cockpit_token() -> DevelopmentResult<String> {
+    let mut bytes = [0_u8; 24];
+    getrandom::fill(&mut bytes).map_err(|error| {
+        DevelopmentError::Process(format!("private cockpit token generation failed: {error}"))
+    })?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn cockpit_html(base: &str) -> String {
+    format!(
+        r##"<!doctype html>
+<meta charset="utf-8">
+<title>Glass private cockpit</title>
+<style>
+body{{font:15px/1.45 system-ui,sans-serif;background:#10131a;color:#e8edf5;margin:2rem;max-width:72rem}}
+pre{{background:#181d27;padding:1rem;border-radius:.6rem;white-space:pre-wrap}}
+button,input{{font:inherit;padding:.45rem .7rem;margin:.2rem 0}}
+button{{cursor:pointer}} code{{color:#9ad1ff}}
+</style>
+<h1>Glass private cockpit</h1>
+<p>Loopback-only workspace state. Mutations remain governed by Glass trust and revision checks.</p>
+<p><button id="refresh">Refresh</button>
+<button id="review">Review GitHub PR</button></p>
+<pre id="state">Loading…</pre>
+const base = "{}";
+const state = document.querySelector("#state");
+async function load() {{
+  const response = await fetch(base + "v1/state", {{cache:"no-store"}});
+  state.textContent = JSON.stringify(await response.json(), null, 2);
+}}
+async function command(name, argumentsValue={{}}) {{
+  const response = await fetch(base + "v1/command", {{
+    method:"POST", headers:{{"content-type":"application/json"}},
+    body:JSON.stringify({{name, arguments:argumentsValue}})
+  }});
+  state.textContent = JSON.stringify(await response.json(), null, 2);
+  await load();
+}}
+document.querySelector("#refresh").onclick = load;
+document.querySelector("#review").onclick = () => command("glass.github.review");
+load();
+</script>"##,
+        base
+    )
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -690,6 +1069,38 @@ mod tests {
                 .any(|item| item.state == AttentionState::Running)
         );
         assert!(inbox.iter().any(|item| item.title == "Tests failed"));
+    }
+
+    #[test]
+    fn local_cockpit_requires_token_and_serves_health() {
+        let root = fixture("http");
+        let workspace = crate::SharedDevelopmentWorkspace::open(&root).unwrap();
+        let cockpit = LocalCockpit::start(workspace).unwrap();
+
+        let mut unauthorized = TcpStream::connect(cockpit.address()).unwrap();
+        unauthorized
+            .write_all(b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut unauthorized_response = Vec::new();
+        unauthorized
+            .read_to_end(&mut unauthorized_response)
+            .unwrap();
+        let unauthorized_response = String::from_utf8_lossy(&unauthorized_response);
+        assert!(unauthorized_response.starts_with("HTTP/1.1 401 Unauthorized"));
+
+        let request = format!(
+            "GET /{}/v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            cockpit.token()
+        );
+        let mut authorized = TcpStream::connect(cockpit.address()).unwrap();
+        authorized.write_all(request.as_bytes()).unwrap();
+        let mut authorized_response = Vec::new();
+        authorized.read_to_end(&mut authorized_response).unwrap();
+        let authorized_response = String::from_utf8_lossy(&authorized_response);
+        assert!(authorized_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(authorized_response.contains("{\"ok\":true}"));
+        drop(cockpit);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

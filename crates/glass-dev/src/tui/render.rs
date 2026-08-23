@@ -1,4 +1,5 @@
 use super::command;
+use super::file_view;
 use super::state::{DevSurface, DevTuiState, ResponsiveClass};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -23,6 +24,11 @@ const SUCCESS: Color = Color::Rgb(126, 231, 135);
 const WARNING: Color = Color::Rgb(210, 153, 34);
 const ERROR: Color = Color::Rgb(255, 123, 114);
 const PURPLE: Color = Color::Rgb(210, 168, 255);
+const USER_BUBBLE_BG: Color = Color::Rgb(20, 48, 78);
+const AGENT_BUBBLE_BG: Color = Color::Rgb(18, 60, 34);
+const SYSTEM_BUBBLE_BG: Color = Color::Rgb(45, 49, 57);
+const ALERT_BUBBLE_BG: Color = Color::Rgb(80, 54, 14);
+const ERROR_BUBBLE_BG: Color = Color::Rgb(80, 28, 27);
 fn panel_text(content: &str) -> Text<'static> {
     Text::from(
         content
@@ -112,20 +118,6 @@ fn status_line(state: &DevTuiState, width: u16) -> Line<'static> {
     ])
 }
 
-fn context_next_actions(surface: DevSurface) -> &'static str {
-    match surface {
-        DevSurface::Trust => "inspect config\ntrust once / project",
-        DevSurface::Agent => "i chat · a launch\n: routes",
-        DevSurface::Code => "Enter open · i edit\nCtrl-S save",
-        DevSurface::App => "n address · T targets\nv visual · Enter attach selected",
-        DevSurface::Terminal => "s start suite · a launch\n: routes",
-        DevSurface::Tasks => "a launch\n: deps · evidence · verify",
-        DevSurface::Git => "d diff · a launch\n: stage · commit · branch",
-        DevSurface::Debug => "a launch\n: debugger · tests",
-        DevSurface::More => "a launch\n: routes",
-    }
-}
-
 pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     let area = frame.area();
     if state.quit_confirmation {
@@ -144,7 +136,7 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
 }
 fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect) {
     let width = area.width.saturating_sub(4).min(64);
-    let height = area.height.saturating_sub(4).min(9);
+    let height = area.height.saturating_sub(4).min(7);
     let modal = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -153,47 +145,39 @@ fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect) {
     };
     frame.render_widget(Clear, modal);
     frame.render_widget(
-        Paragraph::new(panel_text(
-            "QUIT GLASS DEV?\n\nReturn to the shell and close this TUI?\n\n[ Enter / Y ] Quit\n[ Esc / N ] Stay",
-        ))
-        .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
-        .block(
-            Block::default()
-                .title(" EXIT · confirm ")
-                .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(WARNING))
-                .bg(PANEL_BACKGROUND)
-                .padding(Padding::horizontal(1)),
-        )
-        .wrap(Wrap { trim: false }),
+        Paragraph::new(panel_text("QUIT?\n\nEnter quit · Esc stay"))
+            .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+            .block(
+                Block::default()
+                    .title(" EXIT · confirm ")
+                    .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(WARNING))
+                    .bg(PANEL_BACKGROUND)
+                    .padding(Padding::horizontal(1)),
+            )
+            .wrap(Wrap { trim: false }),
         modal,
     );
 }
 
 fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let group = command::command_group_for(state.surface);
-    let content = format!(
-        "COMMAND CENTER · {}\n\nLAUNCH\n  a        open guided launchers for this surface\n  :        search every route by root command\n  Tab      complete the highlighted route\n  ?        this guide · Esc closes overlays\n\nNAVIGATION\n  1–7      switch surfaces (phone uses 1–5)\n  j/k ↑/↓  move and scroll\n  PgUp/Dn  page content · Home/End bounds\n\nAPP\n  n        navigate · t type · v live view\n  Alt-←/→  browser back/forward · Ctrl-R reload\n  H/G      hand control to human / return to Glass\n\nAGENT\n  i        compose a message\n  s/l      setup Pi / sign in\n  Ctrl-D   toggle steer/follow-up mode\n  Ctrl-X   abort the selected session\n\nCODE\n  Enter    open selected file · i edit\n  [/]]     switch open buffers · Ctrl-S save\n\nGIT / DEV\n  current route group: {}\n  example: `{}`",
-        state.surface.label(),
-        group.roots.join(" · "),
-        group.example,
-    );
+    let content = "KEYS\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Tab      next surface\n  Esc      back\n  ?        help\n\nWORKSPACE\n  Enter    describe a task\n  a        workspace actions\n  :        command palette\n  s/l      setup / login\n\nAGENT\n  i        compose a prompt\n  :review  review current changes\n  :harness list\n           list installed harnesses\n  :harness start NAME\n           launch a harness in this terminal\n\nAPP (OPTIONAL)\n  n        address\n  t        type\n  v        live view\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n\nEDITOR\n  Enter    open\n  i        edit\n  Ctrl-S   save\n\nGIT\n  ↑/↓      changed file\n  Enter    diff\n  Esc      close";
     frame.render_widget(
-        Paragraph::new(panel_text(&content))
+        Paragraph::new(panel_text(content))
             .style(Style::default().fg(TEXT))
             .scroll((state.help_scroll, 0))
             .block(
                 Block::default()
-                    .title(" HELP · j/k scroll · ?/Esc close ")
+                    .title(" HELP · ↑↓ scroll · ?/Esc ")
                     .title_style(
                         Style::default()
                             .fg(ACCENT_BRIGHT)
                             .add_modifier(Modifier::BOLD),
                     )
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_type(BorderType::Plain)
                     .border_style(Style::default().fg(PANEL_BORDER))
                     .bg(PANEL_BACKGROUND)
                     .padding(Padding::horizontal(1)),
@@ -206,9 +190,13 @@ fn render_desktop(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Min(8),
-            Constraint::Length(3),
+            Constraint::Length(if state.composer_mode || state.command_mode {
+                3
+            } else {
+                2
+            }),
         ])
         .split(area);
     render_header(frame, state, rows[0], "desktop");
@@ -230,9 +218,9 @@ fn render_compact(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(2),
             Constraint::Min(8),
-            Constraint::Length(4),
+            Constraint::Length(3),
         ])
         .split(area);
     render_header(frame, state, rows[0], "compact");
@@ -246,12 +234,17 @@ fn render_compact(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let footer_height = if state.composer_mode || state.command_mode {
+        4
+    } else {
+        3
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(2),
             Constraint::Min(5),
-            Constraint::Length(if state.composer_mode { 5 } else { 4 }),
+            Constraint::Length(footer_height),
         ])
         .split(area);
     render_header(frame, state, rows[0], "phone cockpit");
@@ -269,11 +262,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )),
             status_line(state, rows[2].width.saturating_sub(2)),
             Line::from(Span::styled(
-                "Enter send · Ctrl-D toggle steer/follow-up",
-                Style::default().fg(MUTED),
-            )),
-            Line::from(Span::styled(
-                "Esc cancel · ? help",
+                "Enter send · Ctrl-D mode · Esc",
                 Style::default().fg(MUTED),
             )),
         ]
@@ -290,39 +279,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )),
             status_line(state, rows[2].width.saturating_sub(2)),
             Line::from(Span::styled(
-                "Tab complete · Enter run · Esc close",
-                Style::default().fg(MUTED),
-            )),
-        ]
-    } else if state.surface == DevSurface::Trust {
-        vec![
-            status_line(state, rows[2].width.saturating_sub(2)),
-            Line::from(Span::styled(
-                "I inspect · O untrusted · 1 once · T project",
-                Style::default().fg(MUTED),
-            )),
-            Line::from(Span::styled(
-                "a launch · ? help",
-                Style::default().fg(MUTED),
-            )),
-        ]
-    } else if state.surface == DevSurface::Agent {
-        vec![
-            status_line(state, rows[2].width.saturating_sub(2)),
-            Line::from(Span::styled(
-                "s setup · l login · i chat · a launch",
-                Style::default().fg(MUTED),
-            )),
-            Line::from(Span::styled(
-                "? help · j/k scroll",
-                Style::default().fg(MUTED),
-            )),
-        ]
-    } else if state.surface == DevSurface::Terminal {
-        vec![
-            status_line(state, rows[2].width.saturating_sub(2)),
-            Line::from(Span::styled(
-                "s start suite · a launch · : routes · ? help",
+                "Tab complete · Enter run · Esc",
                 Style::default().fg(MUTED),
             )),
         ]
@@ -330,11 +287,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         vec![
             status_line(state, rows[2].width.saturating_sub(2)),
             Line::from(Span::styled(
-                "1 Agent · 2 Code · 3 App · 4 Tasks",
-                Style::default().fg(MUTED),
-            )),
-            Line::from(Span::styled(
-                "5 More · a launch · : routes · ? help",
+                "←→ surface · ↑↓ move · Enter open · ?",
                 Style::default().fg(MUTED),
             )),
         ]
@@ -353,7 +306,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     );
 }
 
-fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &str) {
+fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: &str) {
     let brand = Span::styled(
         " GLASS DEV ",
         Style::default()
@@ -361,33 +314,30 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
             .bg(ACCENT)
             .add_modifier(Modifier::BOLD),
     );
+    let surface_label = if state.surface == DevSurface::Agent {
+        "Agent · WORKSPACE".to_string()
+    } else {
+        state.surface.label().to_string()
+    };
     let surface = Span::styled(
-        format!(" {} ", state.surface.label()),
+        format!(" {surface_label} "),
         Style::default()
             .fg(ACCENT_BRIGHT)
             .add_modifier(Modifier::BOLD),
     );
-    let product = Span::styled(
-        format!(" mode:{} ", state.product_mode().label()),
-        Style::default().fg(SUCCESS),
-    );
     let trust = Span::styled(
-        format!(" trust:{} ", state.snapshot_trust_label),
+        format!("{} ", state.snapshot_trust_label),
         Style::default().fg(if state.snapshot_trust_label == "untrusted" {
             WARNING
         } else {
             MUTED
         }),
     );
-    let activity = Span::styled(
-        format!(" {} ", activity_summary(state)),
-        Style::default().fg(MUTED),
-    );
     let path = Span::styled(
-        compact_path(&state.snapshot_root, area.width.saturating_sub(30)),
+        compact_path(&state.snapshot_root, area.width.saturating_sub(24)),
         Style::default().fg(MUTED),
     );
-    let mut lines = if area.width < 72 {
+    let lines = if area.width < 104 {
         vec![
             Line::from(vec![brand.clone(), surface]),
             Line::from(vec![
@@ -397,40 +347,17 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, mode: &
                 trust,
             ]),
         ]
-    } else if area.width < 104 {
-        vec![
-            Line::from(vec![
-                brand.clone(),
-                surface,
-                product,
-                trust,
-                Span::styled(format!(" {} ", mode), Style::default().fg(MUTED)),
-            ]),
-            Line::from(vec![
-                Span::raw(" "),
-                path,
-                Span::styled(" · ", Style::default().fg(PANEL_BORDER)),
-                activity,
-            ]),
-        ]
     } else {
         vec![Line::from(vec![
             brand,
             Span::raw("  "),
-            path,
             surface,
-            product,
+            path,
+            Span::styled(" · ", Style::default().fg(PANEL_BORDER)),
             trust,
-            Span::styled(format!(" {} ", mode), Style::default().fg(MUTED)),
-            activity,
         ])]
     };
-    if area.height >= 2 {
-        lines.push(Line::from(Span::styled(
-            "─".repeat(usize::from(area.width)),
-            Style::default().fg(PANEL_BORDER),
-        )));
-    }
+
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().bg(PANEL_BACKGROUND)),
         area,
@@ -465,37 +392,10 @@ fn compact_line(text: &str, width: u16) -> String {
     compact
 }
 
-fn surface_hint(surface: DevSurface) -> &'static str {
-    match surface {
-        DevSurface::Trust => "authority",
-        DevSurface::Agent => "chat",
-        DevSurface::Code => "files",
-        DevSurface::App => "browser",
-        DevSurface::Terminal => "processes",
-        DevSurface::Tasks => "verify",
-        DevSurface::Git => "changes",
-        DevSurface::Debug => "tests",
-        DevSurface::More => "services",
-    }
-}
-
 fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let rows = if area.height >= 17 {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(10), Constraint::Length(5)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(10), Constraint::Length(0)])
-            .split(area)
-    };
     let items = DevSurface::PRIMARY
         .into_iter()
-        .enumerate()
-        .map(|(index, surface)| {
-            let key = index + 1;
+        .map(|surface| {
             let selected = surface == state.surface;
             let style = if selected {
                 Style::default()
@@ -505,69 +405,50 @@ fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             } else {
                 Style::default().fg(TEXT)
             };
-            let mut row = vec![
+            ListItem::new(Line::from(vec![
                 Span::styled(
                     if selected { " › " } else { "   " },
                     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    format!(" {key} "),
-                    Style::default()
-                        .fg(if selected { Color::Black } else { ACCENT })
-                        .bg(if selected { ACCENT } else { PANEL_BACKGROUND })
-                        .add_modifier(Modifier::BOLD),
-                ),
                 Span::raw(" "),
                 Span::styled(surface.label(), style),
-            ];
-            if area.width >= 30 {
-                row.push(Span::styled(
-                    format!("  {}", surface_hint(surface)),
-                    Style::default().fg(MUTED),
-                ));
-            }
-            ListItem::new(Line::from(row)).style(style)
-        });
+            ]))
+            .style(style)
+        })
+        .collect::<Vec<_>>();
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(2), Constraint::Length(2)])
+        .split(area);
     frame.render_widget(
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
             .block(
                 Block::default()
-                    .title(" SURFACES · 1–7 ")
+                    .title(" SURFACES ")
                     .title_style(
                         Style::default()
                             .fg(ACCENT_BRIGHT)
                             .add_modifier(Modifier::BOLD),
                     )
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_type(BorderType::Plain)
                     .border_style(Style::default().fg(PANEL_BORDER))
                     .padding(Padding::horizontal(1)),
             ),
         rows[0],
     );
-    if rows[1].height > 0 {
-        let quick_keys = if area.width <= 22 {
-            "a launch\n: routes\nq quit · ? help"
-        } else {
-            "a launch · : routes · q quit\nm More · ? help\nj/k move · scroll"
-        };
-        frame.render_widget(
-            Paragraph::new(panel_text(quick_keys))
-                .style(Style::default().bg(PANEL_BACKGROUND))
-                .block(
-                    Block::default()
-                        .title(" QUICK KEYS ")
-                        .title_style(Style::default().fg(MUTED))
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(PANEL_BORDER))
-                        .padding(Padding::horizontal(1)),
-                )
-                .wrap(Wrap { trim: true }),
-            rows[1],
-        );
-    }
+    frame.render_widget(
+        Paragraph::new("←→ move · Enter open")
+            .style(Style::default().fg(MUTED).bg(PANEL_BACKGROUND))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(PANEL_BORDER))
+                    .padding(Padding::horizontal(1)),
+            ),
+        rows[1],
+    );
 }
 
 fn surface_block(title: impl Into<String>, title_color: Color) -> Block<'static> {
@@ -579,9 +460,8 @@ fn surface_block(title: impl Into<String>, title_color: Color) -> Block<'static>
                 .add_modifier(Modifier::BOLD),
         )
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::default().fg(PANEL_BORDER))
-        .bg(PANEL_BACKGROUND)
         .padding(Padding::horizontal(1))
 }
 
@@ -604,37 +484,8 @@ fn render_panel(
     );
 }
 
-fn render_scrollable_panel(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    title: impl Into<String>,
-    content: impl Into<String>,
-    title_color: Color,
-    scroll: u16,
-) {
-    if area.width < 2 || area.height < 2 {
-        return;
-    }
-    frame.render_widget(
-        Paragraph::new(panel_text(&content.into()))
-            .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
-            .scroll((scroll, 0))
-            .block(surface_block(title, title_color))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
 fn stack_for_phone(state: &DevTuiState, area: Rect) -> bool {
     area.width < 84
-        || matches!(
-            state.responsive_class(area.width, area.height),
-            ResponsiveClass::Phone
-        )
-}
-
-fn compact_browser_copy(state: &DevTuiState, area: Rect) -> bool {
-    area.width < 72
         || matches!(
             state.responsive_class(area.width, area.height),
             ResponsiveClass::Phone
@@ -729,11 +580,11 @@ fn agent_progress(state: &DevTuiState) -> String {
         .iter()
         .filter(|message| matches!(message.state, super::state::ChatMessageState::Sending))
         .count();
-    format!(
-        "AGENT PROGRESS\nphase  {phase}\nqueue  {queued} prompt(s) · cursor {}\nactivity  {}",
-        state.conversation_cursor,
-        activity_summary(state)
-    )
+    if queued == 0 {
+        phase.into()
+    } else {
+        format!("{phase} · {queued} queued")
+    }
 }
 
 fn browser_progress(
@@ -752,7 +603,7 @@ fn browser_progress(
         "select a target"
     };
     format!(
-        "BROWSER PROGRESS  {phase} · target {} · rev {}",
+        "target {} · rev {} · {phase}",
         browser
             .selected()
             .map(|entity| entity.name.as_str())
@@ -766,33 +617,29 @@ fn browser_progress(
 fn render_trust_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(4)])
+        .constraints([Constraint::Length(5), Constraint::Min(4)])
         .split(area);
-    let summary = format!(
-        "TRUST REQUIRED\n{} configuration item(s) need attention\n\nCurrent authority: {}\n\n[I] Inspect  [O] Open untrusted\n[1] Trust once  [T] Trust project",
-        state
-            .snapshot_trust_inspection
-            .iter()
-            .filter(|item| item.trust_required)
-            .count(),
-        state.snapshot_trust_label,
-    );
+    let pending = state
+        .snapshot_trust_inspection
+        .iter()
+        .filter(|item| item.trust_required)
+        .count();
     render_panel(
         frame,
         rows[0],
-        " WORKSPACE TRUST · required ",
-        summary,
+        " TRUST ",
+        format!(
+            "{pending} pending · {}\nI inspect · O open\n1 trust once · T trust project",
+            state.snapshot_trust_label
+        ),
         WARNING,
     );
     let inspection = super::projection::trust_items(&state.snapshot_trust_inspection);
     render_panel(
         frame,
         rows[1],
-        " CONFIGURATION BY AUTHORITY / RISK ",
-        format!(
-            "{}\n\nNEXT ACTIONS\nInspect first; trust only the scope this project needs.",
-            inspection
-        ),
+        " CONFIG ",
+        format!("{}\nInspect before trust.", inspection),
         ACCENT_BRIGHT,
     );
 }
@@ -802,33 +649,175 @@ fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
         .agent_readiness
         .lines()
         .next()
-        .unwrap_or("Pi runtime unavailable");
-    let fields = readiness.split(" · ").collect::<Vec<_>>();
-    let runtime_state = fields.first().copied().unwrap_or("Pi runtime unavailable");
-    let runtime_details = fields
-        .iter()
-        .skip(1)
-        .copied()
-        .collect::<Vec<_>>()
-        .join(" · ");
-    let runtime_details = if runtime_details.is_empty() {
-        "runtime details unavailable".to_string()
-    } else {
-        runtime_details
-    };
+        .unwrap_or("Pi unavailable");
+    let runtime_state = readiness.split(" · ").next().unwrap_or("Pi unavailable");
     let app_summary = state
         .browser_chat_header()
         .split(" · ")
-        .take(3)
+        .take(2)
         .collect::<Vec<_>>()
         .join(" · ");
-    let app_summary = format!("{app_summary} · {}", activity_summary(state));
+    let app_summary = app_summary
+        .strip_prefix("APP · ")
+        .map_or(app_summary.clone(), |summary| {
+            format!("APP (optional) · {summary}")
+        });
     format!(
-        "{}\n{}\n{}",
-        compact_line(&format!("PI RUNTIME  {runtime_state}"), width),
-        compact_line(&runtime_details, width),
-        compact_line(&app_summary, width),
+        "{}\n{}",
+        compact_line(runtime_state, width),
+        compact_line(&app_summary, width)
     )
+}
+#[derive(Clone, Copy)]
+enum ConversationBubbleKind {
+    User,
+    Agent,
+    System,
+    Alert,
+    Error,
+}
+
+fn conversation_bubble_style(kind: ConversationBubbleKind) -> (Color, Color, Color) {
+    match kind {
+        ConversationBubbleKind::User => (ACCENT_BRIGHT, USER_BUBBLE_BG, TEXT),
+        ConversationBubbleKind::Agent => (SUCCESS, AGENT_BUBBLE_BG, TEXT),
+        ConversationBubbleKind::System => (MUTED, SYSTEM_BUBBLE_BG, TEXT),
+        ConversationBubbleKind::Alert => (WARNING, ALERT_BUBBLE_BG, TEXT),
+        ConversationBubbleKind::Error => (ERROR, ERROR_BUBBLE_BG, ERROR),
+    }
+}
+
+fn wrap_bubble_line(line: &str, width: usize) -> Vec<String> {
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    line.chars()
+        .collect::<Vec<_>>()
+        .chunks(width.max(1))
+        .map(|chunk| chunk.iter().collect())
+        .collect()
+}
+
+fn conversation_bubble_lines(content: &str, width: u16) -> Vec<Line<'static>> {
+    let available = usize::from(width).max(24);
+    let mut lines = Vec::new();
+    for (index, block) in content.split("\n\n").enumerate() {
+        if index > 0 {
+            lines.push(Line::from(""));
+        }
+        let mut block_lines = block.lines();
+        let first = block_lines.next().unwrap_or_default().trim();
+        let (kind, label, body) = match first {
+            "YOU" => (
+                ConversationBubbleKind::User,
+                "YOU",
+                block_lines.collect::<Vec<_>>().join("\n"),
+            ),
+            "GLASS AGENT" => (
+                ConversationBubbleKind::Agent,
+                "GLASS AGENT",
+                block_lines.collect::<Vec<_>>().join("\n"),
+            ),
+            "SYSTEM" => (
+                ConversationBubbleKind::System,
+                "SYSTEM",
+                block_lines.collect::<Vec<_>>().join("\n"),
+            ),
+            "ALERT" => (
+                ConversationBubbleKind::Alert,
+                "ALERT",
+                block_lines.collect::<Vec<_>>().join("\n"),
+            ),
+            "ERROR" => (
+                ConversationBubbleKind::Error,
+                "ERROR",
+                block_lines.collect::<Vec<_>>().join("\n"),
+            ),
+            _ => (ConversationBubbleKind::System, "SYSTEM", block.to_string()),
+        };
+        let (border, background, text_color) = conversation_bubble_style(kind);
+        let bubble_width = if matches!(kind, ConversationBubbleKind::User) {
+            available.saturating_sub(8).max(18).min(available)
+        } else {
+            available
+        };
+        let inner_width = bubble_width.saturating_sub(4).max(8);
+        let indent = if matches!(kind, ConversationBubbleKind::User) {
+            available.saturating_sub(bubble_width)
+        } else {
+            0
+        };
+        let label_width = label.chars().count();
+        let rule = "─".repeat(inner_width.saturating_sub(label_width + 1));
+        let prefix = " ".repeat(indent);
+        let top = format!("{prefix}╭─ {label} {rule}╮");
+        lines.push(Line::from(Span::styled(
+            top,
+            Style::default()
+                .fg(border)
+                .bg(background)
+                .add_modifier(Modifier::BOLD),
+        )));
+        let body_lines = body
+            .lines()
+            .flat_map(|line| wrap_bubble_line(line, inner_width))
+            .collect::<Vec<_>>();
+        for line in if body_lines.is_empty() {
+            vec![String::new()]
+        } else {
+            body_lines
+        } {
+            let padded = format!("{line:<inner_width$}");
+            lines.push(Line::from(Span::styled(
+                format!("{prefix}│ {padded} │"),
+                Style::default().fg(text_color).bg(background),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            format!("{prefix}╰{}╯", "─".repeat(inner_width + 2)),
+            Style::default().fg(border).bg(background),
+        )));
+    }
+    lines
+}
+
+fn agent_conversation_text(state: &DevTuiState, landing: &str, width: u16) -> Text<'static> {
+    let conversation = state.conversation_view();
+    let mut lines = if conversation.starts_with("No conversation yet.") {
+        panel_text(landing).lines
+    } else {
+        conversation_bubble_lines(&conversation, width)
+    };
+    if !state.composer_mode {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Enter to chat",
+            Style::default().fg(MUTED),
+        )));
+    }
+    Text::from(lines)
+}
+fn render_agent_conversation_panel(
+    frame: &mut Frame<'_>,
+    state: &DevTuiState,
+    landing: &str,
+    area: Rect,
+) {
+    if area.width < 2 || area.height < 2 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(agent_conversation_text(
+            state,
+            landing,
+            area.width.saturating_sub(4),
+        ))
+        .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+        .scroll((state.current_scroll(), 0))
+        .block(surface_block(" CONVERSATION ", ACCENT_BRIGHT))
+        .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -839,81 +828,91 @@ fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if compact {
-            [Constraint::Length(6), Constraint::Min(4)]
+            [Constraint::Length(4), Constraint::Min(5)]
         } else {
-            [Constraint::Length(5), Constraint::Min(6)]
+            [Constraint::Length(4), Constraint::Min(6)]
         })
         .split(area);
     let header = compact_agent_header(state, rows[0].width.saturating_sub(4));
-    render_panel(
-        frame,
-        rows[0],
-        " AGENT · resident session ",
-        header,
-        ACCENT_BRIGHT,
-    );
+    render_panel(frame, rows[0], " CODING AGENT ", header, ACCENT_BRIGHT);
 
     let conversation = state.conversation_view();
     let landing = if conversation.starts_with("No conversation yet.") {
         if state.agent_readiness.starts_with("✓ Ready") {
-            if compact {
-                "START HERE\n[i] Ask Glass Agent\n[a] Launchers · [:] Routes\n\nYour prompt stays inside this workspace.".into()
-            } else {
-                "START HERE\n\n◆ [i] Ask Glass Agent\n◆ [a] Open launchers\n◆ [:] Search routes\n\nYour first prompt stays inside this workspace.".into()
-            }
+            "START HERE\nDescribe a coding task.\nEnter to chat · Glass inspects, edits, runs, and verifies.\nBrowser opens only for UI work.\n\nNeed another tool? Press a for actions, or use :harness list.".into()
         } else {
-            "SETUP REQUIRED\n\n◆ [s] Install/repair Pi runtime\n◆ [u] Refresh pinned runtime\n◆ [l] Sign in after setup\n◆ [i] Chat when Pi is ready".into()
+            "SETUP\nChoose Setup Pi runtime or Login from Actions.\nThen return here to describe a coding task.\n\nInstalled coding harnesses remain available from :harness list.".into()
         }
     } else {
-        format!("TRANSCRIPT\n{conversation}")
+        conversation
     };
     if compact || area.width < 84 {
-        render_scrollable_panel(
-            frame,
-            rows[1],
-            " CONVERSATION · i compose ",
-            format!(
-                "{}\n\n{}\n\nNEXT ACTIONS\n{}\n\nKeys: Enter sends · Ctrl-D toggles steer/follow-up · PgUp/PgDn scroll · Esc closes",
-                landing,
-                agent_progress(state),
-                context_next_actions(DevSurface::Agent)
-            ),
-            ACCENT_BRIGHT,
-            state.current_scroll(),
-        );
+        render_agent_conversation_panel(frame, state, &landing, rows[1]);
         return;
     }
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(68), Constraint::Min(24)])
         .split(rows[1]);
-    render_scrollable_panel(
-        frame,
-        columns[0],
-        " CONVERSATION · i compose ",
-        format!(
-            "{}\n\nKeys: Enter sends · Ctrl-D toggles steer/follow-up · Ctrl-X abort · PgUp/PgDn scroll · Esc closes",
-            landing
-        ),
-        ACCENT_BRIGHT,
-        state.current_scroll(),
-    );
+    render_agent_conversation_panel(frame, state, &landing, columns[0]);
+    let installed_harnesses = state
+        .harnesses
+        .lines()
+        .filter(|line| line.starts_with("●"))
+        .count();
+    let known_harnesses = state
+        .harnesses
+        .lines()
+        .filter(|line| line.starts_with("●") || line.starts_with("○"))
+        .count();
     let sidebar = format!(
-        "FIRST RUN\n{}\n\n{}\n\nAGENT READINESS\n{}\n\nNEXT ACTIONS\n◆ [i] compose\n◆ [a] launchers\n◆ [:] routes\n◆ [s] setup · [l] sign in",
-        if state.agent_readiness.starts_with("✓ Ready") {
-            "Ready to ask"
-        } else {
-            "Setup required"
-        },
-        agent_progress(state),
-        state.agent_readiness,
+        "TASK LOOP\n{}\n\nHARNESS BRIDGE\n{installed_harnesses}/{known_harnesses} detected\n:harness list\n:harness start NAME",
+        agent_progress(state)
     );
     render_panel(frame, columns[1], " SESSION ", sidebar, PURPLE);
+}
+fn render_agent_workspace_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(7),
+            Constraint::Min(8),
+            Constraint::Length(8),
+        ])
+        .split(area);
+    let branch = state.git.lines().next().unwrap_or("branch unavailable");
+    let branch = branch.strip_prefix("branch ").unwrap_or(branch);
+    let check = state
+        .tests
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("No checks run yet");
+    render_panel(
+        frame,
+        rows[0],
+        " WORKSPACE ",
+        format!(
+            "BRANCH {branch}\n{} changed · rev {}\nGITHUB {}\n{}\n{}",
+            state.git_entries.len(),
+            state.snapshot_project_revision,
+            state.github.summary(),
+            activity_summary(state),
+            check
+        ),
+        ACCENT_BRIGHT,
+    );
+    if state.git_diff_open {
+        render_git_diff_panel(frame, state, rows[1]);
+    } else {
+        render_git_file_list(frame, state, rows[1]);
+    }
+    let browser = state.browser_workspace.state();
+    render_browser_visual(frame, state, rows[2], browser);
 }
 fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let items = if state.files.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "No files discovered yet",
+            "No files",
             Style::default().fg(MUTED),
         )))]
     } else {
@@ -963,36 +962,44 @@ fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .get(state.selected_file)
         .map(|path| compact_path(path, area.width.saturating_sub(18)))
         .unwrap_or_else(|| "none".into());
-    frame.render_widget(
+    let mut list_state = ListState::default();
+    if !state.files.is_empty() {
+        list_state.select(Some(state.selected_file));
+    }
+    frame.render_stateful_widget(
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
             .block(surface_block(
-                format!(" FILES · {} selected · j/k · Enter ", selected),
+                format!(" FILES · {} ", selected),
                 ACCENT_BRIGHT,
             )),
         area,
+        &mut list_state,
     );
 }
 
 fn render_code_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let title = if state.focused_editor_path.is_empty() {
-        " EDITOR · select a file "
+        " EDITOR · choose a file "
     } else if state.focused_editor_dirty {
         " EDITOR · unsaved "
     } else {
         " EDITOR · saved "
     };
     let content = if state.editor.trim().is_empty() {
-        "No file open.\n\nSelect a file and press Enter.\nPress i to edit; Ctrl-S saves.".into()
+        "No file open · choose a file from the list"
     } else {
-        state.editor.clone()
+        state.editor.as_str()
     };
     frame.render_widget(
-        Paragraph::new(panel_text(&content))
-            .style(Style::default().fg(TEXT).bg(PANEL_INSET))
-            .scroll((state.current_scroll(), 0))
-            .block(surface_block(title, ACCENT_BRIGHT))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(file_view::render_editor(
+            &state.focused_editor_path,
+            content,
+        ))
+        .style(Style::default().bg(PANEL_INSET))
+        .scroll((state.current_scroll(), 0))
+        .block(surface_block(title, ACCENT_BRIGHT))
+        .wrap(Wrap { trim: false }),
         area,
     );
 }
@@ -1020,15 +1027,12 @@ fn render_code_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     render_panel(
         frame,
         columns[2],
-        " DIAGNOSTICS · lsp ",
-        format!(
-            "{}\n\nNEXT ACTIONS\nEnter open · i edit · Ctrl-S save\n:editor search QUERY\n:lsp diagnostics",
-            if state.lsp.trim().is_empty() {
-                "No diagnostics yet"
-            } else {
-                &state.lsp
-            }
-        ),
+        " LSP ",
+        if state.lsp.trim().is_empty() {
+            "No diagnostics".into()
+        } else {
+            state.lsp.clone()
+        },
         WARNING,
     );
 }
@@ -1038,7 +1042,6 @@ fn render_browser_visual(
     state: &DevTuiState,
     area: Rect,
     browser: &glass_browser::browser_workspace::BrowserWorkspaceState,
-    compact: bool,
 ) {
     if state.browser_visual_live {
         if let Some(pane) = state.browser_pane.as_ref() {
@@ -1052,8 +1055,8 @@ fn render_browser_visual(
             render_panel(
                 frame,
                 area,
-                " VISUAL PLANE · Herdr pane ",
-                "HERDR PANE\n\nLive browser frames are owned by the Herdr graphics pane.\n\nThe semantic inspector remains synchronized here while the pane renders pixels.\n\n[v] stop live view",
+                " LIVE VIEW ",
+                "Live browser view is active",
                 SUCCESS,
             );
             return;
@@ -1062,20 +1065,8 @@ fn render_browser_visual(
     let reason = browser
         .presentation_reason
         .as_deref()
-        .unwrap_or("Request a visual drawer with v after the browser is connected.");
-    let content = if compact {
-        format!(
-            "{}\n\n{}\n\n[n] address · [Enter] attach · [v] visual\nSemantic inspection remains available.",
-            browser_progress(state, browser),
-            reason,
-        )
-    } else {
-        format!(
-            "START HERE\n\n{}\n\nDIAGNOSTIC\n{}\n\nNEXT ACTIONS\n[n] address · [Enter] attach · [v] request visual\nSemantic inspection remains available while pixels are unavailable.",
-            browser_progress(state, browser),
-            reason,
-        )
-    };
+        .unwrap_or("Connect a browser to inspect the page.");
+    let content = format!("{}\n{}", browser_progress(state, browser), reason);
     render_panel(
         frame,
         area,
@@ -1101,12 +1092,13 @@ fn render_browser_inspector(
             .take(18)
             .map(|(index, entity)| {
                 format!(
-                    "{} {} · {}",
+                    "{} [{}] {} · {}",
                     if Some(index) == browser.selected_entity {
                         "›"
                     } else {
                         " "
                     },
+                    index + 1,
                     entity.name,
                     entity.role
                 )
@@ -1117,9 +1109,9 @@ fn render_browser_inspector(
     render_panel(
         frame,
         area,
-        " INSPECTOR · j/k select ",
+        " INSPECTOR ",
         format!(
-            "PAGE\n{}\n{}\n\nCONNECTION\n{} · rev {}\n\nOWNER\n{} · focus {}\n\nENTITIES\n{}\n\n{}\n\nWORKFLOW\n{}",
+            "{}\n{}\n\n{} · rev {}\n{} · focus {}\n\n{}\n\n{}",
             browser.title,
             compact_path(&browser.url, area.width.saturating_sub(6)),
             browser.connection_label(),
@@ -1130,7 +1122,6 @@ fn render_browser_inspector(
             browser.focus_label(),
             entities,
             state.browser_detail,
-            browser.workflow,
         ),
         ACCENT_BRIGHT,
     );
@@ -1141,62 +1132,35 @@ fn render_app_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
-            Constraint::Min(8),
-            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(2),
         ])
         .split(area);
     let address = if browser.url.is_empty() {
-        "No page · press n to enter an address".into()
+        "No page".into()
     } else {
-        compact_path(&browser.url, rows[0].width.saturating_sub(28))
+        compact_path(&browser.url, rows[0].width.saturating_sub(18))
     };
     let toolbar = format!(
-        "{}  {}  {}  ·  {}\n{}\n[Alt-←/→] navigate · [Ctrl-R] reload · [n] address · [v] visual",
-        if browser.loading {
-            "◐ loading"
-        } else {
-            "● ready"
-        },
+        "{} · {}\n{}",
+        if browser.loading { "loading" } else { "ready" },
         browser.connection_label(),
         address,
-        activity_summary(state),
-        browser_progress(state, browser),
     );
-    render_panel(
-        frame,
-        rows[0],
-        " BROWSER · visual + semantic ",
-        toolbar,
-        ACCENT_BRIGHT,
-    );
+    render_panel(frame, rows[0], " BROWSER ", toolbar, ACCENT_BRIGHT);
 
     if stack_for_phone(state, rows[1]) {
-        render_browser_visual(
-            frame,
-            state,
-            rows[1],
-            browser,
-            compact_browser_copy(state, rows[1]),
-        );
+        render_browser_visual(frame, state, rows[1], browser);
     } else {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(68), Constraint::Min(30)])
             .split(rows[1]);
-        render_browser_visual(frame, state, columns[0], browser, false);
+        render_browser_visual(frame, state, columns[0], browser);
         render_browser_inspector(frame, state, columns[1], browser);
     }
-    render_panel(
-        frame,
-        rows[2],
-        " WORKFLOW · guarded actions ",
-        format!(
-            "{}\nNEXT ACTIONS  [n] address · [t] type · [v] visual · [H/G] handoff · : routes",
-            state.workflow
-        ),
-        PURPLE,
-    );
+    render_panel(frame, rows[2], " WORKFLOW ", &state.workflow, PURPLE);
 }
 
 fn split_process_line(line: &str) -> (String, String, String) {
@@ -1221,11 +1185,7 @@ fn status_line_count(content: &str) -> usize {
 fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4),
-            Constraint::Min(7),
-            Constraint::Length(3),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(7)])
         .split(area);
     let process_lines = state
         .processes
@@ -1249,19 +1209,16 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
     render_panel(
         frame,
         rows[0],
-        " TERMINALS · managed processes ",
-        format!(
-            "MANAGED TERMINALS   {process_count} process(es) · {healthy_count} healthy · {failed_count} attention\nBACKGROUND-SAFE PTYs · activity {}",
-            activity_summary(state)
-        ),
+        " TERMINAL ",
+        format!("{process_count} processes · {healthy_count} healthy · {failed_count} attention"),
         ACCENT_BRIGHT,
     );
     if process_lines.is_empty() {
         render_panel(
             frame,
             rows[1],
-            " PROCESS TABLE · s start · a launch ",
-            "No managed terminals.\n\n[s] Start the detected suite\n[a] Open launchers\n:process start · :process logs · :process stop",
+            " PROCESSES ",
+            "No managed processes yet",
             ACCENT_BRIGHT,
         );
     } else {
@@ -1301,26 +1258,16 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
                         .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD)),
                 )
                 .column_spacing(1)
-                .block(surface_block(
-                    " PROCESS TABLE · s start · a launch ",
-                    ACCENT_BRIGHT,
-                )),
+                .block(surface_block(" PROCESSES ", ACCENT_BRIGHT)),
             rows[1],
         );
     }
-    render_panel(
-        frame,
-        rows[2],
-        " NEXT ACTIONS ",
-        "s start detected suite · a open launchers · :process start · :process logs · :process stop",
-        WARNING,
-    );
 }
 
 fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let items = if state.tasks.trim().is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "No tasks · :task create TITLE PROMPT",
+            "No tasks",
             Style::default().fg(MUTED),
         )))]
     } else {
@@ -1340,7 +1287,7 @@ fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
             .block(surface_block(
-                format!(" TASK DAG · {task_count} task(s) · status + verification "),
+                format!(" TASKS · {task_count} "),
                 ACCENT_BRIGHT,
             )),
         area,
@@ -1378,91 +1325,180 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     render_panel(
         frame,
         rows[1],
-        " TASK SUMMARY ",
-        format!(
-            "TASKS\n{running} running · {queued} queued · {failed} failed\n\nFLOW\nlaunch → verify → evidence\n\nNEXT ACTIONS\n[a] task launchers\n:task create\n:task cancel\n:task retry\n\nEvidence and verification stay attached to each task.",
-        ),
+        " SUMMARY ",
+        format!("{running} running · {queued} queued · {failed} failed"),
         PURPLE,
     );
 }
 
-fn diff_text(content: &str) -> Text<'static> {
-    Text::from(
-        content
-            .lines()
-            .map(|line| {
-                let color = if line.starts_with('+') && !line.starts_with("+++") {
-                    SUCCESS
-                } else if line.starts_with('-') && !line.starts_with("---") {
-                    ERROR
-                } else if line.starts_with("@@") {
-                    ACCENT_BRIGHT
-                } else {
-                    TEXT
-                };
-                Line::from(Span::styled(line.to_string(), Style::default().fg(color)))
-            })
-            .collect::<Vec<_>>(),
-    )
+fn git_entry_status(entry: &crate::git::GitStatusEntry) -> String {
+    if entry.untracked {
+        "??".into()
+    } else {
+        format!("{}{}", entry.index_status, entry.worktree_status)
+    }
 }
 
-fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+fn git_entry_status_color(entry: &crate::git::GitStatusEntry) -> Color {
+    if entry.untracked {
+        WARNING
+    } else if entry.index_status == 'U' || entry.worktree_status == 'U' {
+        ERROR
+    } else if entry.index_status != ' ' && entry.worktree_status != ' ' {
+        PURPLE
+    } else if entry.index_status != ' ' {
+        SUCCESS
+    } else if entry.worktree_status != ' ' {
+        ERROR
+    } else {
+        MUTED
+    }
+}
+
+fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let items = if state.git_entries.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "No changed files",
+            Style::default().fg(MUTED),
+        )))]
+    } else {
+        state
+            .git_entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let selected = index == state.selected_git_file;
+                let status = git_entry_status(entry);
+                let marker = if selected { "›" } else { " " };
+                let path = entry
+                    .original_path
+                    .as_deref()
+                    .map(|original| format!("{} ← {}", entry.path, original))
+                    .unwrap_or_else(|| entry.path.clone());
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!("{marker} "),
+                        Style::default()
+                            .fg(if selected { ACCENT_BRIGHT } else { MUTED })
+                            .add_modifier(if selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                    Span::styled(
+                        format!("{status:<2} "),
+                        Style::default()
+                            .fg(git_entry_status_color(entry))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        path,
+                        Style::default()
+                            .fg(if selected { TEXT } else { MUTED })
+                            .add_modifier(if selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                ]);
+                ListItem::new(line).style(if selected {
+                    Style::default().bg(ACTIVE_BACKGROUND)
+                } else {
+                    Style::default()
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut list_state = ListState::default();
+    if !state.git_entries.is_empty() {
+        list_state.select(Some(state.selected_git_file));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .style(Style::default().bg(PANEL_BACKGROUND))
+            .block(surface_block(
+                format!(" CHANGES · {} ", state.git_entries.len()),
+                ACCENT_BRIGHT,
+            )),
+        area,
+        &mut list_state,
+    );
+}
+
+fn render_git_diff_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     if state.git_diff_open {
+        let path = state.git_diff_path.as_deref().unwrap_or("WORKTREE");
         frame.render_widget(
-            Paragraph::new(diff_text(&state.git_diff))
+            Paragraph::new(file_view::render_diff(path, &state.git_diff))
                 .style(Style::default().bg(PANEL_INSET))
                 .scroll((state.current_scroll(), 0))
-                .block(surface_block(
-                    " DIFF · Esc closes · PgUp/PgDn scroll ",
-                    ACCENT_BRIGHT,
-                ))
+                .block(surface_block(format!(" DIFF · {path} "), ACCENT_BRIGHT))
                 .wrap(Wrap { trim: false }),
             area,
         );
         return;
     }
-    let branch = state.git.lines().next().unwrap_or("branch unavailable");
-    let change_count = state
-        .git
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim_start();
-            trimmed.starts_with("M ")
-                || trimmed.starts_with("A ")
-                || trimmed.starts_with("D ")
-                || trimmed.starts_with("R ")
-                || trimmed.starts_with("??")
-                || trimmed.starts_with("✓")
-        })
-        .count();
-    let columns = if stack_for_phone(state, area) {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(38), Constraint::Min(34)])
-            .split(area)
+    let Some(path) = state.selected_git_entry().map(|entry| entry.path.as_str()) else {
+        render_panel(
+            frame,
+            area,
+            " DIFF ",
+            "Choose a file\nEnter actions",
+            PURPLE,
+        );
+        return;
     };
-    render_status_list(
-        frame,
-        columns[0],
-        format!(" CHANGES · {change_count} item(s) · d diff "),
-        &state.git,
-        "No changes detected",
-    );
     render_panel(
         frame,
-        columns[1],
-        " SOURCE CONTROL ",
+        area,
+        " DIFF ",
+        format!("{path}\nEnter actions"),
+        PURPLE,
+    );
+}
+
+fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let branch = state.git.lines().next().unwrap_or("branch unavailable");
+    let change_count = state.git_entries.len();
+    let review = state
+        .github_review
+        .lines()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(5)])
+        .split(area);
+    render_panel(
+        frame,
+        rows[0],
+        format!(" GIT · {branch} "),
         format!(
-            "GIT WORKSPACE\n{}\n\nCHANGES  {change_count} item(s)\n\nNEXT ACTIONS\n[d] open inline diff\n[a] launchers\n:git stage · :git commit · :git branches\n\nChanged lines use green/red markers in the diff.",
-            branch
+            "{change_count} changed · {}\nGH {}",
+            state
+                .selected_git_entry()
+                .map(|entry| format!("selected {}", entry.path))
+                .unwrap_or_else(|| "↑/↓ choose a file".into()),
+            review
         ),
         PURPLE,
     );
+    let columns = if stack_for_phone(state, rows[1]) {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .split(rows[1])
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(38), Constraint::Min(40)])
+            .split(rows[1])
+    };
+    render_git_file_list(frame, state, columns[0]);
+    render_git_diff_panel(frame, state, columns[1]);
 }
 
 fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -1486,19 +1522,11 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     render_status_list(
         frame,
         rows[0],
-        format!(" DEBUG SESSIONS · {session_count} · a launch "),
+        format!(" DEBUG · {session_count} "),
         &state.debugger,
         "No debugger sessions",
     );
-    render_panel(
-        frame,
-        rows[1],
-        " TEST LAB ",
-        format!(
-            "TEST RESULTS\n{test_status}\n\nDEBUG FLOW\nlaunch → attach → inspect\n\nNEXT ACTIONS\n[a] debugger/test launchers\n:debug start\n:test run\n:test results",
-        ),
-        WARNING,
-    );
+    render_panel(frame, rows[1], " TESTS ", test_status, WARNING);
 }
 
 fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -1519,13 +1547,13 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     render_panel(
         frame,
         rows[0],
-        " SERVICES · a launch ",
+        " SERVICES ",
         format!(
-            "WORKSPACE  {} skills · {} tools · {kernel_count} kernels\nACTIVITY  {}\n{}",
+            "{} skills · {} tools · {kernel_count} kernels\n{}\nCOCKPIT {}",
             state.snapshot_skills_count,
             state.snapshot_tools_count,
             activity_summary(state),
-            agent_progress(state)
+            state.private_cockpit_status(),
         ),
         ACCENT_BRIGHT,
     );
@@ -1551,56 +1579,48 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     render_panel(
         frame,
         columns[0],
-        " PI READINESS ",
-        if narrow {
-            format!(
-                "{}\n{}\n{kernel_count} kernels",
-                state
-                    .agent_readiness
-                    .lines()
-                    .next()
-                    .unwrap_or("Pi unavailable"),
-                agent_progress(state)
-            )
-        } else {
-            format!(
-                "{}\n\n{}\n\nKERNELS\n{}",
-                state.agent_readiness,
-                agent_progress(state),
-                state.kernels
-            )
-        },
+        " PI ",
+        format!(
+            "{}\n{}\n{kernel_count} kernels",
+            state
+                .agent_readiness
+                .lines()
+                .next()
+                .unwrap_or("Pi unavailable"),
+            agent_progress(state),
+        ),
         PURPLE,
     );
     render_panel(
         frame,
         columns[1],
         " EXPERIMENTS ",
-        if narrow {
-            format!(
-                "{}\n{}",
-                state.experiments.lines().next().unwrap_or("No experiments"),
-                state.replay.lines().next().unwrap_or("No replay")
-            )
-        } else {
-            format!(
-                "{}\n\nREPLAY / OPERATIONS\n{}",
-                state.experiments, state.replay
-            )
-        },
+        format!(
+            "{}\n{}",
+            state.experiments.lines().next().unwrap_or("No experiments"),
+            state.replay.lines().next().unwrap_or("No replay"),
+        ),
         ACCENT_BRIGHT,
     );
+    let installed_harnesses = state
+        .harnesses
+        .lines()
+        .filter(|line| line.starts_with("●"))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("\n");
     render_panel(
         frame,
         columns[2],
         " ROUTES ",
-        if narrow {
-            String::from("a launch\n:workspace\n:experiment create\n:kernel start\n:replay")
-        } else {
-            String::from(
-                "NEXT ACTIONS\n\na service launch\n:workspace\n:experiment create\n:kernel start\n:replay\n\nUse the command center for complete routes.",
-            )
-        },
+        format!(
+            "workspace · experiments · kernels · replay\n\nHARNESS CATALOG\n{}\n\n:harness list\n:harness start NAME",
+            if installed_harnesses.is_empty() {
+                "none detected"
+            } else {
+                &installed_harnesses
+            }
+        ),
         WARNING,
     );
 }
@@ -1615,11 +1635,6 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .enumerate()
             .map(|(index, action)| {
                 let selected = index == state.menu_selection;
-                let launch = if action.key == ":" {
-                    format!(":{}", action.command)
-                } else {
-                    action.command.to_string()
-                };
                 let item_style = if selected {
                     Style::default()
                         .fg(ACCENT_BRIGHT)
@@ -1633,15 +1648,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                         if selected { "› " } else { "  " },
                         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!("[{}] ", action.key),
-                        Style::default()
-                            .fg(if selected { Color::Black } else { ACCENT })
-                            .bg(if selected { ACCENT } else { PANEL_BACKGROUND })
-                            .add_modifier(Modifier::BOLD),
-                    ),
                     Span::styled(action.label, item_style),
-                    Span::styled(format!(" · {launch}"), Style::default().fg(MUTED)),
                 ]))
                 .style(item_style)
             })
@@ -1660,15 +1667,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                         if selected { "› " } else { "  " },
                         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        "[:] ",
-                        Style::default()
-                            .fg(if selected { Color::Black } else { ACCENT })
-                            .bg(if selected { ACCENT } else { PANEL_BACKGROUND })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Search all commands", item_style),
-                    Span::styled(" · type a route and Tab", Style::default().fg(MUTED)),
+                    Span::styled("Search commands", item_style),
                 ]))
                 .style(item_style)
             }))
@@ -1687,15 +1686,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                         if selected { "› " } else { "  " },
                         Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        "[q] ",
-                        Style::default()
-                            .fg(if selected { Color::Black } else { WARNING })
-                            .bg(if selected { WARNING } else { PANEL_BACKGROUND })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Quit Glass Dev", item_style),
-                    Span::styled(" · ask before exiting", Style::default().fg(MUTED)),
+                    Span::styled("Quit", item_style),
                 ]))
                 .style(item_style)
             }))
@@ -1730,14 +1721,14 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 .style(Style::default().bg(PANEL_BACKGROUND))
                 .block(
                     Block::default()
-                        .title(format!(" COMMAND CENTER · {} ", state.surface.label()))
+                        .title(format!(" ACTIONS · {} ", state.surface.label()))
                         .title_style(
                             Style::default()
                                 .fg(ACCENT_BRIGHT)
                                 .add_modifier(Modifier::BOLD),
                         )
                         .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
+                        .border_type(BorderType::Plain)
                         .border_style(Style::default().fg(PANEL_BORDER))
                         .padding(Padding::horizontal(1)),
                 ),
@@ -1747,19 +1738,16 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         if rows[1].height > 0 {
             frame.render_widget(
                 Paragraph::new(panel_text(&format!(
-                    "{}\n\nROUTES\n{} · {}\n\nTry `{}` · j/k select · Enter run · Esc close",
-                    selected_description,
-                    group.label,
-                    group.roots.join(" · "),
-                    group.example,
+                    "{}\n{}\nEnter run · Esc close",
+                    selected_description, group.example,
                 )))
                 .style(Style::default().fg(TEXT))
                 .block(
                     Block::default()
-                        .title(" ACTION DETAILS ")
+                        .title(" DETAILS ")
                         .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
                         .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
+                        .border_type(BorderType::Plain)
                         .border_style(Style::default().fg(PANEL_BORDER))
                         .bg(PANEL_BACKGROUND)
                         .padding(Padding::horizontal(1)),
@@ -1776,7 +1764,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 .style(Style::default().fg(TEXT))
                 .block(
                     Block::default()
-                        .title(" BROWSER TARGETS · select page ")
+                        .title(" TARGETS ")
                         .title_style(
                             Style::default()
                                 .fg(ACCENT_BRIGHT)
@@ -1802,7 +1790,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .join("\n");
         frame.render_widget(
             Paragraph::new(panel_text(&format!(
-                "BROWSER RECOVERY\n\nport {}\n{}\n\n{}\n\n{}",
+                "RECOVER\nport {}\n{}\n{}\n{}",
                 offer.port,
                 offer.guidance(),
                 offer.reason,
@@ -1811,10 +1799,10 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .style(Style::default().fg(TEXT))
             .block(
                 Block::default()
-                    .title(" RECOVERY · browser ")
+                    .title(" RECOVERY ")
                     .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_type(BorderType::Plain)
                     .border_style(Style::default().fg(WARNING))
                     .bg(PANEL_BACKGROUND)
                     .padding(Padding::horizontal(1)),
@@ -1827,18 +1815,16 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     if let Some(pending) = state.pending_agent_approval.as_ref() {
         frame.render_widget(
             Paragraph::new(panel_text(&format!(
-                "PI TOOL APPROVAL\n\nAgent: {}\nTool: {}\nArguments: {}\n\n[Y / Enter] Approve once\n[N / Esc] Deny\n\nGlass will return the decision to the resident agent.",
-                pending.agent_id,
-                pending.tool_name,
-                pending.arguments
+                "APPROVE TOOL\n{}\n{}\n{}\nEnter/Y approve · Esc/N deny",
+                pending.agent_id, pending.tool_name, pending.arguments
             )))
             .style(Style::default().fg(TEXT))
             .block(
                 Block::default()
-                    .title(" APPROVAL · resident agent ")
+                    .title(" APPROVAL ")
                     .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_type(BorderType::Plain)
                     .border_style(Style::default().fg(WARNING))
                     .bg(PANEL_BACKGROUND)
                     .padding(Padding::horizontal(1)),
@@ -1851,16 +1837,16 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     if let Some(pending) = state.pending_confirmation.as_ref() {
         frame.render_widget(
             Paragraph::new(panel_text(&format!(
-                "CONFIRM ONE MUTATION\n\n{}\n\n[Y / Enter] Approve once\n[N / Esc] Deny\n\nThe frozen call cannot authorize a retry or changed arguments.",
+                "CONFIRM\n{}\nEnter/Y approve · Esc/N deny",
                 pending.summary
             )))
             .style(Style::default().fg(TEXT))
             .block(
                 Block::default()
-                    .title(" CONFIRMATION · one use ")
+                    .title(" CONFIRM ")
                     .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_type(BorderType::Plain)
                     .border_style(Style::default().fg(WARNING))
                     .bg(PANEL_BACKGROUND)
                     .padding(Padding::horizontal(1)),
@@ -1926,113 +1912,75 @@ fn draw_ansi_pane(
     }
 }
 fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let authority = format!(
-        "\n\nAUTHORITY\n{} · project rev {}\nmutations require revision + confirmation\n\nNEXT\n{}",
-        state.snapshot_trust_label.as_str(),
-        state.snapshot_project_revision,
-        context_next_actions(state.surface)
-    );
-    let content = match state.surface {
-        DevSurface::Trust => format!(
-            "TRUST DECISION\n{} configuration item(s) need attention{}",
-            state
+    if state.surface == DevSurface::Agent {
+        render_agent_workspace_context(frame, state, area);
+        return;
+    }
+    let (label, content) = match state.surface {
+        DevSurface::Trust => {
+            let pending = state
                 .snapshot_trust_inspection
                 .iter()
                 .filter(|item| item.trust_required)
-                .count(),
-            authority
-        ),
-        DevSurface::Agent => {
-            let working = state
-                .agents
-                .lines()
-                .any(|line| line.to_ascii_lowercase().contains("working"));
-            let model = state
-                .agents
-                .lines()
-                .find_map(|line| line.split("model ").nth(1).map(str::to_string));
-            if state.selected_agent.is_some() || state.agents.lines().count() > 1 {
+                .count();
+            (
+                "TRUST",
                 format!(
-                    "ACTIVE AGENT\n{} · model {} · events in Inspect{}{}",
-                    if working { "● working" } else { "○ idle" },
-                    model.as_deref().unwrap_or("default"),
-                    if state.browser_workspace.state().selected().is_some() {
-                        "\napp entity attached as context"
+                    "{pending} pending\n{} · rev {}",
+                    state.snapshot_trust_label, state.snapshot_project_revision
+                ),
+            )
+        }
+        DevSurface::Agent => ("WORKSPACE", "Use the workspace".into()),
+        DevSurface::Code => {
+            let content = if state.focused_editor_path.is_empty() {
+                format!("{} files", state.files.len())
+            } else {
+                format!(
+                    "{}{}\nline {}",
+                    if state.focused_editor_dirty {
+                        "● "
                     } else {
                         ""
                     },
-                    authority
+                    state.focused_editor_path,
+                    state.focused_editor_line
                 )
-            } else {
-                format!(
-                    "AGENT READINESS\n{}{}",
-                    state.agent_readiness.lines().next().unwrap_or(""),
-                    authority
-                )
-            }
-        }
-        DevSurface::Code => {
-            let selected = (!state.focused_editor_path.is_empty()).then(|| {
-                (
-                    state.focused_editor_path.clone(),
-                    state.focused_editor_dirty,
-                    state.focused_editor_line,
-                )
-            });
-            match selected {
-                Some((path, dirty, line)) => format!(
-                    "EDITING\n{}{} · line {}\n\nLINKED APP\n{}{}",
-                    if dirty { "● " } else { "○ " },
-                    path,
-                    line,
-                    state
-                        .browser_workspace
-                        .state()
-                        .selected()
-                        .map(|entity| format!("{} · {}", entity.name, entity.reference))
-                        .unwrap_or_else(|| "No current source/runtime link".into()),
-                    authority
-                ),
-                None => format!(
-                    "FILES\n{} project file(s) listed{}",
-                    state.files.len(),
-                    authority
-                ),
-            }
+            };
+            ("CODE", content)
         }
         DevSurface::App => {
             let browser = state.browser_workspace.state();
-            format!(
-                "SELECTED APP ENTITY\n{}\n\nBROWSER\n{} · rev {}\nVISUAL {} · input {}\nFOCUS {}\n{}\n{}",
-                browser
-                    .selected()
-                    .map(|entity| format!(
-                        "◆ {} · {} · {}",
-                        entity.name, entity.role, entity.reference
-                    ))
-                    .unwrap_or_else(|| "No semantic entity selected".into()),
-                browser.connection_label(),
-                browser
-                    .browser_revision
-                    .map_or_else(|| "—".into(), |revision| revision.to_string()),
-                browser.presentation_label(),
-                browser.input_owner_label(),
-                browser.focus_label(),
-                browser
-                    .presentation_reason
-                    .as_deref()
-                    .unwrap_or("visual plane available"),
-                authority
+            let selected = browser.selected().map(|entity| {
+                let index = browser
+                    .entities
+                    .iter()
+                    .position(|candidate| candidate.reference == entity.reference)
+                    .map_or(0, |index| index + 1);
+                if index == 0 {
+                    format!("{} · {}", entity.name, entity.role)
+                } else {
+                    format!("[{index}] {} · {}", entity.name, entity.role)
+                }
+            });
+            (
+                "BROWSER",
+                format!(
+                    "{}\n{}\n{}",
+                    selected.unwrap_or_else(|| "no selection".into()),
+                    browser.connection_label(),
+                    browser.focus_label()
+                ),
             )
         }
-        DevSurface::Terminal => format!(
-            "PROCESSES\n{}{}",
+        DevSurface::Terminal => (
+            "TERMINAL",
             state
                 .processes
                 .lines()
                 .next()
-                .unwrap_or("No process selected"),
-            authority
+                .unwrap_or("no processes")
+                .to_string(),
         ),
         DevSurface::Tasks => {
             let running = state
@@ -2040,36 +1988,55 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 .lines()
                 .filter(|line| line.starts_with("●"))
                 .count();
-            format!("TASKS\n{running} running{}", authority)
+            let queued = state
+                .tasks
+                .lines()
+                .filter(|line| line.starts_with("○"))
+                .count();
+            let failed = state
+                .tasks
+                .lines()
+                .filter(|line| line.starts_with("×"))
+                .count();
+            (
+                "TASKS",
+                format!("{running} running · {queued} queued · {failed} failed"),
+            )
         }
-        DevSurface::Git => format!(
-            "SOURCE CONTROL\n{}{}",
-            state.git.lines().next().unwrap_or("No change selected"),
-            authority
+        DevSurface::Git => (
+            "GIT",
+            state
+                .selected_git_entry()
+                .map(|entry| entry.path.clone())
+                .unwrap_or_else(|| "no changed files".into()),
         ),
-        DevSurface::Debug => format!(
-            "DEBUG\n{}{}",
-            state.debugger.lines().next().unwrap_or("No frame selected"),
-            authority
+        DevSurface::Debug => (
+            "DEBUG",
+            state
+                .debugger
+                .lines()
+                .next()
+                .unwrap_or("no sessions")
+                .to_string(),
         ),
-        DevSurface::More => format!(
-            "PROJECT SERVICES\n{} skills · {} custom tools{}",
-            state.snapshot_skills_count, state.snapshot_tools_count, authority
+        DevSurface::More => (
+            "SERVICES",
+            format!(
+                "{} skills · {} tools · {} kernels",
+                state.snapshot_skills_count,
+                state.snapshot_tools_count,
+                state
+                    .kernels
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .count()
+            ),
         ),
     };
     frame.render_widget(
         Paragraph::new(panel_text(&content))
             .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
-            .block(
-                Block::default()
-                    .title(" LIVE CONTEXT ")
-                    .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(PANEL_BORDER))
-                    .bg(PANEL_BACKGROUND)
-                    .padding(Padding::horizontal(1)),
-            )
+            .block(surface_block(format!(" CONTEXT · {label} "), ACCENT))
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -2177,7 +2144,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 ),
                 Span::styled(state.status.clone(), status_style(state)),
                 Span::styled(
-                    " · Enter sends · Ctrl-D toggles steer/follow-up · Esc closes",
+                    " · Enter send · Ctrl-D mode · Esc",
                     Style::default().fg(MUTED),
                 ),
             ]),
@@ -2228,9 +2195,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         vec![
             first_line,
             Line::from(Span::styled(
-                format!(
-                    "{glyph} Tab completes roots · ↑/↓ history · Enter runs · Esc closes{error}"
-                ),
+                format!("{glyph} Tab roots · ↑/↓ history · Enter run · Esc{error}"),
                 Style::default().fg(MUTED),
             )),
         ]
@@ -2257,7 +2222,14 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 Style::default().fg(ACCENT_BRIGHT),
             ));
         }
-        vec![Line::from(line)]
+        let mut lines = vec![Line::from(line)];
+        if area.width < 104 {
+            lines.push(Line::from(Span::styled(
+                "←→ surface · ↑↓ move · Enter open",
+                Style::default().fg(MUTED),
+            )));
+        }
+        lines
     };
     frame.render_widget(
         Paragraph::new(lines)
@@ -2332,17 +2304,71 @@ mod tests {
         let output = rendered(&state, 48, 18);
         if state.agent_readiness.starts_with("✓ Ready") {
             assert!(output.contains("START HERE"));
-            assert!(output.contains("Ask Glass Agent"));
+            assert!(output.contains("Enter to chat"));
         } else {
-            assert!(output.contains("SETUP REQUIRED"));
-            assert!(output.contains("Install/repair Pi runtime"));
+            assert!(output.contains("SETUP"));
+            assert!(output.contains("Enter to install"));
         }
-        assert!(output.contains("APP · Detached · no page · idle"));
+        assert!(output.contains("APP (optional)"));
         assert!(output.contains("● Ready"));
-        assert!(output.contains("─"));
+        assert!(output.contains("Enter"));
 
         state.status = "browser failed".into();
         assert!(rendered(&state, 48, 18).contains("× browser failed"));
+    }
+
+    #[test]
+    fn agent_surface_exposes_workspace_context() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Agent;
+        state.git = "branch main".into();
+        state.git_entries = vec![crate::git::GitStatusEntry {
+            path: "src/lib.rs".into(),
+            original_path: None,
+            index_status: ' ',
+            worktree_status: 'M',
+            untracked: false,
+        }];
+        let output = rendered(&state, 140, 40);
+        assert!(output.contains("Agent · WORKSPACE"));
+        assert!(!output.contains("CODING WORKSPACE"));
+        assert!(output.contains("BRANCH main"));
+        assert!(output.contains("GITHUB no GitHub origin"));
+        assert!(output.contains("CHANGES · 1"));
+        assert!(output.contains("src/lib.rs"));
+        assert!(output.contains("VISUAL PLANE"));
+        if state.agent_readiness.starts_with("✓ Ready") {
+            assert!(output.contains("Describe a coding task"));
+            assert!(output.contains("Browser opens only for UI work"));
+        }
+
+        state.git_diff_open = true;
+        state.git_diff_path = Some("src/lib.rs".into());
+        state.git_diff = "@@ -1 +1 @@\n-old\n+added".into();
+        let diff_output = rendered(&state, 140, 40);
+        assert!(diff_output.contains("DIFF"));
+        assert!(diff_output.contains("+added"));
+    }
+
+    #[test]
+    fn agent_transcript_uses_distinct_role_bubbles() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Agent;
+        state.agent_conversation = [
+            "YOU\nInspect the failing test.",
+            "GLASS AGENT\nI found the failing assertion.",
+            "SYSTEM\nworkspace revision 4",
+            "ALERT\napproval required",
+            "ERROR\ncommand failed",
+        ]
+        .join("\n\n");
+
+        let output = rendered(&state, 140, 40);
+        for marker in ["YOU", "GLASS AGENT", "SYSTEM", "ALERT", "ERROR"] {
+            assert!(output.contains(marker), "missing role marker {marker}");
+        }
+        assert!(output.contains("╭"));
+        assert!(output.contains("CONVERSATION"));
     }
 
     #[test]
@@ -2350,9 +2376,9 @@ mod tests {
         let mut state = state(TuiLayout::Desktop);
         state.request_quit();
         let output = rendered(&state, 80, 24);
-        assert!(output.contains("QUIT GLASS DEV?"));
-        assert!(output.contains("Enter / Y"));
-        assert!(output.contains("Esc / N"));
+        assert!(output.contains("QUIT?"));
+        assert!(output.contains("Enter quit"));
+        assert!(output.contains("Esc stay"));
     }
 
     #[test]
@@ -2364,30 +2390,49 @@ mod tests {
     }
 
     #[test]
+    fn browser_inspector_uses_compact_local_refs() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::App;
+        state.browser_workspace.replace_entities(
+            7,
+            vec![glass_browser::browser_workspace::BrowserWorkspaceEntity {
+                reference: "r7:b42".into(),
+                role: "button".into(),
+                name: "Save".into(),
+                actionable: true,
+                revision: 7,
+            }],
+        );
+        let output = rendered(&state, 140, 40);
+        assert!(output.contains("[1] Save · button"));
+        assert!(!output.contains("r7:b42"));
+    }
+
+    #[test]
     fn empty_surface_counts_ignore_placeholder_copy() {
         let mut state = state(TuiLayout::Desktop);
 
         state.surface = DevSurface::Tasks;
-        assert!(rendered(&state, 140, 40).contains("TASK DAG · 0 task(s)"));
+        assert!(rendered(&state, 140, 40).contains("TASKS · 0"));
 
         state.surface = DevSurface::Debug;
-        assert!(rendered(&state, 140, 40).contains("DEBUG SESSIONS · 0"));
+        assert!(rendered(&state, 140, 40).contains("DEBUG · 0"));
 
         state.surface = DevSurface::Terminal;
         let terminal = rendered(&state, 140, 40);
-        assert!(terminal.contains("0 process(es)"));
-        assert!(terminal.contains("[s] Start the detected suite"));
+        assert!(terminal.contains("0 processes"));
+        assert!(terminal.contains("No managed processes yet"));
     }
 
     #[test]
     fn surface_empty_states_show_guided_next_actions() {
         let mut desktop = state(TuiLayout::Desktop);
         for (surface, marker) in [
-            (DevSurface::App, "START HERE"),
-            (DevSurface::Terminal, "NEXT ACTIONS"),
-            (DevSurface::Tasks, "NEXT ACTIONS"),
-            (DevSurface::Debug, "NEXT ACTIONS"),
-            (DevSurface::More, "NEXT ACTIONS"),
+            (DevSurface::App, "VISUAL PLANE"),
+            (DevSurface::Terminal, "PROCESSES"),
+            (DevSurface::Tasks, "SUMMARY"),
+            (DevSurface::Debug, "TESTS"),
+            (DevSurface::More, "ROUTES"),
         ] {
             desktop.surface = surface;
             assert!(
@@ -2397,7 +2442,9 @@ mod tests {
         }
 
         let compact = state(TuiLayout::Desktop);
-        assert!(rendered(&compact, 64, 24).contains("m More"));
+        let compact_output = rendered(&compact, 64, 24);
+        assert!(compact_output.contains("SURFACES"));
+        assert!(compact_output.contains("←→ move · Enter open"));
     }
 
     #[test]
@@ -2405,38 +2452,33 @@ mod tests {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
         let agent = rendered(&state, 140, 40);
-        assert!(agent.contains("AGENT PROGRESS"));
-        if state.agent_readiness.starts_with("✓ Ready") {
-            assert!(agent.contains("ready for a prompt"));
-        } else {
-            assert!(agent.contains("setup required"));
-        }
+        assert!(agent.contains("idle"));
         state.surface = DevSurface::App;
         let fallback = rendered(&state, 140, 40);
-        assert!(fallback.contains("BROWSER PROGRESS"));
-        assert!(fallback.contains("DIAGNOSTIC"));
+        assert!(fallback.contains("target"));
+        assert!(fallback.contains("Connect a browser") || fallback.contains("visual"));
 
         state.browser_visual_live = true;
         state.browser_workspace.state_mut().presentation =
             glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
         let herdr = rendered(&state, 140, 40);
-        assert!(herdr.contains("HERDR PANE"));
-        assert!(herdr.contains("semantic inspector"));
+        assert!(herdr.contains("Live browser view is active"));
     }
 
     #[test]
     fn every_surface_exposes_a_distinct_workbench_hierarchy() {
         let mut state = state(TuiLayout::Desktop);
+
         for (surface, markers) in [
-            (DevSurface::Trust, ["WORKSPACE TRUST", "CONFIGURATION"]),
-            (DevSurface::Agent, ["CONVERSATION", "FIRST RUN"]),
+            (DevSurface::Trust, ["TRUST", "CONFIG"]),
+            (DevSurface::Agent, ["CONVERSATION", "START HERE"]),
             (DevSurface::Code, ["FILES", "EDITOR"]),
             (DevSurface::App, ["VISUAL PLANE", "INSPECTOR"]),
-            (DevSurface::Terminal, ["PROCESS TABLE", "NEXT ACTIONS"]),
-            (DevSurface::Tasks, ["TASK DAG", "TASK SUMMARY"]),
-            (DevSurface::Git, ["CHANGES", "SOURCE CONTROL"]),
-            (DevSurface::Debug, ["DEBUG SESSIONS", "TEST LAB"]),
-            (DevSurface::More, ["PI READINESS", "NEXT ACTIONS"]),
+            (DevSurface::Terminal, ["TERMINAL", "PROCESSES"]),
+            (DevSurface::Tasks, ["TASKS", "SUMMARY"]),
+            (DevSurface::Git, ["CHANGES", "DIFF"]),
+            (DevSurface::Debug, ["DEBUG", "TESTS"]),
+            (DevSurface::More, ["PI", "ROUTES"]),
         ] {
             state.surface = surface;
             let output = rendered(&state, 220, 40);
@@ -2447,6 +2489,41 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn git_surface_selects_files_before_loading_focused_diff() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Git;
+        state.git = "branch main\nworking tree dirty".into();
+        state.git_entries = vec![
+            crate::git::GitStatusEntry {
+                path: "src/main.rs".into(),
+                original_path: None,
+                index_status: ' ',
+                worktree_status: 'M',
+                untracked: false,
+            },
+            crate::git::GitStatusEntry {
+                path: "tests/agent.rs".into(),
+                original_path: None,
+                index_status: '?',
+                worktree_status: '?',
+                untracked: true,
+            },
+        ];
+
+        let output = rendered(&state, 140, 40);
+        assert!(output.contains("CHANGES · 2"));
+        assert!(output.contains("src/main.rs"));
+        assert!(output.contains("tests/agent.rs"));
+        assert!(output.contains("src/main.rs"));
+        assert!(output.contains("Enter actions"));
+
+        state.move_git_selection(1);
+        assert_eq!(
+            state.selected_git_entry().map(|entry| entry.path.as_str()),
+            Some("tests/agent.rs")
+        );
     }
 
     #[test]
@@ -2570,16 +2647,17 @@ mod tests {
         desktop.surface = DevSurface::Agent;
         desktop.open_menu();
         let output = rendered(&desktop, 118, 32);
-        assert!(output.contains("COMMAND CENTER · Agent"));
-        assert!(output.contains("[i]"));
-        assert!(output.contains("ACTION DETAILS"));
+        assert!(output.contains("ACTIONS · Agent"));
+        assert!(output.contains("Compose message"));
+        assert!(!output.contains("[i]"));
+        assert!(output.contains("DETAILS"));
         assert!(output.contains("ask the resident Glass Agent"));
 
         let mut mobile = state(TuiLayout::Mobile);
         mobile.surface = DevSurface::Agent;
         mobile.open_menu();
         mobile.menu_selection = mobile.surface_actions().len();
-        assert!(rendered(&mobile, 48, 18).contains("Search all commands"));
+        assert!(rendered(&mobile, 48, 18).contains("Search commands"));
     }
 
     #[test]
@@ -2587,7 +2665,7 @@ mod tests {
         let mut state = state(TuiLayout::Mobile);
         state.surface = DevSurface::More;
         let more = rendered(&state, 160, 24);
-        let readiness = more.find("PI READINESS").expect("readiness panel");
+        let readiness = more.find("PI").expect("readiness panel");
         let experiments = more.find("EXPERIMENTS").expect("experiments panel");
         let routes = more.find("ROUTES").expect("routes panel");
         assert!(readiness < experiments && experiments < routes);
@@ -2610,7 +2688,7 @@ mod tests {
         let output = rendered(&state, 48, 18);
         assert!(output.contains("…"));
         assert!(output.contains("development commands"));
-        assert!(output.contains("Agent composer"));
+        assert!(output.contains("AGENT"));
         assert!(output.contains("Enter send"));
         assert!(output.contains("▌"));
     }
@@ -2640,11 +2718,13 @@ mod tests {
         state.toggle_composer_steer();
         assert!(state.composer_steer);
         assert!(state.status.contains("Steer mode"));
-        assert!(rendered(&state, 118, 32).contains("toggle steer/follow-up"));
+        let output = rendered(&state, 118, 32);
+        assert!(output.contains("Ctrl-D mode"));
         state.toggle_composer_steer();
         assert!(!state.composer_steer);
         assert!(state.status.contains("Follow-up mode"));
     }
+
     #[test]
     fn agent_transcript_scroll_follows_surface_navigation() {
         let mut state = state(TuiLayout::Desktop);
@@ -2660,6 +2740,7 @@ mod tests {
         assert!(!scrolled.contains("TRANSCRIPT_LINE_01"));
         assert!(scrolled.contains("TRANSCRIPT_LINE_10"));
     }
+
     #[test]
     fn read_only_palette_tools_are_queued_off_the_ui_thread() {
         let mut state = state(TuiLayout::Desktop);
@@ -2686,7 +2767,7 @@ mod tests {
         super::super::command::execute(&mut state, "browser start").unwrap();
         let pending = state.pending_confirmation.as_ref().unwrap();
         assert_eq!(pending.call.name, "glass.browser.start");
-        assert!(rendered(&state, 120, 32).contains("CONFIRM ONE MUTATION"));
+        assert!(rendered(&state, 120, 32).contains("CONFIRM"));
         state.deny_confirmation();
         assert!(state.pending_confirmation.is_none());
         assert!(state.status.contains("Denied"));
@@ -2782,7 +2863,7 @@ mod tests {
         state.surface = DevSurface::Agent;
         state.open_menu();
         let output = rendered(&state, 118, 32);
-        assert!(output.contains("COMMAND CENTER · Agent"));
+        assert!(output.contains("ACTIONS · Agent"));
         assert!(output.contains("Compose message"));
         state.move_menu_selection(1);
         state.run_menu_action();
@@ -2793,7 +2874,7 @@ mod tests {
         state.open_menu();
         state.menu_selection = state.surface_actions().len();
         let launcher_output = rendered(&state, 118, 32);
-        assert!(launcher_output.contains("Search all commands"));
+        assert!(launcher_output.contains("Search commands"));
         state.run_menu_action();
         assert!(state.command_mode);
         assert!(state.command_input.is_empty());
@@ -2802,7 +2883,7 @@ mod tests {
         state.open_menu();
         state.menu_selection = state.quit_menu_index();
         let quit_output = rendered(&state, 118, 32);
-        assert!(quit_output.contains("Quit Glass Dev"));
+        assert!(quit_output.contains("Quit"));
         state.run_menu_action();
         assert!(state.quit_confirmation);
         assert!(!state.quit);
@@ -2838,7 +2919,7 @@ mod tests {
             "CDP port 9222 is already occupied; use --attach to connect to that Chrome endpoint or choose another --port",
         );
         let output = rendered(&state, 118, 32);
-        assert!(output.contains("BROWSER RECOVERY"));
+        assert!(output.contains("RECOVER"));
         assert!(output.contains("automatic free port"));
         // Actions are reachable without leaving the TUI and launch off-thread.
         let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
@@ -2864,8 +2945,8 @@ mod tests {
         let mut state = DevTuiState::open(&root, TuiLayout::Mobile).unwrap();
         assert_eq!(state.surface, DevSurface::Trust);
         let rendered = rendered(&state, 64, 24);
-        assert!(rendered.contains("WORKSPACE TRUST"));
-        assert!(rendered.contains("Open untrusted"));
+        assert!(rendered.contains("TRUST"));
+        assert!(rendered.contains("O open"));
         state.handle_printable('O');
         assert_eq!(
             state.workspace.lock().unwrap().trust(),
@@ -2950,7 +3031,7 @@ mod tests {
         assert!(output.contains("YOU"));
         assert!(output.contains("follow up while you work"));
         assert!(output.contains("sending"));
-        assert!(output.contains("Enter sends"));
+        assert!(output.contains("Enter send"));
     }
 
     #[test]
@@ -3020,5 +3101,43 @@ mod tests {
             super::super::state::ChatMessageState::Failed
         );
         assert!(state.status.contains("edit and retry"));
+    }
+    #[test]
+    fn code_surface_renders_source_content_instead_of_flat_panel_text() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Code;
+        state.focused_editor_path = "src/main.rs".into();
+        state.editor =
+            "○ src/main.rs · cursor 1:1 · actor local · 1 lines\n▶  1 │ fn main() { return 42; }"
+                .into();
+        let output = rendered(&state, 120, 32);
+        assert!(output.contains("src/main.rs"));
+        assert!(output.contains("fn main()"));
+        assert!(output.contains("return 42"));
+    }
+
+    #[test]
+    fn code_surface_renders_mermaid_preview_for_raw_diagram_output() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Code;
+        state.focused_editor_path = "docs/flow.mmd".into();
+        state.editor = "flowchart LR\nstart[Start] --> done{Done}".into();
+        let output = rendered(&state, 120, 32);
+        assert!(output.contains("DIAGRAM LR"));
+        assert!(output.contains("[Start]"));
+        assert!(output.contains("──▶"));
+    }
+
+    #[test]
+    fn git_surface_renders_syntax_aware_diff_content() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Git;
+        state.git_diff_open = true;
+        state.git_diff_path = Some("src/lib.rs".into());
+        state.git_diff = "@@ -1 +1 @@\n-fn old() {}\n+fn new() {}".into();
+        let output = rendered(&state, 120, 32);
+        assert!(output.contains("fn old()"));
+        assert!(output.contains("fn new()"));
+        assert!(output.contains("DIFF"));
     }
 }

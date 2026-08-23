@@ -6,7 +6,7 @@
 use super::args::{
     BackendCommand, CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, IrCommand,
     KnowledgeCommand, KnowledgeInvalidationState, McpClient, MemoryCommand, ProfileCommand,
-    ReplayCommand, ResultCommand, SnapshotCommand, SurfaceCommand, TaskCommand,
+    ReplayCommand, ResultCommand, SessionCommand, SnapshotCommand, SurfaceCommand, TaskCommand,
     WorkflowAuthoringCommand, WorkspaceCommand,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
@@ -44,6 +44,7 @@ use crate::results::{
 use crate::surfaces::SurfaceSet;
 use crate::workspace::{ResourceReference, WorkspaceId, WorkspaceStore};
 use base64::Engine;
+use clap::ValueEnum;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -92,7 +93,7 @@ pub async fn dispatch_browser(cli: Cli) -> BrowserResult<()> {
     dispatch_product(cli, false).await
 }
 
-async fn dispatch_product(cli: Cli, _development_enabled: bool) -> BrowserResult<()> {
+async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserResult<()> {
     let policy = policy_from_cli(&cli)?;
     if cli.experimental_extensions {
         eprintln!(concat!(
@@ -224,6 +225,22 @@ async fn dispatch_product(cli: Cli, _development_enabled: bool) -> BrowserResult
             dispatch_ir(action)?;
             return Ok(());
         }
+        Some(Commands::Browser { action }) if cli.prompt.is_none() => {
+            if let Some(name) = cli.session.clone() {
+                cli.port = persistent_session_port(&name)?;
+                cli.attach = true;
+            }
+            let _ = action;
+            return crate::tui::app::run_tui_for_product(&cli, false).await;
+        }
+        Some(Commands::Session { action }) => {
+            dispatch_session(&cli, action, &policy).await?;
+            return Ok(());
+        }
+        Some(Commands::Help { topic }) => {
+            print_grouped_help(topic.as_deref());
+            return Ok(());
+        }
         Some(Commands::Tui) | None if cli.prompt.is_none() => {
             if should_run_tui(
                 std::io::stdin().is_terminal(),
@@ -253,12 +270,17 @@ async fn dispatch_product(cli: Cli, _development_enabled: bool) -> BrowserResult
     }
 
     let viewport = cli.viewport.as_deref().map(parse_viewport).transpose()?;
+    let session_port = cli
+        .session
+        .as_deref()
+        .map(persistent_session_port)
+        .transpose()?;
     let options = SessionOptions {
-        port: cli.port,
+        port: session_port.unwrap_or(cli.port),
         chrome_path: cli.chrome_path.clone(),
         profile: cli.profile.clone(),
         incognito: cli.incognito,
-        attach: cli.attach,
+        attach: cli.attach || cli.session.is_some(),
         target_id: cli.target_id.clone(),
         frame_id: cli.frame_id.clone(),
         headed: cli.headed,
@@ -329,6 +351,127 @@ async fn dispatch_daemon(action: &DaemonCommand) -> BrowserResult<()> {
         }
     }
     Ok(())
+}
+
+async fn dispatch_session(
+    cli: &Cli,
+    action: &SessionCommand,
+    policy: &BrowserPolicy,
+) -> BrowserResult<()> {
+    match action {
+        SessionCommand::Start { name } => {
+            if cli.attach {
+                return Err("session start launches Chrome; remove `--attach`".into());
+            }
+            let record = crate::browser::persistent::start(
+                crate::browser::persistent::PersistentSessionConfig {
+                    name: name.clone(),
+                    port: cli.port,
+                    profile: cli.profile.clone(),
+                    headed: cli.headed,
+                    chrome_path: cli.chrome_path.clone(),
+                    policy_args: policy_forward_args(cli),
+                },
+            )
+            .await?;
+            print_json(&serde_json::to_value(record)?)?;
+        }
+        SessionCommand::Status { name } => {
+            print_json(&crate::browser::persistent::status(name)?)?;
+        }
+        SessionCommand::Stop { name } => {
+            print_json(&crate::browser::persistent::stop(name).await?)?;
+        }
+        SessionCommand::Open { name } => {
+            println!("{}", crate::browser::persistent::open_message(name)?);
+        }
+        SessionCommand::Serve {
+            name,
+            socket,
+            status,
+        } => {
+            crate::browser::persistent::serve(
+                crate::browser::persistent::PersistentSessionServeConfig {
+                    name: name.clone(),
+                    socket: socket.clone(),
+                    status_path: status.clone(),
+                    port: cli.port,
+                    profile: cli.profile.clone(),
+                    headed: cli.headed,
+                    chrome_path: cli.chrome_path.clone(),
+                    policy: policy.clone(),
+                },
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+fn persistent_session_port(name: &str) -> BrowserResult<u16> {
+    let value = crate::browser::persistent::status(name)?;
+    if value.get("state").and_then(Value::as_str) != Some("running") {
+        return Err(format!(
+            "persistent session `{name}` is not running; start it with `glass session start {name}`"
+        )
+        .into());
+    }
+    value
+        .get("port")
+        .and_then(Value::as_u64)
+        .and_then(|port| u16::try_from(port).ok())
+        .ok_or_else(|| "persistent session has no valid verified port".into())
+}
+
+fn policy_forward_args(cli: &Cli) -> Vec<String> {
+    let mut args = vec![
+        cli.policy
+            .to_possible_value()
+            .map(|value| value.get_name().to_string())
+            .unwrap_or_else(|| "development".into()),
+    ];
+    if cli.yolo {
+        args.push("--yolo".into());
+    }
+    for (flag, values) in [
+        ("--policy-allow", &cli.policy_allow),
+        ("--policy-confirm", &cli.policy_confirm),
+        ("--policy-confirm-once", &cli.policy_confirm_once),
+    ] {
+        for value in values {
+            if let Some(value) = value.to_possible_value() {
+                args.push(flag.into());
+                args.push(value.get_name().into());
+            }
+        }
+    }
+    for (flag, values) in [
+        ("--policy-allow-host", &cli.policy_allow_host),
+        ("--policy-deny-host", &cli.policy_deny_host),
+    ] {
+        for value in values {
+            args.push(flag.into());
+            args.push(value.clone());
+        }
+    }
+    args
+}
+
+fn print_grouped_help(topic: Option<&str>) {
+    match topic.unwrap_or("overview") {
+        "browser" => println!(
+            "BROWSER\n\n  glass browser                 launch the browser-first terminal\n  glass observe --level interactive\n                               inspect the current semantic page\n  glass navigate URL            open one page in a bounded operation\n  glass --session NAME observe  attach to a persistent session\n"
+        ),
+        "session" => println!(
+            "SESSION\n\n  glass session start [NAME]    launch a persistent local browser\n  glass session status [NAME]   inspect owner and browser health\n  glass session open [NAME]     print attach commands\n  glass session stop [NAME]     close the owned browser\n"
+        ),
+        "skills" => println!(
+            "SKILLS\n\n  browser-observe               semantic observation and stable refs\n  browser-actions               guarded navigation, click, type, and scroll\n  workflow                      bounded workflows with checkpoints\n  evidence                      redacted revisions and replayable results\n\nPi receives the complete embedded contract from assets/pi-glass-system.md.\n"
+        ),
+        _ => println!(
+            "GLASS START HERE\n\n  glass browser                 start the browser-first terminal\n  glass session start           keep one browser alive between commands\n  glass help browser            browser commands\n  glass help session            persistent session commands\n  glass help skills             embedded agent workflow skills\n  glass doctor                  check local browser/runtime support\n\nStructured observation is the default. Use `glass <command> --help` for exact flags.\n"
+        ),
+    }
 }
 
 async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> BrowserResult<()> {
@@ -2261,6 +2404,9 @@ async fn run_command(
             unreachable!("handled before starting a browser session")
         }
         Commands::Tui
+        | Commands::Browser { .. }
+        | Commands::Session { .. }
+        | Commands::Help { .. }
         | Commands::Ir { .. }
         | Commands::InstallChromium { .. }
         | Commands::Profiles { .. }

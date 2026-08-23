@@ -135,7 +135,8 @@ and reads, native buffers, atomic saves, undo/redo, fuzzy search, PTYs, process
 health/output, real rust-analyzer diagnostics, source/runtime graph, semantic
 breakpoints, actor-attributed timeline/events, replay, Git worktree
 experiments, collaboration claims, Neovim probes, resident sessions, reconnect
-capsules, attention inbox, and verification cards.
+capsules, attention inbox, verification cards, evidence-aware review prompts,
+and a fixed-path external harness bridge.
 
 Project reads are handle-bound and capped. Mutations stay inside the canonical
 root and record actor provenance. Prompt text and tool arguments are represented

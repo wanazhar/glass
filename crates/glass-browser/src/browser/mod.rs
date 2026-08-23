@@ -37,6 +37,8 @@ pub mod connection;
 pub mod dom;
 /// Mouse movement engine with bounded smooth pointer paths.
 pub mod mouse;
+/// Named local browser sessions that outlive one-shot CLI invocations.
+pub mod persistent;
 /// Security policy engine with capability-based operation gating.
 pub mod policy;
 /// Chrome user-data directory profiles for persistent sessions.

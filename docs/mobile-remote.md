@@ -40,13 +40,16 @@ The phone layout uses the same keyboard and authority rules as desktop:
 | `:` | open the governed command palette |
 | `?` | open scrollable keyboard help in navigation mode |
 | `j`/`k`, arrows, mouse wheel | scroll content; App `j`/`k` moves semantic selection |
-| `i` on Agent | open the agent composer |
+| `i` on Agent | open the agent composer (or queue setup when Pi is not ready) |
 | `Enter` on Code/App | open a file or activate the selected browser entity |
 | `d` on Git | queue and display the inline diff |
 | `v` on App | toggle the bounded ANSI live view |
 | `H` / `G` on App | take human control / reconcile Glass control |
 | `Esc` | close the active menu, composer, palette, editor, diff, recovery sheet, or confirmation |
 | `Ctrl-C` | restore the terminal and quit immediately |
+| `:review` | prefill an evidence-aware review prompt |
+| `:harness list` | show installed external coding harnesses |
+| `:harness start NAME` | hand the terminal to one installed harness, then resume Glass |
 
 The composer, palette, and editor keep printable characters such as `?` as text.
 Action-menu commands remove documentation placeholders such as `NAME` and

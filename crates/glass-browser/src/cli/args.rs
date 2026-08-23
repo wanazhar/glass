@@ -22,6 +22,7 @@ use crate::results::ResponseMode;
     name = "glass",
     version,
     about = "Semantic browser execution for humans and agents",
+    disable_help_subcommand = true,
     after_help = "Start here:\n  glass doctor                         Check browser and local runtime support\n  glass                                Open the interactive terminal workspace\n  glass navigate https://example.com   Open a page in one bounded operation\n  glass observe --level interactive    Inspect current semantic understanding\n  glass task compile task.json ir.json Compile a deterministic browser-free task\n\nUse `glass <command> --help` for command-specific options and examples."
 )]
 pub struct Cli {
@@ -70,6 +71,11 @@ pub struct Cli {
     /// The default profile value is ignored in this mode.
     #[arg(long, global = true)]
     pub attach: bool,
+
+    /// Attach browser operations to a named persistent local session.
+    /// The session's verified loopback port is resolved before the operation starts.
+    #[arg(long, global = true, value_name = "NAME")]
+    pub session: Option<String>,
 
     /// Chrome page target ID. Required when the selected endpoint has multiple
     /// page targets.
@@ -759,8 +765,65 @@ pub enum Commands {
     /// Write text to the system clipboard.
     ClipboardWrite { text: String },
 
-    /// Launch the interactive TUI.
+    /// Launch the browser-first terminal workspace.
+    ///
+    /// `glass browser` is the shortest path to a browser session; `glass browser tui`
+    /// is an explicit equivalent.
+    Browser {
+        #[command(subcommand)]
+        action: Option<BrowserCommand>,
+    },
+
+    /// Start, inspect, and stop a persistent local browser session.
+    Session {
+        #[command(subcommand)]
+        action: SessionCommand,
+    },
+
+    /// Show grouped help and the embedded Glass workflow skills.
+    Help { topic: Option<String> },
+
+    /// Launch the development terminal workspace.
     Tui,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BrowserCommand {
+    /// Launch the focused browser terminal workspace.
+    Tui,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionCommand {
+    /// Start one named persistent browser session.
+    Start {
+        #[arg(default_value = "default")]
+        name: String,
+    },
+    /// Inspect one persistent browser session without starting Chrome.
+    Status {
+        #[arg(default_value = "default")]
+        name: String,
+    },
+    /// Stop one persistent browser session and its owned browser.
+    Stop {
+        #[arg(default_value = "default")]
+        name: String,
+    },
+    /// Print the attach command for one persistent browser session.
+    Open {
+        #[arg(default_value = "default")]
+        name: String,
+    },
+    /// Foreground owner used internally by `session start`.
+    #[command(hide = true)]
+    Serve {
+        name: String,
+        #[arg(long)]
+        socket: PathBuf,
+        #[arg(long)]
+        status: PathBuf,
+    },
 }
 
 fn parse_semantic_level(value: &str) -> Result<String, String> {
@@ -1488,6 +1551,26 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn browser_and_session_onboarding_commands_parse() {
+        let browser = Cli::try_parse_from(["glass", "browser"]).unwrap();
+        assert!(matches!(
+            browser.command,
+            Some(Commands::Browser { action: None })
+        ));
+
+        let session = Cli::try_parse_from(["glass", "--session", "work", "observe"]).unwrap();
+        assert_eq!(session.session.as_deref(), Some("work"));
+        assert!(matches!(session.command, Some(Commands::Observe { .. })));
+
+        let start = Cli::try_parse_from(["glass", "session", "start", "work"]).unwrap();
+        assert!(matches!(
+            start.command,
+            Some(Commands::Session {
+                action: SessionCommand::Start { ref name }
+            }) if name == "work"
+        ));
+    }
     #[test]
     fn update_options_are_explicit_and_browser_free() {
         let cli = Cli::try_parse_from([
@@ -2247,6 +2330,28 @@ mod tests {
             Some(Commands::Ir {
                 action: IrCommand::Canonical { input }
             }) if input.as_os_str() == "draft.json"
+        ));
+    }
+    #[test]
+    fn browser_first_and_persistent_session_commands_parse() {
+        let cli = Cli::try_parse_from(["glass", "browser", "tui"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Browser {
+                action: Some(BrowserCommand::Tui)
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["glass", "--session", "work", "observe"]).unwrap();
+        assert_eq!(cli.session.as_deref(), Some("work"));
+        assert!(matches!(cli.command, Some(Commands::Observe { .. })));
+
+        let cli = Cli::try_parse_from(["glass", "session", "status", "work"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Session {
+                action: SessionCommand::Status { name }
+            }) if name == "work"
         ));
     }
 }

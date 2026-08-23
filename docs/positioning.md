@@ -20,6 +20,28 @@ workflow generator, cross-browser test framework, or remote browser fleet.
 | Resume or observe from an iPhone | mobile TUI, terminal graphics, SSH-forwarded Remote View | loopback-only services; no public hosted relay |
 | Build repeatable browser tasks | Task Protocol, workflows, checkpoints, replay | callers author intent and policy; Glass does not invent an unbounded workflow |
 
+## Collaboration surface boundary
+
+`WORKSPACE` is the clean local overview: current branch, upstream
+ahead/behind, changed-file count, checks, and active agent work. `Git` owns the
+full local branch/worktree/commit surface, including guarded branch switching
+and worktree operations. A branch list does not belong in the overview because
+it makes the default coding screen noisy and makes a destructive action look
+like navigation.
+
+Pull requests and remote issues are different state. For a `github.com` origin,
+`WORKSPACE` performs a cached, read-only `gh auth status --hostname
+github.com` probe and reports whether the GitHub CLI is unavailable,
+unauthenticated, authenticated, or timed out. The probe never displays `gh`
+output and does not run for non-GitHub remotes.
+
+PRs and issues should live in an explicit provider-backed `REVIEW` surface
+rather than being inferred from Git branches or remote URLs. That surface
+should show draft/ready/merged PR state, reviewers, CI checks, linked commits,
+and open issues/bugs with provider, repository, and authentication status
+visible. No remote PR or issue data is currently synthesized without that
+provider boundary.
+
 ## Use the full `glass-dev` product when
 
 - the source tree, editor, PTYs, diagnostics, diff, graph, and verification

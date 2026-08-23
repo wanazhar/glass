@@ -309,6 +309,7 @@ export default function (pi: ExtensionAPI) {
   register("glass_editor_open", "glass.editor.open", "Open a shared resident editor buffer", Type.Object({ path: Type.String() }), true);
   register("glass_editor_selection", "glass.editor.selection", "Inspect a shared editor cursor and selection", Type.Object({ path: Type.String() }));
   register("glass_editor_replace", "glass.editor.replace", "Replace text in a shared conflict-safe buffer", Type.Object({ path: Type.String(), oldText: Type.String(), newText: Type.String() }), true);
+  register("glass_editor_replace_selection", "glass.editor.replace_selection", "Replace the human's current editor selection", Type.Object({ path: Type.String(), replacement: Type.String() }), true);
   register("glass_editor_save", "glass.editor.save", "Save a shared conflict-safe editor buffer", Type.Object({ path: Type.String() }), true);
   register("glass_editor_diff", "glass.editor.diff", "Inspect the current project/editor diff", Type.Object({}));
   register("glass_editor_buffers", "glass.editor.buffers", "List shared resident editor buffers", Type.Object({}));
@@ -321,7 +322,7 @@ export default function (pi: ExtensionAPI) {
   register("glass_browser_observe", "glass.browser.observe", "Create a fresh structured browser observation", Type.Object({}));
   register("glass_browser_snapshot", "glass.browser.snapshot", "Capture a fresh accessibility snapshot", Type.Object({}));
   register("glass_browser_semantic", "glass.browser.semantic", "Inspect fresh semantic browser evidence", Type.Object({ level: Type.Optional(Type.Union([Type.Literal("summary"), Type.Literal("interactive"), Type.Literal("structured"), Type.Literal("detailed"), Type.Literal("raw")])) }));
-  register("glass_browser_diff", "glass.browser.diff", "Diff the cached and fresh browser observations", Type.Object({}));
+  register("glass_browser_web_ir", "glass.browser.web_ir", "Inspect bounded live Web IR evidence", Type.Object({}));
   register("glass_browser_targets", "glass.browser.targets", "List authoritative browser targets", Type.Object({}));
   register("glass_browser_select_target", "glass.browser.target.select", "Select an authoritative browser target", Type.Object({ targetId: Type.String() }), true);
   register("glass_browser_navigate", "glass.browser.navigate", "Navigate with a browser revision guard", Type.Object({ url: Type.String(), browserRevision: Type.Integer({ minimum: 1 }), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
@@ -337,7 +338,6 @@ export default function (pi: ExtensionAPI) {
   register("glass_memory_retrieve", "glass.memory.retrieve", "Retrieve bounded advisory browser memory", Type.Object({ recordId: Type.Optional(Type.String()) }));
   register("glass_memory_explain", "glass.memory.explain", "Explain one advisory memory record", Type.Object({ recordId: Type.String() }));
   register("glass_memory_forget", "glass.memory.forget", "Forget one advisory memory record", Type.Object({ recordId: Type.String() }), true);
-  register("glass_semantic_inspect", "glass.semantic.inspect", "Inspect fresh authoritative browser semantics", Type.Object({}));
   register("glass_semantic_diff", "glass.semantic.diff", "Diff fresh authoritative browser semantics", Type.Object({}));
   register("glass_semantic_links", "glass.semantic.links", "Read source/runtime/browser semantic links", Type.Object({}));
 

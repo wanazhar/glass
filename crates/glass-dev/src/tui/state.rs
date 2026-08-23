@@ -222,6 +222,11 @@ pub struct DevTuiState {
     pub focused_editor_path: String,
     pub focused_editor_dirty: bool,
     pub focused_editor_line: u32,
+    pub focused_editor_column: u32,
+    pub focused_editor_selection: Option<crate::development::TextSelection>,
+    pub editor_comments: Vec<crate::development::EditorComment>,
+    pub editor_proposals: Vec<crate::development::EditorProposal>,
+    pub editor_checkpoints: Vec<crate::development::EditorCheckpoint>,
     pub agents: String,
     pub agent_readiness: String,
     pub harnesses: String,
@@ -387,6 +392,11 @@ impl DevTuiState {
             focused_editor_path: String::new(),
             focused_editor_dirty: false,
             focused_editor_line: 0,
+            focused_editor_column: 0,
+            focused_editor_selection: None,
+            editor_comments: Vec::new(),
+            editor_proposals: Vec::new(),
+            editor_checkpoints: Vec::new(),
             status: if trust_prompt {
                 "Trust required · I inspect · O untrusted · 1 once · T project".into()
             } else {
@@ -861,6 +871,62 @@ impl DevTuiState {
             },
         })
     }
+    /// Snapshot the focused editor buffer for the shared workspace chat.
+    ///
+    /// Chat must see the same unsaved text the human sees, not only the
+    /// on-disk file. Keep the attachment bounded; the agent can request the
+    /// remainder through its file tools.
+    pub fn agent_editor_context(&self) -> serde_json::Value {
+        let buffer = self.focused_buffer();
+        let focused = buffer.as_ref().map(|buffer| {
+            let (content, truncated) = bounded_editor_content(&buffer.content);
+            serde_json::json!({
+                "path": buffer.path,
+                "cursor": {
+                    "line": buffer.cursor_line,
+                    "column": buffer.cursor_column,
+                },
+                "selection": buffer.selection,
+                "dirty": buffer.dirty,
+                "actor": buffer.actor,
+                "content": content,
+                "contentTruncated": truncated,
+            })
+        });
+        let project_revision = self
+            .workspace
+            .try_lock()
+            .ok()
+            .map(|workspace| workspace.project().revision());
+        let comments = self
+            .editor_comments
+            .iter()
+            .filter(|comment| {
+                self.focused_editor_path.is_empty() || comment.path == self.focused_editor_path
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let proposals = self
+            .editor_proposals
+            .iter()
+            .filter(|proposal| {
+                self.focused_editor_path.is_empty() || proposal.path == self.focused_editor_path
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "focusedPath": self.focused_editor_path,
+            "cursor": {
+                "line": self.focused_editor_line,
+                "column": self.focused_editor_column,
+            },
+            "dirty": self.focused_editor_dirty,
+            "projectRevision": project_revision,
+            "focusedBuffer": focused,
+            "comments": comments,
+            "proposals": proposals,
+        })
+    }
 
     pub fn browser_chat_header(&self) -> String {
         let browser = self.browser_workspace.state();
@@ -1013,6 +1079,34 @@ impl DevTuiState {
         self.composer_mode = true;
         self.composer_cursor = self.composer_input.len();
         self.status = "Agent composer · Enter sends · draft stays open · Esc cancels".into();
+    }
+    /// Move from the native editor into the shared agent conversation with
+    /// the focused buffer attached as unsaved, bounded context.
+    pub fn prepare_editor_agent_prompt(&mut self) {
+        let Some(buffer) = self.focused_buffer() else {
+            self.status = "No open buffer · open a file before asking Pi".into();
+            return;
+        };
+        let line = buffer
+            .content
+            .lines()
+            .nth(buffer.cursor_line.saturating_sub(1) as usize)
+            .unwrap_or_default()
+            .trim();
+        let line_preview = line.chars().take(240).collect::<String>();
+        self.composer_input = format!(
+            "Help me with {}:{}:{}.\nInspect the attached editor buffer and explain the safest minimal change. Current line: `{line_preview}`. Do not edit files until I approve a concrete proposal.",
+            buffer.path, buffer.cursor_line, buffer.cursor_column
+        );
+        self.composer_cursor = self.composer_input.len();
+        self.composer_steer = false;
+        self.code_edit_mode = false;
+        self.surface = DevSurface::Agent;
+        self.open_composer();
+        self.status = format!(
+            "Editor context attached · {}:{} · review the prompt, then press Enter",
+            buffer.path, buffer.cursor_line
+        );
     }
 
     /// Prepare an editable review prompt using the current workspace evidence.
@@ -1206,7 +1300,8 @@ impl DevTuiState {
         self.composer_cursor = 0;
         self.composer_steer = false;
         self.composer_mode = true;
-        let context = self.agent_browser_context();
+        let mut context = self.agent_browser_context();
+        context["editor"] = self.agent_editor_context();
         if context["browser"]["selectedEntity"].is_object() {
             self.browser_workspace.state_mut().input_owner =
                 glass_browser::browser_workspace::BrowserInputOwner::Agent;
@@ -1917,17 +2012,54 @@ impl DevTuiState {
     }
 
     pub fn refresh_editor_projection(&mut self) {
-        let buffers = self
+        let (buffers, comments, proposals, checkpoints) = self
             .workspace
             .lock()
-            .map(|workspace| workspace.project().buffers().cloned().collect::<Vec<_>>())
+            .map(|workspace| {
+                (
+                    workspace.project().buffers().cloned().collect::<Vec<_>>(),
+                    workspace.project().editor_comments(None),
+                    workspace.project().editor_proposals(),
+                    workspace.project().editor_checkpoints(),
+                )
+            })
             .unwrap_or_default();
+        self.editor_comments = comments;
+        self.editor_proposals = proposals;
+        self.editor_checkpoints = checkpoints;
         if let Some(buffer) = buffers.get(self.editor_buffer_index) {
             self.focused_editor_path = buffer.path.clone();
             self.focused_editor_dirty = buffer.dirty;
             self.focused_editor_line = buffer.cursor_line;
+            self.focused_editor_column = buffer.cursor_column;
+            self.focused_editor_selection = buffer.selection.clone();
+        } else {
+            self.focused_editor_path.clear();
+            self.focused_editor_dirty = false;
+            self.focused_editor_line = 0;
+            self.focused_editor_column = 0;
+            self.focused_editor_selection = None;
         }
         self.editor = format_editor_buffers(&buffers);
+    }
+
+    pub fn editor_collaboration_summary(&self) -> String {
+        let open_comments = self
+            .editor_comments
+            .iter()
+            .filter(|comment| comment.state == crate::development::EditorCommentState::Open)
+            .count();
+        let pending = self
+            .editor_proposals
+            .iter()
+            .filter(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
+            .count();
+        format!(
+            "comments {} open · proposals {} pending · checkpoints {}",
+            open_comments,
+            pending,
+            self.editor_checkpoints.len()
+        )
     }
 
     pub fn cycle_editor_buffer(&mut self, delta: i32) {
@@ -1967,7 +2099,8 @@ impl DevTuiState {
         if has_buffer {
             self.code_edit_mode = true;
             self.status =
-                "EDIT · arrows move · Ctrl-S save · Ctrl-Z/Y undo/redo · Esc close".into();
+                "EDIT · arrows move · Alt-A ask Pi · Ctrl-S save · Ctrl-Z/Y undo/redo · Esc close"
+                    .into();
         }
     }
 
@@ -1987,6 +2120,12 @@ impl DevTuiState {
         };
         let path = buffer.path.clone();
         let result = match (code, modifiers) {
+            (crossterm::event::KeyCode::Char('a'), value)
+                if value.contains(crossterm::event::KeyModifiers::ALT) =>
+            {
+                self.prepare_editor_agent_prompt();
+                Ok(())
+            }
             (crossterm::event::KeyCode::Char('s'), value)
                 if value.contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
@@ -2017,10 +2156,30 @@ impl DevTuiState {
                         ))
                     })
             }
-            (crossterm::event::KeyCode::Left, _) => self.move_editor_cursor(&path, 0, -1),
-            (crossterm::event::KeyCode::Right, _) => self.move_editor_cursor(&path, 0, 1),
-            (crossterm::event::KeyCode::Up, _) => self.move_editor_cursor(&path, -1, 0),
-            (crossterm::event::KeyCode::Down, _) => self.move_editor_cursor(&path, 1, 0),
+            (crossterm::event::KeyCode::Left, value) => self.move_editor_cursor(
+                &path,
+                0,
+                -1,
+                value.contains(crossterm::event::KeyModifiers::SHIFT),
+            ),
+            (crossterm::event::KeyCode::Right, value) => self.move_editor_cursor(
+                &path,
+                0,
+                1,
+                value.contains(crossterm::event::KeyModifiers::SHIFT),
+            ),
+            (crossterm::event::KeyCode::Up, value) => self.move_editor_cursor(
+                &path,
+                -1,
+                0,
+                value.contains(crossterm::event::KeyModifiers::SHIFT),
+            ),
+            (crossterm::event::KeyCode::Down, value) => self.move_editor_cursor(
+                &path,
+                1,
+                0,
+                value.contains(crossterm::event::KeyModifiers::SHIFT),
+            ),
             (crossterm::event::KeyCode::Enter, _) => self.insert_editor_text(&path, "\n"),
             (crossterm::event::KeyCode::Backspace, _) => self.backspace_editor(&path),
             (crossterm::event::KeyCode::Char(character), _) => {
@@ -2039,6 +2198,7 @@ impl DevTuiState {
         path: &str,
         line_delta: i32,
         column_delta: i32,
+        extend_selection: bool,
     ) -> crate::development::DevelopmentResult<()> {
         let buffer = self
             .workspace
@@ -2061,10 +2221,30 @@ impl DevTuiState {
         } else {
             (buffer.cursor_column as i32 + column_delta).clamp(1, max_column as i32) as u32
         };
-        self.workspace
-            .try_lock()?
+        let anchor = if extend_selection {
+            buffer
+                .selection
+                .map(|selection| selection.anchor)
+                .unwrap_or(crate::development::TextPosition {
+                    line: buffer.cursor_line,
+                    column: buffer.cursor_column,
+                })
+        } else {
+            crate::development::TextPosition { line, column }
+        };
+        let mut workspace = self.workspace.try_lock()?;
+        workspace
             .project_mut()
-            .set_buffer_cursor(path, line, column)
+            .set_buffer_cursor(path, line, column)?;
+        workspace.project_mut().set_buffer_selection(
+            path,
+            extend_selection.then_some(crate::development::TextSelection {
+                anchor,
+                active: crate::development::TextPosition { line, column },
+            }),
+            crate::development::Actor::local(),
+        )?;
+        Ok(())
     }
 
     fn insert_editor_text(
@@ -2072,47 +2252,58 @@ impl DevTuiState {
         path: &str,
         text: &str,
     ) -> crate::development::DevelopmentResult<()> {
-        let buffer = self
-            .workspace
-            .try_lock()?
-            .project()
-            .buffer(path)
-            .cloned()
-            .ok_or_else(|| {
-                crate::development::DevelopmentError::NotFound(format!("buffer {path}"))
-            })?;
+        let mut workspace = self.workspace.try_lock()?;
+        let project = workspace.project_mut();
+        let buffer = project.buffer(path).cloned().ok_or_else(|| {
+            crate::development::DevelopmentError::NotFound(format!("buffer {path}"))
+        })?;
+        if buffer
+            .selection
+            .as_ref()
+            .is_some_and(|selection| !selection.is_empty())
+        {
+            project.replace_buffer_selection(
+                path,
+                text.to_string(),
+                crate::development::Actor::local(),
+            )?;
+            return Ok(());
+        }
         let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
-        let mut content = buffer.content.clone();
+        let mut content = buffer.content;
         content.insert_str(offset, text);
-        self.workspace.try_lock()?.project_mut().edit_buffer(
-            path,
-            content,
-            crate::development::Actor::local(),
-        )?;
-        let (line, column) = if text == "\n" {
-            (buffer.cursor_line + 1, 1)
-        } else {
-            (
-                buffer.cursor_line,
-                buffer.cursor_column + text.chars().count() as u32,
-            )
-        };
-        self.workspace
-            .try_lock()?
-            .project_mut()
-            .set_buffer_cursor(path, line, column)
+        let cursor =
+            crate::development::editor::text_position_at_offset(&content, offset + text.len())
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::InvalidInput(
+                        "inserted text ended at an invalid UTF-8 boundary".into(),
+                    )
+                })?;
+        let actor = crate::development::Actor::local();
+        project.edit_buffer(path, content, actor.clone())?;
+        project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+        project.set_buffer_selection(path, None, actor)?;
+        Ok(())
     }
 
     fn backspace_editor(&mut self, path: &str) -> crate::development::DevelopmentResult<()> {
-        let buffer = self
-            .workspace
-            .lock()?
-            .project()
-            .buffer(path)
-            .cloned()
-            .ok_or_else(|| {
-                crate::development::DevelopmentError::NotFound(format!("buffer {path}"))
-            })?;
+        let mut workspace = self.workspace.try_lock()?;
+        let project = workspace.project_mut();
+        let buffer = project.buffer(path).cloned().ok_or_else(|| {
+            crate::development::DevelopmentError::NotFound(format!("buffer {path}"))
+        })?;
+        if buffer
+            .selection
+            .as_ref()
+            .is_some_and(|selection| !selection.is_empty())
+        {
+            project.replace_buffer_selection(
+                path,
+                String::new(),
+                crate::development::Actor::local(),
+            )?;
+            return Ok(());
+        }
         let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
         if offset == 0 {
             return Ok(());
@@ -2122,32 +2313,19 @@ impl DevTuiState {
             .next_back()
             .map(|(index, _)| index)
             .unwrap_or(0);
-        let removed_newline = &buffer.content[previous..offset] == "\n";
-        let mut content = buffer.content.clone();
+        let mut content = buffer.content;
         content.drain(previous..offset);
-        self.workspace.try_lock()?.project_mut().edit_buffer(
-            path,
-            content.clone(),
-            crate::development::Actor::local(),
-        )?;
-        let (line, column) = if removed_newline {
-            let line = buffer.cursor_line.saturating_sub(1).max(1);
-            let column = content
-                .split('\n')
-                .nth(line.saturating_sub(1) as usize)
-                .map(|line| line.chars().count() + 1)
-                .unwrap_or(1) as u32;
-            (line, column)
-        } else {
-            (
-                buffer.cursor_line,
-                buffer.cursor_column.saturating_sub(1).max(1),
-            )
-        };
-        self.workspace
-            .try_lock()?
-            .project_mut()
-            .set_buffer_cursor(path, line, column)
+        let cursor = crate::development::editor::text_position_at_offset(&content, previous)
+            .ok_or_else(|| {
+                crate::development::DevelopmentError::InvalidInput(
+                    "backspace ended at an invalid UTF-8 boundary".into(),
+                )
+            })?;
+        let actor = crate::development::Actor::local();
+        project.edit_buffer(path, content, actor.clone())?;
+        project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+        project.set_buffer_selection(path, None, actor)?;
+        Ok(())
     }
 
     pub fn previous_surface(&mut self) {
@@ -2451,6 +2629,16 @@ impl DevTuiState {
                 .collect::<Vec<_>>()
                 .join("\n\n")
         };
+        self.editor_comments = workspace.project().editor_comments(None);
+        self.editor_proposals = workspace.project().editor_proposals();
+        self.editor_checkpoints = workspace.project().editor_checkpoints();
+        if let Some(buffer) = buffers.get(self.editor_buffer_index) {
+            self.focused_editor_path = buffer.path.clone();
+            self.focused_editor_dirty = buffer.dirty;
+            self.focused_editor_line = buffer.cursor_line;
+            self.focused_editor_column = buffer.cursor_column;
+            self.focused_editor_selection = buffer.selection.clone();
+        }
         self.lsp = {
             let language = workspace.language();
             let servers = language.names().collect::<Vec<_>>();
@@ -3439,6 +3627,17 @@ fn page_origin(url: &str) -> Option<String> {
         .unwrap_or(url.len());
     Some(url[..authority_end].to_string())
 }
+fn bounded_editor_content(content: &str) -> (String, bool) {
+    const MAX_CONTEXT_BYTES: usize = 64 * 1024;
+    if content.len() <= MAX_CONTEXT_BYTES {
+        return (content.to_string(), false);
+    }
+    let mut end = MAX_CONTEXT_BYTES;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    (content[..end].to_string(), true)
+}
 
 fn pending_agent_approval(
     agents: Option<&Vec<crate::AgentSnapshot>>,
@@ -3661,6 +3860,93 @@ mod tests {
         assert_eq!(state.surface, DevSurface::Agent);
         assert!(state.composer_mode);
         assert_eq!(state.composer_input, "c");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn agent_editor_context_attaches_unsaved_buffer_and_inline_prompt() {
+        let root =
+            std::env::temp_dir().join(format!("glass-editor-agent-context-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open editor buffer");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .edit_buffer(
+                "src/main.rs",
+                "fn main() {\n    println!(\"unsaved\");\n}\n".into(),
+                crate::development::Actor::local(),
+            )
+            .expect("edit buffer");
+        state.refresh_editor_projection();
+
+        let context = state.agent_editor_context();
+        assert_eq!(context["focusedPath"], "src/main.rs");
+        assert_eq!(
+            context["focusedBuffer"]["content"],
+            "fn main() {\n    println!(\"unsaved\");\n}\n"
+        );
+        assert_eq!(context["focusedBuffer"]["dirty"], true);
+
+        state.enter_code_edit();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::ALT,
+        );
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert!(state.composer_mode);
+        assert!(!state.code_edit_mode);
+        assert!(state.composer_input.contains("src/main.rs:1:1"));
+        assert!(state.composer_input.contains("Do not edit files"));
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn editor_shift_selection_replaces_text_and_clears_anchor() {
+        let root =
+            std::env::temp_dir().join(format!("glass-editor-selection-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "alpha\nbeta\n").expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open editor buffer");
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+        for _ in 0..5 {
+            state.edit_code_key(
+                crossterm::event::KeyCode::Right,
+                crossterm::event::KeyModifiers::SHIFT,
+            );
+        }
+        assert!(
+            state
+                .focused_editor_selection
+                .as_ref()
+                .is_some_and(|selection| !selection.is_empty())
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('X'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        let buffer = state.focused_buffer().expect("focused editor buffer");
+        assert_eq!(buffer.content, "X\nbeta\n");
+        assert_eq!((buffer.cursor_line, buffer.cursor_column), (1, 2));
+        assert!(buffer.selection.is_none());
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

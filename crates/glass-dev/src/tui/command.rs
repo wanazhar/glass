@@ -131,16 +131,40 @@ const CODE_ACTIONS: &[SurfaceAction] = &[
         description: "edit the focused buffer",
     },
     SurfaceAction {
+        label: "Replace selection",
+        command: "editor replace-selection",
+        key: ":",
+        description: "replace the highlighted editor text directly",
+    },
+    SurfaceAction {
+        label: "Comment selection",
+        command: "editor comment-selection",
+        key: ":",
+        description: "anchor a review comment to the current selection",
+    },
+    SurfaceAction {
         label: "Save buffer",
         command: "Ctrl-S",
         key: "Ctrl-S",
         description: "write the focused buffer",
     },
     SurfaceAction {
-        label: "Search project",
-        command: "editor search QUERY",
+        label: "Propose edit",
+        command: "editor propose PATH SUMMARY TEXT",
         key: ":",
-        description: "find text across the repository",
+        description: "stage an agent or human edit for approval",
+    },
+    SurfaceAction {
+        label: "Review proposals",
+        command: "editor proposals",
+        key: ":",
+        description: "inspect pending, accepted, and stale edits",
+    },
+    SurfaceAction {
+        label: "Create checkpoint",
+        command: "editor checkpoint NAME",
+        key: ":",
+        description: "save open buffers as an undoable checkpoint",
     },
     SurfaceAction {
         label: "Diagnostics",
@@ -1590,7 +1614,7 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
                 json!({
                     "taskId":parts.get(1).ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?,
                     "kind":parts.get(2).ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?,
-                    "passed":parts.get(3).ok_or("task evidence requires TASK_ID KIND PASS [JSON]")?.parse::<bool>().map_err(|_| "task evidence PASS must be true or false")?,
+                    "passed":parts.get(3).ok_or("task evidence PASS must be true or false")?.parse::<bool>().map_err(|_| "task evidence PASS must be true or false")?,
                     "details":details
                 }),
                 true,
@@ -1606,6 +1630,166 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         state.surface = DevSurface::Code;
         return Ok("Opened shared editor".into());
     };
+    if action == "comments" {
+        let path = parts.get(1).copied();
+        let result = run_tool(state, "glass.editor.comments", json!({"path":path}), false)?;
+        state.editor = serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?;
+        state.surface = DevSurface::Code;
+        return Ok(compact_result("glass.editor.comments", &result));
+    }
+    if action == "proposals" {
+        let result = run_tool(state, "glass.editor.proposals", json!({}), false)?;
+        state.editor = serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?;
+        state.surface = DevSurface::Code;
+        return Ok(compact_result("glass.editor.proposals", &result));
+    }
+    if action == "checkpoints" {
+        let result = run_tool(state, "glass.editor.checkpoints", json!({}), false)?;
+        state.editor = serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?;
+        state.surface = DevSurface::Code;
+        return Ok(compact_result("glass.editor.checkpoints", &result));
+    }
+    if action == "replace-selection" {
+        let path = state.focused_editor_path.clone();
+        if path.is_empty() {
+            return Err("editor replace-selection requires an open buffer".into());
+        }
+        let replacement = parts.get(1..).unwrap_or_default().join(" ");
+        if replacement.is_empty() {
+            return Err("editor replace-selection requires TEXT".into());
+        }
+        let result = run_tool(
+            state,
+            "glass.editor.replace_selection",
+            json!({"path":path,"replacement":replacement}),
+            true,
+        )?;
+        state.surface = DevSurface::Code;
+        state.refresh_editor_projection();
+        return Ok(compact_result("glass.editor.replace_selection", &result));
+    }
+    if action == "comment-selection" {
+        let path = state.focused_editor_path.clone();
+        if path.is_empty() {
+            return Err("editor comment-selection requires an open buffer".into());
+        }
+        let text = parts.get(1..).unwrap_or_default().join(" ");
+        if text.is_empty() {
+            return Err("editor comment-selection requires TEXT".into());
+        }
+        let (start_line, end_line) = state
+            .focused_editor_selection
+            .as_ref()
+            .filter(|selection| !selection.is_empty())
+            .map(crate::development::TextSelection::ordered)
+            .map(|(start, end)| (start.line, end.line))
+            .unwrap_or((state.focused_editor_line, state.focused_editor_line));
+        let result = run_tool(
+            state,
+            "glass.editor.comment.add",
+            json!({"path":path,"startLine":start_line,"endLine":end_line,"text":text}),
+            true,
+        )?;
+        state.surface = DevSurface::Code;
+        state.refresh_editor_projection();
+        return Ok(compact_result("glass.editor.comment.add", &result));
+    }
+    if action == "comment" {
+        let path = parts
+            .get(1)
+            .ok_or("editor comment requires PATH START END TEXT")?;
+        let start_line = parse_u64(parts.get(2), "START")?;
+        let end_line = parse_u64(parts.get(3), "END")?;
+        let text = parts.get(4..).unwrap_or_default().join(" ");
+        if text.is_empty() {
+            return Err("editor comment requires TEXT".into());
+        }
+        let result = run_tool(
+            state,
+            "glass.editor.comment.add",
+            json!({"path":path,"startLine":start_line,"endLine":end_line,"text":text}),
+            true,
+        )?;
+        state.surface = DevSurface::Code;
+        return Ok(compact_result("glass.editor.comment.add", &result));
+    }
+    if action == "comment-resolve" {
+        let id = parts.get(1).ok_or("editor comment-resolve requires ID")?;
+        let result = run_tool(
+            state,
+            "glass.editor.comment.resolve",
+            json!({"id":id}),
+            true,
+        )?;
+        state.surface = DevSurface::Code;
+        return Ok(compact_result("glass.editor.comment.resolve", &result));
+    }
+    if action == "propose" {
+        let path = parts
+            .get(1)
+            .ok_or("editor propose requires PATH SUMMARY TEXT")?;
+        let summary = parts
+            .get(2)
+            .ok_or("editor propose requires PATH SUMMARY TEXT")?;
+        let proposed = parts.get(3..).unwrap_or_default().join(" ");
+        if proposed.is_empty() {
+            return Err("editor propose requires TEXT".into());
+        }
+        let original = state
+            .ws()?
+            .project()
+            .buffer(path)
+            .map(|buffer| buffer.content.clone())
+            .ok_or_else(|| format!("buffer {path} must be open before proposing an edit"))?;
+        let result = run_tool(
+            state,
+            "glass.editor.proposal.create",
+            json!({"path":path,"original":original,"proposed":proposed,"summary":summary}),
+            true,
+        )?;
+        state.surface = DevSurface::Code;
+        return Ok(compact_result("glass.editor.proposal.create", &result));
+    }
+    if action == "accept" || action == "reject" {
+        let id = parts.get(1).ok_or("editor proposal action requires ID")?;
+        let tool = if action == "accept" {
+            "glass.editor.proposal.accept"
+        } else {
+            "glass.editor.proposal.reject"
+        };
+        let result = run_tool(state, tool, json!({"id":id}), true)?;
+        state.surface = DevSurface::Code;
+        state.refresh_editor_projection();
+        return Ok(compact_result(tool, &result));
+    }
+    if action == "checkpoint" {
+        let name = parts.get(1..).unwrap_or_default().join(" ");
+        if name.is_empty() {
+            return Err("editor checkpoint requires NAME".into());
+        }
+        let result = run_tool(
+            state,
+            "glass.editor.checkpoint.create",
+            json!({"name":name}),
+            true,
+        )?;
+        state.surface = DevSurface::Code;
+        return Ok(compact_result("glass.editor.checkpoint.create", &result));
+    }
+    if action == "restore" {
+        let id = parts
+            .get(1)
+            .ok_or("editor restore requires CHECKPOINT_ID")?;
+        let result = run_tool(
+            state,
+            "glass.editor.checkpoint.restore",
+            json!({"id":id}),
+            true,
+        )?;
+        state.surface = DevSurface::Code;
+        state.refresh_editor_projection();
+        return Ok(compact_result("glass.editor.checkpoint.restore", &result));
+    }
     let path = parts.get(1).ok_or("editor action requires PATH")?;
     if matches!(action, "undo" | "redo") {
         require_trusted(state)?;
@@ -1652,7 +1836,7 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         }
         _ => {
             return Err(
-                "editor actions: open, selection, replace, save, undo, redo, search".into(),
+                "editor actions: open, selection, replace, replace-selection, save, undo, redo, search, comments, comment, comment-selection, comment-resolve, proposals, propose, accept, reject, checkpoints, checkpoint, restore".into(),
             );
         }
     };
@@ -1665,7 +1849,19 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
     let action = parts.first().copied().unwrap_or("list");
     let server = parts.get(1).copied();
     let (tool, arguments, mutating) = match action {
-        "start" => ("glass.lsp.start", json!({"server":server.ok_or("lsp start requires SERVER COMMAND")?,"command":parts.get(2).ok_or("lsp start requires SERVER COMMAND")?,"arguments":parts.get(3..).unwrap_or_default()}), true),
+        "start" => {
+            let server = server.ok_or("lsp start requires SERVER COMMAND")?;
+            let command = parts
+                .get(2)
+                .ok_or("lsp start requires SERVER COMMAND")?;
+            let mut arguments = json!({"server":server,"command":command});
+            if let Some(extra) = parts.get(3..)
+                && !extra.is_empty()
+            {
+                arguments["arguments"] = json!(extra);
+            }
+            ("glass.lsp.start", arguments, true)
+        }
         "stop" => ("glass.lsp.stop", json!({"server":server.ok_or("lsp stop requires SERVER")?}), true),
         "list" => ("glass.lsp.list", json!({}), false),
         "events" => ("glass.lsp.events", json!({"since":parts.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(0)}), false),
@@ -1837,6 +2033,7 @@ fn execute_browser(
             "stop" => ("glass.browser.stop", json!({}), true),
             "state" => ("glass.browser.state", json!({}), false),
             "observe" => ("glass.browser.observe", json!({}), false),
+            "web-ir" => ("glass.browser.web_ir", json!({}), false),
             "targets" => ("glass.browser.targets", json!({}), false),
             "select" => ("glass.browser.target.select", json!({"targetId":parts.get(1).ok_or("browser select requires TARGET_ID")?}), true),
             "navigate" => ("glass.browser.navigate", json!({"url":parts.get(1).ok_or("browser navigate requires URL")?,"browserRevision":visible_revision?}), true),
@@ -1858,7 +2055,7 @@ fn execute_browser(
             "remote-open" => ("glass.browser.remote-view.open", json!({}), true),
             "remote-status" => ("glass.browser.remote-view.status", json!({}), false),
             "remote-revoke" => ("glass.browser.remote-view.revoke", json!({}), true),
-            _ => return Err("browser actions: start, stop, state, observe, targets, select, navigate, back, forward, reload, stop-loading, click, type, scroll, screenshot, remote-open, remote-status, remote-revoke".into()),
+            _ => return Err("browser actions: start, stop, state, observe, web-ir, targets, select, navigate, back, forward, reload, stop-loading, click, type, scroll, screenshot, remote-open, remote-status, remote-revoke".into()),
         }
     };
     let result = run_tool(state, tool, arguments, mutating)?;
@@ -2417,6 +2614,76 @@ mod tests {
         execute(&mut state, "task list").expect("queue task list");
         let task_call = state.queued_tool_request.take().expect("task request");
         assert_eq!(task_call.0.name, "glass.task.list");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_collaboration_commands_use_the_focused_buffer_and_selection() {
+        let (mut state, root) = test_state("editor-collaboration");
+        fs::create_dir_all(root.join("src")).expect("create source directory");
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open editor buffer");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .set_buffer_selection(
+                "src/main.rs",
+                Some(crate::development::TextSelection {
+                    anchor: crate::development::TextPosition { line: 1, column: 1 },
+                    active: crate::development::TextPosition { line: 1, column: 3 },
+                }),
+                crate::development::Actor::local(),
+            )
+            .expect("set editor selection");
+        state.refresh_editor_projection();
+
+        execute(&mut state, "editor replace-selection fn").expect("queue selection replacement");
+        let replacement = state
+            .pending_confirmation
+            .take()
+            .expect("replacement confirmation");
+        assert_eq!(replacement.call.name, "glass.editor.replace_selection");
+        assert_eq!(replacement.call.arguments["path"], "src/main.rs");
+        assert_eq!(replacement.call.arguments["replacement"], "fn");
+
+        execute(&mut state, "editor comment-selection simplify this")
+            .expect("queue selection comment");
+        let comment = state
+            .pending_confirmation
+            .take()
+            .expect("comment confirmation");
+        assert_eq!(comment.call.name, "glass.editor.comment.add");
+        assert_eq!(comment.call.arguments["startLine"], 1);
+        assert_eq!(comment.call.arguments["endLine"], 1);
+        assert_eq!(comment.call.arguments["text"], "simplify this");
+        execute(
+            &mut state,
+            "editor propose src/main.rs add-output fn main() { println!(\"ok\"); }",
+        )
+        .expect("queue editor proposal");
+        let proposal = state
+            .pending_confirmation
+            .take()
+            .expect("proposal confirmation");
+        assert_eq!(proposal.call.name, "glass.editor.proposal.create");
+        assert_eq!(proposal.call.arguments["path"], "src/main.rs");
+        assert_eq!(proposal.call.arguments["summary"], "add-output");
+        assert_eq!(proposal.call.arguments["original"], "fn main() {}\n");
+
+        execute(&mut state, "editor checkpoint before-agent").expect("queue editor checkpoint");
+        let checkpoint = state
+            .pending_confirmation
+            .take()
+            .expect("checkpoint confirmation");
+        assert_eq!(checkpoint.call.name, "glass.editor.checkpoint.create");
+        assert_eq!(checkpoint.call.arguments["name"], "before-agent");
+
         let _ = fs::remove_dir_all(root);
     }
 

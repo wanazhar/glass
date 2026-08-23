@@ -1733,6 +1733,7 @@ impl PiHarness {
                     "glass_editor_open",
                     "glass_editor_selection",
                     "glass_editor_replace",
+                    "glass_editor_replace_selection",
                     "glass_editor_save",
                     "glass_editor_diff",
                     "glass_editor_buffers",
@@ -2394,6 +2395,8 @@ mod tests {
         assert!(prompt.contains("embedded inside Glass Dev"));
         assert!(prompt.contains("Structured browser observation is the default"));
         assert!(prompt.contains("per-call approval"));
+        assert!(prompt.contains("glass.editor.proposal.create"));
+        assert!(prompt.contains("stale proposal"));
         assert!(prompt.contains("queued, running, indeterminate, stale, or background"));
         assert!(prompt.contains("300 seconds"));
         for tool in [
@@ -2408,10 +2411,12 @@ mod tests {
             "glass_diagnostics_run",
             "glass_file_mkdir",
             "glass_file_rename",
-            "glass_file_delete",
-            "glass_test_run",
             "glass_process_start",
             "glass_process_stop",
+            "glass_editor_comments",
+            "glass_editor_proposal_create",
+            "glass_editor_proposal_accept",
+            "glass_editor_checkpoint_create",
             "\"read\"",
             "\"write\"",
             "\"edit\"",

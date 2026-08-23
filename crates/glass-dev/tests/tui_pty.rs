@@ -803,8 +803,19 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
     );
     session.send(b"i");
     assert!(
-        session.wait_for("EDITOR", Duration::from_secs(5)),
+        session.wait_for("REVIEW", Duration::from_secs(5)),
+        "Code collaboration panel did not render\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("EDITOR", Duration::from_secs(1)),
         "Code editor did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1ba");
+    assert!(
+        session.wait_for("Do not edit files", Duration::from_secs(5)),
+        "Alt-A did not hand the focused editor context to the agent\n{}",
         session.output_tail()
     );
     session.send(b"\x1b");
@@ -819,7 +830,8 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
     session.send(b"v");
     assert!(
         session.wait_for("Semantic inspection", Duration::from_secs(5))
-            || session.wait_for("Live view", Duration::from_secs(1)),
+            || session.wait_for("Live view", Duration::from_secs(1))
+            || session.wait_for("live pixels are disabled", Duration::from_secs(1)),
         "browser visual toggle did not report a result\n{}",
         session.output_tail()
     );

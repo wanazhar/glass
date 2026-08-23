@@ -7,6 +7,8 @@ use glass_browser::browser::session::{
     BrowserSession, SemanticObservationLevel, SessionOptions, WorkflowCheckpoint,
     WorkflowDefinition, WorkflowRunResult,
 };
+use glass_browser::extraction::ExtractionRequest;
+use glass_browser::protocol::WebIrInspectionResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -80,6 +82,7 @@ enum BrowserCommand {
     Observe,
     Snapshot,
     Semantic(SemanticObservationLevel),
+    WebIr,
     Diff,
     Targets,
     SelectTarget(String),
@@ -208,6 +211,11 @@ impl BrowserService {
     /// Capture semantic observations at the requested level.
     pub fn semantic(&self, level: SemanticObservationLevel) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Semantic(level))
+    }
+
+    /// Extract the current page into a bounded Web IR inspection summary.
+    pub fn web_ir(&self) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::WebIr)
     }
 
     /// Return the observation delta since the session's previous revision.
@@ -480,6 +488,15 @@ impl BrowserWorker {
                     .await
                     .map_err(browser_error)?;
                 serde_json::to_value(observation).map_err(Into::into)
+            }
+            BrowserCommand::WebIr => {
+                let ir = self
+                    .session()?
+                    .extract_web_ir(&ExtractionRequest::default_document())
+                    .await
+                    .map_err(browser_error)?;
+                self.revision = Some(ir.revision);
+                serde_json::to_value(WebIrInspectionResult::from_ir(&ir)).map_err(Into::into)
             }
             BrowserCommand::Diff => {
                 let delta = self
@@ -842,6 +859,8 @@ mod tests {
         let error = service.observe().unwrap_err();
         assert!(error.to_string().contains("glass.browser.start"));
         assert_eq!(service.remote_view_status().unwrap()["active"], false);
+        let web_ir_error = service.web_ir().unwrap_err();
+        assert!(web_ir_error.to_string().contains("glass.browser.start"));
         assert!(
             service
                 .open_remote_view()
@@ -936,6 +955,10 @@ mod tests {
                 .unwrap()["page"]["title"],
             "Resident Glass"
         );
+        let web_ir = service.web_ir().unwrap();
+        assert!(web_ir["revision"].as_u64().is_some());
+        assert!(web_ir["entityCount"].as_u64().unwrap_or_default() > 0);
+        assert!(web_ir["actionableEntities"].is_array());
         assert!(service.diff().unwrap()["toRevision"].as_u64().is_some());
         let revision = observed["consistency"]["end_revision"]
             .as_u64()

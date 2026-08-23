@@ -131,6 +131,9 @@ language (including aliases), and recognized Mermaid flowcharts and sequence
 diagrams receive a terminal-native preview. If Mermaid syntax is not
 recognized, its source remains readable rather than being dropped.
 
+The native editor keeps cursor and selection state in the shared workspace, including unsaved buffers. `Alt-A` sends the focused buffer, cursor, and selection to the in-TUI Pi conversation without writing a file. The Code surface's `REVIEW` panel summarizes anchored comments, pending proposals, and checkpoints; use the `:editor` routes to add or resolve comments, create or approve/reject proposals, and create or restore checkpoints. Proposals are exact-content and conflict-checked; checkpoints and proposals change resident buffers only until `:editor save` or `Ctrl-S`.
+
+
 ## Live browser and iPhone
 
 

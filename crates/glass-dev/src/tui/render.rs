@@ -163,7 +163,7 @@ fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let content = "KEYS\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Tab      next surface\n  Esc      back\n  ?        help\n\nWORKSPACE\n  Enter    describe a task\n  a        workspace actions\n  :        command palette\n  s/l      setup / login\n\nAGENT\n  i        compose a prompt\n  :review  review current changes\n  :harness list\n           list installed harnesses\n  :harness start NAME\n           launch a harness in this terminal\n\nAPP (OPTIONAL)\n  n        address\n  t        type\n  v        live view\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n\nEDITOR\n  Enter    open\n  i        edit\n  Ctrl-S   save\n\nGIT\n  ↑/↓      changed file\n  Enter    diff\n  Esc      close";
+    let content = "KEYS\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Tab      next surface\n  Esc      back\n  ?        help\n\nWORKSPACE\n  Enter    describe a task\n  a        workspace actions\n  :        command palette\n  s/l      setup / login\n\nAGENT\n  i        compose a prompt\n  :review  review current changes\n  :harness list\n           list installed harnesses\n  :harness start NAME\n           launch a harness in this terminal\n\nAPP (OPTIONAL)\n  n        address\n  t        type\n  v        live view\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n\nEDITOR\n  Enter    open\n  i        edit\n  Alt-A    ask Pi with the focused buffer\n  Ctrl-S   save\n  Ctrl-Z/Y undo / redo\n\nGIT\n  ↑/↓      changed file\n  Enter    diff\n  Esc      close";
     frame.render_widget(
         Paragraph::new(panel_text(content))
             .style(Style::default().fg(TEXT))
@@ -980,11 +980,19 @@ fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 
 fn render_code_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let title = if state.focused_editor_path.is_empty() {
-        " EDITOR · choose a file "
-    } else if state.focused_editor_dirty {
-        " EDITOR · unsaved "
+        " EDITOR · choose a file ".to_string()
     } else {
-        " EDITOR · saved "
+        let dirty = if state.focused_editor_dirty {
+            "unsaved"
+        } else {
+            "saved"
+        };
+        format!(
+            " EDITOR · {dirty} · Ln {} Col {} · {} ",
+            state.focused_editor_line,
+            state.focused_editor_column,
+            state.editor_collaboration_summary()
+        )
     };
     let content = if state.editor.trim().is_empty() {
         "No file open · choose a file from the list"
@@ -995,6 +1003,7 @@ fn render_code_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         Paragraph::new(file_view::render_editor(
             &state.focused_editor_path,
             content,
+            state.focused_editor_selection.as_ref(),
         ))
         .style(Style::default().bg(PANEL_INSET))
         .scroll((state.current_scroll(), 0))
@@ -1003,15 +1012,113 @@ fn render_code_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         area,
     );
 }
+fn render_editor_collaboration(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4);
+    let open_comments = state
+        .editor_comments
+        .iter()
+        .filter(|comment| comment.state == crate::development::EditorCommentState::Open)
+        .count();
+    let pending_proposals = state
+        .editor_proposals
+        .iter()
+        .filter(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
+        .count();
+    let mut lines = vec![
+        format!("comments {open_comments} open · proposals {pending_proposals} pending",),
+        format!("checkpoints {}", state.editor_checkpoints.len()),
+    ];
+    if !state.focused_editor_path.is_empty() {
+        lines.push(format!(
+            "FILE {}",
+            compact_path(&state.focused_editor_path, width.saturating_sub(5)),
+        ));
+        lines.push(format!(
+            "CURSOR {}:{}{}",
+            state.focused_editor_line,
+            state.focused_editor_column,
+            if state.focused_editor_dirty {
+                " · unsaved"
+            } else {
+                ""
+            }
+        ));
+        if let Some(selection) = state
+            .focused_editor_selection
+            .as_ref()
+            .filter(|selection| !selection.is_empty())
+        {
+            let (start, end) = selection.ordered();
+            lines.push(format!(
+                "SELECT {}:{}–{}:{}",
+                start.line, start.column, end.line, end.column
+            ));
+        }
+    }
+    if open_comments > 0 {
+        lines.push("COMMENTS".into());
+        lines.extend(
+            state
+                .editor_comments
+                .iter()
+                .filter(|comment| comment.state == crate::development::EditorCommentState::Open)
+                .take(3)
+                .map(|comment| {
+                    compact_line(
+                        &format!(
+                            "L{}-{} {}",
+                            comment.start_line, comment.end_line, comment.text
+                        ),
+                        width,
+                    )
+                }),
+        );
+    }
+    if pending_proposals > 0 {
+        lines.push("PROPOSALS".into());
+        lines.extend(
+            state
+                .editor_proposals
+                .iter()
+                .filter(|proposal| {
+                    proposal.state == crate::development::EditorProposalState::Pending
+                })
+                .take(3)
+                .map(|proposal| {
+                    compact_line(&format!("{} · {}", proposal.id, proposal.summary), width)
+                }),
+        );
+    }
+    render_panel(frame, area, " REVIEW ", lines.join("\n"), ACCENT_BRIGHT);
+}
+
+fn render_editor_lsp(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    render_panel(
+        frame,
+        area,
+        " LSP ",
+        if state.lsp.trim().is_empty() {
+            "No diagnostics".into()
+        } else {
+            state.lsp.clone()
+        },
+        WARNING,
+    );
+}
 
 fn render_code_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     if stack_for_phone(state, area) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+            .constraints([
+                Constraint::Percentage(28),
+                Constraint::Percentage(52),
+                Constraint::Percentage(20),
+            ])
             .split(area);
         render_file_tree(frame, state, rows[0]);
         render_code_editor(frame, state, rows[1]);
+        render_editor_collaboration(frame, state, rows[2]);
         return;
     }
     let columns = Layout::default()
@@ -1024,17 +1131,12 @@ fn render_code_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .split(area);
     render_file_tree(frame, state, columns[0]);
     render_code_editor(frame, state, columns[1]);
-    render_panel(
-        frame,
-        columns[2],
-        " LSP ",
-        if state.lsp.trim().is_empty() {
-            "No diagnostics".into()
-        } else {
-            state.lsp.clone()
-        },
-        WARNING,
-    );
+    let side = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
+        .split(columns[2]);
+    render_editor_collaboration(frame, state, side[0]);
+    render_editor_lsp(frame, state, side[1]);
 }
 
 fn render_browser_visual(

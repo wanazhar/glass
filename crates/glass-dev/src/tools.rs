@@ -260,20 +260,29 @@ impl DevelopmentToolRouter {
             ),
             "glass.editor.selection" => {
                 let path = string("path")?;
-                workspace
+                let buffer = workspace
                     .project()
                     .buffer(path)
                     .cloned()
-                    .map(|buffer| {
-                        serde_json::json!({
-                            "path":buffer.path,
-                            "line":buffer.cursor_line,
-                            "column":buffer.cursor_column,
-                            "actor":buffer.actor,
-                            "dirty":buffer.dirty
-                        })
-                    })
-                    .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))
+                    .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))?;
+                let selected_text = workspace.project().selected_editor_text(path)?;
+                Ok(serde_json::json!({
+                    "path":buffer.path,
+                    "line":buffer.cursor_line,
+                    "column":buffer.cursor_column,
+                    "selection":buffer.selection,
+                    "selectedText":selected_text,
+                    "actor":buffer.actor,
+                    "dirty":buffer.dirty
+                }))
+            }
+            "glass.editor.replace_selection" => {
+                let buffer = workspace.project_mut().replace_buffer_selection(
+                    string("path")?,
+                    string("replacement")?.to_string(),
+                    context.authorization.actor.clone(),
+                )?;
+                Ok(serde_json::to_value(buffer)?)
             }
             "glass.editor.replace" => {
                 let matches = workspace.project_mut().replace_in_buffer(
@@ -291,6 +300,59 @@ impl DevelopmentToolRouter {
             "glass.editor.buffers" => Ok(serde_json::to_value(
                 workspace.project().buffers().cloned().collect::<Vec<_>>(),
             )?),
+            "glass.editor.comments" => Ok(serde_json::to_value(
+                workspace.project().editor_comments(optional_string(call, "path")),
+            )?),
+            "glass.editor.proposals" => Ok(serde_json::to_value(
+                workspace.project().editor_proposals(),
+            )?),
+            "glass.editor.checkpoints" => Ok(serde_json::to_value(
+                workspace.project().editor_checkpoints(),
+            )?),
+            "glass.editor.comment.add" => map_service(workspace.project_mut().add_editor_comment(
+                string("path")?,
+                u32_value(call, "startLine")?,
+                u32_value(call, "endLine")?,
+                string("text")?.to_string(),
+                context.authorization.actor.clone(),
+            )),
+            "glass.editor.comment.resolve" => map_service(
+                workspace
+                    .project_mut()
+                    .resolve_editor_comment(string("id")?, context.authorization.actor.clone()),
+            ),
+            "glass.editor.proposal.create" => map_service(
+                workspace.project_mut().propose_editor_change(
+                    string("path")?,
+                    string("original")?.to_string(),
+                    string("proposed")?.to_string(),
+                    string("summary")?.to_string(),
+                    context.authorization.actor.clone(),
+                ),
+            ),
+            "glass.editor.proposal.accept" => map_service(
+                workspace
+                    .project_mut()
+                    .accept_editor_proposal(string("id")?, context.authorization.actor.clone()),
+            ),
+            "glass.editor.proposal.reject" => map_service(
+                workspace
+                    .project_mut()
+                    .reject_editor_proposal(string("id")?, context.authorization.actor.clone()),
+            ),
+            "glass.editor.checkpoint.create" => map_service(
+                workspace
+                    .project_mut()
+                    .create_editor_checkpoint(
+                        string("name")?.to_string(),
+                        context.authorization.actor.clone(),
+                    ),
+            ),
+            "glass.editor.checkpoint.restore" => map_service(
+                workspace
+                    .project_mut()
+                    .restore_editor_checkpoint(string("id")?, context.authorization.actor.clone()),
+            ),
             "glass.process.start" => map_service(workspace.project_mut().start_process(
                 string("name")?,
                 required_string(call, "command")?,
@@ -379,6 +441,7 @@ impl DevelopmentToolRouter {
                 "raw" => SemanticObservationLevel::Raw,
                 _ => return Err(DevelopmentError::InvalidInput("browser semantic level must be summary, interactive, structured, detailed, or raw".into())),
             }),
+            "glass.browser.web_ir" => workspace.browser().web_ir(),
             "glass.browser.diff" => workspace.browser().diff(),
             "glass.browser.targets" => workspace.browser().targets(),
             "glass.browser.target.select" => workspace
@@ -474,9 +537,6 @@ impl DevelopmentToolRouter {
                     .map_err(|error| DevelopmentError::Process(error.to_string()))?;
                 Ok(serde_json::to_value(change)?)
             }
-            "glass.semantic.inspect" => workspace
-                .browser()
-                .semantic(SemanticObservationLevel::Structured),
             "glass.semantic.diff" => workspace.browser().diff(),
             "glass.semantic.links" => Ok(serde_json::json!({
                 "nodes":workspace.intelligence().nodes().collect::<Vec<_>>(),
@@ -1396,10 +1456,15 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.git.branches",
         "glass.git.blame",
         "glass.git.conflicts",
+        "glass.git.diff",
         "glass.git.stash.list",
         "glass.git.worktree.list",
-        "glass.test.discover",
-        "glass.test.results",
+        "glass.editor.selection",
+        "glass.editor.diff",
+        "glass.editor.buffers",
+        "glass.editor.comments",
+        "glass.editor.proposals",
+        "glass.editor.checkpoints",
         "glass.eval.list",
         "glass.lsp.diagnostics",
         "glass.workspace.list",
@@ -1442,6 +1507,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.task.list",
         "glass.task.get",
         "glass.task.inspect",
+        "glass.test.results",
+        "glass.test.discover",
         "glass.experiment.list",
         "glass.experiment.compare",
         "glass.graph.query",
@@ -1450,15 +1517,13 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.replay.list",
         "glass.replay.inspect",
         "glass.replay.diff",
-        "glass.editor.selection",
-        "glass.editor.diff",
-        "glass.editor.buffers",
         "glass.process.health",
         "glass.process.ports",
         "glass.browser.state",
         "glass.browser.observe",
         "glass.browser.snapshot",
         "glass.browser.semantic",
+        "glass.browser.web_ir",
         "glass.browser.diff",
         "glass.browser.targets",
         "glass.browser.screenshot",
@@ -1468,7 +1533,6 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.workflow.record",
         "glass.memory.retrieve",
         "glass.memory.explain",
-        "glass.semantic.inspect",
         "glass.semantic.diff",
         "glass.semantic.links",
     ];
@@ -1548,7 +1612,15 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.experiment.remove",
         "glass.editor.open",
         "glass.editor.replace",
+        "glass.editor.replace_selection",
         "glass.editor.save",
+        "glass.editor.comment.add",
+        "glass.editor.comment.resolve",
+        "glass.editor.proposal.create",
+        "glass.editor.proposal.accept",
+        "glass.editor.proposal.reject",
+        "glass.editor.checkpoint.create",
+        "glass.editor.checkpoint.restore",
         "glass.process.start",
         "glass.process.stop",
         "glass.process.restart",
@@ -1610,6 +1682,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.browser.observe"
             | "glass.browser.snapshot"
             | "glass.browser.semantic"
+            | "glass.browser.web_ir"
             | "glass.browser.diff"
             | "glass.browser.targets"
             | "glass.browser.target.select"
@@ -1629,10 +1702,13 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.graph.source"
             | "glass.agent.hello"
             | "glass.agent.models"
-            | "glass.workspace.list"
-            | "glass.workspace.inspect"
-            | "glass.daemon.status"
-            | "glass.daemon.doctor"
+            | "glass.editor.open"
+            | "glass.editor.selection"
+            | "glass.editor.diff"
+            | "glass.editor.buffers"
+            | "glass.editor.comments"
+            | "glass.editor.proposals"
+            | "glass.editor.checkpoints"
             | "glass.daemon.logs"
             | "glass.neovim.probe"
             | "glass.memory.retrieve"
@@ -1646,10 +1722,6 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.replay.list"
             | "glass.replay.inspect"
             | "glass.replay.diff"
-            | "glass.editor.open"
-            | "glass.editor.selection"
-            | "glass.editor.diff"
-            | "glass.editor.buffers"
             | "glass.process.logs"
             | "glass.process.list"
             | "glass.process.health"
@@ -2112,7 +2184,10 @@ fn project_observable_result(
             ));
         }
     }
-    if call.name.starts_with("glass.semantic.") || call.name.starts_with("glass.web_ir.") {
+    if call.name.starts_with("glass.semantic.")
+        || call.name.starts_with("glass.web_ir.")
+        || call.name == "glass.browser.web_ir"
+    {
         observed.push((
             format!("webIr:{}", id_component(&call.id)),
             DevelopmentNodeKind::WebIrEntity,
@@ -2563,8 +2638,20 @@ mod tests {
         let descriptors = router.descriptors();
         for name in [
             "glass.editor.open",
+            "glass.editor.selection",
             "glass.editor.replace",
+            "glass.editor.replace_selection",
             "glass.editor.save",
+            "glass.editor.comments",
+            "glass.editor.proposals",
+            "glass.editor.checkpoints",
+            "glass.editor.comment.add",
+            "glass.editor.comment.resolve",
+            "glass.editor.proposal.create",
+            "glass.editor.proposal.accept",
+            "glass.editor.proposal.reject",
+            "glass.editor.checkpoint.create",
+            "glass.editor.checkpoint.restore",
             "glass.process.list",
             "glass.process.logs",
             "glass.process.start",
@@ -2577,6 +2664,7 @@ mod tests {
             "glass.browser.attach",
             "glass.browser.reconnect",
             "glass.browser.semantic",
+            "glass.browser.web_ir",
             "glass.browser.diff",
             "glass.browser.navigate",
             "glass.browser.act",
@@ -2658,6 +2746,15 @@ mod tests {
                 "{name} must execute, not be a placeholder"
             );
         }
+        let semantic_descriptors = descriptors
+            .iter()
+            .filter(|descriptor| descriptor.name == "glass.semantic.inspect")
+            .collect::<Vec<_>>();
+        assert_eq!(semantic_descriptors.len(), 1);
+        assert_eq!(
+            semantic_descriptors[0].input_schema["required"],
+            serde_json::json!(["entity"])
+        );
 
         for (id, name, arguments) in [
             (
@@ -2689,6 +2786,103 @@ mod tests {
             "pub fn resident() {}\n"
         );
     }
+    #[test]
+    fn editor_selection_tool_returns_text_and_replaces_only_that_range() {
+        let mut workspace = workspace();
+        std::fs::create_dir_all(workspace.root().join("src")).unwrap();
+        std::fs::write(workspace.root().join("src/lib.rs"), "alpha\nbeta\n").unwrap();
+        let router = DevelopmentToolRouter::default();
+        let authorized = context(&workspace, true);
+        router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "selection-open".into(),
+                    name: "glass.editor.open".into(),
+                    arguments: serde_json::json!({"path":"src/lib.rs"}),
+                },
+                &authorized,
+            )
+            .unwrap();
+        workspace
+            .project_mut()
+            .set_buffer_selection(
+                "src/lib.rs",
+                Some(crate::development::TextSelection {
+                    anchor: crate::development::TextPosition { line: 1, column: 2 },
+                    active: crate::development::TextPosition { line: 2, column: 3 },
+                }),
+                crate::development::Actor::local(),
+            )
+            .unwrap();
+        let read_only = context(&workspace, false);
+        let selection = router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "selection-read".into(),
+                    name: "glass.editor.selection".into(),
+                    arguments: serde_json::json!({"path":"src/lib.rs"}),
+                },
+                &read_only,
+            )
+            .unwrap();
+        assert_eq!(selection["selectedText"], "lpha\nbe");
+        let authorized = context(&workspace, true);
+        router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "selection-replace".into(),
+                    name: "glass.editor.replace_selection".into(),
+                    arguments: serde_json::json!({
+                        "path":"src/lib.rs",
+                        "replacement":"X\nY"
+                    }),
+                },
+                &authorized,
+            )
+            .unwrap();
+        assert_eq!(
+            workspace.project().buffer("src/lib.rs").unwrap().content,
+            "aX\nYta\n"
+        );
+        assert!(
+            workspace
+                .project()
+                .buffer("src/lib.rs")
+                .unwrap()
+                .selection
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn live_web_ir_route_is_read_only_and_requires_browser() {
+        let mut workspace = workspace();
+        let router = DevelopmentToolRouter::default();
+        let descriptor = router
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == "glass.browser.web_ir")
+            .expect("live Web IR descriptor");
+        assert!(descriptor.available);
+        assert!(!descriptor.mutating);
+
+        let read_only = context(&workspace, false);
+        let error = router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "web-ir-disconnected".into(),
+                    name: "glass.browser.web_ir".into(),
+                    arguments: json!({}),
+                },
+                &read_only,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("glass.browser.start"));
+    }
 
     #[test]
     fn observable_projection_populates_every_issue_35_graph_resource_kind() {
@@ -2718,6 +2912,11 @@ mod tests {
                 json!({"targetId":"page-1","revision":12}),
             ),
             ("glass.web_ir.inspect", json!({}), json!({"entities":[]})),
+            (
+                "glass.browser.web_ir",
+                json!({}),
+                json!({"targetId":"page-1","revision":12,"entityCount":3}),
+            ),
             (
                 "glass.workflow.verify",
                 json!({"runId":"checkout"}),
@@ -2776,6 +2975,14 @@ mod tests {
                 .unwrap();
             project_observable_result(&mut workspace, &call, "test", 1, 1, &result).unwrap();
         }
+        assert!(
+            workspace
+                .intelligence()
+                .query_kind(DevelopmentNodeKind::WebIrEntity)
+                .iter()
+                .any(|node| node.id == "webIr:projection-8"),
+            "live browser Web IR must be projected into the graph"
+        );
         for kind in [
             DevelopmentNodeKind::Repository,
             DevelopmentNodeKind::File,

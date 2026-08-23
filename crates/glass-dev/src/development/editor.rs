@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// Zero-based line and character-column position in editor text.
+/// One-based line and character-column position in editor text.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TextPosition {
-    /// Zero-based line number.
+    /// One-based line number.
     pub line: u32,
-    /// Zero-based character column within the line.
+    /// One-based character column within the line; one is before its first character.
     pub column: u32,
 }
 
@@ -19,7 +19,142 @@ pub struct TextSelection {
     /// Current cursor position; may be before or after `anchor`.
     pub active: TextPosition,
 }
+/// Lifecycle of an anchored editor comment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EditorCommentState {
+    Open,
+    Resolved,
+}
 
+/// A durable human or agent comment anchored to a source range.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorComment {
+    pub id: String,
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub text: String,
+    pub actor: super::Actor,
+    pub state: EditorCommentState,
+    pub created_revision: u64,
+    pub updated_revision: u64,
+}
+
+/// Lifecycle of a proposed editor change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EditorProposalState {
+    Pending,
+    Accepted,
+    Rejected,
+    Stale,
+}
+
+/// An unsaved, reviewable replacement produced by an agent or human.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorProposal {
+    pub id: String,
+    pub path: String,
+    pub summary: String,
+    pub actor: super::Actor,
+    pub base_hash: String,
+    pub base_revision: u64,
+    pub original: String,
+    pub proposed: String,
+    pub state: EditorProposalState,
+    pub created_revision: u64,
+    pub updated_revision: u64,
+}
+
+/// A named in-memory checkpoint of open editor buffers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorCheckpoint {
+    pub id: String,
+    pub name: String,
+    pub actor: super::Actor,
+    pub revision: u64,
+    pub buffers: Vec<super::EditorBuffer>,
+}
+
+impl TextSelection {
+    pub fn collapsed(position: TextPosition) -> Self {
+        Self {
+            anchor: position,
+            active: position,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.anchor == self.active
+    }
+
+    pub fn ordered(&self) -> (TextPosition, TextPosition) {
+        if (self.anchor.line, self.anchor.column) <= (self.active.line, self.active.column) {
+            (self.anchor, self.active)
+        } else {
+            (self.active, self.anchor)
+        }
+    }
+}
+
+/// Convert a one-based editor position to a UTF-8 byte offset.
+///
+/// Columns address character boundaries, not bytes. The position immediately
+/// after the final character on a line is valid, including on an empty line.
+pub(crate) fn text_position_offset(content: &str, position: TextPosition) -> Option<usize> {
+    if position.line == 0 || position.column == 0 {
+        return None;
+    }
+
+    let mut line_start = 0;
+    for (index, line) in content.split('\n').enumerate() {
+        if index + 1 == position.line as usize {
+            let character_index = position.column.saturating_sub(1) as usize;
+            let character_count = line.chars().count();
+            if character_index > character_count {
+                return None;
+            }
+            let byte_offset = line
+                .char_indices()
+                .nth(character_index)
+                .map(|(offset, _)| offset)
+                .unwrap_or(line.len());
+            return Some(line_start + byte_offset);
+        }
+        line_start = line_start.saturating_add(line.len() + 1);
+    }
+    None
+}
+
+/// Convert a UTF-8 byte offset to the nearest one-based editor position.
+pub(crate) fn text_position_at_offset(content: &str, offset: usize) -> Option<TextPosition> {
+    if offset > content.len() || !content.is_char_boundary(offset) {
+        return None;
+    }
+    let prefix = &content[..offset];
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
+    let column = prefix
+        .rsplit_once('\n')
+        .map(|(_, current_line)| current_line.chars().count())
+        .unwrap_or_else(|| prefix.chars().count()) as u32
+        + 1;
+    Some(TextPosition { line, column })
+}
+
+/// Return ordered UTF-8 byte offsets for a selection.
+pub(crate) fn selection_offsets(
+    content: &str,
+    selection: &TextSelection,
+) -> Option<(usize, usize)> {
+    let (start, end) = selection.ordered();
+    let start_offset = text_position_offset(content, start)?;
+    let end_offset = text_position_offset(content, end)?;
+    (start_offset <= end_offset).then_some((start_offset, end_offset))
+}
 /// Coarse syntax categories emitted by [`syntax_spans`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

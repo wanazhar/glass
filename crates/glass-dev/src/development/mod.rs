@@ -70,6 +70,7 @@ pub use debug::{
 pub use diff::{ProjectDiff, build_diff};
 /// Low-level editor positions, syntax spans, folds, and matching helpers.
 pub use editor::{
+    EditorCheckpoint, EditorComment, EditorCommentState, EditorProposal, EditorProposalState,
     FoldRegion, SyntaxKind, SyntaxSpan, TextPosition, TextSelection, fold_regions,
     matching_bracket, syntax_spans,
 };

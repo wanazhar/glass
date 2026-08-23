@@ -134,6 +134,40 @@ pub struct ExtractionRequest {
 }
 
 impl ExtractionRequest {
+    /// Build the bounded document request used by live semantic consumers.
+    ///
+    /// The source set mirrors live Task Protocol compilation so a caller can
+    /// inspect the same evidence classes without hand-maintaining a second
+    /// request contract. The request remains non-mutating and bounded by the
+    /// default extraction budgets.
+    pub fn default_document() -> Self {
+        Self {
+            schema_version: EXTRACTION_CONTRACT_SCHEMA_VERSION,
+            scope: ExtractionScope::Document,
+            sources: vec![
+                EvidenceSource::Accessibility,
+                EvidenceSource::Dom,
+                EvidenceSource::Forms,
+                EvidenceSource::Layout,
+                EvidenceSource::Navigation,
+                EvidenceSource::Tables,
+                EvidenceSource::Collections,
+                EvidenceSource::Dialogs,
+                EvidenceSource::Frames,
+                EvidenceSource::ShadowDom,
+                EvidenceSource::Svg,
+                EvidenceSource::CanvasDetection,
+                EvidenceSource::MediaMetadata,
+                EvidenceSource::EmbeddedDocument,
+                EvidenceSource::Pdf,
+                EvidenceSource::BrowserNative,
+                EvidenceSource::Bridge,
+                EvidenceSource::BoundedProbe,
+            ],
+            budgets: ExtractionBudgets::default(),
+        }
+    }
+
     /// Validate the authored request before any browser work starts.
     pub fn validate(&self) -> Result<(), ExtractionContractError> {
         if self.schema_version != EXTRACTION_CONTRACT_SCHEMA_VERSION {
@@ -1886,6 +1920,15 @@ mod tests {
             request.to_canonical_json().unwrap(),
             request.to_canonical_json().unwrap()
         );
+    }
+
+    #[test]
+    fn default_document_request_matches_live_evidence_contract() {
+        let request = ExtractionRequest::default_document();
+        assert!(request.validate().is_ok());
+        assert_eq!(request.scope, ExtractionScope::Document);
+        assert!(request.sources.contains(&EvidenceSource::Accessibility));
+        assert!(request.sources.contains(&EvidenceSource::BoundedProbe));
     }
 
     #[test]

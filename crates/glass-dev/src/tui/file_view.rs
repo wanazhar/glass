@@ -93,7 +93,12 @@ pub(crate) fn classify(path: &str) -> FileKind {
     }
 }
 
-pub(crate) fn render_editor(path: &str, content: &str) -> Text<'static> {
+pub(crate) fn render_editor(
+    path: &str,
+    content: &str,
+    selection: Option<&crate::development::TextSelection>,
+) -> Text<'static> {
+    let selection = selection.filter(|selection| !selection.is_empty());
     if !content
         .lines()
         .any(|line| editor_header_path(line).is_some())
@@ -127,6 +132,7 @@ pub(crate) fn render_editor(path: &str, content: &str) -> Text<'static> {
     let mut highlighter = SyntaxHighlighter::for_path(path);
     let mut lines = Vec::new();
     let mut saw_editor_header = false;
+    let mut source_line = 0;
     let mut markdown_fence = None;
     let mut markdown_highlighter = None;
 
@@ -149,6 +155,8 @@ pub(crate) fn render_editor(path: &str, content: &str) -> Text<'static> {
             continue;
         }
         if let Some((gutter, source)) = line.split_once(" │ ") {
+            let line_number = editor_line_number(gutter).unwrap_or(source_line + 1);
+            source_line = line_number;
             let mut rendered = vec![Span::styled(
                 format!("{gutter} │ "),
                 Style::default().fg(if gutter.trim_start().starts_with('▶') {
@@ -157,23 +165,35 @@ pub(crate) fn render_editor(path: &str, content: &str) -> Text<'static> {
                     MUTED
                 }),
             )];
-            rendered.extend(editor_source_spans(
+            let source_spans = editor_source_spans(
                 current_kind,
                 source,
                 &mut markdown_fence,
                 &mut markdown_highlighter,
                 &mut highlighter,
+            );
+            rendered.extend(apply_selection_background(
+                source_spans,
+                selection_columns(selection, line_number, source),
             ));
             lines.push(Line::from(rendered));
         } else if line.trim().is_empty() {
+            if saw_editor_header {
+                source_line = source_line.saturating_add(1);
+            }
             lines.push(Line::default());
         } else if saw_editor_header {
-            lines.push(Line::from(editor_source_spans(
+            source_line = source_line.saturating_add(1);
+            let source_spans = editor_source_spans(
                 current_kind,
                 line,
                 &mut markdown_fence,
                 &mut markdown_highlighter,
                 &mut highlighter,
+            );
+            lines.push(Line::from(apply_selection_background(
+                source_spans,
+                selection_columns(selection, source_line, line),
             )));
         } else {
             lines.push(Line::from(editor_source_spans(
@@ -193,6 +213,75 @@ pub(crate) fn render_editor(path: &str, content: &str) -> Text<'static> {
         )));
     }
     Text::from(lines)
+}
+
+fn editor_line_number(gutter: &str) -> Option<u32> {
+    gutter.trim_start_matches(['▶', ' ']).trim().parse().ok()
+}
+
+fn selection_columns(
+    selection: Option<&crate::development::TextSelection>,
+    line_number: u32,
+    line: &str,
+) -> Option<(usize, usize)> {
+    let selection = selection?;
+    let (start, end) = selection.ordered();
+    if line_number < start.line || line_number > end.line {
+        return None;
+    }
+    let character_count = line.chars().count();
+    let start_column = if line_number == start.line {
+        start.column.saturating_sub(1) as usize
+    } else {
+        0
+    }
+    .min(character_count);
+    let end_column = if line_number == end.line {
+        end.column.saturating_sub(1) as usize
+    } else {
+        character_count
+    }
+    .min(character_count);
+    (start_column < end_column).then_some((start_column, end_column))
+}
+
+fn apply_selection_background(
+    spans: Vec<Span<'static>>,
+    range: Option<(usize, usize)>,
+) -> Vec<Span<'static>> {
+    let Some((selection_start, selection_end)) = range else {
+        return spans;
+    };
+    let mut rendered = Vec::with_capacity(spans.len() + 2);
+    let mut position = 0;
+    for span in spans {
+        let style = span.style;
+        let mut chunk = String::new();
+        let mut chunk_selected = None;
+        for character in span.content.chars() {
+            let selected = (selection_start..selection_end).contains(&position);
+            if chunk_selected != Some(selected) && !chunk.is_empty() {
+                let chunk_style = if chunk_selected == Some(true) {
+                    style.bg(ACTIVE_BACKGROUND)
+                } else {
+                    style
+                };
+                rendered.push(Span::styled(std::mem::take(&mut chunk), chunk_style));
+            }
+            chunk_selected = Some(selected);
+            chunk.push(character);
+            position += 1;
+        }
+        if !chunk.is_empty() {
+            let chunk_style = if chunk_selected == Some(true) {
+                style.bg(ACTIVE_BACKGROUND)
+            } else {
+                style
+            };
+            rendered.push(Span::styled(chunk, chunk_style));
+        }
+    }
+    rendered
 }
 
 fn editor_source_for_path(path: &str, content: &str) -> Option<String> {
@@ -1240,6 +1329,7 @@ mod tests {
         let output = render_editor(
             "src/main.rs",
             "○ src/main.rs · cursor 1:1 · actor local · 1 lines\n▶  1 │ fn main() { true }",
+            None,
         );
         assert_eq!(output.lines.len(), 2);
         assert!(output.lines[1].spans[0].content.contains('1'));
@@ -1252,10 +1342,30 @@ mod tests {
     }
 
     #[test]
+    fn editor_renderer_marks_the_active_selection() {
+        let selection = crate::development::TextSelection {
+            anchor: crate::development::TextPosition { line: 1, column: 4 },
+            active: crate::development::TextPosition { line: 1, column: 8 },
+        };
+        let output = render_editor(
+            "src/main.rs",
+            "○ src/main.rs · cursor 1:8 · actor local · 1 lines\n▶  1 │ fn main() { true }",
+            Some(&selection),
+        );
+        assert!(
+            output.lines[1]
+                .spans
+                .iter()
+                .any(|span| span.style.bg == Some(ACTIVE_BACKGROUND))
+        );
+    }
+
+    #[test]
     fn formatted_mermaid_editor_projection_renders_the_diagram() {
         let output = symbols(render_editor(
             "docs/flow.mmd",
             "○ docs/flow.mmd · cursor 1:1 · actor local · 2 lines\n  1 │ flowchart LR\n  2 │ start[Start] --> finish{Done}",
+            None,
         ));
         assert!(output.contains("DIAGRAM LR"));
         assert!(output.contains("[Start]"));

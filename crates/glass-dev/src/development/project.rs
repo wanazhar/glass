@@ -1,3 +1,4 @@
+use super::editor::{selection_offsets, text_position_at_offset, text_position_offset};
 use super::{
     Actor, DevelopmentError, DevelopmentEventKind, DevelopmentGraph, DevelopmentResult,
     LanguageDiagnostic, LspClient, MAX_BUFFER_BYTES, MAX_FILE_BYTES, MAX_FILE_ENTRIES,
@@ -132,6 +133,8 @@ pub struct EditorBuffer {
     pub dirty: bool,
     pub cursor_line: u32,
     pub cursor_column: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<super::TextSelection>,
     pub actor: Actor,
 }
 
@@ -153,6 +156,11 @@ pub struct ProjectWorkspace {
     actors: BTreeMap<String, Actor>,
     actor: Actor,
     revision: u64,
+    comments: BTreeMap<String, Vec<super::EditorComment>>,
+    proposals: BTreeMap<String, super::EditorProposal>,
+    checkpoints: BTreeMap<String, super::EditorCheckpoint>,
+    checkpoints_path: PathBuf,
+    next_editor_id: u64,
 }
 
 impl std::fmt::Debug for ProjectWorkspace {
@@ -192,7 +200,12 @@ impl ProjectWorkspace {
         let config = load_project_config(detection.config_path.as_deref())?;
         let timeline = Timeline::for_project(&root)?;
         let graph_path = timeline.path().with_file_name("graph.json");
+        let checkpoints_path = timeline.path().with_file_name("editor-checkpoints.json");
         let graph = DevelopmentGraph::load(&graph_path)?;
+        let checkpoints = load_editor_checkpoints(&checkpoints_path)?;
+        let comments = comments_from_timeline(&timeline);
+        let proposals = proposals_from_timeline(&timeline);
+        let next_editor_id = timeline.events().count() as u64 + 1;
         let actor = Actor::local();
         let mut actors = BTreeMap::new();
         actors.insert(actor.id.clone(), actor.clone());
@@ -221,6 +234,11 @@ impl ProjectWorkspace {
             actors,
             actor,
             revision: 0,
+            comments,
+            proposals,
+            checkpoints,
+            checkpoints_path,
+            next_editor_id,
         };
         let _ = workspace.record(
             DevelopmentEventKind::WorkspaceOpened,
@@ -269,6 +287,442 @@ impl ProjectWorkspace {
 
     pub fn collaboration(&mut self) -> &mut super::CollaborationBus {
         &mut self.collaboration
+    }
+
+    pub fn set_buffer_selection(
+        &mut self,
+        path: &str,
+        selection: Option<super::TextSelection>,
+        actor: Actor,
+    ) -> DevelopmentResult<EditorBuffer> {
+        let content = self
+            .buffers
+            .get(path)
+            .map(|buffer| buffer.content.clone())
+            .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))?;
+        if let Some(selection) = selection.as_ref()
+            && (text_position_offset(&content, selection.anchor).is_none()
+                || text_position_offset(&content, selection.active).is_none())
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "editor selection positions must be one-based and within the buffer".into(),
+            ));
+        }
+        let buffer = self
+            .buffers
+            .get_mut(path)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))?;
+        buffer.selection = selection;
+        buffer.actor = actor;
+        Ok(buffer.clone())
+    }
+
+    /// Return the selected text from a shared buffer, if the selection is non-empty.
+    pub fn selected_editor_text(&self, path: &str) -> DevelopmentResult<Option<String>> {
+        let buffer = self
+            .buffers
+            .get(path)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))?;
+        let Some(selection) = buffer.selection.as_ref() else {
+            return Ok(None);
+        };
+        let Some((start, end)) = selection_offsets(&buffer.content, selection) else {
+            return Err(DevelopmentError::InvalidInput(
+                "editor selection positions must be one-based and within the buffer".into(),
+            ));
+        };
+        if start == end {
+            return Ok(None);
+        }
+        Ok(Some(buffer.content[start..end].to_string()))
+    }
+
+    /// Replace the human's current selection and leave the cursor after the replacement.
+    pub fn replace_buffer_selection(
+        &mut self,
+        path: &str,
+        replacement: String,
+        actor: Actor,
+    ) -> DevelopmentResult<EditorBuffer> {
+        let buffer = self
+            .buffers
+            .get(path)
+            .cloned()
+            .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))?;
+        let selection = buffer.selection.as_ref().ok_or_else(|| {
+            DevelopmentError::InvalidInput(format!("editor buffer {path} has no selection"))
+        })?;
+        let Some((start, end)) = selection_offsets(&buffer.content, selection) else {
+            return Err(DevelopmentError::InvalidInput(
+                "editor selection positions must be one-based and within the buffer".into(),
+            ));
+        };
+        if start == end {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "editor buffer {path} has an empty selection"
+            )));
+        }
+        let mut content = buffer.content;
+        content.replace_range(start..end, &replacement);
+        let cursor =
+            text_position_at_offset(&content, start + replacement.len()).ok_or_else(|| {
+                DevelopmentError::InvalidInput(
+                    "replacement ended at an invalid UTF-8 boundary".into(),
+                )
+            })?;
+        self.edit_buffer(path, content, actor.clone())?;
+        self.set_buffer_cursor(path, cursor.line, cursor.column)?;
+        self.set_buffer_selection(path, None, actor)?;
+        self.buffer(path)
+            .cloned()
+            .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))
+    }
+
+    pub fn editor_comments(&self, path: Option<&str>) -> Vec<super::EditorComment> {
+        self.comments
+            .values()
+            .flat_map(|comments| comments.iter())
+            .filter(|comment| path.is_none_or(|path| path == comment.path))
+            .cloned()
+            .collect()
+    }
+
+    pub fn add_editor_comment(
+        &mut self,
+        path: &str,
+        start_line: u32,
+        end_line: u32,
+        text: String,
+        actor: Actor,
+    ) -> DevelopmentResult<super::EditorComment> {
+        self.validate_editor_range(path, start_line, end_line)?;
+        if text.trim().is_empty() || text.len() > 16 * 1024 {
+            return Err(DevelopmentError::InvalidInput(
+                "editor comment must contain 1-16384 bytes".into(),
+            ));
+        }
+        let revision = self.bump_editor_revision();
+        let comment = super::EditorComment {
+            id: self.next_editor_id("comment"),
+            path: path.into(),
+            start_line,
+            end_line,
+            text,
+            actor: actor.clone(),
+            state: super::EditorCommentState::Open,
+            created_revision: revision,
+            updated_revision: revision,
+        };
+        self.record_as(
+            actor,
+            DevelopmentEventKind::EditorCommentAdded,
+            serde_json::to_value(&comment)?,
+        )?;
+        self.comments
+            .entry(path.into())
+            .or_default()
+            .push(comment.clone());
+        Ok(comment)
+    }
+
+    pub fn resolve_editor_comment(
+        &mut self,
+        id: &str,
+        actor: Actor,
+    ) -> DevelopmentResult<super::EditorComment> {
+        let (path, index) = self.find_comment(id)?;
+        let current = self
+            .comments
+            .get(&path)
+            .and_then(|comments| comments.get(index))
+            .cloned()
+            .ok_or_else(|| DevelopmentError::NotFound(format!("comment {id}")))?;
+        if current.state == super::EditorCommentState::Resolved {
+            return Ok(current);
+        }
+        let revision = self.bump_editor_revision();
+        let comment = self
+            .comments
+            .get_mut(&path)
+            .and_then(|comments| comments.get_mut(index))
+            .ok_or_else(|| DevelopmentError::NotFound(format!("comment {id}")))?;
+        comment.state = super::EditorCommentState::Resolved;
+        comment.updated_revision = revision;
+        let result = comment.clone();
+        self.record_as(
+            actor,
+            DevelopmentEventKind::EditorCommentResolved,
+            serde_json::to_value(&result)?,
+        )?;
+        Ok(result)
+    }
+
+    pub fn editor_proposals(&self) -> Vec<super::EditorProposal> {
+        self.proposals.values().cloned().collect()
+    }
+
+    pub fn propose_editor_change(
+        &mut self,
+        path: &str,
+        original: String,
+        proposed: String,
+        summary: String,
+        actor: Actor,
+    ) -> DevelopmentResult<super::EditorProposal> {
+        self.validate_editor_path(path)?;
+        if original.len() > MAX_BUFFER_BYTES || proposed.len() > MAX_BUFFER_BYTES {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "editor proposal exceeds the {} byte buffer limit",
+                MAX_BUFFER_BYTES
+            )));
+        }
+        if summary.trim().is_empty() || summary.len() > 1024 {
+            return Err(DevelopmentError::InvalidInput(
+                "editor proposal summary must contain 1-1024 bytes".into(),
+            ));
+        }
+        let current = self.current_editor_content(path)?;
+        if current != original {
+            return Err(DevelopmentError::Conflict(format!(
+                "editor buffer {path} changed before the proposal was created"
+            )));
+        }
+        let revision = self.bump_editor_revision();
+        let proposal = super::EditorProposal {
+            id: self.next_editor_id("proposal"),
+            path: path.into(),
+            summary,
+            actor: actor.clone(),
+            base_hash: hash(&original),
+            base_revision: revision,
+            original,
+            proposed,
+            state: super::EditorProposalState::Pending,
+            created_revision: revision,
+            updated_revision: revision,
+        };
+        self.record_as(
+            actor,
+            DevelopmentEventKind::EditorProposalCreated,
+            serde_json::to_value(&proposal)?,
+        )?;
+        self.proposals.insert(proposal.id.clone(), proposal.clone());
+        Ok(proposal)
+    }
+
+    pub fn accept_editor_proposal(
+        &mut self,
+        id: &str,
+        actor: Actor,
+    ) -> DevelopmentResult<EditorBuffer> {
+        let proposal = self
+            .proposals
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DevelopmentError::NotFound(format!("proposal {id}")))?;
+        if proposal.state != super::EditorProposalState::Pending {
+            return Err(DevelopmentError::Conflict(format!(
+                "proposal {id} is already {:?}",
+                proposal.state
+            )));
+        }
+        if self.current_editor_content(&proposal.path)? != proposal.original
+            || hash(&proposal.original) != proposal.base_hash
+        {
+            let revision = self.bump_editor_revision();
+            if let Some(stale) = self.proposals.get_mut(id) {
+                stale.state = super::EditorProposalState::Stale;
+                stale.updated_revision = revision;
+            }
+            self.record_as(
+                actor,
+                DevelopmentEventKind::EditorProposalRejected,
+                serde_json::json!({"id": id, "reason": "stale: base content changed"}),
+            )?;
+            return Err(DevelopmentError::Conflict(format!(
+                "proposal {id} is stale because {} changed",
+                proposal.path
+            )));
+        }
+        let buffer = self
+            .edit_buffer(&proposal.path, proposal.proposed.clone(), actor.clone())
+            .map(|_| self.buffer(&proposal.path).cloned())?
+            .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {}", proposal.path)))?;
+        let revision = self.bump_editor_revision();
+        if let Some(accepted) = self.proposals.get_mut(id) {
+            accepted.state = super::EditorProposalState::Accepted;
+            accepted.updated_revision = revision;
+        }
+        self.record_as(
+            actor,
+            DevelopmentEventKind::EditorProposalAccepted,
+            serde_json::json!({"id": id, "path": proposal.path}),
+        )?;
+        Ok(buffer)
+    }
+
+    pub fn reject_editor_proposal(
+        &mut self,
+        id: &str,
+        actor: Actor,
+    ) -> DevelopmentResult<super::EditorProposal> {
+        let current = self
+            .proposals
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DevelopmentError::NotFound(format!("proposal {id}")))?;
+        if current.state != super::EditorProposalState::Pending {
+            return Err(DevelopmentError::Conflict(format!(
+                "proposal {id} is already {:?}",
+                current.state
+            )));
+        }
+        let revision = self.bump_editor_revision();
+        let proposal = self
+            .proposals
+            .get_mut(id)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("proposal {id}")))?;
+        proposal.state = super::EditorProposalState::Rejected;
+        proposal.updated_revision = revision;
+        let result = proposal.clone();
+        self.record_as(
+            actor,
+            DevelopmentEventKind::EditorProposalRejected,
+            serde_json::to_value(&result)?,
+        )?;
+        Ok(result)
+    }
+
+    pub fn editor_checkpoints(&self) -> Vec<super::EditorCheckpoint> {
+        self.checkpoints.values().cloned().collect()
+    }
+
+    pub fn create_editor_checkpoint(
+        &mut self,
+        name: String,
+        actor: Actor,
+    ) -> DevelopmentResult<super::EditorCheckpoint> {
+        if name.trim().is_empty() || name.len() > 256 {
+            return Err(DevelopmentError::InvalidInput(
+                "checkpoint name must contain 1-256 bytes".into(),
+            ));
+        }
+        let revision = self.bump_editor_revision();
+        let checkpoint = super::EditorCheckpoint {
+            id: self.next_editor_id("checkpoint"),
+            name,
+            actor: actor.clone(),
+            revision,
+            buffers: self.buffers.values().cloned().collect(),
+        };
+        self.checkpoints
+            .insert(checkpoint.id.clone(), checkpoint.clone());
+        self.persist_checkpoints()?;
+        self.record_as(
+            actor,
+            DevelopmentEventKind::EditorCheckpointCreated,
+            serde_json::to_value(&checkpoint)?,
+        )?;
+        Ok(checkpoint)
+    }
+
+    pub fn restore_editor_checkpoint(
+        &mut self,
+        id: &str,
+        actor: Actor,
+    ) -> DevelopmentResult<Vec<EditorBuffer>> {
+        let checkpoint = self
+            .checkpoints
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DevelopmentError::NotFound(format!("checkpoint {id}")))?;
+        for restored in &checkpoint.buffers {
+            if let Some(current) = self.buffers.get(&restored.path) {
+                self.undo
+                    .entry(restored.path.clone())
+                    .or_default()
+                    .push(current.content.clone());
+            }
+            self.buffers.insert(restored.path.clone(), restored.clone());
+        }
+        let revision = self.bump_editor_revision();
+        self.record_as(
+            actor,
+            DevelopmentEventKind::EditorCheckpointRestored,
+            serde_json::json!({"id": id, "revision": revision}),
+        )?;
+        self.invalidate_tree_cache();
+        Ok(checkpoint.buffers)
+    }
+
+    fn validate_editor_path(&self, path: &str) -> DevelopmentResult<()> {
+        if self.buffers.contains_key(path) {
+            return Ok(());
+        }
+        self.resolve_path(path, false).map(|_| ())
+    }
+
+    fn validate_editor_range(
+        &self,
+        path: &str,
+        start_line: u32,
+        end_line: u32,
+    ) -> DevelopmentResult<()> {
+        self.validate_editor_path(path)?;
+        if start_line == 0 || end_line < start_line {
+            return Err(DevelopmentError::InvalidInput(
+                "editor comment range must be one-based and ordered".into(),
+            ));
+        }
+        let content = self
+            .buffers
+            .get(path)
+            .map(|buffer| buffer.content.clone())
+            .map(Ok)
+            .unwrap_or_else(|| self.read_file_snapshot(path))?;
+        let line_count = content.split('\n').count().max(1) as u32;
+        if end_line > line_count {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "editor comment range ends at line {end_line}, but {path} has {line_count} lines"
+            )));
+        }
+        Ok(())
+    }
+
+    fn current_editor_content(&self, path: &str) -> DevelopmentResult<String> {
+        if let Some(buffer) = self.buffers.get(path) {
+            return Ok(buffer.content.clone());
+        }
+        self.read_file_snapshot(path)
+    }
+
+    fn find_comment(&self, id: &str) -> DevelopmentResult<(String, usize)> {
+        self.comments
+            .iter()
+            .find_map(|(path, comments)| {
+                comments
+                    .iter()
+                    .position(|comment| comment.id == id)
+                    .map(|index| (path.clone(), index))
+            })
+            .ok_or_else(|| DevelopmentError::NotFound(format!("comment {id}")))
+    }
+
+    fn bump_editor_revision(&mut self) -> u64 {
+        self.revision = self.revision.saturating_add(1);
+        self.revision
+    }
+
+    fn next_editor_id(&mut self, kind: &str) -> String {
+        let id = format!("{kind}-{}-{}", self.revision, self.next_editor_id);
+        self.next_editor_id = self.next_editor_id.saturating_add(1);
+        id
+    }
+
+    fn persist_checkpoints(&self) -> DevelopmentResult<()> {
+        let data = serde_json::to_vec_pretty(&self.checkpoints)?;
+        fs::write(&self.checkpoints_path, data)?;
+        Ok(())
     }
 
     pub fn attach_actor(&mut self, actor: Actor) -> DevelopmentResult<()> {
@@ -360,6 +814,7 @@ impl ProjectWorkspace {
             dirty: false,
             cursor_line: 1,
             cursor_column: 1,
+            selection: None,
             actor,
         };
         self.buffers.insert(relative, buffer.clone());
@@ -400,6 +855,7 @@ impl ProjectWorkspace {
                         dirty: false,
                         cursor_line: 1,
                         cursor_column: 1,
+                        selection: None,
                         actor: actor.clone(),
                     },
                 );
@@ -1084,6 +1540,92 @@ fn portable_relative_path(path: &Path) -> String {
         .join("/")
 }
 
+fn load_editor_checkpoints(
+    path: &Path,
+) -> DevelopmentResult<BTreeMap<String, super::EditorCheckpoint>> {
+    if !path.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let data = fs::read(path)?;
+    serde_json::from_slice(&data)
+        .map_err(|error| DevelopmentError::Config(format!("invalid editor checkpoints: {error}")))
+}
+
+fn comments_from_timeline(timeline: &Timeline) -> BTreeMap<String, Vec<super::EditorComment>> {
+    let mut comments: BTreeMap<String, Vec<super::EditorComment>> = BTreeMap::new();
+    for event in timeline.events() {
+        match event.kind {
+            DevelopmentEventKind::EditorCommentAdded => {
+                if let Ok(comment) =
+                    serde_json::from_value::<super::EditorComment>(event.payload.clone())
+                {
+                    comments
+                        .entry(comment.path.clone())
+                        .or_default()
+                        .push(comment);
+                }
+            }
+            DevelopmentEventKind::EditorCommentResolved => {
+                let Some(id) = event.payload.get("id").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                for comment in comments.values_mut().flat_map(|items| items.iter_mut()) {
+                    if comment.id == id {
+                        comment.state = super::EditorCommentState::Resolved;
+                        if let Some(revision) = event
+                            .payload
+                            .get("updatedRevision")
+                            .and_then(serde_json::Value::as_u64)
+                        {
+                            comment.updated_revision = revision;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    comments
+}
+
+fn proposals_from_timeline(timeline: &Timeline) -> BTreeMap<String, super::EditorProposal> {
+    let mut proposals = BTreeMap::new();
+    for event in timeline.events() {
+        match event.kind {
+            DevelopmentEventKind::EditorProposalCreated => {
+                if let Ok(proposal) =
+                    serde_json::from_value::<super::EditorProposal>(event.payload.clone())
+                {
+                    proposals.insert(proposal.id.clone(), proposal);
+                }
+            }
+            DevelopmentEventKind::EditorProposalAccepted
+            | DevelopmentEventKind::EditorProposalRejected => {
+                let Some(id) = event.payload.get("id").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                if let Some(proposal) = proposals.get_mut(id) {
+                    proposal.state =
+                        if matches!(event.kind, DevelopmentEventKind::EditorProposalAccepted) {
+                            super::EditorProposalState::Accepted
+                        } else if event
+                            .payload
+                            .get("reason")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|reason| reason.contains("stale"))
+                        {
+                            super::EditorProposalState::Stale
+                        } else {
+                            super::EditorProposalState::Rejected
+                        };
+                }
+            }
+            _ => {}
+        }
+    }
+    proposals
+}
+
 pub fn detect_project(root: impl AsRef<Path>) -> DevelopmentResult<ProjectDetection> {
     let root = canonical_root(root.as_ref())?;
     let config_path = [root.join("glass.toml"), root.join(".glass.toml")]
@@ -1511,6 +2053,52 @@ mod tests {
     }
 
     #[test]
+    fn editor_selection_replacement_is_atomic_and_unicode_safe() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        project
+            .edit_buffer("src/main.rs", "αlpha\nβeta\n".into(), Actor::local())
+            .unwrap();
+        project
+            .set_buffer_selection(
+                "src/main.rs",
+                Some(crate::development::TextSelection {
+                    anchor: crate::development::TextPosition { line: 1, column: 2 },
+                    active: crate::development::TextPosition { line: 2, column: 3 },
+                }),
+                Actor::local(),
+            )
+            .unwrap();
+        assert_eq!(
+            project
+                .selected_editor_text("src/main.rs")
+                .unwrap()
+                .as_deref(),
+            Some("lpha\nβe")
+        );
+        let buffer = project
+            .replace_buffer_selection("src/main.rs", "X\nY".into(), Actor::local())
+            .unwrap();
+        assert_eq!(buffer.content, "αX\nYta\n");
+        assert_eq!(buffer.cursor_line, 2);
+        assert_eq!(buffer.cursor_column, 2);
+        assert!(buffer.selection.is_none());
+        assert!(matches!(
+            project.set_buffer_selection(
+                "src/main.rs",
+                Some(crate::development::TextSelection {
+                    anchor: crate::development::TextPosition { line: 9, column: 1 },
+                    active: crate::development::TextPosition { line: 9, column: 1 },
+                }),
+                Actor::local(),
+            ),
+            Err(DevelopmentError::InvalidInput(_))
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn file_operations_support_nested_create_rename_and_safe_delete() {
         let root = fixture();
         let mut project = ProjectWorkspace::open(&root).unwrap();
@@ -1549,6 +2137,121 @@ mod tests {
         );
         #[cfg(unix)]
         assert_eq!(tree.skipped_symlinks, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_comments_replay_and_proposals_require_approval() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        let comment = project
+            .add_editor_comment(
+                "src/main.rs",
+                1,
+                1,
+                "Prefer an explicit return here".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        assert_eq!(project.editor_comments(None).len(), 1);
+        assert_eq!(project.editor_proposals().len(), 0);
+        let proposal = project
+            .propose_editor_change(
+                "src/main.rs",
+                "fn main() {}\n".into(),
+                "fn main() { println!(\"ok\"); }\n".into(),
+                "Add observable output".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().content,
+            "fn main() {}\n"
+        );
+        project
+            .accept_editor_proposal(&proposal.id, Actor::local())
+            .unwrap();
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().content,
+            "fn main() { println!(\"ok\"); }\n"
+        );
+        let resolved = project
+            .resolve_editor_comment(&comment.id, Actor::local())
+            .unwrap();
+        let revision = project.revision();
+        assert_eq!(
+            project
+                .resolve_editor_comment(&comment.id, Actor::local())
+                .unwrap(),
+            resolved
+        );
+        assert_eq!(project.revision(), revision);
+        drop(project);
+
+        let reopened = ProjectWorkspace::open(&root).unwrap();
+        let comments = reopened.editor_comments(Some("src/main.rs"));
+        assert_eq!(comments.len(), 1);
+        assert_eq!(
+            comments[0].state,
+            crate::development::EditorCommentState::Resolved
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_proposals_become_stale_on_buffer_conflict() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        let proposal = project
+            .propose_editor_change(
+                "src/main.rs",
+                "fn main() {}\n".into(),
+                "fn main() { println!(\"proposal\"); }\n".into(),
+                "Add output".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        project
+            .edit_buffer(
+                "src/main.rs",
+                "fn main() { println!(\"human\"); }\n".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        assert!(matches!(
+            project.accept_editor_proposal(&proposal.id, Actor::local()),
+            Err(DevelopmentError::Conflict(_))
+        ));
+        assert_eq!(
+            project.editor_proposals()[0].state,
+            crate::development::EditorProposalState::Stale
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_checkpoints_restore_unsaved_buffers_and_survive_reopen() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project
+            .edit_buffer("src/main.rs", "one\n".into(), Actor::local())
+            .unwrap();
+        let checkpoint = project
+            .create_editor_checkpoint("before experiment".into(), Actor::local())
+            .unwrap();
+        project
+            .edit_buffer("src/main.rs", "two\n".into(), Actor::local())
+            .unwrap();
+        project
+            .restore_editor_checkpoint(&checkpoint.id, Actor::local())
+            .unwrap();
+        assert_eq!(project.buffer("src/main.rs").unwrap().content, "one\n");
+        drop(project);
+
+        let reopened = ProjectWorkspace::open(&root).unwrap();
+        assert_eq!(reopened.editor_checkpoints().len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }

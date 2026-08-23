@@ -307,11 +307,22 @@ export default function (pi: ExtensionAPI) {
   register("glass_process_ports", "glass.process.ports", "Inspect process-owned detected URLs and ports", Type.Object({}));
 
   register("glass_editor_open", "glass.editor.open", "Open a shared resident editor buffer", Type.Object({ path: Type.String() }), true);
-  register("glass_editor_selection", "glass.editor.selection", "Inspect a shared editor cursor and selection", Type.Object({ path: Type.String() }));
-  register("glass_editor_replace", "glass.editor.replace", "Replace text in a shared conflict-safe buffer", Type.Object({ path: Type.String(), oldText: Type.String(), newText: Type.String() }), true);
+  register("glass_editor_selection", "glass.editor.selection", "Inspect a shared editor cursor, selection, and selected text", Type.Object({ path: Type.String() }));
+  register("glass_editor_replace", "glass.editor.replace", "Replace matching text in a shared conflict-safe buffer", Type.Object({ path: Type.String(), oldText: Type.String(), newText: Type.String() }), true);
+  register("glass_editor_replace_selection", "glass.editor.replace_selection", "Replace the human's current editor selection", Type.Object({ path: Type.String(), replacement: Type.String() }), true);
   register("glass_editor_save", "glass.editor.save", "Save a shared conflict-safe editor buffer", Type.Object({ path: Type.String() }), true);
   register("glass_editor_diff", "glass.editor.diff", "Inspect the current project/editor diff", Type.Object({}));
   register("glass_editor_buffers", "glass.editor.buffers", "List shared resident editor buffers", Type.Object({}));
+  register("glass_editor_comments", "glass.editor.comments", "List anchored editor review comments", Type.Object({ path: Type.Optional(Type.String()) }));
+  register("glass_editor_proposals", "glass.editor.proposals", "List reviewable editor change proposals", Type.Object({}));
+  register("glass_editor_checkpoints", "glass.editor.checkpoints", "List durable editor checkpoints", Type.Object({}));
+  register("glass_editor_comment_add", "glass.editor.comment.add", "Add an anchored editor review comment", Type.Object({ path: Type.String(), startLine: Type.Integer({ minimum: 1 }), endLine: Type.Integer({ minimum: 1 }), text: Type.String() }), true);
+  register("glass_editor_comment_resolve", "glass.editor.comment.resolve", "Resolve an anchored editor review comment", Type.Object({ id: Type.String() }), true);
+  register("glass_editor_proposal_create", "glass.editor.proposal.create", "Create an approval-gated editor change proposal", Type.Object({ path: Type.String(), original: Type.String(), proposed: Type.String(), summary: Type.String() }), true);
+  register("glass_editor_proposal_accept", "glass.editor.proposal.accept", "Accept a conflict-checked editor proposal", Type.Object({ id: Type.String() }), true);
+  register("glass_editor_proposal_reject", "glass.editor.proposal.reject", "Reject an editor change proposal", Type.Object({ id: Type.String() }), true);
+  register("glass_editor_checkpoint_create", "glass.editor.checkpoint.create", "Create an editor buffer checkpoint", Type.Object({ name: Type.String() }), true);
+  register("glass_editor_checkpoint_restore", "glass.editor.checkpoint.restore", "Restore an editor buffer checkpoint", Type.Object({ id: Type.String() }), true);
 
   register("glass_browser_state", "glass.browser.state", "Inspect the authoritative resident browser state", Type.Object({}));
   register("glass_browser_start", "glass.browser.start", "Start or attach the resident browser", Type.Object({ port: Type.Optional(Type.Integer()), attach: Type.Optional(Type.Boolean()), incognito: Type.Optional(Type.Boolean()), headed: Type.Optional(Type.Boolean()), profile: Type.Optional(Type.String()), chromePath: Type.Optional(Type.String()) }), true);
@@ -321,7 +332,7 @@ export default function (pi: ExtensionAPI) {
   register("glass_browser_observe", "glass.browser.observe", "Create a fresh structured browser observation", Type.Object({}));
   register("glass_browser_snapshot", "glass.browser.snapshot", "Capture a fresh accessibility snapshot", Type.Object({}));
   register("glass_browser_semantic", "glass.browser.semantic", "Inspect fresh semantic browser evidence", Type.Object({ level: Type.Optional(Type.Union([Type.Literal("summary"), Type.Literal("interactive"), Type.Literal("structured"), Type.Literal("detailed"), Type.Literal("raw")])) }));
-  register("glass_browser_diff", "glass.browser.diff", "Diff the cached and fresh browser observations", Type.Object({}));
+  register("glass_browser_web_ir", "glass.browser.web_ir", "Inspect bounded live Web IR evidence", Type.Object({}));
   register("glass_browser_targets", "glass.browser.targets", "List authoritative browser targets", Type.Object({}));
   register("glass_browser_select_target", "glass.browser.target.select", "Select an authoritative browser target", Type.Object({ targetId: Type.String() }), true);
   register("glass_browser_navigate", "glass.browser.navigate", "Navigate with a browser revision guard", Type.Object({ url: Type.String(), browserRevision: Type.Integer({ minimum: 1 }), timeoutSeconds: Type.Optional(Type.Integer()) }), true);
@@ -337,7 +348,6 @@ export default function (pi: ExtensionAPI) {
   register("glass_memory_retrieve", "glass.memory.retrieve", "Retrieve bounded advisory browser memory", Type.Object({ recordId: Type.Optional(Type.String()) }));
   register("glass_memory_explain", "glass.memory.explain", "Explain one advisory memory record", Type.Object({ recordId: Type.String() }));
   register("glass_memory_forget", "glass.memory.forget", "Forget one advisory memory record", Type.Object({ recordId: Type.String() }), true);
-  register("glass_semantic_inspect", "glass.semantic.inspect", "Inspect fresh authoritative browser semantics", Type.Object({}));
   register("glass_semantic_diff", "glass.semantic.diff", "Diff fresh authoritative browser semantics", Type.Object({}));
   register("glass_semantic_links", "glass.semantic.links", "Read source/runtime/browser semantic links", Type.Object({}));
 

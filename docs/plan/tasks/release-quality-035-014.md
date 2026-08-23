@@ -2,6 +2,8 @@
 
 Status: Local workflow complete; GitHub key enrollment and exact-tag gates pending
 
+Status: Historical checkpoint; superseded by the current 0.3.12 source/release evidence.
+
 ## Implementation
 
 - Replaced `gh release create --generate-notes` with a validated repository

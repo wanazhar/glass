@@ -94,9 +94,11 @@ execution remains blocked until the local user makes a decision.
 A browser startup collision or disconnect keeps the project workspace alive and
 opens a recovery sheet on the App surface. Choices are attach to a compatible
 endpoint, launch on an automatic free port, try an explicit port, retry the
-preferred port, or dismiss, depending on the detected failure. Browser launch
-runs through the governed worker and the sheet never destroys files, tasks,
-agent state, or Git state.
+preferred port, or dismiss, depending on the detected failure. From the
+development TUI command palette, `:browser start` starts the browser; automatic
+port selection is a recovery-sheet choice, not an inline automatic-port launch
+command. Browser startup runs through the governed worker and the sheet never
+destroys files, tasks, agent state, or Git state.
 
 ## Live browser view
 
@@ -116,7 +118,8 @@ glass-browser --tui-live-backend ansi --tui-live-quality data
 Herdr is used when available and ANSI is the portable fallback. Standalone
 semantic selection is local-only; moving through entities does not send a CDP
 highlight request for every arrow key. `Enter` performs the selected action
-through the normal revision guard.
+through the normal revision guard. Standalone `glass-browser` does not provide
+Remote View; use the development TUI routes below for that capability.
 
 Continuous pixels remain off by default. Treat screenshots, DOM, profiles,
 cookies, storage, evaluated values, and diagnostic logs as sensitive. Do not
@@ -139,9 +142,16 @@ Herdr is optional. tmux remains compatible. Mosh can carry the terminal session
 on roaming links; use a separate SSH connection for any local port forward.
 Glass does not duplicate the multiplexer or silently manage its server.
 
-For a full-fidelity iPhone browser, use the stable `safari` workflow or the
-scoped `browser remote-view open` command. Both are loopback/SSH-forward
-workflows. Keep the Chrome CDP port and application server private.
+For a full-fidelity iPhone browser, use Remote View from the development TUI:
+
+```text
+:browser remote-open
+:browser remote-status
+:browser remote-revoke
+```
+
+These are loopback/SSH-forward workflows. Keep the Chrome CDP port and
+application server private.
 
 ## Current limits
 
@@ -162,11 +172,13 @@ implemented surface contract is documented in
 - Use a UTF-8 locale because the TUI uses Unicode state markers but does not
   rely on color alone.
 
-## Open the full application in Safari
+## Open the full application from a phone
 
-Use `safari` for the stable application-server iPhone workflow or
-`browser remote-view open` for the scoped current BrowserSession view. Both
-work through a private SSH local port forward; neither exposes Chrome CDP.
+For the stable application-server iPhone workflow, use a private SSH local
+port forward. For the scoped current BrowserSession view, use the development
+TUI `:browser remote-open`, `:browser remote-status`, and
+`:browser remote-revoke` routes. Remote View remains loopback-only and does not
+expose Chrome CDP.
 
 ## Further reading
 

@@ -1,10 +1,17 @@
 # Glass delivery plans
 
-## Active plan: Glass v0.3.6 issue #36
+## Current source line: Glass 0.3.12 and post-tag work
 
-Status: Direct serial implementation in progress. Conventional checkpoints,
-push, publication, release, and issue completion are authorized only after the
-complete release gate passes.
+Status: 0.3.12 was released and publicly verified on 2026-08-22. This checkout
+also contains post-tag source-rendering work; see the `Unreleased` changelog
+and current guides for behavior in the working tree. The [documentation index](../INDEX.md#glass-documentation)
+records the current source-line scope; historical plan and release-analysis
+bodies below are retained for audit provenance.
+
+## Historical plan: Glass v0.3.6 issue #36
+
+Status: Historical/superseded — this 0.3.6 audit body is retained for issue and
+release provenance; the current source and release evidence are 0.3.12.
 
 Issue [#36](https://github.com/wanazhar/glass/issues/36) is the authoritative
 urgent product-repair contract. The 35-pillar baseline, locked architecture,
@@ -25,10 +32,10 @@ dependency order, scenarios A-J, and 15 release gates are mapped in
 Each completed checkpoint receives a focused conventional commit before the
 next task starts.
 
-## Completed plan: Glass v0.3.5 issue #35
+## Historical plan: Glass v0.3.5 issue #35
 
-Status: Direct local implementation in progress — no push, tag, publication,
-GitHub Release, or issue mutation is authorized.
+Status: Historical/superseded — this 0.3.5 audit body is retained for issue and
+release provenance; the current source and release evidence are 0.3.12.
 
 Issue [#35](https://github.com/wanazhar/glass/issues/35) is the authoritative
 sixteen-pillar trust and runtime-convergence contract. The audited baseline,
@@ -58,9 +65,9 @@ Delivery order:
 Each completed checkpoint receives a focused local conventional commit before
 the next checkpoint starts.
 
-## Completed plan: Glass v0.3.4 issue #34
+## Historical plan: Glass v0.3.4 issue #34
 
-Status: Released and publicly verified on 2026-08-10.
+Status: Historical — released and publicly verified on 2026-08-10.
 
 Issue [#34](https://github.com/wanazhar/glass/issues/34) is the authoritative
 18-pillar full-agentic-development-suite contract. The baseline inventory,
@@ -80,10 +87,10 @@ Delivery order:
 Every completed delivery checkpoint is committed locally with a focused
 conventional commit before the next checkpoint begins.
 
-## Completed plan: Glass 0.3.3 documentation depth
+## Historical plan: Glass 0.3.3 documentation depth
 
-Status: Completed and verified locally — documentation-only, with no push,
-tag, publication, release, or issue mutation.
+Status: Historical — completed and verified locally as documentation-only, with
+no push, tag, publication, release, or issue mutation.
 
 The [depth audit](analysis/documentation-depth-035.md) accounts for every
 public documentation surface and replaces name-presence checks with workflow,
@@ -91,10 +98,10 @@ state, limit, failure, recovery, and exact nested-command contracts. The
 implementation record is
 [documentation-depth-035-001](tasks/documentation-depth-035-001.md).
 
-## Completed plan: Glass v0.3.3 issue #33
+## Historical plan: Glass v0.3.3 issue #33
 
-Status: Complete local release candidate — no tag, push, crates.io
-publication, GitHub Release, or issue closure was performed.
+Status: Historical/superseded — this 0.3.3 audit body is retained for issue and
+release provenance; the current source and release evidence are 0.3.12.
 
 Issue #33 and its authoritative amendment define 15 integration pillars, 53
 mandatory release checkboxes, scenarios A–K, full-suite command exposure and
@@ -116,34 +123,36 @@ Delivery order:
 5. [release-033-005](tasks/release-033-005.md) — full-suite binaries,
    cross-platform/tool CI, black-box demonstrations, docs and final validation.
 
-## Completed plan: complete public documentation and docs.rs revamp
+## Historical plan: complete public documentation and docs.rs revamp
 
-Status: Completed and verified locally — no remote mutation.
+Status: Historical — completed and verified locally; no remote mutation.
 
 The [documentation audit](analysis/documentation-revamp-034.md) and
 [implementation task](tasks/documentation-034-001.md) cover every current
 user, operator, SDK, MCP, TUI, package, rustdoc, example, and release-reference
 surface, with generated drift checks against the implementation.
 
-## Completed plan: semantic resource and correctness audit
+## Historical plan: semantic resource and correctness audit
 
-Status: Completed and verified locally — no remote mutation.
+Status: Historical — completed and verified locally; no remote mutation.
 
 The [resource audit](analysis/semantic-resource-audit.md) and atomic
 [implementation task](tasks/semantic-resource-033-002.md) optimize the task
 compiler, live binding, agent gateway, and private Pi request boundary while
 preserving the completed semantic-core contracts.
 
-## Completed plan: semantic core hardening
+## Historical plan: semantic core hardening
 
-Status: Completed and verified locally — no remote mutation.
+Status: Historical — completed and verified locally; no remote mutation.
 
 The [delivery analysis](analysis/semantic-core-hardening.md) and atomic
 [implementation task](tasks/semantic-core-033-001.md) cover executable Web IR
 evidence, relationship-scoped compilation, revision-bound execution,
 capability and state fidelity, continuity, and bounded Local/Pi semantic tools.
 
-## Active post-0.1.18 roadmap
+## Historical/superseded post-0.1.18 roadmap
+Status: Historical/superseded — the roadmap body records delivered 0.2.x work
+and later issue tracking; it is not the current source-line plan.
 
 Issue #21 was delivered as a serial workflow-runtime sprint. Issues #25 and
 #26 were included in the published 0.2.0 release; their remaining artifact and
@@ -153,10 +162,10 @@ are [scenario contract](tasks/reliability-026-001.md),
 and [capability/replay work](tasks/reliability-026-004.md). Issue #27 is now
 active; its first foundation phase is [stable runtime platform](tasks/platform-027-001.md).
 
-## Active plan: Glass v0.3.1 issue #31
+## Historical plan: Glass v0.3.1 issue #31
 
-Status: Active local development — no push, tag, crates.io publication, or
-GitHub Release is part of this plan.
+Status: Historical/superseded — this 0.3.1 audit body is retained for issue and
+release provenance; the current source and release evidence are 0.3.12.
 
 The authoritative [issue #31](https://github.com/wanazhar/glass/issues/31)
 defines four mandatory pillars—semantic memory, multi-surface understanding,
@@ -182,10 +191,10 @@ These tasks are intentionally disjoint and do not edit shared exports or
 dispatch files. Integration tasks begin only after committed implementation
 and independent review.
 
-## Active plan: Glass v0.3.2 issue #32
+## Historical plan: Glass v0.3.2 issue #32
 
-Status: Complete local release candidate — no push, tag, crates.io
-publication, or GitHub Release is part of this plan.
+Status: Historical/superseded — this 0.3.2 audit body is retained for issue and
+release provenance; the current source and release evidence are 0.3.12.
 
 Issue #32 is an architectural epic. The original thin-slice interpretation was
 rejected during the issue/comment audit; the current candidate is reviewed
@@ -225,9 +234,10 @@ Integration wave (after foundation review):
 - [integration-031-001](tasks/integration-031-001.md) — run the integrated
   four-pillar conformance demonstration.
 
-## Completed plan: remote development cockpit
+## Historical plan: remote development cockpit
 
-Status: Implemented and verified by direct serial work on the local 0.3.2 candidate.
+Status: Historical — implemented and verified by direct serial work on the
+local 0.3.2 candidate.
 
 The post-issue-32 product enhancements are defined in the
 [delivery analysis](analysis/mobile-cockpit.md) and implemented as the atomic

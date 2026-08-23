@@ -19,33 +19,47 @@ const MAX_REMOTE_BYTES: usize = 4 * 1024;
 const MAX_REVIEW_BYTES: usize = 64 * 1024;
 const MAX_SHIP_OUTPUT_BYTES: usize = 16 * 1024;
 
+/// Parsed GitHub repository owner/name and canonical web URL.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubRepository {
+    /// Repository in `owner/name` form.
     pub name_with_owner: String,
+    /// HTTPS repository URL.
     pub web_url: String,
 }
 
+/// Availability of the repository remote and authenticated `gh` CLI.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GitHubAvailability {
+    /// No GitHub origin is configured.
     #[default]
     NoRemote,
+    /// The configured origin could not be read.
     RemoteUnavailable,
+    /// The `gh` executable is unavailable.
     GhUnavailable,
+    /// `gh` is installed but not authenticated.
     NotAuthenticated,
+    /// Authenticated `gh` status.
     Authenticated,
+    /// The bounded authentication probe timed out.
     TimedOut,
 }
 
+/// Cached repository and `gh` availability status.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubStatus {
+    /// Parsed GitHub origin, if present.
     pub repository: Option<GitHubRepository>,
+    /// Current availability classification.
     pub availability: GitHubAvailability,
 }
 
 impl GitHubStatus {
+    /// Format a compact status string for the TUI and command palette.
     pub fn summary(&self) -> String {
         match (&self.repository, self.availability) {
             (None, GitHubAvailability::NoRemote) => "no GitHub origin".into(),
@@ -72,6 +86,7 @@ impl GitHubStatus {
         }
     }
 
+    /// Whether `gh auth status` succeeded for this repository.
     pub fn is_authenticated(&self) -> bool {
         self.availability == GitHubAvailability::Authenticated
     }
@@ -85,6 +100,7 @@ pub struct GitHubProbeCache {
 }
 
 impl GitHubProbeCache {
+    /// Probe GitHub status, reusing a result for 15 seconds per root.
     pub fn probe(&mut self, root: &Path) -> GitHubStatus {
         if self.root.as_deref() == Some(root)
             && self
@@ -110,6 +126,7 @@ pub struct GitHubReviewCache {
 }
 
 impl GitHubReviewCache {
+    /// Fetch review data, reusing a result for 15 seconds per root.
     pub fn review(&mut self, root: &Path) -> GitHubReview {
         if self.root.as_deref() == Some(root)
             && self
@@ -247,6 +264,7 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
     }
 }
 
+/// Parse a GitHub HTTPS or SCP-style remote into repository metadata.
 pub fn parse_github_remote(remote: &str) -> Option<GitHubRepository> {
     let remote = remote.trim();
     let path = if let Some(path) = remote.strip_prefix("git@github.com:") {
@@ -287,57 +305,90 @@ fn valid_segment(segment: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+/// Pull request summary returned by `gh pr view`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubPullRequest {
+    /// Pull request number.
     pub number: u64,
+    /// Pull request title.
     pub title: String,
+    /// GitHub pull request state.
     pub state: String,
+    /// Pull request web URL.
     pub url: String,
+    /// Source branch, when available.
     pub head_branch: Option<String>,
+    /// Target branch, when available.
     pub base_branch: Option<String>,
+    /// GitHub's review decision, when available.
     pub review_decision: Option<String>,
 }
 
+/// One status-check entry associated with a pull request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubCheck {
+    /// Check or workflow name.
     pub name: String,
+    /// Provider-reported status.
     pub status: String,
+    /// Provider conclusion, when complete.
     pub conclusion: Option<String>,
+    /// Details URL, when supplied.
     pub link: Option<String>,
 }
 
+/// Bounded GitHub review projection for a repository branch.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubReview {
+    /// Parsed repository metadata.
     pub repository: Option<GitHubRepository>,
+    /// Current branch, when available.
     pub branch: Option<String>,
+    /// Remote/authentication availability.
     pub availability: GitHubAvailability,
+    /// Pull request for the current branch, when found.
     pub pull_request: Option<GitHubPullRequest>,
+    /// Associated status checks.
     pub checks: Vec<GitHubCheck>,
+    /// Human-readable summary.
     pub summary: String,
+    /// Non-fatal review error, when status was still returned.
     pub error: Option<String>,
 }
 
+/// Explicit caller inputs for creating a pull request.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubShipRequest {
+    /// Optional pull request title.
     pub title: Option<String>,
+    /// Optional pull request body.
     pub body: Option<String>,
+    /// Optional base branch.
     pub base: Option<String>,
+    /// Whether to create the pull request as a draft.
     pub draft: bool,
 }
+
+/// Result of a successful pull-request creation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubShipResult {
+    /// Repository receiving the pull request.
     pub repository: GitHubRepository,
+    /// Current source branch.
     pub branch: String,
+    /// Created pull request URL, when returned by `gh`.
     pub url: Option<String>,
+    /// Bounded command output.
     pub output: String,
 }
 
 impl GitHubReview {
+    /// Render the summary, branch, first eight checks, and any error.
     pub fn display(&self) -> String {
         let checks = self
             .checks
@@ -367,7 +418,9 @@ impl GitHubReview {
         lines.join("\n")
     }
 }
-/// normal GitHub workflow states as transport failures.
+/// Fetch authenticated pull-request and check status through bounded `gh`
+/// subprocess calls. Normal workflow states are returned as data rather than
+/// transport errors.
 pub fn review(root: &Path) -> DevelopmentResult<GitHubReview> {
     let status = probe_uncached(root);
     let branch = current_branch(root);

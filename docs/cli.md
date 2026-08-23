@@ -146,8 +146,10 @@ confirmation flags, and output schemas.
 | `certify` | `run`, `plan`, `release`, `replay`, `replay-diff` |
 | `workspace` | `list`, `inspect`, `suspend`, `resume`, `delete` |
 | `project` | `inspect`, `files`, `search`, `read`, `edit`, `mkdir`, `rename`, `delete`, `diagnostics`, `run`, `test`, `lint`, `process`, `diff`, `link`, `graph`, `breakpoint`, `timeline`, `replay`, `neovim`, `experiment`, `attach` |
-| `agent` | `hello`, `prompt`, `steer`, `follow-up`, `models`, `set-model`, `thinking`, `abort`, `new-session` |
+| `agent` | `doctor`, `setup`, `status`, `hello`, `prompt`, `steer`, `follow-up`, `models`, `set-model`, `thinking`, `abort`, `new-session` |
 | `memory` | `status`, `inspect`, `explain`, `forget`, `export`, `prune`, `reindex` |
+| `browser` | `tui` (or omit the subcommand to launch the browser workspace) |
+| `session` | `start`, `status`, `open`, `stop` |
 | `surfaces` | `inspect`, `coverage` |
 | `backend` | `status`, `capabilities`, `test` |
 | `daemon` | `start`, `status`, `stop`, `doctor`, `logs`, `acknowledge-recovery` |
@@ -195,6 +197,53 @@ command stream. Hidden implementation commands are not public CLI contracts.
 | `ir` | Glass Web IR v1 JSON | validation, summary, diff, continuity, canonical JSON | invalid graph, revision drift, and ambiguous continuity stay explicit |
 | `checkpoint` | bounded workflow/checkpoint files | portable redacted checkpoint | definition/route/effect mismatch prevents resume |
 | `snapshot` | profile and snapshot selector | redacted bounded session evidence | snapshot data never restores live browser authority |
+| `browser` | optional `tui` subcommand | browser-first terminal workspace | browser startup/recovery stays in the workspace; use the TUI App surface for targets |
+| `session` | optional session name | persistent browser owner and attach metadata | `status` is read-only; `open` prints the attach command; `stop` closes the owned browser |
+
+## Browser workspace and persistent sessions
+
+The top-level `browser` family launches the browser-first development
+workspace. These are equivalent:
+
+```console
+glass browser
+glass browser tui
+```
+
+The resident development TUI has separate command-palette routes. Use
+`browser start` to launch or attach the workspace browser (headed and
+persistent by default), and `browser targets` to load and select its current
+pages. `browser targets` takes an optional text query; it does not take a
+port. For a disposable session, use the current flags:
+
+```text
+browser start --incognito --headless
+browser targets checkout
+```
+
+If startup reports a busy or unusable endpoint, the TUI keeps the project and
+agent alive and opens recovery choices: attach to a verified compatible
+endpoint, launch an isolated browser on a free local port, retry the preferred
+port, or dismiss. Use `browser start` for subsequent retries; the project and
+agent remain available throughout recovery.
+
+Persistent browser ownership is a separate top-level family:
+
+```console
+glass session start review
+glass session status review
+glass session open review
+glass session stop review
+```
+
+Omitting the name uses `default`. `start` launches the named owner, `status`
+inspects it without starting Chrome, `open` prints its attach command, and
+`stop` closes the owned browser.
+
+For a private mobile view from the development TUI, use
+`browser remote-open`, inspect it with `browser remote-status`, and revoke it
+with `browser remote-revoke`.
+
 
 Standalone utility commands are `update`, `install-chromium`, `capabilities`,
 `doctor`, `mcp-config`, `delete-profile`, and `tui`. With no command or prompt, `glass`

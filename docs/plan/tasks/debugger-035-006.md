@@ -2,6 +2,7 @@
 
 Status: Implementation complete locally on 2026-08-11. Native three-family CI
 evidence awaits an authorized remote run.
+Status: Historical checkpoint; superseded by the current 0.3.12 source/release evidence.
 
 Glass now dispatches DAP reverse requests while waiting for ordinary responses.
 `runInTerminal` uses an exact-argv, workspace-confined Glass PTY whose output,

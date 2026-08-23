@@ -1,6 +1,7 @@
 # Documentation rewrite in ASD-STE100 style
 
 Status: in progress locally.
+Status: Historical 0.3.2 task; superseded by the current 0.3.12 source/release evidence.
 
 ## Scope
 

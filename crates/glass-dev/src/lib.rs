@@ -44,54 +44,87 @@
 //! [`trust`] enforce governed operations, while [`tui`] and [`workspace`]
 //! connect those services to the interactive product.
 
+/// Resident Pi agent scheduling, evidence, and lifecycle control.
 pub mod agents;
+/// Development-browser service owned by the resident workspace worker.
 pub mod browser;
+/// Command-line argument and dispatch support for Glass Dev.
 pub mod cli;
+/// User and project customization loading.
 pub mod customization;
+/// Resident development daemon integration.
 pub mod daemon;
+/// Debugging and semantic breakpoint support.
 pub mod debugger;
+/// Files, editors, processes, language services, and project execution.
 pub mod development;
+/// Experiment orchestration and comparison.
 pub mod experiments;
+/// Governed Git workspace operations.
 pub mod git;
+/// GitHub status, review, and pull-request shipping operations.
 pub mod github;
+/// Discovery and safe handoff of installed coding harnesses.
 pub mod harness;
+/// Development graph and causal intelligence projections.
 pub mod intelligence;
+/// Kernel process and runtime integration.
 pub mod kernels;
+/// LSP-facing language service integration.
 pub mod lsp;
+/// MCP server and tool integration.
 pub mod mcp;
+/// Managed Pi runtime readiness and sessions.
 pub mod pi_runtime;
+/// Task scheduling, evidence, and verification requirements.
 pub mod tasks;
+/// Test execution and result collection.
 pub mod testing;
+/// Governed development-tool routing.
 pub mod tools;
+/// Workspace trust decisions and persistence.
 pub mod trust;
+/// Interactive Glass Dev terminal application.
 pub mod tui;
+/// Workspace ownership and shared handles.
 pub mod workspace;
 
 use glass_browser::cli::args::Cli;
 
+/// Resident Pi agent types and scheduler handles.
 pub use agents::{
     AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus, ResidentAgentBroker,
 };
+/// Development browser configuration, state, and service handle.
 pub use browser::{BrowserRuntimeState, BrowserService, BrowserStartConfig};
+/// User-facing customization and skill configuration.
 pub use customization::{Customization, GlassConfig, Skill};
+/// Experiment management and comparison types.
 pub use experiments::{
     ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentRanking,
     ExperimentSnapshot, ExperimentState, ExperimentTrustPolicy, ExperimentWeights,
 };
+/// Development intelligence graph and replay types.
 pub use intelligence::{
     CausalPath, DevelopmentEdge, DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind,
     ObservableDevelopmentEvent, ObservableEventInput, ReplayDiff,
 };
+/// Language-service configuration and event types.
 pub use lsp::{LanguageServerConfig, LanguageService, LanguageServiceEvent};
+/// Pi readiness and managed-session request types.
 pub use pi_runtime::{
     PINNED_PI_SDK_VERSION, PiReadiness, PiReadinessComponent, PiReadinessState, PiSessionRequest,
 };
+/// Task scheduling, retry, evidence, and verification types.
 pub use tasks::{
     RetryPolicy, TaskBudget, TaskEvidence, TaskId, TaskScheduler, TaskSnapshot, TaskSpec,
     TaskState, VerificationRequirement,
 };
+/// Governed tool execution context and router.
 pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
+/// Workspace trust identities, decisions, and persistence.
 pub use trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
+/// Workspace owners and thread-safe handles.
 pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 
 /// Dispatch the full Glass Development Environment.

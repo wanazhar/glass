@@ -77,17 +77,30 @@ browser.
    `.glass.toml` when present. It does not execute a detected command during
    inspection.
 
-2. Inspect the bounded project tree and diagnostics:
+2. Inspect the bounded project tree and, when using the resident TUI, start
+   the language server before requesting diagnostics:
 
    ```console
    glass project files --root .
+   ```
+
+   In the TUI command palette, enter:
+
+   ```text
+   lsp start rust-analyzer rust-analyzer
+   lsp diagnostics rust-analyzer src/main.rs
+   ```
+
+   The one-shot convenience command starts its dedicated Rust client as
+   needed:
+
+   ```console
    glass project diagnostics src/main.rs --root .
    ```
 
    The tree reports its entry limit, truncation, ignored generated/vendor
-   directories, and skipped symlinks. Diagnostics use a persistent LSP client
-   in resident sessions and fail explicitly when the language server is not
-   installed.
+   directories, and skipped symlinks. Missing language-server executables and
+   protocol failures are explicit errors; Glass does not fabricate diagnostics.
 
 3. Run a finite command in a real PTY:
 
@@ -111,8 +124,6 @@ Project reads, writes, renames, and deletes remain inside the canonical root.
 Saves are atomic. An external file change or conflicting actor claim produces
 a conflict instead of overwriting another version.
 
-Continue with [Development Runtime](development-runtime.md).
-
 ## Path B: use the terminal workspace
 
 Start the resident workspace from a project:
@@ -122,9 +133,10 @@ cd /path/to/project
 glass
 ```
 
-Use `1`–`7` or `Tab` for desktop Agent, Code, App, Terminal, Tasks, Git, and
-Debug. Phone uses `1`–`5` for Agent, Code, App, Tasks, and More. Enter `:` to
-open fuzzy command discovery. The same printable navigation works over SSH.
+Use `1`–`8` or `Tab` for desktop Agent, Code, App, Terminal, Tasks, Git,
+Debug, and More. Phone uses `1`–`5` for Agent, Code, App, Tasks, and More.
+Enter `:` to open fuzzy command discovery. The same printable navigation works
+over SSH.
 
 Useful first commands in the TUI command bar:
 
@@ -132,8 +144,13 @@ Useful first commands in the TUI command bar:
 editor open README.md
 editor search TODO
 process start dev cargo run
-lsp diagnostics rust src/main.rs
-browser observe
+lsp start rust-analyzer rust-analyzer
+lsp diagnostics rust-analyzer src/main.rs
+browser start
+browser targets
+agent doctor
+agent setup
+agent status
 task list
 ```
 
@@ -206,9 +223,11 @@ render policy, and an SSH environment variable does not prove graphics
 support.
 
 The semantic-first phone UI works without pixels. Use Herdr or tmux to retain
-the PTY across detach. Use `live on` for an ephemeral terminal view. Use
-`safari` or `browser remote-view open` for a private loopback service forwarded
-by the iOS SSH client. Never expose Chrome CDP publicly.
+the PTY across detach. Use `live on` for an ephemeral terminal view. In the TUI
+command palette, run `browser remote-open` for a tokenized loopback view, then
+configure the matching SSH local forward and open the printed local URL in the
+forwarded mobile browser. Use `browser remote-status` while sharing and
+`browser remote-revoke` when finished. Never expose Chrome CDP publicly.
 
 Follow [Mobile and remote development](mobile-remote.md) for forwarding,
 Herdr, Mosh, Remote View, browser recovery, terminal compatibility, and
@@ -261,8 +280,8 @@ errors, and optional development-runtime APIs.
 |---|---|---|
 | `doctor` cannot find Chrome | No supported executable was discovered | Install system Chrome/Chromium, run `install-chromium` where supported, or pass `--chrome-path`. |
 | Chrome exits with profile status 21 | A confined browser cannot access a host profile path | Upgrade to 0.3.4 or newer; Glass automatically selects Snap Chromium's accessible persistent profile root. |
-| Port `9222` is occupied | Another process owns the preferred CDP port | In TUI use `browser launch --port auto`, or explicitly attach only after Glass verifies the endpoint. |
-| Multiple targets found | More than one page is eligible | Run `targets` or `browser targets PORT`, then select an explicit ID/number. |
+| Port `9222` is occupied | Another process owns the preferred CDP port | In the TUI run `browser start`; the recovery sheet can attach to a verified endpoint, launch an isolated browser on a free local port, or retry `9222`. Project and agent state remain alive. |
+| Multiple targets found | More than one page is eligible | Run `browser targets` (optionally followed by a query), then select the intended target from the App surface. |
 | LSP unavailable | The detected language server is missing or failed initialization | Install the server, inspect diagnostics, and retry; Glass does not fabricate diagnostics. |
 | One-shot process cannot remain running | The CLI owner is exiting | Use `--wait` for finite work or use TUI/MCP/daemon for a resident process. |
 | Stale revision | Browser/project state changed after observation | Re-observe or reread, then issue a new revision-bound request. |
@@ -276,7 +295,7 @@ errors, and optional development-runtime APIs.
   Glass.
 - Stop the daemon with `glass daemon stop` before uninstalling `glass-dev`.
 - Close owned browser sessions so named profiles can flush.
-- Revoke Remote View with `browser remote-view close` when sharing ends.
+- Revoke Remote View with `browser remote-revoke` when sharing ends.
 - Do not assume an interrupted mutation is safe to repeat; reconcile its
   execution ID and current revision.
 

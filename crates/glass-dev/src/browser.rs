@@ -17,14 +17,21 @@ use std::time::Duration;
 const COMMAND_QUEUE: usize = 32;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Options used to create or attach the resident development browser session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrowserStartConfig {
+    /// Chrome DevTools port.
     pub port: u16,
+    /// Attach to an existing browser rather than launching one.
     pub attach: bool,
+    /// Use an isolated incognito context.
     pub incognito: bool,
+    /// Show the browser window.
     pub headed: bool,
+    /// Named profile passed to the browser session.
     pub profile: String,
+    /// Optional explicit Chrome executable path.
     pub chrome_path: Option<PathBuf>,
 }
 
@@ -49,13 +56,19 @@ fn default_profile() -> String {
     "default".into()
 }
 
+/// Serializable state of the resident browser worker.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserRuntimeState {
+    /// Whether a browser session is connected.
     pub connected: bool,
+    /// PID when this service owns the browser process.
     pub browser_process_id: Option<u32>,
+    /// Latest observation revision known to the worker.
     pub browser_revision: Option<u64>,
+    /// Current workflow lifecycle state.
     pub workflow_state: String,
+    /// Identifier of the active workflow, if any.
     pub active_workflow: Option<String>,
 }
 
@@ -125,6 +138,10 @@ pub struct BrowserService {
 }
 
 impl BrowserService {
+    /// Create a resident browser worker rooted at `root`.
+    ///
+    /// Commands are serialized through one bounded worker queue. Each command
+    /// waits at most 180 seconds before returning a timeout error.
     pub fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         let root = root.as_ref().to_path_buf();
         let (commands, receiver) = mpsc::sync_channel::<(BrowserCommand, Reply)>(COMMAND_QUEUE);
@@ -158,46 +175,57 @@ impl BrowserService {
         })?
     }
 
+    /// Start a browser session; fails if one is already connected.
     pub fn start(&self, config: BrowserStartConfig) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Start(config))
     }
 
+    /// Stop the session and revoke any remote view.
     pub fn stop(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Stop)
     }
 
+    /// Restart using the most recent start configuration.
     pub fn reconnect(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Reconnect)
     }
 
+    /// Return connection, workflow, and latest revision state.
     pub fn state(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::State)
     }
 
+    /// Capture a fresh observation and advance the worker's known revision.
     pub fn observe(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Observe)
     }
 
+    /// Capture the session's current snapshot without forcing a fresh observe.
     pub fn snapshot(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Snapshot)
     }
 
+    /// Capture semantic observations at the requested level.
     pub fn semantic(&self, level: SemanticObservationLevel) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Semantic(level))
     }
 
+    /// Return the observation delta since the session's previous revision.
     pub fn diff(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Diff)
     }
 
+    /// List browser targets.
     pub fn targets(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Targets)
     }
 
+    /// Select a target and return a fresh observation for it.
     pub fn select_target(&self, target: String) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::SelectTarget(target))
     }
 
+    /// Navigate if `expected_revision` still matches; `timeout` bounds navigation.
     pub fn navigate(
         &self,
         url: String,
@@ -210,37 +238,37 @@ impl BrowserService {
             timeout,
         })
     }
-
+    /// Go back if the supplied observation revision is current.
     pub fn back(&self, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Back(expected_revision))
     }
-
+    /// Go forward if the supplied observation revision is current.
     pub fn forward(&self, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Forward(expected_revision))
     }
-
+    /// Reload if the supplied observation revision is current.
     pub fn reload(&self, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Reload(expected_revision))
     }
-
+    /// Stop loading if the supplied observation revision is current.
     pub fn stop_loading(&self, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::StopLoading(expected_revision))
     }
-
+    /// Highlight a target if the supplied observation revision is current.
     pub fn highlight(&self, target: String, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Highlight {
             target,
             expected_revision,
         })
     }
-
+    /// Click a target if the supplied observation revision is current.
     pub fn click(&self, target: String, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Click {
             target,
             expected_revision,
         })
     }
-
+    /// Type text into the selected or explicit target at the current revision.
     pub fn type_text(
         &self,
         text: String,
@@ -253,7 +281,7 @@ impl BrowserService {
             expected_revision,
         })
     }
-
+    /// Scroll by the requested delta at the current observation revision.
     pub fn scroll(&self, dx: f64, dy: f64, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Scroll {
             dx,
@@ -261,11 +289,12 @@ impl BrowserService {
             expected_revision,
         })
     }
-
+    /// Capture a screenshot of the connected browser.
     pub fn screenshot(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Screenshot)
     }
 
+    /// Start a workflow from its JSON definition and named inputs.
     pub fn run_workflow(
         &self,
         definition: Value,
@@ -274,10 +303,12 @@ impl BrowserService {
         self.call(BrowserCommand::RunWorkflow { definition, inputs })
     }
 
+    /// Pause the active workflow and retain its checkpoint.
     pub fn pause_workflow(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::PauseWorkflow)
     }
 
+    /// Resume a workflow from a caller-provided checkpoint.
     pub fn resume_workflow(
         &self,
         definition: Value,
@@ -291,26 +322,32 @@ impl BrowserService {
         })
     }
 
+    /// List workflow definitions known to the connected session.
     pub fn list_workflows(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::ListWorkflows)
     }
 
+    /// Cancel the active workflow.
     pub fn cancel_workflow(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::CancelWorkflow)
     }
 
+    /// Verify the active workflow's completion conditions.
     pub fn verify_workflow(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::VerifyWorkflow)
     }
 
+    /// Open a remote-view capability for the connected browser.
     pub fn open_remote_view(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::RemoteViewOpen)
     }
 
+    /// Return remote-view status and current capability state.
     pub fn remote_view_status(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::RemoteViewStatus)
     }
 
+    /// Revoke the remote-view capability.
     pub fn revoke_remote_view(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::RemoteViewRevoke)
     }

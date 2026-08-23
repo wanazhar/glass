@@ -3,8 +3,10 @@
 mod command;
 mod file_view;
 mod projection;
+/// Rendering primitives and frame composition for the development TUI.
 pub mod render;
 mod snapshot;
+/// Public reducer state and surface-selection types for the development TUI.
 pub mod state;
 mod syntax;
 
@@ -31,13 +33,19 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// Public TUI state, selected surface, product mode, and responsive class.
 pub use state::{DevSurface, DevTuiState, ProductMode, ResponsiveClass};
 
+/// Visual settings used to select the live browser preview path.
 #[derive(Debug, Clone, Copy)]
 pub struct TuiVisualOptions {
+    /// Requested live-rendering mode.
     pub mode: TuiLiveMode,
+    /// Preferred rendering backend.
     pub backend: TuiLiveBackend,
+    /// Requested image quality.
     pub quality: TuiLiveQuality,
+    /// Frame fit policy.
     pub fit: TuiLiveFit,
 }
 
@@ -151,6 +159,12 @@ impl VisualRuntime {
     }
 }
 
+/// Run the interactive Glass Dev TUI until the user exits.
+///
+/// Requires interactive stdin and stdout. `root` is the project workspace;
+/// `layout` selects the desktop/phone composition and `visual_options`
+/// selects the optional browser preview path. Non-interactive callers should
+/// use a CLI command or MCP instead.
 pub fn run(
     root: impl AsRef<Path>,
     layout: TuiLayout,

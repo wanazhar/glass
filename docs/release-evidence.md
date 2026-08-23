@@ -10,7 +10,9 @@ registry responses, or GitHub records; prior-release evidence is not reused.
   [`33ff290f601adea114df210a2def4173307ad052`](https://github.com/wanazhar/glass/commit/33ff290f601adea114df210a2def4173307ad052);
   the cross-platform CI fixes landed in the final release source
   [`2cf23a66625c535bd6257a2fcee45db567db2aa2`](https://github.com/wanazhar/glass/commit/2cf23a66625c535bd6257a2fcee45db567db2aa2).
-  `origin/main` and `v0.3.12` resolve to the final SHA.
+  At release closure, `origin/main` and `v0.3.12` both resolved to the final
+  SHA. This is historical closure evidence, not a claim about the current
+  `origin/main` ref.
 - Signed tag: local `git tag -v v0.3.12` passed with EDDSA key
   `C7102B6A568EABDE023F818528E01A5852DB1559`; GitHub reports the annotated
   tag object as `verified: true`, reason `valid`, and the tag commit is the

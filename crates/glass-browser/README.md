@@ -101,7 +101,6 @@ does not own or close the external browser.
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
 | Reliability | `reliability`, `reliability_runner` | Scenarios, fixtures, replay evidence, and certification gates |
-| Development Runtime | `development` | Optional project files, PTYs, events, graph, harness, and replay |
 
 ## Cargo features
 

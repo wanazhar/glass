@@ -13,7 +13,7 @@ certification; native browser/PTY support is not certified.
 
 ## 0.3.12 release
 
-- [x] Re-audit issue #36 scenarios A-J, gates 1-14, and every forbidden
+- [x] Re-audit issue #36 scenarios A-J, gates 1-15, and every forbidden
       outcome against the current source and executable tests.
 - [x] Pass the complete local workspace, docs, package, security, fuzz, live
       browser, PTY, clean-install, and publish dry-run gates.
@@ -233,7 +233,7 @@ The release is incomplete while any required field or gate is blank.
 
 ## 0.3.9 release candidate
 
-- [x] Certify issue #36 scenarios A-J, gates 1-14, and every forbidden outcome.
+- [x] Certify issue #36 scenarios A-J, gates 1-15, and every forbidden outcome.
 - [x] Pass the complete local workspace, docs, package, security, fuzz, live
       browser, PTY, clean-install, and publish dry-run gates.
 - [x] Verify the signed exact tag, ordered registry publication, clean registry

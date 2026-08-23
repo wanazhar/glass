@@ -19,21 +19,28 @@ const AGENT_EVIDENCE_CAPACITY: usize = 64;
 const MAX_AGENTS: usize = 32;
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
 
+/// Connection metadata for an optional resident-agent broker.
 #[derive(Debug, Clone)]
 pub struct ResidentAgentBroker {
+    /// Unix socket used to reach the broker.
     pub socket: PathBuf,
+    /// Authentication token sent to the broker.
     pub token: String,
+    /// Workspace identity asserted by the broker.
     pub workspace_id: String,
 }
 
+/// Stable identifier for one resident agent; values start with `agent-`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AgentId(String);
 
 impl AgentId {
+    /// Borrow the stable identifier as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Parse an identifier, requiring the `agent-` prefix and a 64-byte bound.
     pub fn parse(value: impl Into<String>) -> DevelopmentResult<Self> {
         let value = value.into();
         if !value.starts_with("agent-")
@@ -46,16 +53,25 @@ impl AgentId {
     }
 }
 
+/// Lifecycle state of a resident agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentStatus {
+    /// Accepted but waiting for dependencies or capacity.
     Queued,
+    /// Worker process is being started.
     Starting,
+    /// Worker is ready for a request.
     Idle,
+    /// Worker is processing a request.
     Working,
+    /// Worker is waiting on external/user input.
     Waiting,
+    /// Agent completed successfully.
     Completed,
+    /// Agent terminated with an error.
     Failed,
+    /// Agent was explicitly cancelled.
     Cancelled,
 }
 
@@ -79,23 +95,34 @@ impl AgentStatus {
     }
 }
 
+/// Declarative request for one resident agent session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSpec {
+    /// Human-readable role assigned to the agent.
     pub role: String,
+    /// Initial task prompt.
     pub task: String,
+    /// Agents that must complete before this agent starts.
     #[serde(default)]
     pub dependencies: Vec<AgentId>,
+    /// Optional Pi model override.
     pub model: Option<String>,
+    /// Optional Pi thinking-level override.
     pub thinking: Option<String>,
+    /// Optional existing worktree path.
     pub worktree: Option<PathBuf>,
+    /// Whether governed tool restrictions are disabled.
     #[serde(default)]
     pub unrestricted: bool,
+    /// Optional worker runtime limit in seconds.
     pub max_runtime_seconds: Option<u64>,
+    /// Optional retained-event limit for this agent.
     pub max_events: Option<u64>,
 }
 
 impl AgentSpec {
+    /// Build a spec with governed defaults of 3,600 seconds and 10,000 events.
     pub fn new(role: impl Into<String>, task: impl Into<String>) -> Self {
         Self {
             role: role.into(),
@@ -111,35 +138,59 @@ impl AgentSpec {
     }
 }
 
+/// Current serialized projection of an agent and its bounded evidence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSnapshot {
+    /// Stable agent identifier.
     pub id: AgentId,
+    /// Configured role.
     pub role: String,
+    /// Configured task prompt.
     pub task: String,
+    /// Current lifecycle status.
     pub status: AgentStatus,
+    /// Dependency identifiers.
     pub dependencies: Vec<AgentId>,
+    /// Effective model, if configured.
     pub model: Option<String>,
+    /// Effective thinking level, if configured.
     pub thinking: Option<String>,
+    /// Canonical worktree used by the worker.
     pub worktree: PathBuf,
+    /// Whether unrestricted tools were enabled.
     pub unrestricted: bool,
+    /// Creation timestamp in Unix milliseconds.
     pub created_at_ms: u128,
+    /// Start timestamp in Unix milliseconds.
     pub started_at_ms: Option<u128>,
+    /// Last projection update timestamp in Unix milliseconds.
     pub updated_at_ms: u128,
+    /// Number of events received for this agent.
     pub event_count: u64,
+    /// Number of lossy events dropped by the bounded queue.
     pub dropped_event_count: u64,
+    /// Last worker error, if any.
     pub last_error: Option<String>,
+    /// Last Pi response identifier, if any.
     pub last_response_id: Option<String>,
+    /// Bounded tool/runtime evidence values.
     pub evidence: Vec<Value>,
 }
 
+/// One ordered event emitted by an agent worker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEvent {
+    /// Monotonic event sequence number.
     pub sequence: u64,
+    /// Agent that emitted the event.
     pub agent_id: AgentId,
+    /// Event timestamp in Unix milliseconds.
     pub timestamp_ms: u128,
+    /// Event kind label.
     pub kind: String,
+    /// Structured event payload.
     pub payload: Value,
 }
 
@@ -198,6 +249,7 @@ pub struct AgentRegistry {
 }
 
 impl AgentRegistry {
+    /// Create a registry rooted at the canonical project directory.
     pub fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         let root = std::fs::canonicalize(root)?;
         let sessions_dir = root.join(".glass").join("pi-sessions");
@@ -219,6 +271,7 @@ impl AgentRegistry {
         })
     }
 
+    /// Configure the authenticated broker used for resident-agent requests.
     pub fn set_resident_broker(&mut self, broker: ResidentAgentBroker) -> DevelopmentResult<()> {
         if !broker.socket.is_absolute()
             || broker.socket == Path::new("/")
@@ -283,6 +336,7 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Validate and enqueue an agent; dependencies must be known and successful.
     pub fn create(&mut self, mut spec: AgentSpec) -> DevelopmentResult<AgentId> {
         self.refresh()?;
         if spec.model.is_none() {
@@ -344,6 +398,7 @@ impl AgentRegistry {
         Ok(id)
     }
 
+    /// Drain worker events, update snapshots, and start newly ready agents.
     pub fn refresh(&mut self) -> DevelopmentResult<()> {
         loop {
             match self.events_rx.try_recv() {
@@ -366,6 +421,7 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Return one refreshed agent snapshot or a not-found error.
     pub fn snapshot(&mut self, id: &AgentId) -> DevelopmentResult<AgentSnapshot> {
         self.refresh()?;
         self.records
@@ -374,6 +430,7 @@ impl AgentRegistry {
             .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))
     }
 
+    /// Return refreshed snapshots for all registered agents.
     pub fn list(&mut self) -> DevelopmentResult<Vec<AgentSnapshot>> {
         self.refresh()?;
         Ok(self
@@ -383,6 +440,7 @@ impl AgentRegistry {
             .collect())
     }
 
+    /// Return retained events at or after the supplied sequence number.
     pub fn history(&mut self, since: u64) -> DevelopmentResult<Vec<AgentEvent>> {
         self.refresh()?;
         Ok(self
@@ -393,6 +451,7 @@ impl AgentRegistry {
             .collect())
     }
 
+    /// Send an initial prompt to an agent, subject to prompt-size bounds.
     pub fn prompt(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
         self.prompt_with_context(id, text, None)
     }
@@ -478,6 +537,7 @@ impl AgentRegistry {
         self.send(id, request)
     }
 
+    /// Mark a non-terminal agent complete after its worker settles.
     pub fn complete(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
         if self.record_mut(id)?.snapshot.status.terminal() {
@@ -495,6 +555,7 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Cancel a non-terminal agent and stop its worker.
     pub fn cancel(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
         if self.record_mut(id)?.snapshot.status.terminal() {

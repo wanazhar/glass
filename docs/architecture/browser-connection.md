@@ -97,10 +97,17 @@ The target picker shows at most a bounded number of page targets. It displays
 title, redacted origin/path, type, selected/associated state and never persists
 full sensitive URLs.
 
-## Commands
+## Commands (design-era pseudocode)
+
+The command grammar below is retained as accepted 0.3.3 design-era pseudocode,
+not current operator syntax. Current development-TUI operators use
+`:browser start` for browser startup; automatic port selection is offered by
+the in-TUI recovery sheet rather than a `browser launch --port auto` command.
+For current Remote View operations, use `:browser remote-open`,
+`:browser remote-status`, and `:browser remote-revoke`. Standalone
+`glass-browser` does not provide Remote View.
 
 `:` opens a filtered palette. Printable routes remain usable on mobile:
-
 ```text
 :browser status
 :browser connect

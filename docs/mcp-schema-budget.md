@@ -12,9 +12,9 @@ On the current checkout, `target/debug/glass` reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 317 |
-| Serialized `tools` array | 156,413 UTF-8 bytes |
-| Four-bytes-per-token estimate | 39,103 tokens |
+| Negotiated tools | 316 |
+| Serialized `tools` array | 155,859 UTF-8 bytes |
+| Four-bytes-per-token estimate | 38,965 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -56,7 +56,7 @@ explain why a new public tool is preferable to an existing typed verb or a
 namespaced resource.
 
 The increase from the published 0.3.4 measurement of 129,444 bytes to the
-current 146,421-byte development inventory covers explicit trust, autonomous
+current 155,859-byte development inventory covers explicit trust, autonomous
 task, measured experiment, debugger inspection, governed-kernel operations,
 and the governed Agent composer/runtime setup routes.
 `glass` exposes the same typed resident services used by Pi, the TUI, CLI, and
@@ -118,7 +118,7 @@ effective agreement. Inspect `glassAgreement`, then use `tools/list` and
 capability/schema checks for optional behavior. A reconnect creates a new
 agreement and requires fresh discovery.
 
-The current `glass` executable advertises the 299-tool merged catalog in the
+The current `glass` executable advertises the 316-tool merged catalog in the
 reproducible scoreboard; `glass-browser` retains its independently measured
 browser catalog. The effective capability
 agreement determines which optional operations are usable. Context reduction

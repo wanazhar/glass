@@ -9,23 +9,34 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
+/// Fixed metadata for a supported external coding harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HarnessSpec {
+    /// Stable machine-readable identifier.
     pub id: &'static str,
+    /// Human-readable display label.
     pub label: &'static str,
+    /// Executable basename searched on `PATH`.
     pub binary: &'static str,
+    /// Short description shown in discovery summaries.
     pub description: &'static str,
 }
 
+/// PATH discovery result for one harness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessStatus {
+    /// Harness metadata from [`SPECS`].
     pub spec: HarnessSpec,
+    /// Resolved executable path, when found and executable.
     pub path: Option<PathBuf>,
 }
 
+/// A validated harness launch target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedHarness {
+    /// Harness metadata.
     pub spec: HarnessSpec,
+    /// Executable path selected from `PATH`.
     pub path: PathBuf,
 }
 
@@ -106,10 +117,12 @@ pub const SPECS: &[HarnessSpec] = &[
     },
 ];
 
+/// Return the fixed supported-harness catalog.
 pub fn specs() -> &'static [HarnessSpec] {
     SPECS
 }
 
+/// Discover supported harnesses using the process `PATH`.
 pub fn discover() -> Vec<HarnessStatus> {
     discover_from_path(std::env::var_os("PATH").as_deref())
 }
@@ -125,6 +138,7 @@ fn discover_from_path(path: Option<&OsStr>) -> Vec<HarnessStatus> {
         .collect()
 }
 
+/// Format a compact availability summary without probing versions or network.
 pub fn summary() -> String {
     let statuses = discover();
     summary_for(&statuses)
@@ -144,6 +158,7 @@ fn summary_for(statuses: &[HarnessStatus]) -> String {
         .join("\n")
 }
 
+/// Resolve a case-insensitive id, label, or binary and require it on `PATH`.
 pub fn resolve(name: &str) -> Result<ResolvedHarness, String> {
     let spec = SPECS
         .iter()

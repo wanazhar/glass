@@ -30,7 +30,10 @@ want that package to replace the shared `glass-browser` executable.
 
 The public Rust API is documented at [docs.rs/glass-dev](https://docs.rs/glass-dev);
 use the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md)
-for installed command behavior.
+for installed command behavior. This guide follows the current `0.3.12` source
+checkout; published `0.3.12` docs.rs pages describe released API artifacts and
+may not include the checkout's newest TUI surfaces.
+
 
 Chrome or Chromium is needed only for browser-backed operations. Project
 inspection, files, search, local harness, Task Protocol/Web IR operations,
@@ -43,9 +46,11 @@ cd /path/to/project
 glass
 ```
 
-Desktop mode opens the Development coding workspace by default. The workspace
-owns a bounded file tree, native editor, PTY processes, diagnostics, actors,
-timeline, source/runtime graph, diff, replay, and optional Pi/Neovim adapters.
+Desktop mode opens the Development coding workspace by default. Its eight
+destinations are Agent, Code, App, Terminal, Tasks, Git, Debug, and More. The
+workspace owns a bounded file tree, native editor, PTY processes, diagnostics,
+actors, timeline, source/runtime graph, diff, replay, and optional Pi/Neovim
+adapters.
 
 Start from the CLI without opening Chrome:
 
@@ -77,10 +82,11 @@ workspace. Continuous pixels remain off by default.
 First-launch agent setup stays inside the TUI. On the Agent surface, press `s`
 to install or repair the pinned managed Pi runtime, `u` to refresh that pinned
 runtime, `l` to open Pi `/login`, and `i` to start a conversation. The
-equivalent palette routes are `:agent setup` and `:agent update`. `a` opens the
-guided command center; `?` opens contextual help. Agent mutations pause on an
-inline Glass approval card: `Enter` approves the exact call once and `Esc`
-denies it.
+equivalent palette routes are `:agent setup`, `:agent update`, and
+`:agent setup login`. `a` opens the guided command center; `?` opens contextual
+help. Agent mutations pause on an inline Glass approval card: `Enter` approves
+the exact call once and `Esc` denies it.
+
 
 On the App surface, `T` opens a searchable page-target picker without
 changing the active page. Type a title, URL, or target ID; `j`/`k` (or the
@@ -114,18 +120,38 @@ From the App surface, chat can bootstrap a browser target with `open <url>`.
 Glass attaches, navigates, and observes through the revision-bound browser
 workspace before the agent acts.
 
+## Source and diff rendering
+
+The Code surface classifies both source files and diff hunks by path. It uses
+the bundled `syntect` grammar first, then deterministic manual highlighting;
+unknown formats deliberately use a plain-text fallback. Path aliases cover
+TypeScript, Swift, Kotlin, Dart, and Dockerfile-like names. Markdown headings
+and inline markup are styled directly, fenced code tracks its declared
+language (including aliases), and recognized Mermaid flowcharts and sequence
+diagrams receive a terminal-native preview. If Mermaid syntax is not
+recognized, its source remains readable rather than being dropped.
+
+## Live browser and iPhone
+
+
 `live on` enables an ephemeral terminal-native browser using Herdr-owned
 graphics when the native pane is available, or the bounded true-color ANSI
-half-block renderer. `--tui-live-backend kitty` is accepted for compatibility
-and currently uses the ANSI path; `live quality data` is intended for
-constrained links. Herdr is optional but recommended as the persistent PTY
-owner for detach/reattach. tmux remains compatible.
+half-block renderer with the default backend. `live auto` enables continuous
+frames only when Herdr is detected and may remain semantic-only otherwise.
+`--tui-live-backend kitty` is accepted for compatibility and maps to the ANSI
+path; an explicit unavailable Herdr backend remains semantic-only. `live
+quality data` is intended for constrained links. Herdr is optional but
+recommended as the persistent PTY owner for detach/reattach. tmux remains
+compatible.
 
-The `safari` command prints the stable application-server iPhone workflow. For
-the active BrowserSession, `browser remote-view open` starts a tokenized,
-loopback-only, revocable view and prints its SSH-forward hint. Configure the
-matching SSH local forward, then open the printed local URL in Safari. Do not
-expose the application server, Remote View, or Chrome CDP publicly.
+The active BrowserSession's private iPhone path is exposed by the development
+TUI's `:browser remote-open` route. It starts a tokenized, loopback-only,
+revocable view and prints its SSH-forward hint. `browser remote-view open` is
+not a standalone CLI command (and the focused `glass-browser` package does not
+export the development runtime); configure the matching SSH local port forward,
+then open the printed local URL in Safari.
+
+Do not expose the application server, Remote View, or Chrome CDP publicly.
 
 ## MCP and clients
 

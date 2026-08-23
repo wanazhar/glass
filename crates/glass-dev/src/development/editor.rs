@@ -1,43 +1,68 @@
 use serde::{Deserialize, Serialize};
 
+/// Zero-based line and character-column position in editor text.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TextPosition {
+    /// Zero-based line number.
     pub line: u32,
+    /// Zero-based character column within the line.
     pub column: u32,
 }
 
+/// A selection represented by its fixed anchor and active cursor positions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TextSelection {
+    /// Position where the selection began.
     pub anchor: TextPosition,
+    /// Current cursor position; may be before or after `anchor`.
     pub active: TextPosition,
 }
 
+/// Coarse syntax categories emitted by [`syntax_spans`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SyntaxKind {
+    /// Recognized language keyword.
     Keyword,
+    /// Reserved for string-token spans.
     String,
+    /// A line comment.
     Comment,
+    /// An ASCII decimal number token.
     Number,
 }
 
+/// Half-open byte range and category for one syntax span.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyntaxSpan {
+    /// Inclusive start byte offset.
     pub start: usize,
+    /// Exclusive end byte offset.
     pub end: usize,
+    /// Category assigned to the span.
     pub kind: SyntaxKind,
 }
 
+/// One-based inclusive line range that can be folded.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FoldRegion {
+    /// Line containing the opening brace.
     pub start_line: u32,
+    /// Line containing the matching closing brace.
     pub end_line: u32,
 }
 
+/// Find coarse keyword, comment, and number spans in source text.
+///
+/// `extension` is a bare lowercase suffix. Supported keyword tables are
+/// `rs`, `js`, `jsx`, `ts`, `tsx`, `py`, and `go`; unknown suffixes produce
+/// no keyword spans. Returned offsets are UTF-8 byte offsets and output is
+/// capped at 4,096 spans. This low-level helper is independent of the
+/// private syntect-based TUI renderer.
 pub fn syntax_spans(content: &str, extension: &str) -> Vec<SyntaxSpan> {
     let keywords: &[&str] = match extension {
         "rs" => &[
@@ -114,6 +139,8 @@ pub fn syntax_spans(content: &str, extension: &str) -> Vec<SyntaxSpan> {
     spans
 }
 
+/// Return the matching bracket's character index, if `character_index` points
+/// to `(`, `[`, `{`, `)`, `]`, or `}` and a balanced partner exists.
 pub fn matching_bracket(content: &str, character_index: usize) -> Option<usize> {
     let characters = content.chars().collect::<Vec<_>>();
     let bracket = *characters.get(character_index)?;
@@ -142,6 +169,9 @@ pub fn matching_bracket(content: &str, character_index: usize) -> Option<usize> 
     }
 }
 
+/// Collect brace-delimited fold regions using one-based inclusive line numbers.
+///
+/// The scan is intentionally lexical and returns at most 1,024 regions.
 pub fn fold_regions(content: &str) -> Vec<FoldRegion> {
     let mut stack = Vec::new();
     let mut regions = Vec::new();

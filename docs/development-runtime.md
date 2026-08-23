@@ -127,15 +127,37 @@ TUI editor keys:
 | Key | Action |
 |---|---|
 | arrows | move the cursor |
-| text, `Enter`, `Tab` | insert content |
-| `Backspace`, `Delete` | remove content |
+| text, `Enter` | insert content |
+| `Backspace` | remove content |
 | `Ctrl-S` | atomically save with actor attribution |
 | `Ctrl-Z`, `Ctrl-Y` | undo or redo in the current buffer |
 | `Esc` | leave editor mode and return to Code navigation |
 
-Glass-native rendering remains the state owner. Neovim can act as an optional
-editing engine; it does not own project, browser, process, graph, actor, or
-timeline state.
+`Tab` remains product-destination navigation outside the editor, and `Delete`
+has no editor mutation binding. Glass-native rendering remains the state owner.
+Neovim can act as an optional editing engine; it does not own project, browser,
+process, graph, actor, or timeline state.
+
+## Source and diff rendering
+
+The Code view and inline Git diff select syntax by path. Syntect provides the
+bundled grammar when one is available; unknown paths use deterministic manual
+rendering or plain text rather than content-based language detection. The
+supported path aliases include TypeScript (`.ts`, `.tsx`, `.mts`, `.cts`) via
+JavaScript, Swift and Dart via C++, Kotlin (`.kt`, `.kts`) via Java, and
+Dockerfile-like names via the shell grammar.
+
+Markdown (`.md`, `.markdown`, `.mdx`, and README names) styles headings, lists,
+links, and inline code. Fenced blocks delimited by backticks or tildes select
+the language token and highlight TypeScript, Swift, Kotlin, or Dart aliases.
+Mermaid (`.mmd` and `.mermaid`) renders supported flowcharts, graphs, and
+sequence diagrams as deterministic terminal diagrams; unsupported forms stay
+as styled source.
+
+Diff rendering follows each file path from its `---`/`+++` headers, displays
+old/new line numbers and add/remove backgrounds, and applies that path's
+grammar to changed lines. A path without a grammar retains the plain/manual
+fallback.
 
 ## Processes and PTYs
 
@@ -193,7 +215,16 @@ and project trust boundary.
 
 ## Diagnostics and persistent LSP
 
-Request diagnostics for one path:
+For a fresh server in the resident TUI, start it before requesting
+diagnostics. Enter these commands in the command palette:
+
+```text
+lsp start rust-analyzer rust-analyzer
+lsp diagnostics rust-analyzer src/main.rs
+```
+
+The one-shot `project diagnostics` convenience command uses the Rust
+diagnostics path and starts its dedicated client as needed:
 
 ```console
 glass project diagnostics src/main.rs --root .

@@ -5,6 +5,11 @@ points in `0.3.12`; it is not a cross-platform certification claim. The
 machine-readable target status is in
 [feature-parity.json](feature-parity.json).
 
+This page describes the current `0.3.12` source checkout. The published
+`0.3.12` docs.rs pages are released Rust API artifacts and may not include
+newer checkout-only TUI or CLI surfaces.
+
+
 ## Interfaces
 
 | Domain | CLI | TUI | MCP | Rust | Guide |
@@ -26,7 +31,8 @@ machine-readable target status is in
 | Policy/security | global policy options | effective policy status | startup policy and typed denials | `BrowserPolicy` and capability types | [Policy](policy.md) |
 | Workspaces/daemon | `workspace`, `daemon` | daemon status | workspace and lease tools | `workspace`, `daemon` modules | [Daemon](daemon.md) |
 | Development Runtime | `project`, `agent` | Development workspace | `project.*`, `agent.*` | `development` module | [Development Runtime](development-runtime.md) |
-| Terminal/remote browser view | TUI live and Remote View commands | semantic-first Browser view; Herdr/Kitty/ANSI or tokenized loopback Safari | metadata only; no MCP pixel stream | `connection`, `presentation`, `terminal_graphics`, `development::remote_view` | [Mobile/remote](mobile-remote.md) |
+| Terminal/remote browser view | `browser`, `session`; Remote View is development-TUI-only | semantic-first Browser view; Herdr or bounded ANSI, plus tokenized loopback Remote View | metadata only; no MCP pixel stream | `connection`, `presentation`, `terminal_graphics`, `development::remote_view` | [Mobile/remote](mobile-remote.md) |
+
 | Backends/surfaces/replay | `backend`, `surfaces`, `replay` | bounded status | corresponding tools | backend/surface/replay contracts | [Architecture](architecture/README.md) |
 | Extensions | `--experimental-extensions`, capabilities | negotiated status | negotiated experimental status | `extensions` module | [Extensions](extensions.md) |
 | Reliability/certification | `certify`, `smoke-sites` | compact status | scenario operations through core tools | reliability modules | [Reliability](reliability.md) |
@@ -142,16 +148,30 @@ Project reads are handle-bound and capped. Mutations stay inside the canonical
 root and record actor provenance. Prompt text and tool arguments are represented
 in audit state by bounded metadata and digests, not raw values.
 
-## Terminal and remote experience
+The Code surface's source and diff renderers classify each file or hunk by
+path. They use bundled `syntect` grammars first, then deterministic manual
+highlighting; unknown formats deliberately remain plain text. Path aliases
+cover TypeScript, Swift, Kotlin, Dart, and Dockerfile-like names. Markdown
+headings and inline markup are styled directly, fenced code tracks its
+declared language, and recognized Mermaid flowcharts and sequence diagrams
+receive a terminal-native preview. Unrecognized Mermaid remains readable
+source text.
 
-Desktop, compact, and phone layouts share one workspace and canonical browser
-controller. Phone exposes Agent, Code, App, Tasks, and More without function
-keys. App selection carries the visible browser revision automatically.
 
-The optional live browser backend order is Herdr, direct Kitty, ANSI, then
-semantic fallback. `live auto` requires a detected native backend; `live on`
-allows ANSI. Safari over an SSH local port forward is the stable full-fidelity
-iPhone path. Glass never opens CDP publicly.
+Desktop exposes eight destinations—Agent, Code, App, Terminal, Tasks, Git,
+Debug, and More. Phone exposes Agent, Code, App, Tasks, and More without
+function keys. App selection carries the visible browser revision
+automatically.
+
+The optional live browser policy uses Herdr-owned graphics when Herdr is
+detected. `live auto` may remain semantic-only without Herdr; `live on` permits
+the bounded ANSI renderer, and `--tui-live-backend kitty` currently maps to
+that ANSI path. Mosh remains semantic-only. The private iPhone path uses the
+development TUI's `:browser remote-open` route, which starts loopback-only
+tokenized Remote View and prints an SSH-forward hint; `browser remote-view open`
+is not a standalone CLI command. Configure SSH local port forwarding and open
+the resulting local URL in Safari. Glass never opens CDP publicly.
+
 
 ## Backends and surfaces
 
@@ -171,8 +191,8 @@ Repository clients in `clients/typescript` and `clients/python` are thin MCP
 clients, not browser runtimes. They negotiate capabilities, expose browser and
 Development Runtime helpers, maintain bounded request state, support
 cancellation, cursor-based project events, process-health waits, reconnect
-workflows, and mutation-lease scopes. They are not published to npm or PyPI in
-the `0.3.5` line.
+workflows, and mutation-lease scopes. They are part of the current `0.3.12`
+source checkout, not published npm or PyPI packages.
 
 Run their browser-free conformance smokes:
 

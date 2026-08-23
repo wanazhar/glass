@@ -38,7 +38,7 @@ DEPTH_CONTRACTS = {
     "docs/mobile-remote.md": (
         "## Start on an iPhone", "## Preserve work with Herdr",
         "## Recover the browser without leaving the TUI",
-        "## Open the full application in Safari", "## Terminal compatibility",
+        "## Open the full application from a phone", "## Terminal compatibility",
     ),
     "docs/harness-architecture.md": (
         "## Runtime planes", "## Event and snapshot rules",

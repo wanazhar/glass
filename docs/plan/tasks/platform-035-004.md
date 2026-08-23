@@ -2,6 +2,7 @@
 
 Status: Implemented locally on 2026-08-11; Windows native execution awaits the
 existing remote Windows CI runner. No push or remote mutation performed.
+Status: Historical checkpoint; superseded by the current 0.3.12 source/release evidence.
 
 ## Outcome
 

@@ -42,6 +42,10 @@ and revision checks.
 The packages intentionally share the `glass-browser` executable name and
 cannot own it in the same Cargo installation root. Follow the tested
 [installation and ownership-transition guide](docs/installation.md).
+The command and feature notes below describe the current `0.3.12` source
+checkout. Published `0.3.12` docs.rs pages are released Rust API artifacts;
+they are not a substitute for checking this checkout's TUI and CLI behavior.
+
 
 ## Install
 
@@ -133,9 +137,11 @@ it does not terminate the editor, PTYs, agent, or project session.
 
 First-launch onboarding stays inside the TUI. On the `Agent` surface, press
 `s` to install or repair the pinned Pi runtime, `u` to refresh it, `l` to open
-Pi `/login` in the terminal, then `i` to start a conversation. Glass keeps the
-workspace trust decision and one-use mutation confirmation in the same flow; it
-does not require a separate setup command before you can inspect the project.
+Pi `/login` in the terminal, then `i` to start a conversation. The equivalent
+palette routes are `:agent setup`, `:agent update`, and `:agent setup login`.
+Glass keeps the workspace trust decision and one-use mutation confirmation in
+the same flow; it does not require a separate setup command before you can
+inspect the project.
 Once the composer is open, `Enter` sends the draft immediately and leaves the
 composer available for the next prompt. Sent prompts stay visible as `YOU`
 messages while the resident agent streams `GLASS AGENT` text and tool activity;
@@ -171,6 +177,8 @@ a slow network.
 | `5` | Tasks | More |
 | `6` | Git | - |
 | `7` | Debug | - |
+| `8` | More | - |
+
 
 `Tab` and `Shift-Tab` move between views. `?` opens help, `:` or `/` opens
 command discovery, and `Ctrl-L` redraws. Essential phone navigation uses
@@ -179,6 +187,18 @@ printable keys and does not require function keys or mouse input.
 The browser view is structured-first. Continuous pixels are off by default.
 Use `live on` only when visual steering is useful, and use an explicit
 `screenshot PATH` when you need persistent visual evidence.
+
+## Source and diff rendering
+
+The Code surface classifies source and diff content by path. Both paths use
+the bundled `syntect` grammar when available, then deterministic manual
+highlighting; an unknown format remains plain text rather than being guessed.
+Path aliases cover TypeScript, Swift, Kotlin, Dart, and Dockerfile-like names.
+Markdown headings and inline markup are styled directly, fenced code tracks its
+declared language (including those aliases), and recognized Mermaid flowcharts
+and sequence diagrams receive a terminal-native preview. A Mermaid or unknown
+format that cannot be rendered safely remains readable source text.
+
 
 Architecture and interaction details are in the [TUI
 contract](docs/architecture/tui.md), [Development TUI
@@ -368,23 +388,30 @@ Presentation is selected independently from layout:
 - constrained or unknown remote links use 3/6/12 FPS profiles;
 - Mosh remains semantic-only because it synchronizes terminal cells, not
   arbitrary graphics-protocol state;
+- `live auto` enables continuous frames only when Herdr is detected; without
+  Herdr it may remain semantic-only;
+- `live on` permits the bounded ANSI renderer, and
+  `--tui-live-backend kitty` currently maps to that ANSI path;
 - auto quality reduces capture scale before frame rate and suspends hidden
   browser acquisition.
 
 Use Herdr when you want agent-aware persistent PTYs across SSH detach and
-reattach. tmux remains compatible. For full-fidelity iPhone viewing, use one
-of two private loopback paths:
+reattach. tmux remains compatible. For iPhone viewing, use the private
+loopback Remote View path:
 
-- `safari` prints a stable application-server forwarding workflow;
-- `browser remote-view open` serves the current BrowserSession through a
-  random, revocable token and revision-bound input.
+The active BrowserSession's private iPhone path is exposed by the development
+TUI's `:browser remote-open` route. It starts a tokenized, loopback-only,
+revocable view and prints its SSH-forward hint. `browser remote-view open` is
+not a standalone CLI command; configure the matching SSH local port forward,
+then open the printed local URL in Safari.
 
-Neither path exposes CDP publicly or launches Safari on the remote machine.
-The iOS SSH client owns the local port forward.
+The application server, Remote View, and Chrome CDP must remain private; the
+iOS SSH client owns the local port forward.
 
 Follow [Mobile and remote development](docs/mobile-remote.md) for exact Herdr,
-Mosh, terminal-graphics, Safari, Remote View, troubleshooting, and security
+Mosh, terminal-graphics, Remote View, troubleshooting, and security
 procedures.
+
 
 ## MCP integration
 
@@ -428,7 +455,9 @@ the external browser.
 
 Read the [Rust SDK guide](docs/rust-sdk.md), [runnable example
 catalog](docs/examples.md), [glass-browser docs.rs](https://docs.rs/glass-browser),
-and [glass-dev docs.rs](https://docs.rs/glass-dev).
+and [glass-dev docs.rs](https://docs.rs/glass-dev). Those docs.rs pages describe
+published Rust packages; this repository checkout can contain newer source
+surfaces and TUI behavior than the published `0.3.12` API pages.
 
 ## TypeScript and Python clients
 

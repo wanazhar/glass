@@ -18,6 +18,12 @@ development-only dependencies and are therefore not scraped into the docs.rs
 example index; the checked-in runnable examples catalog remains the complete
 source-level example inventory.
 
+This guide's module map follows the current `0.3.12` source checkout. The
+published `0.3.12` docs.rs pages are separate released artifacts: use them to
+verify the published API, while using this checkout for newer source-level
+surfaces such as `browser_workspace`.
+
+
 ## Dependency and features
 
 ```toml
@@ -192,6 +198,10 @@ Knowledge records never retain executable target references. Historical
 fingerprints can explain or rank current candidates but cannot authorize a
 mutation.
 
+The focused `glass-browser` crate does not export the Development Runtime;
+project files, PTYs, LSP, Pi, and Neovim ownership remain in `glass-dev`.
+
+
 ## Development Runtime
 
 Depend on `glass-dev` to embed project tooling:
@@ -236,8 +246,11 @@ count/digest and result metadata, not argument values.
 - `presentation` owns frame metadata, geometry/revision mapping, latest-frame
   mailbox, payload ownership events, and metrics. It does not own browser or
   terminal transports.
-- `terminal_graphics` selects Herdr, Kitty, ANSI, or semantic output and keeps
-  payload retention bounded.
+- `terminal_graphics` provides Kitty protocol and semantic render adapters.
+  The development TUI's live policy selects Herdr or bounded ANSI; requesting
+  Kitty there currently maps to ANSI, and `live auto` may remain semantic-only
+  without Herdr.
+
 
 ## Protocol, MCP, daemon, and results
 
@@ -259,6 +272,7 @@ receive a local result ID rather than an unbounded transport payload.
 |---|---|
 | `browser` | Chrome/CDP lifecycle, session API, policies, profiles, actions, observations, workflows, knowledge |
 | `browser_backend` | Transport-neutral semantic backend contract and dispatcher |
+| `browser_workspace` | Bounded revision-safe browser UI state, actions, focus, ownership, layout, and presentation contracts |
 | `capabilities` | Versioned discovery and negotiation manifest |
 | `cli` | Clap types and shared command runner |
 | `connection` | Independent connection environment, presentation profiles, policy reasons, and observatory metrics |
@@ -275,7 +289,7 @@ receive a local result ID rather than an unbounded transport payload.
 | `surfaces` | Bounded multi-surface understanding and bridge grants |
 | `task_compiler` | Deterministic Task Protocol to execution-plan compiler |
 | `task_protocol` | Strict authored semantic task contract |
-| `terminal_graphics` | Herdr, Kitty, ANSI, and semantic render adapters |
+| `terminal_graphics` | Kitty protocol and semantic render adapters |
 | `tui` | Standalone Browser TUI reducer, responsive layouts, semantic selection, and bounded Herdr/ANSI live presentation |
 | `web_ir` | Stable Web IR reconciliation, validation, diff, and continuity |
 | `workspace` | Workspace identity, ownership, attachments, lifecycle, and persistence |

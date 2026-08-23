@@ -5,6 +5,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added path-aware Code/editor and diff rendering with syntect plus a
+  deterministic manual/plain-text fallback. Markdown fenced code and Mermaid
+  source receive dedicated rendering, with aliases for TypeScript, Swift,
+  Kotlin, Dart, and Dockerfile-like paths; diff hunks retain syntax highlighting
+  with add/remove backgrounds.
+
 ### Changed
 
 - Reframed the Glass Dev TUI and embedded Pi prompt around a coding workspace:

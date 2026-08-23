@@ -17,7 +17,7 @@
       "import-cookies", "pdf", "fill-form", "batch", "workflow", "task",
       "ir", "workflow-resume", "resolve-intent", "execute-intent", "verify",
       "reconcile-refs", "observe-delta", "checkpoint", "snapshot",
-      "clipboard-read", "clipboard-write", "tui"
+      "clipboard-read", "clipboard-write", "browser", "session", "tui"
     ],
     "glass-browser": [
       "update", "install-chromium", "certify", "workspace", "memory", "surfaces",
@@ -34,7 +34,7 @@
       "import-cookies", "pdf", "fill-form", "batch", "workflow", "task",
       "ir", "workflow-resume", "resolve-intent", "execute-intent", "verify",
       "reconcile-refs", "observe-delta", "checkpoint", "snapshot",
-      "clipboard-read", "clipboard-write", "tui"
+      "clipboard-read", "clipboard-write", "browser", "session", "tui"
     ]
   },
   "nested": {

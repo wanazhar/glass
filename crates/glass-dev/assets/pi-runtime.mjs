@@ -131,6 +131,18 @@ function glassBackedTool(name, label, description, parameters, mapArguments) {
 
 const nativeTools = [
   glassBackedTool(
+    "delegate",
+    "Temporary external agent",
+    "Delegate one bounded prompt to Codex, Claude Code, or OpenCode through Glass. Read-only is the default and every delegation requires Glass approval.",
+    Type.Object({
+      harness: Type.String({ minLength: 1 }),
+      prompt: Type.String({ minLength: 1, maxLength: 65536 }),
+      sandbox: Type.Optional(Type.String()),
+      timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 3600 })),
+    }, { additionalProperties: false }),
+    { name: "glass.agent.delegate", arguments: (params) => params },
+  ),
+  glassBackedTool(
     "read",
     "Read",
     "Read a bounded UTF-8 project file through Glass. Paths stay inside the current workspace.",
@@ -235,7 +247,7 @@ async function create(manager) {
     sessionManager: manager,
     resourceLoader,
     noTools: "builtin",
-    tools: ["glass_tool", "read", "write", "edit", "bash", "grep", "find", "ls"],
+    tools: ["glass_tool", "delegate", "read", "write", "edit", "bash", "grep", "find", "ls"],
     customTools: [glassTool, ...nativeTools],
     thinkingLevel: process.env.GLASS_PI_THINKING || undefined,
   });

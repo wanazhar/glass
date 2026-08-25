@@ -60,6 +60,8 @@ pub mod debugger;
 pub mod development;
 /// Experiment orchestration and comparison.
 pub mod experiments;
+/// One-shot adapters for installed external coding agents.
+pub mod external_agents;
 /// Governed Git workspace operations.
 pub mod git;
 /// GitHub status, review, and pull-request shipping operations.
@@ -154,6 +156,10 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         enforce_legacy_development_trust(&cli)?;
         return cli::dispatch_agent(action, cli.yolo);
     }
+    if let Some(glass_browser::cli::args::Commands::Harness { action }) = &cli.command {
+        enforce_legacy_development_trust(&cli)?;
+        return cli::dispatch_harness(action);
+    }
     if let Some(glass_browser::cli::args::Commands::Daemon { action }) = &cli.command {
         return daemon::dispatch(action).await;
     }
@@ -187,7 +193,9 @@ fn run_development_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    use glass_browser::cli::args::{AgentCommand, AgentHarness, Commands, ProjectCommand};
+    use glass_browser::cli::args::{
+        AgentCommand, AgentHarness, Commands, HarnessCommand, ProjectCommand,
+    };
 
     let (root, safe_static) = match cli.command.as_ref() {
         Some(Commands::Project { action }) => {
@@ -229,6 +237,10 @@ fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error:
             );
             (root, safe)
         }
+        Some(Commands::Harness { action }) => match action {
+            HarnessCommand::List => return Ok(()),
+            HarnessCommand::Start { root, .. } => (root, false),
+        },
         Some(Commands::Agent { action }) => {
             let (root, safe) = match action {
                 AgentCommand::Doctor | AgentCommand::Setup { .. } | AgentCommand::Status => {
@@ -240,6 +252,13 @@ fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error:
                 AgentCommand::Prompt { root, harness, .. } => {
                     (root, matches!(harness, AgentHarness::Local))
                 }
+                AgentCommand::Delegate { root, sandbox, .. } => (
+                    root,
+                    matches!(
+                        sandbox,
+                        glass_browser::cli::args::ExternalAgentSandbox::ReadOnly
+                    ),
+                ),
                 AgentCommand::Tool { .. } | AgentCommand::ToolFile { .. } => return Ok(()),
                 AgentCommand::Steer { root, .. }
                 | AgentCommand::FollowUp { root, .. }

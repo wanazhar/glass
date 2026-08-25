@@ -165,7 +165,7 @@
 //!   deterministic execution plans.
 //! - [`terminal_graphics`] — Herdr, Kitty, ANSI, and semantic render adapters.
 //! - [`tui`] — standalone Ratatui reducer, responsive layouts, semantic
-//!   selection, and bounded Herdr/ANSI live presentation.
+//!   selection, and bounded Herdr/Kitty/ANSI live presentation.
 //! - [`web_ir`] — stable reconciliation, validation, diff, and continuity.
 //! - [`workspace`] — identity, ownership, lifecycle, attachments, and
 //!   persistence.

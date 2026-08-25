@@ -47,6 +47,7 @@
     "glass.agent.approve",
     "glass.agent.clone-session",
     "glass.agent.compact",
+    "glass.agent.delegate",
     "glass.agent.entries",
     "glass.agent.follow-up",
     "glass.agent.fork",

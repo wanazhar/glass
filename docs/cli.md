@@ -39,10 +39,10 @@ top-level and nested command tree for documentation drift validation. Live
 | `--tui-graphics auto\|kitty\|sixel\|i-term-inline\|ansi\|semantic-only` | `auto` | Override graphics capability; auto requires active evidence. |
 | `--tui-rtt-ms MS` | unknown | Supply measured round-trip latency. |
 | `--tui-throughput-mbps MBPS` | unknown | Supply measured terminal-link throughput. |
-| `--tui-live off\|auto\|on` | `off` | Keep continuous pixels off, require a detected native backend, or allow ANSI fallback. |
-| `--tui-live-backend auto\|herdr\|ansi` | `auto` | Select the terminal-native renderer; `kitty` is accepted and currently rendered through the ANSI path. |
+| `--tui-live off\|auto\|on` | `off` | Keep continuous pixels off, require an available selected backend, or allow the default ANSI fallback. |
+| `--tui-live-backend auto\|herdr\|kitty\|ansi` | `auto` | Select Herdr, Kitty terminal graphics, or bounded ANSI rendering; `auto` prefers Herdr and otherwise falls back to ANSI only for `live on`. |
 | `--tui-live-quality data\|balanced\|smooth` | `balanced` | Select the adaptive capture size and target frame rate. |
-| `--tui-live-fit contain\|cover\|actual` | `contain` | Select ANSI sampling; native image backends use contain. |
+| `--tui-live-fit contain\|cover\|actual` | `contain` | Select ANSI sampling; Kitty and other native image backends use contain. |
 
 Place global options before or after the subcommand.
 
@@ -438,6 +438,44 @@ UTF-8 search with optional path prefix, `*`/`?` glob, case folding, context, and
 limit; `find` matches project paths with `*` and `?`; `edit` applies one atomic
 set of unique exact replacements; and `bash` has a caller-selected timeout
 capped at 300 seconds.
+
+### External harness parity
+
+The CLI and TUI share one fixed PATH-discovered harness catalog:
+
+```console
+glass harness list
+glass harness start codex --root .
+```
+
+The equivalent TUI commands are `:harness list` and `:harness start codex`.
+Both launch the selected installed program in the project root and return to
+the client after it exits.
+
+### Temporary external agents
+
+Glass can make a bounded one-shot delegation to an installed Codex CLI,
+Claude Code, or OpenCode process without registering that process as a resident
+Glass Agent:
+
+```console
+glass agent delegate codex "inspect the failing test and explain the smallest fix" --root .
+glass agent delegate claude "review the current diff for regressions" --root .
+glass agent delegate opencode "summarize the project entrypoints" --root .
+```
+
+The TUI equivalent is `:harness delegate NAME PROMPT`, with optional
+`--sandbox`, `--timeout-secs`, `--allow-mutation`, and `--yes` tokens. The
+prompt can be `-` to read it from stdin in the CLI. Delegation uses the
+selected harness's structured output mode, captures bounded stdout/stderr, and
+returns JSON with the exit status, timeout, transport, and truncation flags.
+The default sandbox is `read-only`; `--sandbox workspace-write` requires both
+`--allow-mutation` and `--yes` (or the process-scoped `--yolo` flag). Glass
+passes the workspace root as a process argument, never through a shell.
+
+The resident Glass Agent exposes the same capability as the governed `delegate`
+tool / `glass.agent.delegate`. It remains approval-gated, bounded, and
+ephemeral.
 
 ### Unrestricted Pi mode
 

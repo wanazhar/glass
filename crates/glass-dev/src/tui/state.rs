@@ -184,6 +184,9 @@ pub struct DevTuiState {
     pub command_history: Vec<String>,
     pub command_history_index: Option<usize>,
     pub palette_error: Option<String>,
+    pub palette_scroll: u16,
+    /// Index in the filtered, arrow-selectable palette action list.
+    pub palette_selection: usize,
     pub menu_open: bool,
     pub menu_selection: usize,
     pub help_open: bool,
@@ -361,6 +364,8 @@ impl DevTuiState {
             command_history: Vec::new(),
             command_history_index: None,
             palette_error: None,
+            palette_scroll: 0,
+            palette_selection: 0,
             menu_open: false,
             menu_selection: 0,
             help_open: false,
@@ -400,7 +405,7 @@ impl DevTuiState {
             status: if trust_prompt {
                 "Trust required · I inspect · O untrusted · 1 once · T project".into()
             } else {
-                "Ready · describe a coding task · a actions · : commands · ? help".into()
+                "Ready · describe a coding task".into()
             },
             agents: String::new(),
             agent_readiness: crate::pi_runtime::pi_readiness()
@@ -519,10 +524,7 @@ impl DevTuiState {
     pub fn open_menu(&mut self) {
         self.menu_open = true;
         self.menu_selection = 0;
-        self.status = format!(
-            "Command center · {} · ↑↓ move · Enter run · Esc close",
-            self.surface.label()
-        );
+        self.status = format!("Command center · {}", self.surface.label());
     }
 
     pub fn close_menu(&mut self) {
@@ -659,10 +661,11 @@ impl DevTuiState {
         self.command_cursor = 0;
         self.command_history_index = None;
         self.palette_error = None;
-        let group = command::command_group_for(self.surface);
+        self.palette_scroll = 0;
+        self.palette_selection = 0;
         self.status = format!(
-            "Command search · {} routes first · Tab completes · Esc closes",
-            group.label
+            "Command palette · {} actions · ↑↓ select · Enter run",
+            self.surface.label()
         );
     }
 
@@ -672,15 +675,82 @@ impl DevTuiState {
         self.command_cursor = 0;
         self.command_history_index = None;
         self.palette_error = None;
-        self.status = "Command search cancelled · press a for guided launchers".into();
+        self.palette_scroll = 0;
+        self.palette_selection = 0;
+        self.status = "Command palette closed · press a for guided launchers".into();
+    }
+
+    pub fn palette_action_indices(&self) -> Vec<usize> {
+        let query = self.command_input.trim();
+        self.surface_actions()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, action)| {
+                let haystack =
+                    format!("{} {} {}", action.label, action.command, action.description);
+                fuzzy_contains(&haystack, query).then_some(index)
+            })
+            .collect()
+    }
+
+    pub fn selected_palette_action(&self) -> Option<command::SurfaceAction> {
+        let indices = self.palette_action_indices();
+        indices
+            .get(self.palette_selection)
+            .and_then(|index| self.surface_actions().get(*index))
+            .copied()
+    }
+
+    pub fn move_palette_selection(&mut self, delta: i32) {
+        let count = self.palette_action_indices().len();
+        if count == 0 {
+            return;
+        }
+        self.palette_selection =
+            (self.palette_selection as i32 + delta).rem_euclid(count as i32) as usize;
+        self.palette_error = None;
+        self.palette_scroll = 0;
+        if let Some(action) = self.selected_palette_action() {
+            self.status = format!("{} · Enter runs", action.label);
+        }
     }
 
     pub fn submit_palette(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        let input = std::mem::take(&mut self.command_input);
-        self.command_cursor = 0;
-        self.command_history_index = None;
-        self.command_mode = false;
-        if !input.trim().is_empty() && self.command_history.last() != Some(&input) {
+        let typed = self.command_input.trim().to_string();
+        let command = match self.selected_palette_action() {
+            Some(action) => self.prepare_palette_action(action),
+            None if typed.is_empty() => {
+                self.status = "No matching palette action · Esc closes".into();
+                return;
+            }
+            None => {
+                self.command_mode = false;
+                self.command_input.clear();
+                self.command_cursor = 0;
+                self.command_history_index = None;
+                self.palette_scroll = 0;
+                self.palette_selection = 0;
+                Some(typed)
+            }
+        };
+
+        let Some(input) = command else {
+            if !self.command_mode {
+                if let Some((call, context)) = self.queued_tool_request.take() {
+                    match worker.submit_tool(call, context) {
+                        Ok(id) => {
+                            self.running_tool_job = Some(id);
+                            self.status.push_str(" · running in background");
+                        }
+                        Err(error) => self.status = format!("Could not queue tool: {error}"),
+                    }
+                }
+                worker.request_refresh();
+            }
+            return;
+        };
+
+        if self.command_history.last() != Some(&input) {
             self.command_history.push(input.clone());
             if self.command_history.len() > 32 {
                 self.command_history.remove(0);
@@ -708,11 +778,104 @@ impl DevTuiState {
         worker.request_refresh();
     }
 
+    fn prepare_palette_action(&mut self, action: command::SurfaceAction) -> Option<String> {
+        self.palette_error = None;
+        match action.command {
+            "i" => {
+                self.command_mode = false;
+                if self.surface == DevSurface::Agent {
+                    self.open_composer();
+                } else {
+                    self.enter_code_edit();
+                }
+                None
+            }
+            "Enter" => {
+                self.command_mode = false;
+                if self.surface == DevSurface::Code {
+                    self.open_selected_file();
+                }
+                None
+            }
+            "n" => {
+                self.surface = DevSurface::App;
+                self.open_palette_with("browser navigate ");
+                self.status = "Navigate · type only the URL, then press Enter".into();
+                None
+            }
+            "t" => {
+                self.surface = DevSurface::App;
+                self.open_palette_with("browser type ");
+                self.status = "Type · enter the text or target, then press Enter".into();
+                None
+            }
+            "v" => {
+                self.command_mode = false;
+                self.browser_visual_live = true;
+                self.status = "Live view starting · v stops".into();
+                None
+            }
+            "s" if matches!(self.surface, DevSurface::Terminal | DevSurface::More) => {
+                self.command_mode = false;
+                self.request_detected_dev();
+                None
+            }
+            "d" if self.surface == DevSurface::Git => {
+                self.command_mode = false;
+                self.git_diff_requested = true;
+                self.status = "Git diff queued · loading off-thread".into();
+                None
+            }
+            "1" | "T" | "I" | "O" => {
+                self.command_mode = false;
+                self.handle_printable(action.command.chars().next().unwrap());
+                None
+            }
+            "Ctrl-S" if self.surface == DevSurface::Code => {
+                self.command_mode = false;
+                self.edit_code_key(
+                    crossterm::event::KeyCode::Char('s'),
+                    crossterm::event::KeyModifiers::CONTROL,
+                );
+                None
+            }
+            command => {
+                let prefill = command
+                    .split_whitespace()
+                    .take_while(|token| {
+                        !token
+                            .chars()
+                            .all(|character| character.is_ascii_uppercase() || character == '_')
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if prefill != command {
+                    self.open_palette_with(&format!("{prefill} "));
+                    self.status = format!(
+                        "{} · enter only the required value(s), then press Enter",
+                        action.label
+                    );
+                    None
+                } else {
+                    self.command_mode = false;
+                    self.command_input.clear();
+                    self.command_cursor = 0;
+                    self.command_history_index = None;
+                    self.palette_scroll = 0;
+                    self.palette_selection = 0;
+                    Some(command.into())
+                }
+            }
+        }
+    }
+
     pub fn insert_palette_char(&mut self, character: char) {
         self.command_input.insert(self.command_cursor, character);
         self.command_cursor += character.len_utf8();
         self.palette_error = None;
         self.command_history_index = None;
+        self.palette_scroll = 0;
+        self.palette_selection = 0;
     }
 
     pub fn insert_palette_text(&mut self, text: &str) {
@@ -733,28 +896,62 @@ impl DevTuiState {
         self.command_input.drain(previous..self.command_cursor);
         self.command_cursor = previous;
         self.command_history_index = None;
+        self.palette_scroll = 0;
+        self.palette_selection = 0;
+    }
+
+    fn palette_history_indices(&self) -> Vec<usize> {
+        let visible = command::palette_order(self.surface);
+        self.command_history
+            .iter()
+            .enumerate()
+            .filter_map(|(index, input)| {
+                let root = input.split_whitespace().next()?;
+                let root = match root {
+                    "?" => "help",
+                    "q" => "quit",
+                    "gh" => "github",
+                    "tasks" => "task",
+                    "tests" => "test",
+                    "experiments" => "experiment",
+                    "knowledge" => "memory",
+                    "surfaces" | "backend" => "surface",
+                    "tools" => "tool",
+                    _ => root,
+                };
+                visible.contains(&root).then_some(index)
+            })
+            .collect()
     }
 
     pub fn navigate_palette_history(&mut self, older: bool) {
-        if self.command_history.is_empty() {
+        let history = self.palette_history_indices();
+        if history.is_empty() {
             return;
         }
-        let last = self.command_history.len() - 1;
-        let index = match (self.command_history_index, older) {
-            (None, true) => last,
+        let position = self
+            .command_history_index
+            .and_then(|index| history.iter().position(|candidate| *candidate == index));
+        let next_position = match (position, older) {
+            (None, true) => history.len() - 1,
             (None, false) => return,
-            (Some(index), true) => index.saturating_sub(1),
-            (Some(index), false) if index < last => index + 1,
+            (Some(position), true) => position.saturating_sub(1),
+            (Some(position), false) if position + 1 < history.len() => position + 1,
             (Some(_), false) => {
                 self.command_history_index = None;
                 self.command_input.clear();
                 self.command_cursor = 0;
+                self.palette_scroll = 0;
+                self.palette_selection = 0;
                 return;
             }
         };
+        let index = history[next_position];
         self.command_history_index = Some(index);
         self.command_input.clone_from(&self.command_history[index]);
         self.command_cursor = self.command_input.len();
+        self.palette_scroll = 0;
+        self.palette_selection = 0;
     }
 
     pub fn complete_palette(&mut self) {
@@ -769,7 +966,9 @@ impl DevTuiState {
         self.command_input = format!("{completion}{suffix}");
         self.command_cursor = self.command_input.len();
         self.command_history_index = None;
-        self.status = format!("Completed `{completion}` · Enter runs · ↑/↓ history");
+        self.palette_scroll = 0;
+        self.palette_selection = 0;
+        self.status = format!("Completed `{completion}` · Enter runs · Ctrl-P/N history");
     }
 
     pub fn open_palette_with(&mut self, prefix: &str) {
@@ -792,6 +991,10 @@ impl DevTuiState {
                 .map(|(index, _)| index)
                 .unwrap_or(0);
         }
+    }
+
+    pub fn scroll_palette(&mut self, delta: i32) {
+        self.move_palette_selection(delta.saturating_mul(5));
     }
 
     pub fn palette_matches(&self) -> Vec<&'static str> {
@@ -968,7 +1171,16 @@ impl DevTuiState {
         } else {
             self.agent_conversation.clone()
         };
+        let mut observed = std::collections::BTreeMap::<String, usize>::new();
         for message in &self.pending_chat_messages {
+            if message.state != ChatMessageState::Failed {
+                let marker = format!("YOU\n{}", message.text);
+                let seen = observed.entry(message.text.clone()).or_default();
+                if *seen < conversation.matches(&marker).count() {
+                    *seen += 1;
+                    continue;
+                }
+            }
             if !conversation.is_empty() {
                 conversation.push_str("\n\n");
             }
@@ -1594,6 +1806,25 @@ impl DevTuiState {
                     } else {
                         self.status = "Sent · Glass Agent is thinking…".into();
                     }
+                } else if result.tool == "glass.agent.delegate" {
+                    self.surface = DevSurface::Agent;
+                    let harness = value
+                        .get("harness")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("external harness");
+                    let outcome = if value.get("success").and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    {
+                        "completed"
+                    } else if value.get("timedOut").and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    {
+                        "timed out"
+                    } else {
+                        "failed"
+                    };
+                    let detail = super::projection::external_agent_output(&value);
+                    self.status = format!("Temporary {harness} {outcome} · {detail}");
                 } else if result.tool == "glass.github.review" {
                     match serde_json::from_value::<crate::github::GitHubReview>(value) {
                         Ok(review) => {
@@ -1627,6 +1858,7 @@ impl DevTuiState {
                     result.tool.as_str(),
                     "glass.agent.send"
                         | "glass.agent.setup"
+                        | "glass.agent.delegate"
                         | "glass.git.diff"
                         | "glass.github.review"
                         | "glass.github.ship"
@@ -1734,7 +1966,7 @@ impl DevTuiState {
             };
             if let Some(surface) = surface {
                 self.surface = surface;
-                self.status = format!("{} selected · Enter open", surface.label());
+                self.status = format!("{} selected", surface.label());
                 return;
             }
         }
@@ -1751,7 +1983,7 @@ impl DevTuiState {
         };
         if let Some(surface) = surface {
             self.surface = surface;
-            self.status = format!("{} selected · Enter open", surface.label());
+            self.status = format!("{} selected", surface.label());
         } else if self.surface == DevSurface::Agent && self.snapshot_trust_label != "untrusted" {
             self.open_composer();
             self.insert_composer_text(&character.to_string());
@@ -1783,7 +2015,12 @@ impl DevTuiState {
                 return;
             }
             Err(error) => {
-                self.status = format!("Development command unavailable: {error}");
+                self.status = if error.to_string().contains("workspace busy") {
+                    "Development suite unavailable: workspace refresh is still running · press s again"
+                        .into()
+                } else {
+                    format!("Development command unavailable: {error}")
+                };
                 return;
             }
         };
@@ -1821,7 +2058,7 @@ impl DevTuiState {
             .position(|surface| *surface == self.surface)
             .unwrap_or(0);
         self.surface = surfaces[(index + 1) % surfaces.len()];
-        self.status = format!("{} selected · Enter open", self.surface.label());
+        self.status = format!("{} selected", self.surface.label());
     }
 
     pub fn scroll_surface(&mut self, delta: i32) {
@@ -2342,12 +2579,19 @@ impl DevTuiState {
             .position(|surface| *surface == self.surface)
             .unwrap_or(0);
         self.surface = surfaces[(index + surfaces.len() - 1) % surfaces.len()];
-        self.status = format!("{} selected · Enter open", self.surface.label());
+        self.status = format!("{} selected", self.surface.label());
     }
 
     /// Apply one background snapshot without touching UI-only fields.
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
         self.refresh_latency_ms = snapshot.duration.as_millis() as u64;
+        let selected_agent_status = self.selected_agent.as_ref().and_then(|selected| {
+            snapshot
+                .agent_states
+                .iter()
+                .find(|(id, _)| id == selected)
+                .map(|(_, status)| *status)
+        });
         if let super::snapshot::BrowserHealth::Crashed {
             last_process_id,
             last_revision,
@@ -2375,6 +2619,26 @@ impl DevTuiState {
         self.agents = snapshot.agents.clone();
         self.agent_conversation = snapshot.agent_conversation.clone();
         self.reconcile_pending_chat();
+        if self.agent_send_job.is_none()
+            && self.pending_chat_messages.is_empty()
+            && self.status.contains("Glass Agent is thinking")
+        {
+            match selected_agent_status {
+                Some(crate::AgentStatus::Idle) => {
+                    self.status = "Glass Agent ready · response received".into();
+                }
+                Some(crate::AgentStatus::Failed) => {
+                    self.status = "Glass Agent failed · press Enter to retry".into();
+                }
+                Some(crate::AgentStatus::Cancelled) => {
+                    self.status = "Glass Agent stopped · press Enter to retry".into();
+                }
+                Some(crate::AgentStatus::Waiting) => {
+                    self.status = "Glass Agent waiting for approval".into();
+                }
+                _ => {}
+            }
+        }
         self.tasks = snapshot.tasks.clone();
         if !snapshot.editor.is_empty() {
             self.editor = snapshot.editor.clone();
@@ -3864,6 +4128,32 @@ mod tests {
     }
 
     #[test]
+    fn external_delegate_result_is_visible_in_tui_status() {
+        let root =
+            std::env::temp_dir().join(format!("glass-delegate-status-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.running_tool_job = Some(7);
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 7,
+            tool: "glass.agent.delegate".into(),
+            result: Ok(serde_json::json!({
+                "harness": "codex",
+                "success": true,
+                "timedOut": false,
+                "output": "REAL_RESULT\nsecond line\n",
+                "stderr": "",
+            })),
+        });
+        assert!(state.status.contains("Temporary codex completed"));
+        assert!(state.status.contains("REAL_RESULT"));
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert!(state.running_tool_job.is_none());
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn agent_editor_context_attaches_unsaved_buffer_and_inline_prompt() {
         let root =
             std::env::temp_dir().join(format!("glass-editor-agent-context-{}", std::process::id()));
@@ -3951,6 +4241,58 @@ mod tests {
     }
 
     #[test]
+    fn conversation_view_does_not_echo_pending_message_after_snapshot() {
+        let root = std::env::temp_dir().join(format!("glass-chat-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.agent_conversation = "YOU\ninspect the failing test\n\nGLASS AGENT\nworking".into();
+        state.pending_chat_messages.push(PendingChatMessage {
+            text: "inspect the failing test".into(),
+            state: ChatMessageState::Sent,
+            job_id: None,
+            error: None,
+        });
+
+        let view = state.conversation_view();
+        assert_eq!(view.matches("YOU\ninspect the failing test").count(), 1);
+        assert!(!view.contains("Glass Agent is thinking"));
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn palette_filters_actions_and_prefills_selected_arguments() {
+        let root =
+            std::env::temp_dir().join(format!("glass-palette-actions-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.surface = DevSurface::Agent;
+        state.open_palette();
+        state.insert_palette_text("agent setup");
+        assert_eq!(
+            state.selected_palette_action().map(|action| action.label),
+            Some("Setup Pi runtime")
+        );
+        state.move_palette_selection(1);
+        assert_eq!(
+            state.selected_palette_action().map(|action| action.label),
+            Some("Authenticate")
+        );
+
+        state.open_palette_with("agent rewind ENTRY_ID");
+        let action = state.selected_palette_action().expect("rewind action");
+        assert_eq!(action.label, "Rewind Pi session");
+        assert!(state.prepare_palette_action(action).is_none());
+        assert!(state.command_mode);
+        assert_eq!(state.command_input, "agent rewind ");
+        assert!(state.status.contains("required value"));
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn arrow_surface_cycle_matches_layout_order() {
         let root =
             std::env::temp_dir().join(format!("glass-surface-arrows-{}", std::process::id()));
@@ -3960,7 +4302,7 @@ mod tests {
         desktop.surface = DevSurface::Agent;
         desktop.next_surface();
         assert_eq!(desktop.surface, DevSurface::Code);
-        assert!(desktop.status.contains("Enter open"));
+        assert_eq!(desktop.status, "Code selected");
         desktop.previous_surface();
         assert_eq!(desktop.surface, DevSurface::Agent);
         desktop.surface = DevSurface::Debug;
@@ -3974,7 +4316,7 @@ mod tests {
         phone.surface = DevSurface::Agent;
         phone.previous_surface();
         assert_eq!(phone.surface, DevSurface::More);
-        assert!(phone.status.contains("Enter open"));
+        assert_eq!(phone.status, "More selected");
         phone.next_surface();
         assert_eq!(phone.surface, DevSurface::Agent);
 

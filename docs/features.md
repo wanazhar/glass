@@ -164,13 +164,14 @@ function keys. App selection carries the visible browser revision
 automatically.
 
 The optional live browser policy uses Herdr-owned graphics when Herdr is
-detected. `live auto` may remain semantic-only without Herdr; `live on` permits
-the bounded ANSI renderer, and `--tui-live-backend kitty` currently maps to
-that ANSI path. Mosh remains semantic-only. The private iPhone path uses the
-development TUI's `:browser remote-open` route, which starts loopback-only
-tokenized Remote View and prints an SSH-forward hint; `browser remote-view open`
-is not a standalone CLI command. Configure SSH local port forwarding and open
-the resulting local URL in Safari. Glass never opens CDP publicly.
+detected. `live auto` may remain semantic-only without Herdr on the default
+backend; explicit Kitty emits the Kitty terminal graphics protocol, while
+`live on` defaults to bounded ANSI rendering. Mosh remains semantic-only. The
+private iPhone path uses the development TUI's `:browser remote-open` route,
+which starts a loopback-only tokenized Remote View and prints an SSH-forward
+hint; `browser remote-view open` is not a standalone CLI command. Configure SSH
+local port forwarding and open the resulting local URL in Safari. Glass never
+opens CDP publicly.
 
 
 ## Backends and surfaces

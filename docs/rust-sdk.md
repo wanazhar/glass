@@ -247,9 +247,9 @@ count/digest and result metadata, not argument values.
   mailbox, payload ownership events, and metrics. It does not own browser or
   terminal transports.
 - `terminal_graphics` provides Kitty protocol and semantic render adapters.
-  The development TUI's live policy selects Herdr or bounded ANSI; requesting
-  Kitty there currently maps to ANSI, and `live auto` may remain semantic-only
-  without Herdr.
+  The development TUI's live policy selects Herdr, explicit Kitty, or bounded
+  ANSI; `live auto` may remain semantic-only without Herdr when no explicit
+  native backend was selected.
 
 
 ## Protocol, MCP, daemon, and results
@@ -290,7 +290,7 @@ receive a local result ID rather than an unbounded transport payload.
 | `task_compiler` | Deterministic Task Protocol to execution-plan compiler |
 | `task_protocol` | Strict authored semantic task contract |
 | `terminal_graphics` | Kitty protocol and semantic render adapters |
-| `tui` | Standalone Browser TUI reducer, responsive layouts, semantic selection, and bounded Herdr/ANSI live presentation |
+| `tui` | Standalone Browser TUI reducer, responsive layouts, semantic selection, and bounded Herdr/Kitty/ANSI live presentation |
 | `web_ir` | Stable Web IR reconciliation, validation, diff, and continuity |
 | `workspace` | Workspace identity, ownership, attachments, lifecycle, and persistence |
 

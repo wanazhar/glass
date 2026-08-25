@@ -178,6 +178,10 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             let _ = action;
             return Err("agent harness commands belong to the `glass` development product".into());
         }
+        Some(Commands::Harness { action }) => {
+            let _ = action;
+            return Err("harness commands belong to the `glass` development product".into());
+        }
         Some(Commands::Memory { action }) => {
             policy.require(PolicyCapability::PersistentProfile)?;
             dispatch_memory(action, cli.knowledge_store.as_deref(), &cli.profile)?;
@@ -1858,6 +1862,7 @@ async fn run_command(
         | Commands::Workspace { .. }
         | Commands::Project { .. }
         | Commands::Agent { .. }
+        | Commands::Harness { .. }
         | Commands::Memory { .. }
         | Commands::Surfaces { .. }
         | Commands::Backend { .. }

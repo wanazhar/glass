@@ -421,6 +421,7 @@ export default function (pi: ExtensionAPI) {
   register("glass_debug_stop", "glass.debug.stop", "Stop a resident debugger session", Type.Object({ session: Type.String() }), true);
 
   register("glass_agent_list", "glass.agent.list", "Inspect independent Glass Agent sessions", Type.Object({}));
+  register("glass_agent_delegate", "glass.agent.delegate", "Delegate one bounded prompt to a temporary Codex, Claude Code, or OpenCode session; read-only by default and Glass approval required.", Type.Object({ harness: Type.String(), prompt: Type.String(), sandbox: Type.Optional(Type.String()), timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 3600 })) }), true);
   register("glass_agent_spawn", "glass.agent.spawn", "Spawn an independent Pi-powered Glass Agent", Type.Object({ spec: Type.Object({}, { additionalProperties: true }) }), true);
   register("glass_agent_prompt", "glass.agent.prompt", "Prompt an independent Glass Agent", Type.Object({ agentId: Type.String(), text: Type.String(), context: Type.Optional(Type.Any()) }), true);
   register("glass_agent_steer", "glass.agent.steer", "Steer a running Glass Agent", Type.Object({ agentId: Type.String(), text: Type.String(), context: Type.Optional(Type.Any()) }), true);

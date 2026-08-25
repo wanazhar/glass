@@ -19,7 +19,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::collections::BTreeMap;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -36,7 +36,11 @@ use crate::browser_workspace::{
     BrowserWorkspaceEntity, BrowserWorkspaceIntent, BrowserWorkspaceLayout,
 };
 use crate::cli::args::{Cli, TuiLiveFit, TuiLiveMode, TuiLiveQuality};
-use crate::terminal_graphics::AnsiCanvas;
+use crate::presentation::{
+    BrowserFrame, CaptureScale, FrameDamage, FrameDropCounts, FrameEncoding,
+    PRESENTATION_CONTRACT_SCHEMA_VERSION, PixelSize, TargetResourceIdentity,
+};
+use crate::terminal_graphics::{AnsiCanvas, GraphicsMode, PaneArea, TerminalGraphics};
 
 const PHONE_MAX_COLUMNS: u16 = 72;
 const COMPACT_MAX_COLUMNS: u16 = 109;
@@ -48,6 +52,7 @@ pub enum WorkspaceMode {
     Semantic,
     Help,
 }
+const KITTY_CLEAR: &[u8] = b"\x1b_Ga=d,d=A\x1b\\";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResponsiveClass {
@@ -81,13 +86,16 @@ struct BrowserTui {
     workflow_checkpoint: Option<WorkflowCheckpoint>,
 }
 
-/// Live-visual state decided once from CLI flags plus the environment.
 #[derive(Default)]
 struct VisualState {
     path: Option<VisualPath>,
     live: bool,
     ansi_canvas: AnsiCanvas,
     ansi_pane: Option<AnsiPane>,
+    kitty: Option<TerminalGraphics>,
+    kitty_generation: u64,
+    kitty_pane: Option<PaneArea>,
+    kitty_drawn: bool,
     quality: TuiLiveQuality,
     fit: TuiLiveFit,
 }
@@ -100,6 +108,13 @@ impl VisualState {
             cli.tui_live_backend,
             herdr_available,
         ));
+        self.kitty = if matches!(&self.path, Some(VisualPath::Kitty)) {
+            TargetResourceIdentity::new("glass-browser", Some("kitty-live".into()))
+                .ok()
+                .and_then(|identity| TerminalGraphics::new(GraphicsMode::Kitty, identity).ok())
+        } else {
+            None
+        };
         self.quality = cli.tui_live_quality;
         self.fit = cli.tui_live_fit;
     }
@@ -113,6 +128,11 @@ impl VisualState {
         }
         match path {
             VisualPath::Herdr | VisualPath::Ansi => None,
+            VisualPath::Kitty if self.kitty.is_some() => None,
+            VisualPath::Kitty => {
+                self.live = false;
+                Some("Kitty renderer could not be initialized".into())
+            }
             VisualPath::SemanticOnly { reason } => {
                 self.live = false;
                 Some(reason)
@@ -123,10 +143,37 @@ impl VisualState {
     fn label(&self) -> String {
         match &self.path {
             Some(VisualPath::Herdr) if self.live => "Herdr live".into(),
+            Some(VisualPath::Kitty) if self.live => "Kitty live".into(),
             Some(VisualPath::Ansi) if self.live => "ANSI live".into(),
             Some(VisualPath::SemanticOnly { reason }) => format!("Semantic · {reason}"),
             _ => "Semantic · live off".into(),
         }
+    }
+    fn sync_kitty_area(
+        &mut self,
+        pane: Option<PaneArea>,
+        terminal: &mut TerminalGuard,
+    ) -> io::Result<()> {
+        if !matches!(self.path, Some(VisualPath::Kitty)) {
+            return Ok(());
+        }
+        if self.kitty_pane != pane && self.kitty_drawn {
+            terminal.write_bytes(KITTY_CLEAR)?;
+            self.kitty_drawn = false;
+        }
+        self.kitty_pane = pane;
+        Ok(())
+    }
+
+    fn mark_kitty_drawn(&mut self) {
+        self.kitty_drawn = true;
+    }
+
+    fn shutdown(&mut self) -> Vec<u8> {
+        self.kitty
+            .as_mut()
+            .map(TerminalGraphics::shutdown)
+            .unwrap_or_default()
     }
 }
 
@@ -137,7 +184,7 @@ impl BrowserTui {
         visual.configure(cli);
         let auto_live = matches!(
             visual.path,
-            Some(VisualPath::Herdr) | Some(VisualPath::Ansi)
+            Some(VisualPath::Herdr) | Some(VisualPath::Kitty) | Some(VisualPath::Ansi)
         ) && matches!(cli.tui_live, TuiLiveMode::On | TuiLiveMode::Auto);
         let _ = visual.request_live(auto_live);
         Self {
@@ -336,7 +383,7 @@ impl BrowserTui {
             return Ok(false);
         }
         if command == "screenshot" {
-            self.refresh_visual(80, 24).await?;
+            self.refresh_visual(Rect::new(0, 0, 80, 24)).await?;
             self.status = "Explicit screenshot captured for the selected presentation path".into();
             return Ok(false);
         }
@@ -602,7 +649,7 @@ impl BrowserTui {
         Ok(())
     }
 
-    async fn refresh_visual(&mut self, columns: u16, rows: u16) -> BrowserResult<()> {
+    async fn refresh_visual(&mut self, area: Rect) -> BrowserResult<Option<Vec<u8>>> {
         let Some(session) = self.session.as_ref() else {
             return Err("browser is detached".into());
         };
@@ -617,7 +664,7 @@ impl BrowserTui {
                 let Some(graphics) = self.graphics.as_ref() else {
                     self.workspace.state_mut().presentation_reason =
                         Some("Herdr environment was not detected".into());
-                    return Ok(());
+                    return Ok(None);
                 };
                 let png = session.screenshot_png().await?;
                 let (image_width, image_height) = png_dimensions(&png).unwrap_or((1, 1));
@@ -627,17 +674,80 @@ impl BrowserTui {
                     image_height,
                     viewport_col: 0,
                     viewport_row: 3,
-                    grid_cols: u32::from(columns),
-                    grid_rows: u32::from(rows.saturating_sub(6).max(1)),
+                    grid_cols: u32::from(area.width),
+                    grid_rows: u32::from(area.height.saturating_sub(6).max(1)),
                 }) {
                     self.workspace.state_mut().frame_revision =
                         self.workspace.state().browser_revision;
                 }
-                Ok(())
+                Ok(None)
+            }
+            VisualPath::Kitty => {
+                let pane = visual_pane_area(area).ok_or("Kitty visual pane is too small")?;
+                let png = session.screenshot_png().await?;
+                let (image_width, image_height) =
+                    png_dimensions(&png).ok_or("screenshot payload was not a PNG")?;
+                let viewport = PixelSize::new(image_width, image_height);
+                viewport.validate("screenshot")?;
+                let browser_revision = self.workspace.state().browser_revision.unwrap_or(0);
+                let reset = self
+                    .visual
+                    .kitty
+                    .as_ref()
+                    .is_none_or(|graphics| browser_revision < graphics.browser_revision());
+                if reset {
+                    let identity =
+                        TargetResourceIdentity::new("glass-browser", Some("kitty-live".into()))?;
+                    self.visual.kitty = Some(TerminalGraphics::new(GraphicsMode::Kitty, identity)?);
+                    self.visual.kitty_pane = Some(pane);
+                    self.visual.kitty_drawn = false;
+                }
+                let graphics = self
+                    .visual
+                    .kitty
+                    .as_mut()
+                    .ok_or("Kitty renderer is unavailable")?;
+                graphics.resize(
+                    pane,
+                    viewport,
+                    viewport,
+                    CaptureScale::FULL,
+                    browser_revision,
+                )?;
+                self.visual.kitty_generation =
+                    self.visual.kitty_generation.saturating_add(1).max(1);
+                let frame = BrowserFrame {
+                    schema_version: PRESENTATION_CONTRACT_SCHEMA_VERSION,
+                    generation: self.visual.kitty_generation,
+                    identity: TargetResourceIdentity::new(
+                        "glass-browser",
+                        Some("kitty-live".into()),
+                    )?,
+                    acquired_at_ms: self.visual.kitty_generation,
+                    viewport,
+                    content: viewport,
+                    capture_scale: CaptureScale::FULL,
+                    encoding: FrameEncoding::Png,
+                    keyframe: true,
+                    damage: FrameDamage::Full,
+                    browser_revision,
+                    geometry_revision: graphics.geometry_revision(),
+                    dropped: FrameDropCounts::default(),
+                };
+                graphics.submit(frame, &png)?;
+                graphics.present_pending()?;
+                let rendered = graphics.render_current("")?;
+                if rendered.mode != GraphicsMode::Kitty {
+                    return Err("Kitty renderer returned a semantic frame".into());
+                }
+                self.workspace.state_mut().frame_revision = self.workspace.state().browser_revision;
+                self.workspace.state_mut().presentation_reason =
+                    Some("Kitty terminal graphics frame emitted".into());
+                Ok(Some(rendered.bytes))
             }
             VisualPath::Ansi => {
                 let png = session.screenshot_png().await?;
-                let (columns, rows) = pane_size(self.visual.quality, (columns, rows));
+                let (columns, rows) = pane_size(self.visual.quality, (area.width, area.height));
                 match AnsiPane::from_png(
                     &mut self.visual.ansi_canvas,
                     &png,
@@ -649,19 +759,19 @@ impl BrowserTui {
                         self.visual.ansi_pane = Some(pane);
                         self.workspace.state_mut().frame_revision =
                             self.workspace.state().browser_revision;
-                        Ok(())
+                        Ok(None)
                     }
                     Err(error) => {
                         self.visual.request_live(false);
                         self.workspace.state_mut().presentation_reason =
                             Some(format!("ANSI renderer failed: {error}"));
-                        Ok(())
+                        Ok(None)
                     }
                 }
             }
             VisualPath::SemanticOnly { reason } => {
                 self.workspace.state_mut().presentation_reason = Some(reason);
-                Ok(())
+                Ok(None)
             }
         }
     }
@@ -672,6 +782,10 @@ impl BrowserTui {
             Some(VisualPath::Herdr) if self.visual.live => (
                 crate::browser_workspace::BrowserPresentationPath::Herdr,
                 None,
+            ),
+            Some(VisualPath::Kitty) if self.visual.live => (
+                crate::browser_workspace::BrowserPresentationPath::Kitty,
+                Some("waiting for a Kitty terminal graphics frame".into()),
             ),
             Some(VisualPath::Ansi) if self.visual.live => (
                 crate::browser_workspace::BrowserPresentationPath::Ansi,
@@ -746,6 +860,11 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
     let mut last_visual = Instant::now();
     let result: BrowserResult<()> = loop {
         app.poll_graphics();
+        let size = terminal.terminal.size()?;
+        let kitty_pane = (app.mode == WorkspaceMode::Browser && app.visual.live)
+            .then(|| visual_pane_area(Rect::new(0, 0, size.width, size.height)))
+            .flatten();
+        app.visual.sync_kitty_area(kitty_pane, &mut terminal)?;
         terminal.terminal.draw(|frame| draw(frame, &app))?;
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
@@ -902,16 +1021,32 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
         if app.visual.live
             && last_visual.elapsed() >= Duration::from_millis(frame_interval_ms(app.visual.quality))
         {
-            let size = terminal.terminal.size()?;
-            if let Err(error) = app.refresh_visual(size.width, size.height).await {
-                app.status = format!("Visual refresh failed: {error}");
-                app.visual.request_live(false);
+            match app
+                .refresh_visual(Rect::new(0, 0, size.width, size.height))
+                .await
+            {
+                Ok(Some(bytes)) => {
+                    terminal.write_bytes(&bytes)?;
+                    app.visual.mark_kitty_drawn();
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    app.status = format!("Visual refresh failed: {error}");
+                    app.visual.request_live(false);
+                }
             }
             last_visual = Instant::now();
         }
     };
+    let cleanup = app.visual.shutdown();
+    let cleanup_result = if cleanup.is_empty() {
+        Ok(())
+    } else {
+        terminal.write_bytes(&cleanup)
+    };
     let close = app.close().await;
     result?;
+    cleanup_result?;
     close
 }
 
@@ -977,6 +1112,26 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &BrowserTui) {
         .block(Block::default().title("COMMAND").borders(Borders::ALL)),
         rows[2],
     );
+}
+
+fn visual_pane_area(area: Rect) -> Option<PaneArea> {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ])
+        .split(area);
+    let content = rows[1];
+    let inner = Rect {
+        x: content.x.saturating_add(1),
+        y: content.y.saturating_add(1),
+        width: content.width.saturating_sub(2),
+        height: content.height.saturating_sub(2),
+    };
+    (inner.width > 0 && inner.height > 0)
+        .then(|| PaneArea::new(inner.x, inner.y, inner.width, inner.height))
 }
 
 /// Paint an ANSI half-block pane inside the content area, below its border.
@@ -1098,6 +1253,11 @@ impl TerminalGuard {
             terminal: Terminal::new(CrosstermBackend::new(stdout))?,
         })
     }
+    fn write_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let backend = self.terminal.backend_mut();
+        backend.write_all(bytes)?;
+        backend.flush()
+    }
 }
 
 impl Drop for TerminalGuard {
@@ -1173,6 +1333,26 @@ mod tests {
             app.workspace.state().presentation,
             crate::browser_workspace::BrowserPresentationPath::Ansi
         );
+    }
+    #[test]
+    fn kitty_live_maps_to_kitty_presentation_and_reserves_a_visual_pane() {
+        let cli = test_cli(
+            &["--tui-live", "on", "--tui-live-backend", "kitty"],
+            TuiLiveMode::On,
+        );
+        let mut app = BrowserTui::new(&cli);
+        assert_eq!(app.visual.path, Some(VisualPath::Kitty));
+        assert!(app.visual.live);
+        app.sync_presentation_state();
+        assert_eq!(
+            app.workspace.state().presentation,
+            crate::browser_workspace::BrowserPresentationPath::Kitty
+        );
+        let pane = visual_pane_area(Rect::new(0, 0, 120, 40)).expect("visual pane");
+        assert_eq!(pane.x, 1);
+        assert_eq!(pane.y, 6);
+        assert_eq!(pane.width, 118);
+        assert_eq!(pane.height, 30);
     }
 
     fn test_cli(extra: &[&str], _mode: TuiLiveMode) -> Cli {

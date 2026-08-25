@@ -138,14 +138,14 @@ The native editor keeps cursor and selection state in the shared workspace, incl
 
 
 `live on` enables an ephemeral terminal-native browser using Herdr-owned
-graphics when the native pane is available, or the bounded true-color ANSI
-half-block renderer with the default backend. `live auto` enables continuous
-frames only when Herdr is detected and may remain semantic-only otherwise.
-`--tui-live-backend kitty` is accepted for compatibility and maps to the ANSI
-path; an explicit unavailable Herdr backend remains semantic-only. `live
-quality data` is intended for constrained links. Herdr is optional but
-recommended as the persistent PTY owner for detach/reattach. tmux remains
-compatible.
+graphics when the native pane is available, Kitty terminal graphics when
+`--tui-live-backend kitty` is selected, or the bounded true-color ANSI
+half-block renderer with the default/ANSI backend. `live auto` enables
+continuous frames when the selected backend is available and may remain
+semantic-only with the default backend when Herdr is absent. An explicit
+unavailable Herdr backend remains semantic-only. `live quality data` is
+intended for constrained links. Herdr is optional but recommended as the
+persistent PTY owner for detach/reattach. tmux remains compatible.
 
 The active BrowserSession's private iPhone path is exposed by the development
 TUI's `:browser remote-open` route. It starts a tokenized, loopback-only,
@@ -180,6 +180,17 @@ tool calls. The native Pi SDK runtime adds model selection, thinking level,
 follow-up, abort, persistent sessions, resume/fork/compact, and event streaming.
 Pi starts with its built-in tools disabled; its only executable capability is
 Glass's schema-validating gateway into the authoritative workspace actor.
+
+The same workspace exposes the fixed external-harness catalog to both clients:
+`glass harness list` and `:harness list` report PATH availability, while
+`glass harness start NAME --root .` and `:harness start NAME` launch the same
+interactive handoff.
+
+It can also make a temporary one-shot delegation to installed Codex CLI, Claude
+Code, or OpenCode through `glass agent delegate HARNESS PROMPT --root .` or
+the TUI's `:harness delegate NAME PROMPT` route. Delegation is read-only by
+default, returns bounded structured output, and requires explicit mutation
+authority plus confirmation for a `workspace-write` sandbox.
 
 Run `glass agent doctor` or `glass agent status` before the first turn. Nothing
 is downloaded at startup. `glass agent setup` explicitly installs or repairs

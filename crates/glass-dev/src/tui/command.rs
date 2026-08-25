@@ -115,6 +115,12 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
         key: ":",
         description: "hand this terminal to an installed coding harness",
     },
+    SurfaceAction {
+        label: "Delegate to external harness",
+        command: "harness delegate NAME PROMPT",
+        key: ":",
+        description: "request a bounded read-only second opinion with Glass approval",
+    },
 ];
 
 const CODE_ACTIONS: &[SurfaceAction] = &[
@@ -492,8 +498,44 @@ pub fn command_group_for(surface: DevSurface) -> &'static CommandGroup {
         .expect("command group index must be valid")
 }
 
+const GLOBAL_PALETTE_ROOTS: &[&str] = &["help", "quit", "view"];
+const CROSS_SURFACE_PALETTE_ROOTS: &[&str] = &["agent", "review"];
+
+const TRUST_PALETTE_ROOTS: &[&str] = &["trust"];
+const AGENT_PALETTE_ROOTS: &[&str] = &["agent", "harness", "task", "github", "review"];
+const CODE_PALETTE_ROOTS: &[&str] = &["project", "editor", "lsp"];
+const APP_PALETTE_ROOTS: &[&str] = &["browser", "workflow"];
+const TERMINAL_PALETTE_ROOTS: &[&str] = &["process", "workflow"];
+const TASK_PALETTE_ROOTS: &[&str] = &["task", "test"];
+const GIT_PALETTE_ROOTS: &[&str] = &["git", "github"];
+const DEBUG_PALETTE_ROOTS: &[&str] = &["debug", "test"];
+const MORE_PALETTE_ROOTS: &[&str] = &[
+    "cockpit",
+    "workspace",
+    "daemon",
+    "kernel",
+    "experiment",
+    "replay",
+    "memory",
+    "surface",
+    "tool",
+];
+
+fn surface_palette_roots(surface: DevSurface) -> &'static [&'static str] {
+    match surface {
+        DevSurface::Trust => TRUST_PALETTE_ROOTS,
+        DevSurface::Agent => AGENT_PALETTE_ROOTS,
+        DevSurface::Code => CODE_PALETTE_ROOTS,
+        DevSurface::App => APP_PALETTE_ROOTS,
+        DevSurface::Terminal => TERMINAL_PALETTE_ROOTS,
+        DevSurface::Tasks => TASK_PALETTE_ROOTS,
+        DevSurface::Git => GIT_PALETTE_ROOTS,
+        DevSurface::Debug => DEBUG_PALETTE_ROOTS,
+        DevSurface::More => MORE_PALETTE_ROOTS,
+    }
+}
+
 pub fn palette_order(surface: DevSurface) -> Vec<&'static str> {
-    let group = command_group_for(surface);
     let mut ordered = Vec::new();
     for action in surface_actions(surface) {
         if action.key == ":"
@@ -504,17 +546,36 @@ pub fn palette_order(surface: DevSurface) -> Vec<&'static str> {
             ordered.push(root);
         }
     }
-    for root in group.roots.iter().copied() {
+    for root in surface_palette_roots(surface)
+        .iter()
+        .copied()
+        .chain(
+            (surface != DevSurface::Trust)
+                .then_some(CROSS_SURFACE_PALETTE_ROOTS)
+                .into_iter()
+                .flatten()
+                .copied(),
+        )
+        .chain(GLOBAL_PALETTE_ROOTS.iter().copied())
+    {
         if !ordered.contains(&root) {
             ordered.push(root);
         }
     }
-    for command in ROOT_COMMANDS.iter().copied() {
-        if !ordered.contains(&command) {
-            ordered.push(command);
-        }
-    }
     ordered
+}
+pub fn palette_example(surface: DevSurface) -> &'static str {
+    match surface {
+        DevSurface::Trust => "trust status",
+        DevSurface::Agent => "agent prompt TEXT",
+        DevSurface::Code => "editor proposals",
+        DevSurface::App => "browser observe",
+        DevSurface::Terminal => "process start NAME COMMAND",
+        DevSurface::Tasks => "task list",
+        DevSurface::Git => "git status",
+        DevSurface::Debug => "test results",
+        DevSurface::More => "workspace status",
+    }
 }
 
 pub fn route_guide() -> String {
@@ -678,7 +739,7 @@ fn execute_harness(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
         "list" | "status" => {
             state.surface = DevSurface::Agent;
             Ok(format!(
-                "External harnesses · ● installed · ○ unavailable\n{}\n\n`harness start NAME` hands the terminal to a selected installed harness",
+                "External harnesses · ● installed · ○ unavailable\n{}\n\n`harness start NAME` hands the terminal to a selected installed harness\n`harness delegate NAME PROMPT` runs a bounded read-only delegation for codex, claude, or opencode",
                 state.harnesses
             ))
         }
@@ -704,8 +765,110 @@ fn execute_harness(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
                 resolved.spec.label
             ))
         }
-        _ => Err("harness actions: list, status, start NAME".into()),
+        "delegate" | "run" => execute_harness_delegate(state, parts),
+        _ => {
+            Err("harness actions: list, status, start NAME, delegate NAME PROMPT [OPTIONS]".into())
+        }
     }
+}
+
+fn execute_harness_delegate(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    require_trusted(state)?;
+    let name = parts
+        .get(1)
+        .ok_or("harness delegate requires NAME PROMPT")?;
+    let harness = crate::external_agents::ExternalHarness::parse(name)?;
+    let mut prompt_parts = Vec::new();
+    let mut sandbox = crate::external_agents::ExternalSandbox::ReadOnly;
+    let mut timeout_secs = crate::external_agents::DEFAULT_TIMEOUT_SECS;
+    let mut allow_mutation = false;
+    let mut confirmed = false;
+    let mut parse_options = true;
+    let mut index = 2;
+    while index < parts.len() {
+        let part = parts[index];
+        if parse_options && part == "--" {
+            parse_options = false;
+            index += 1;
+            continue;
+        }
+        if parse_options && part == "--allow-mutation" {
+            allow_mutation = true;
+            index += 1;
+            continue;
+        }
+        if parse_options && part == "--yes" {
+            confirmed = true;
+            index += 1;
+            continue;
+        }
+        if parse_options && let Some(value) = part.strip_prefix("--sandbox=") {
+            sandbox = crate::external_agents::ExternalSandbox::parse(value)?;
+            index += 1;
+            continue;
+        }
+        if parse_options && part == "--sandbox" {
+            let value = parts
+                .get(index + 1)
+                .ok_or("--sandbox requires read-only or workspace-write")?;
+            sandbox = crate::external_agents::ExternalSandbox::parse(value)?;
+            index += 2;
+            continue;
+        }
+        if parse_options
+            && let Some(value) = part
+                .strip_prefix("--timeout=")
+                .or_else(|| part.strip_prefix("--timeout-secs="))
+        {
+            timeout_secs = value
+                .parse()
+                .map_err(|_| "--timeout requires an integer number of seconds")?;
+            index += 1;
+            continue;
+        }
+        if parse_options && matches!(part, "--timeout" | "--timeout-secs") {
+            let value = parts
+                .get(index + 1)
+                .ok_or("--timeout requires an integer number of seconds")?;
+            timeout_secs = value
+                .parse()
+                .map_err(|_| "--timeout requires an integer number of seconds")?;
+            index += 2;
+            continue;
+        }
+        if parse_options && part.starts_with("--") {
+            return Err(format!("unknown harness delegate option `{part}`"));
+        }
+        prompt_parts.push(part);
+        index += 1;
+    }
+    let prompt = prompt_parts.join(" ");
+    if prompt.trim().is_empty() {
+        return Err("harness delegate requires PROMPT".into());
+    }
+    if !(1..=3600).contains(&timeout_secs) {
+        return Err("harness delegate timeout must be between 1 and 3600 seconds".into());
+    }
+    if sandbox == crate::external_agents::ExternalSandbox::WorkspaceWrite
+        && (!allow_mutation || !confirmed)
+    {
+        return Err(
+            "workspace-write delegation requires --allow-mutation and --yes in the TUI command"
+                .into(),
+        );
+    }
+    execute_named_tool(
+        state,
+        "glass.agent.delegate",
+        json!({
+            "harness": harness.id(),
+            "prompt": prompt,
+            "sandbox": sandbox.id(),
+            "timeoutSeconds": timeout_secs,
+        }),
+        true,
+        DevSurface::Agent,
+    )
 }
 
 fn execute_workspace(
@@ -2511,6 +2674,48 @@ mod tests {
         assert_eq!(palette_order(DevSurface::Code)[0], "editor");
         assert_eq!(palette_order(DevSurface::Tasks)[0], "task");
     }
+    #[test]
+    fn palette_order_scopes_routes_to_current_surface_and_shared_roots() {
+        let git = palette_order(DevSurface::Git);
+        for root in ["git", "github", "agent", "review", "help", "quit", "view"] {
+            assert!(git.contains(&root), "Git palette missing {root}");
+        }
+        for root in [
+            "editor", "project", "lsp", "browser", "process", "task", "test", "debug",
+        ] {
+            assert!(!git.contains(&root), "Git palette leaked {root}");
+        }
+
+        let code = palette_order(DevSurface::Code);
+        for root in [
+            "project", "editor", "lsp", "agent", "review", "help", "quit", "view",
+        ] {
+            assert!(code.contains(&root), "Code palette missing {root}");
+        }
+        for root in ["git", "github", "browser", "process", "debug"] {
+            assert!(!code.contains(&root), "Code palette leaked {root}");
+        }
+
+        let trust = palette_order(DevSurface::Trust);
+        for root in ["trust", "help", "quit", "view"] {
+            assert!(trust.contains(&root), "Trust palette missing {root}");
+        }
+        assert!(!trust.contains(&"agent"));
+        assert!(!trust.contains(&"review"));
+    }
+
+    #[test]
+    fn shared_palette_routes_still_switch_surfaces() {
+        let (mut state, root) = test_state("surface-route");
+        state.surface = DevSurface::Git;
+        execute(&mut state, "agent").expect("agent route");
+        assert_eq!(state.surface, DevSurface::Agent);
+        state.surface = DevSurface::Code;
+        execute(&mut state, "review").expect("review route");
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert!(state.composer_mode);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn agent_prompt_without_id_queues_native_interactive_send() {
@@ -2555,7 +2760,47 @@ mod tests {
         let output = execute(&mut state, "harness list").expect("harness list route");
         assert!(output.contains("External harnesses"));
         assert!(output.contains("harness start NAME"));
+        assert!(output.contains("harness delegate NAME PROMPT"));
         assert_eq!(state.surface, DevSurface::Agent);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn harness_delegate_route_matches_cli_request_and_authority_rules() {
+        let (mut state, root) = test_state("harness-delegate");
+        let output = execute(
+            &mut state,
+            "harness delegate codex inspect current diff --sandbox read-only --timeout-secs 30",
+        )
+        .expect("queue read-only external delegation");
+        assert!(output.contains("confirmation"));
+        let pending = state
+            .pending_confirmation
+            .take()
+            .expect("delegation confirmation");
+        assert_eq!(pending.call.name, "glass.agent.delegate");
+        assert_eq!(pending.call.arguments["harness"], "codex");
+        assert_eq!(pending.call.arguments["prompt"], "inspect current diff");
+        assert_eq!(pending.call.arguments["sandbox"], "read-only");
+        assert_eq!(pending.call.arguments["timeoutSeconds"], 30);
+
+        let error = execute(
+            &mut state,
+            "harness delegate codex update files --sandbox workspace-write",
+        )
+        .expect_err("workspace-write must require explicit flags");
+        assert!(error.contains("--allow-mutation and --yes"));
+        let output = execute(
+            &mut state,
+            "harness delegate codex update files --sandbox workspace-write --allow-mutation --yes",
+        )
+        .expect("queue authorized workspace-write delegation");
+        assert!(output.contains("confirmation"));
+        let pending = state
+            .pending_confirmation
+            .take()
+            .expect("workspace-write confirmation");
+        assert_eq!(pending.call.arguments["sandbox"], "workspace-write");
         let _ = fs::remove_dir_all(root);
     }
     #[test]

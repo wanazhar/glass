@@ -69,6 +69,9 @@ pub enum BrowserHealth {
 pub struct DisplaySnapshot {
     pub version: u64,
     pub agents: String,
+    /// Typed lifecycle state for each resident agent; the TUI uses this to
+    /// replace optimistic "thinking" copy when a turn actually settles.
+    pub agent_states: Vec<(crate::AgentId, crate::AgentStatus)>,
     pub harnesses: String,
     pub agent_conversation: String,
     pub tasks: String,
@@ -493,7 +496,17 @@ fn compute_snapshot(
         })
         .unwrap_or_default();
     snapshot.harnesses = crate::harness::summary();
-    snapshot.agents = match locked.agents().list() {
+    let agent_snapshots = locked.agents().list();
+    snapshot.agent_states = agent_snapshots
+        .as_ref()
+        .map(|agents| {
+            agents
+                .iter()
+                .map(|agent| (agent.id.clone(), agent.status))
+                .collect()
+        })
+        .unwrap_or_default();
+    snapshot.agents = match agent_snapshots {
         Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
         Ok(agents) => agents
             .iter()

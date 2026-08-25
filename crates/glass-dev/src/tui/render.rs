@@ -117,6 +117,96 @@ fn status_line(state: &DevTuiState, width: u16) -> Line<'static> {
         ),
     ])
 }
+/// Return the inner cell area reserved for a Kitty browser frame.
+///
+/// The raw Kitty image is emitted after Ratatui draws, so this geometry must
+/// stay identical to the App surface's visual panel layout.
+pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
+    if state.surface != DevSurface::App
+        || !state.browser_visual_live
+        || state.quit_confirmation
+        || state.help_open
+        || state.command_mode
+        || state.menu_open
+        || state.browser_target_picker
+        || state.browser_recovery.is_some()
+    {
+        return None;
+    }
+
+    let app_area = match state.responsive_class(area.width, area.height) {
+        ResponsiveClass::Desktop => {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+                    Constraint::Min(8),
+                    Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+                ])
+                .split(area);
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(24),
+                    Constraint::Percentage(55),
+                    Constraint::Min(30),
+                ])
+                .split(rows[1])[1]
+        }
+        ResponsiveClass::Compact => {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+                    Constraint::Min(8),
+                    Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+                ])
+                .split(area);
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(22), Constraint::Min(36)])
+                .split(rows[1])[1]
+        }
+        ResponsiveClass::Phone => {
+            let footer_height = if state.composer_mode || state.command_mode {
+                3
+            } else {
+                2
+            };
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2),
+                    Constraint::Min(5),
+                    Constraint::Length(footer_height),
+                ])
+                .split(area)[1]
+        }
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(2),
+        ])
+        .split(app_area);
+    let visual = if stack_for_phone(state, rows[1]) {
+        rows[1]
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(68), Constraint::Min(30)])
+            .split(rows[1])[0]
+    };
+    let inner = Rect {
+        x: visual.x.saturating_add(1),
+        y: visual.y.saturating_add(1),
+        width: visual.width.saturating_sub(2),
+        height: visual.height.saturating_sub(2),
+    };
+    (inner.width > 0 && inner.height > 0).then_some(inner)
+}
 
 pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     let area = frame.area();
@@ -132,6 +222,9 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
         ResponsiveClass::Desktop => render_desktop(frame, state, area),
         ResponsiveClass::Compact => render_compact(frame, state, area),
         ResponsiveClass::Phone => render_phone(frame, state, area),
+    }
+    if state.command_mode {
+        render_command_palette(frame, state, area);
     }
 }
 fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect) {
@@ -162,8 +255,185 @@ fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
+fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4).min(104);
+    let height = area.height.saturating_sub(6).max(5).min(area.height);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + 1,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(format!(
+            " COMMAND PALETTE · {} · ↑↓ select · Enter run · Esc close ",
+            state.surface.label()
+        ))
+        .title_style(
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(modal);
+    let mut lines = vec![
+        palette_fixed_line(
+            "SELECT AN ACTION",
+            inner.width,
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        palette_fixed_line(
+            "↑/↓ select · Enter run · Esc close · type only to filter (optional)",
+            inner.width,
+            Style::default().fg(MUTED),
+        ),
+    ];
+    if !state.command_input.trim().is_empty() {
+        lines.push(palette_fixed_line(
+            format!("Filter: {}", state.command_input),
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    }
+    lines.push(palette_fixed_line(
+        "",
+        inner.width,
+        Style::default().bg(PANEL_BACKGROUND),
+    ));
+    let action_offset = lines.len();
+    let indices = state.palette_action_indices();
+    if indices.is_empty() {
+        lines.push(palette_fixed_line(
+            "No matching actions · clear the filter with Ctrl-U",
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    } else {
+        for (visible_index, action_index) in indices.into_iter().enumerate() {
+            let action = &state.surface_actions()[action_index];
+            lines.push(palette_action_line(
+                action,
+                visible_index == state.palette_selection,
+                inner.width,
+            ));
+        }
+    }
+    let line_count = lines.len();
+    let visible_lines = usize::from(inner.height);
+    let max_scroll = line_count.saturating_sub(visible_lines);
+    let selected_line = action_offset.saturating_add(state.palette_selection);
+    let selected_scroll = selected_line.saturating_sub(visible_lines.saturating_sub(1));
+    let scroll = usize::from(state.palette_scroll)
+        .max(selected_scroll)
+        .min(max_scroll) as u16;
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .scroll((scroll, 0))
+            .block(block),
+        modal,
+    );
+}
+
+#[cfg(test)]
+fn command_palette_content(state: &DevTuiState) -> String {
+    let indices = state.palette_action_indices();
+    let mut lines = vec![
+        "SELECT AN ACTION".to_string(),
+        "↑/↓ select · Enter run · Esc close · type only to filter (optional)".to_string(),
+    ];
+    if !state.command_input.trim().is_empty() {
+        lines.push(format!("Filter: {}", state.command_input));
+    }
+    lines.push(String::new());
+    if indices.is_empty() {
+        lines.push("No matching actions · clear the filter with Ctrl-U".into());
+    } else {
+        for (visible_index, action_index) in indices.into_iter().enumerate() {
+            let action = &state.surface_actions()[action_index];
+            let marker = if visible_index == state.palette_selection {
+                "▸"
+            } else {
+                " "
+            };
+            lines.push(format!(
+                "{marker} {:<26} · {}",
+                action.label,
+                palette_action_hint(action.command)
+            ));
+        }
+    }
+    lines.join("\n")
+}
+fn palette_fixed_line(content: impl Into<String>, width: u16, style: Style) -> Line<'static> {
+    Line::from(Span::styled(
+        palette_row_text(&content.into(), width),
+        style,
+    ))
+}
+
+fn palette_action_line(
+    action: &command::SurfaceAction,
+    selected: bool,
+    width: u16,
+) -> Line<'static> {
+    let marker = if selected { "▸ " } else { "  " };
+    let content = format!(
+        "{marker}{:<26} · {}",
+        action.label,
+        palette_action_hint(action.command)
+    );
+    let style = if selected {
+        Style::default()
+            .fg(ACCENT_BRIGHT)
+            .bg(ACTIVE_BACKGROUND)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(TEXT).bg(PANEL_BACKGROUND)
+    };
+    Line::from(Span::styled(palette_row_text(&content, width), style))
+}
+
+fn palette_row_text(content: &str, width: u16) -> String {
+    let mut row = compact_line(content, width);
+    let padding = usize::from(width).saturating_sub(row.chars().count());
+    if padding > 0 {
+        row.push_str(&" ".repeat(padding));
+    }
+    row
+}
+
+fn palette_action_hint(command: &str) -> String {
+    let mut prefix = Vec::new();
+    let mut has_arguments = false;
+    for token in command.split_whitespace() {
+        if token
+            .chars()
+            .all(|character| character.is_ascii_uppercase() || character == '_')
+        {
+            has_arguments = true;
+            break;
+        }
+        prefix.push(token);
+    }
+    let mut hint = prefix.join(" ");
+    if has_arguments {
+        if !hint.is_empty() {
+            hint.push(' ');
+        }
+        hint.push('…');
+    }
+    hint
+}
+
 fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let content = "KEYS\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Tab      next surface\n  Esc      back\n  ?        help\n\nWORKSPACE\n  Enter    describe a task\n  a        workspace actions\n  :        command palette\n  s/l      setup / login\n\nAGENT\n  i        compose a prompt\n  :review  review current changes\n  :harness list\n           list installed harnesses\n  :harness start NAME\n           launch a harness in this terminal\n\nAPP (OPTIONAL)\n  n        address\n  t        type\n  v        live view\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n\nEDITOR\n  Enter    open\n  i        edit\n  Alt-A    ask Pi with the focused buffer\n  Ctrl-S   save\n  Ctrl-Z/Y undo / redo\n\nGIT\n  ↑/↓      changed file\n  Enter    diff\n  Esc      close";
+    let content = "KEYS\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Tab      next surface\n  Esc      back\n  ?        help\n\nWORKSPACE\n  Enter    describe a task\n  a        workspace actions\n  s/l      setup / login\n\nAGENT\n  i        compose a prompt\n  :review  review current changes\n  :harness list\n           list installed harnesses\n  :harness start NAME\n           launch a harness in this terminal\n\nAPP (OPTIONAL)\n  n        address\n  t        type\n  v        live view\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n\nEDITOR\n  Enter    open\n  i        edit\n  Alt-A    ask Pi with the focused buffer\n  Ctrl-S   save\n  Ctrl-Z/Y undo / redo\n\nGIT\n  ↑/↓      changed file\n  Enter    diff\n  Esc      close\n\nCOMMAND PALETTE\n  :        open the full command and shortcut list\n  ↑/↓      browse the list\n  Ctrl-P/N previous / next command history\n  Ctrl-U   clear the command\n  Tab      complete the first matching route\n  Enter    run the command";
     frame.render_widget(
         Paragraph::new(panel_text(content))
             .style(Style::default().fg(TEXT))
@@ -190,13 +460,9 @@ fn render_desktop(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(if state.composer_mode { 3 } else { 2 }),
             Constraint::Min(8),
-            Constraint::Length(if state.composer_mode || state.command_mode {
-                3
-            } else {
-                2
-            }),
+            Constraint::Length(if state.composer_mode { 3 } else { 2 }),
         ])
         .split(area);
     render_header(frame, state, rows[0], "desktop");
@@ -218,9 +484,9 @@ fn render_compact(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(if state.composer_mode { 3 } else { 2 }),
             Constraint::Min(8),
-            Constraint::Length(3),
+            Constraint::Length(if state.composer_mode { 3 } else { 2 }),
         ])
         .split(area);
     render_header(frame, state, rows[0], "compact");
@@ -232,12 +498,11 @@ fn render_compact(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     render_surface(frame, state, columns[1]);
     render_status(frame, state, rows[2]);
 }
-
 fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let footer_height = if state.composer_mode || state.command_mode {
-        4
-    } else {
         3
+    } else {
+        2
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -261,10 +526,6 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 rows[2].width.saturating_sub(6),
             )),
             status_line(state, rows[2].width.saturating_sub(2)),
-            Line::from(Span::styled(
-                "Enter send · Ctrl-D mode · Esc",
-                Style::default().fg(MUTED),
-            )),
         ]
     } else if state.command_mode {
         vec![
@@ -278,19 +539,9 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 rows[2].width.saturating_sub(6),
             )),
             status_line(state, rows[2].width.saturating_sub(2)),
-            Line::from(Span::styled(
-                "Tab complete · Enter run · Esc",
-                Style::default().fg(MUTED),
-            )),
         ]
     } else {
-        vec![
-            status_line(state, rows[2].width.saturating_sub(2)),
-            Line::from(Span::styled(
-                "←→ surface · ↑↓ move · Enter open · ?",
-                Style::default().fg(MUTED),
-            )),
-        ]
+        vec![status_line(state, rows[2].width.saturating_sub(2))]
     };
     frame.render_widget(
         Paragraph::new(footer_lines)
@@ -416,10 +667,6 @@ fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .style(style)
         })
         .collect::<Vec<_>>();
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(2), Constraint::Length(2)])
-        .split(area);
     frame.render_widget(
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
@@ -436,18 +683,7 @@ fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                     .border_style(Style::default().fg(PANEL_BORDER))
                     .padding(Padding::horizontal(1)),
             ),
-        rows[0],
-    );
-    frame.render_widget(
-        Paragraph::new("←→ move · Enter open")
-            .style(Style::default().fg(MUTED).bg(PANEL_BACKGROUND))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(PANEL_BORDER))
-                    .padding(Padding::horizontal(1)),
-            ),
-        rows[1],
+        area,
     );
 }
 
@@ -1153,6 +1389,7 @@ fn render_browser_visual(
         if matches!(
             browser.presentation,
             glass_browser::browser_workspace::BrowserPresentationPath::Herdr
+                | glass_browser::browser_workspace::BrowserPresentationPath::Kitty
         ) {
             render_panel(
                 frame,
@@ -1804,7 +2041,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 .map(|action| action.description)
                 .unwrap_or("Choose an action.")
         };
-        let group = command::command_group_for(state.surface);
+        let example = command::palette_example(state.surface);
         let rows = if area.height >= 11 {
             Layout::default()
                 .direction(Direction::Vertical)
@@ -1841,7 +2078,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             frame.render_widget(
                 Paragraph::new(panel_text(&format!(
                     "{}\n{}\nEnter run · Esc close",
-                    selected_description, group.example,
+                    selected_description, example,
                 )))
                 .style(Style::default().fg(TEXT))
                 .block(
@@ -2245,62 +2482,25 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(state.status.clone(), status_style(state)),
-                Span::styled(
-                    " · Enter send · Ctrl-D mode · Esc",
-                    Style::default().fg(MUTED),
-                ),
             ]),
         ]
     } else if state.command_mode {
-        let group = command::command_group_for(state.surface);
-        let suggestions = state.palette_matches().join(" · ");
-        let error = state
-            .palette_error
-            .as_deref()
-            .map(|error| format!(" · {error}"))
-            .unwrap_or_default();
-        let first_line = if state.command_input.trim().is_empty() {
-            {
-                let mut spans = input_spans(
-                    ": ",
-                    Style::default().fg(ACCENT_BRIGHT),
-                    &state.command_input,
-                    state.command_cursor,
-                    area.width.saturating_sub(8),
-                );
-                spans.push(Span::styled(
-                    format!("  {}", state.status),
-                    status_style(state),
-                ));
-                spans.push(Span::styled(
-                    format!(" · try `{}`", group.example),
-                    Style::default().fg(MUTED),
-                ));
-                Line::from(spans)
-            }
-        } else {
-            {
-                let mut spans = input_spans(
-                    ": ",
-                    Style::default().fg(ACCENT_BRIGHT),
-                    &state.command_input,
-                    state.command_cursor,
-                    area.width.saturating_sub(8),
-                );
-                spans.push(Span::styled(
-                    format!("  [{suggestions}]"),
-                    Style::default().fg(MUTED),
-                ));
-                Line::from(spans)
-            }
-        };
-        vec![
-            first_line,
-            Line::from(Span::styled(
-                format!("{glyph} Tab roots · ↑/↓ history · Enter run · Esc{error}"),
-                Style::default().fg(MUTED),
-            )),
-        ]
+        let mut spans = input_spans(
+            ": ",
+            Style::default().fg(ACCENT_BRIGHT),
+            &state.command_input,
+            state.command_cursor,
+            area.width.saturating_sub(8),
+        );
+        spans.push(Span::styled(
+            if state.command_input.trim().is_empty() {
+                "  ↑↓ select · Enter run · type only to filter"
+            } else {
+                "  Filter · ↑↓ select · Enter run"
+            },
+            Style::default().fg(MUTED),
+        ));
+        vec![Line::from(spans)]
     } else {
         let mut line = vec![
             Span::styled(
@@ -2324,14 +2524,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 Style::default().fg(ACCENT_BRIGHT),
             ));
         }
-        let mut lines = vec![Line::from(line)];
-        if area.width < 104 {
-            lines.push(Line::from(Span::styled(
-                "←→ surface · ↑↓ move · Enter open",
-                Style::default().fg(MUTED),
-            )));
-        }
-        lines
+        vec![Line::from(line)]
     };
     frame.render_widget(
         Paragraph::new(lines)
@@ -2382,6 +2575,62 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+    fn rendered_buffer(state: &DevTuiState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, state)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn command_palette_keeps_bottom_selection_visible_and_highlighted() {
+        let mut palette_state = state(TuiLayout::Mobile);
+        palette_state.open_palette();
+        for _ in 0..16 {
+            palette_state.move_palette_selection(1);
+        }
+
+        let buffer = rendered_buffer(&palette_state, 48, 18);
+        let selected_row = (0..18)
+            .find(|row| {
+                let row_text = (0..48)
+                    .map(|column| {
+                        buffer
+                            .cell((column, *row))
+                            .expect("cell in buffer")
+                            .symbol()
+                    })
+                    .collect::<String>();
+                row_text.contains("Delegate to external harness")
+                    && (0..48).any(|column| {
+                        buffer
+                            .cell((column, *row))
+                            .expect("cell in buffer")
+                            .symbol()
+                            == "▸"
+                    })
+            })
+            .expect("selected bottom palette row must remain visible");
+        let row_text = (0..48)
+            .map(|column| {
+                buffer
+                    .cell((column, selected_row))
+                    .expect("cell in buffer")
+                    .symbol()
+            })
+            .collect::<String>();
+        assert!(row_text.contains("Delegate to external harness"));
+        assert!(
+            (0..48).any(|column| {
+                buffer
+                    .cell((column, selected_row))
+                    .expect("cell in buffer")
+                    .bg
+                    == ACTIVE_BACKGROUND
+            }),
+            "selected palette row must use the active background"
+        );
     }
 
     #[test]
@@ -2544,9 +2793,12 @@ mod tests {
         }
 
         let compact = state(TuiLayout::Desktop);
+        let desktop_output = rendered(&compact, 140, 40);
+        assert!(!desktop_output.contains("←→ move · Enter open"));
+        assert!(!desktop_output.contains("n navigate · t type"));
         let compact_output = rendered(&compact, 64, 24);
         assert!(compact_output.contains("SURFACES"));
-        assert!(compact_output.contains("←→ move · Enter open"));
+        assert!(!compact_output.contains("←→ move · Enter open"));
     }
 
     #[test]
@@ -2675,33 +2927,78 @@ mod tests {
 
         state.open_palette();
         assert!(rendered(&state, 120, 32).contains("▌"));
-        assert!(rendered(&state, 120, 32).contains("try `agent prompt TEXT`"));
+        assert!(rendered(&state, 120, 32).contains("SELECT AN ACTION"));
+        assert!(rendered(&state, 120, 32).contains("type only to filter"));
+        assert_eq!(state.palette_selection, 0);
+        state.move_palette_selection(2);
+        assert_eq!(
+            state.selected_palette_action().map(|action| action.label),
+            Some("Update Pi runtime")
+        );
         state.insert_palette_text("browser");
         state.move_palette_cursor(false);
         state.palette_backspace();
         state.insert_palette_char('e');
         assert!(state.command_cursor < state.command_input.len());
-        assert!(state.palette_matches().contains(&"browser"));
+        assert!(!state.palette_matches().contains(&"browser"));
 
         state.close_palette();
-        state.command_history = vec!["agent status".into(), "browser observe".into()];
+        state.command_history = vec![
+            "editor proposals".into(),
+            "agent status".into(),
+            "browser observe".into(),
+            "review".into(),
+        ];
         state.open_palette();
         state.navigate_palette_history(true);
-        assert_eq!(state.command_input, "browser observe");
+        assert_eq!(state.command_input, "review");
         state.navigate_palette_history(true);
         assert_eq!(state.command_input, "agent status");
         state.navigate_palette_history(false);
-        assert_eq!(state.command_input, "browser observe");
-        state.command_input = "brw".into();
+        assert_eq!(state.command_input, "review");
+        state.command_input = "agnt".into();
         state.command_cursor = state.command_input.len();
         state.complete_palette();
-        assert_eq!(state.command_input, "browser");
+        assert_eq!(state.command_input, "agent");
 
         state.close_palette();
         let surface = state.surface;
         state.scroll_surface(3);
         assert_eq!(state.surface, surface);
         assert_eq!(state.current_scroll(), 3);
+    }
+
+    #[test]
+    fn command_palette_lists_arrow_selectable_surface_actions() {
+        let mut palette_state = state(TuiLayout::Desktop);
+        palette_state.open_palette();
+        let first_page = rendered(&palette_state, 120, 32);
+        for marker in [
+            "COMMAND PALETTE",
+            "SELECT AN ACTION",
+            "↑↓ select",
+            "Compose message",
+            "agent setup",
+        ] {
+            assert!(
+                first_page.contains(marker),
+                "missing palette marker {marker}"
+            );
+        }
+
+        let mut git_state = state(TuiLayout::Desktop);
+        git_state.surface = DevSurface::Git;
+        let git_content = command_palette_content(&git_state);
+        assert!(git_content.contains("Stage all changes"));
+        assert!(git_content.contains("git stage"));
+        assert!(!git_content.contains("Open selected file"));
+        assert!(!git_content.contains("COMMAND ROOTS"));
+
+        palette_state.move_palette_selection(5);
+        assert_eq!(palette_state.palette_selection, 5);
+        assert!(rendered(&palette_state, 120, 32).contains("▸"));
+        palette_state.scroll_palette(-1);
+        assert_eq!(palette_state.palette_selection, 0);
     }
 
     #[test]
@@ -2748,6 +3045,7 @@ mod tests {
         let mut desktop = state(TuiLayout::Desktop);
         desktop.surface = DevSurface::Agent;
         desktop.open_menu();
+        assert_eq!(desktop.status, "Command center · Agent");
         let output = rendered(&desktop, 118, 32);
         assert!(output.contains("ACTIONS · Agent"));
         assert!(output.contains("Compose message"));
@@ -2758,6 +3056,7 @@ mod tests {
         let mut mobile = state(TuiLayout::Mobile);
         mobile.surface = DevSurface::Agent;
         mobile.open_menu();
+        assert_eq!(mobile.status, "Command center · Agent");
         mobile.menu_selection = mobile.surface_actions().len();
         assert!(rendered(&mobile, 48, 18).contains("Search commands"));
     }
@@ -2791,7 +3090,7 @@ mod tests {
         assert!(output.contains("…"));
         assert!(output.contains("development commands"));
         assert!(output.contains("AGENT"));
-        assert!(output.contains("Enter send"));
+        assert!(output.contains("Enter sends"));
         assert!(output.contains("▌"));
     }
 
@@ -2821,7 +3120,7 @@ mod tests {
         assert!(state.composer_steer);
         assert!(state.status.contains("Steer mode"));
         let output = rendered(&state, 118, 32);
-        assert!(output.contains("Ctrl-D mode"));
+        assert!(!output.contains("Ctrl-D mode"));
         state.toggle_composer_steer();
         assert!(!state.composer_steer);
         assert!(state.status.contains("Follow-up mode"));
@@ -3133,7 +3432,7 @@ mod tests {
         assert!(output.contains("YOU"));
         assert!(output.contains("follow up while you work"));
         assert!(output.contains("sending"));
-        assert!(output.contains("Enter send"));
+        assert!(!output.contains("Enter send"));
     }
 
     #[test]
@@ -3203,6 +3502,33 @@ mod tests {
             super::super::state::ChatMessageState::Failed
         );
         assert!(state.status.contains("edit and retry"));
+    }
+
+    #[test]
+    fn agent_chat_status_clears_thinking_after_idle_snapshot() {
+        let mut state = state(TuiLayout::Desktop);
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        state.surface = DevSurface::Agent;
+        state.selected_agent = Some(agent_id.clone());
+        state.status = "Sent to agent-0001 · Glass Agent is thinking…".into();
+        state.agent_conversation = "YOU\nhello hello\n\nGLASS AGENT\nhello hello".into();
+        state
+            .pending_chat_messages
+            .push(super::super::state::PendingChatMessage {
+                text: "hello hello".into(),
+                state: super::super::state::ChatMessageState::Sent,
+                job_id: None,
+                error: None,
+            });
+
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot {
+            agent_states: vec![(agent_id, crate::AgentStatus::Idle)],
+            agent_conversation: state.agent_conversation.clone(),
+            ..Default::default()
+        });
+
+        assert!(state.pending_chat_messages.is_empty());
+        assert_eq!(state.status, "Glass Agent ready · response received");
     }
     #[test]
     fn code_surface_renders_source_content_instead_of_flat_panel_text() {

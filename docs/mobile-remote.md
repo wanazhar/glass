@@ -103,23 +103,25 @@ destroys files, tasks, agent state, or Git state.
 ## Live browser view
 
 Semantic browser state is the default. Embedded App live view is toggled with
-`v` and uses the bounded ANSI half-block path in the current `glass-dev` TUI.
-The screenshot worker keeps only the latest frame. If capture fails, Glass
-clears the live-view toggle and shows the failure in the status footer instead
-of leaving a stale “starting” state.
+`v`. The development TUI uses the selected live backend: Herdr when available,
+Kitty terminal graphics when explicitly requested, or the bounded ANSI
+half-block path. The screenshot worker keeps only the latest frame. If capture
+fails, Glass clears the live-view toggle and shows the failure in the status
+footer instead of leaving a stale “starting” state.
 
 The standalone Browser TUI also supports explicit live presentation:
 
 ```console
-glass-browser --tui-live on
-glass-browser --tui-live-backend ansi --tui-live-quality data
+glass-browser --tui-live on --tui-live-backend kitty
+glass-browser --tui-live on --tui-live-backend ansi --tui-live-quality data
 ```
 
-Herdr is used when available and ANSI is the portable fallback. Standalone
-semantic selection is local-only; moving through entities does not send a CDP
-highlight request for every arrow key. `Enter` performs the selected action
-through the normal revision guard. Standalone `glass-browser` does not provide
-Remote View; use the development TUI routes below for that capability.
+Herdr and Kitty are native image paths; ANSI is the portable fallback.
+
+Standalone semantic selection is local-only; moving through entities does not
+send a CDP highlight request for every arrow key. `Enter` performs the selected
+action through the normal revision guard. Standalone `glass-browser` does not
+provide Remote View; use the development TUI routes below for that capability.
 
 Continuous pixels remain off by default. Treat screenshots, DOM, profiles,
 cookies, storage, evaluated values, and diagnostic logs as sensitive. Do not

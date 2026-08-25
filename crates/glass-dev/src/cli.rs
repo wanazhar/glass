@@ -5,10 +5,11 @@ use crate::development::{
     ProcessSnapshot, ProjectWorkspace, SemanticBreakpoint, SemanticSnapshot,
 };
 use glass_browser::cli::args::{
-    AgentCommand, AgentHarness, ExperimentCommand, NeovimCommand, ProjectCommand,
-    ProjectGraphCommand, ProjectProcessCommand,
+    AgentCommand, AgentHarness, ExperimentCommand, ExternalAgentSandbox, HarnessCommand,
+    NeovimCommand, ProjectCommand, ProjectGraphCommand, ProjectProcessCommand,
 };
 use serde::Serialize;
+use std::io::Read;
 use std::time::Duration;
 
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -32,6 +33,62 @@ pub fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()
             )?);
         }
         _ => {}
+    }
+    if let AgentCommand::Delegate {
+        harness,
+        prompt,
+        root,
+        sandbox,
+        timeout_secs,
+        allow_mutation,
+        yes,
+    } = action
+    {
+        let sandbox = match sandbox {
+            ExternalAgentSandbox::ReadOnly => crate::external_agents::ExternalSandbox::ReadOnly,
+            ExternalAgentSandbox::WorkspaceWrite => {
+                if !(*allow_mutation || unrestricted) {
+                    return Err(
+                        "workspace-write delegation requires --allow-mutation (or --yolo)".into(),
+                    );
+                }
+                if !(*yes || unrestricted) {
+                    return Err(
+                        "workspace-write delegation requires --yes for the exact request".into(),
+                    );
+                }
+                crate::external_agents::ExternalSandbox::WorkspaceWrite
+            }
+        };
+        let prompt = if prompt == "-" {
+            let mut stdin_prompt = String::new();
+            std::io::stdin().read_to_string(&mut stdin_prompt)?;
+            stdin_prompt
+        } else {
+            prompt.clone()
+        };
+        let result =
+            crate::external_agents::delegate(crate::external_agents::ExternalAgentRequest {
+                harness: harness.clone(),
+                root: root.clone(),
+                prompt,
+                sandbox,
+                timeout: Duration::from_secs(*timeout_secs),
+                allow_mutation: *allow_mutation || unrestricted,
+            })?;
+        print_json(&result)?;
+        if !result.success {
+            let reason = if result.timed_out {
+                " after the configured timeout".into()
+            } else {
+                result
+                    .status
+                    .map(|status| format!(" with status {status}"))
+                    .unwrap_or_else(|| " before a successful exit".into())
+            };
+            return Err(format!("{} delegation failed{reason}", result.harness).into());
+        }
+        return Ok(());
     }
     let (root, request, adapter) = match action {
         AgentCommand::Tool { .. } | AgentCommand::ToolFile { .. } => {
@@ -82,6 +139,7 @@ pub fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()
         AgentCommand::Doctor | AgentCommand::Setup { .. } | AgentCommand::Status => {
             unreachable!("readiness commands return before harness dispatch")
         }
+        AgentCommand::Delegate { .. } => unreachable!("delegation returns before harness dispatch"),
     };
     let mut workspace = ProjectWorkspace::open(root)?;
     match adapter {
@@ -92,6 +150,55 @@ pub fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()
         AgentHarness::Pi => {
             let mut harness = PiHarness::spawn_with_unrestricted(workspace.root(), unrestricted)?;
             print_json(&harness.request(request)?)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn dispatch_harness(action: &HarnessCommand) -> CliResult<()> {
+    match action {
+        HarnessCommand::List => {
+            let harnesses = crate::harness::discover()
+                .into_iter()
+                .map(|status| {
+                    serde_json::json!({
+                        "id": status.spec.id,
+                        "label": status.spec.label,
+                        "binary": status.spec.binary,
+                        "description": status.spec.description,
+                        "installed": status.path.is_some(),
+                        "path": status.path,
+                        "temporaryDelegation": matches!(
+                            status.spec.id,
+                            "codex" | "claude" | "opencode"
+                        ),
+                    })
+                })
+                .collect::<Vec<_>>();
+            print_json(&serde_json::json!({"harnesses": harnesses}))?;
+        }
+        HarnessCommand::Start { name, root } => {
+            let resolved = crate::harness::resolve(name)?;
+            let status = crate::harness::launch_resolved(&resolved, root)?;
+            print_json(&serde_json::json!({
+                "harness": resolved.spec.id,
+                "label": resolved.spec.label,
+                "path": resolved.path,
+                "root": root,
+                "success": status.success(),
+                "status": status.code(),
+            }))?;
+            if !status.success() {
+                return Err(format!(
+                    "{} exited{}",
+                    resolved.spec.label,
+                    status.code().map_or_else(
+                        || " from a signal".into(),
+                        |code| format!(" with status {code}")
+                    )
+                )
+                .into());
+            }
         }
     }
     Ok(())

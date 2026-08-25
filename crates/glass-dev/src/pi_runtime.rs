@@ -1328,7 +1328,8 @@ mod tests {
     #[test]
     fn runtime_asset_registers_governed_custom_tools_without_builtins() {
         assert!(RUNTIME_SOURCE.contains("noTools: \"builtin\""));
-        assert!(RUNTIME_SOURCE.contains("tools: [\"glass_tool\", \"read\""));
+        assert!(RUNTIME_SOURCE.contains("tools: [\"glass_tool\", \"delegate\", \"read\""));
+        assert!(RUNTIME_SOURCE.contains("\"glass.agent.delegate\""));
         assert!(RUNTIME_SOURCE.contains("customTools: [glassTool, ...nativeTools]"));
     }
     #[test]

@@ -7,7 +7,8 @@
 //! harness's protocol.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
 
 /// Fixed metadata for a supported external coding harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +182,14 @@ pub fn resolve(name: &str) -> Result<ResolvedHarness, String> {
     let path = executable_on_path(spec.binary, std::env::var_os("PATH").as_deref())
         .ok_or_else(|| format!("{} is not installed or not on PATH", spec.label))?;
     Ok(ResolvedHarness { spec, path })
+}
+
+/// Launch a resolved harness in the requested project directory.
+pub fn launch_resolved(resolved: &ResolvedHarness, root: &Path) -> Result<ExitStatus, String> {
+    Command::new(&resolved.path)
+        .current_dir(root)
+        .status()
+        .map_err(|error| format!("{} failed to start: {error}", resolved.spec.label))
 }
 
 fn executable_on_path(binary: &str, path: Option<&OsStr>) -> Option<PathBuf> {

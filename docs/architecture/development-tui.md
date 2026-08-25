@@ -29,7 +29,7 @@ does not create another editor, process, task, browser, or agent owner.
 | `Tab` / `Shift-Tab` | move between product destinations |
 | `j` / `k`, arrows, wheel | scroll the focused pane; App `j`/`k` moves semantic selection |
 | `i` in Agent | open the ordinary no-ID conversation composer |
-| `:` | open cursor-editable fuzzy command palette with bounded history |
+| `:` | open a cursor-editable fuzzy action palette scoped to the active surface; type a command directly for expert routes such as `help`, `quit`, or `view` |
 | `Y`/Enter or `N`/Esc | approve one frozen mutation or deny it |
 | `H` / `G` in App | take human control / reconcile and return Glass control |
 | `?` | open keyboard help; `j`/`k` and PageUp/PageDown scroll help |

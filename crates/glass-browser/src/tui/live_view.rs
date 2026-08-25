@@ -1,10 +1,10 @@
 //! Live visual plane for Glass TUIs.
 //!
 //! Wraps the browser-owned presentation pipeline with the policy the TUIs
-//! need: Herdr when the environment provides it, then the true-color ANSI
-//! half-block renderer from [`crate::terminal_graphics`] so `--tui-live`
-//! works on any true-color terminal, and semantic-only otherwise. Latest
-//! frame wins; nothing queues unboundedly.
+//! need: Herdr when the environment provides it, then explicit Kitty output
+//! or the true-color ANSI half-block renderer from
+//! [`crate::terminal_graphics`]. Latest frame wins; nothing queues
+//! unboundedly.
 
 use crate::cli::args::{TuiLiveBackend, TuiLiveFit, TuiLiveMode, TuiLiveQuality};
 use crate::terminal_graphics::{AnsiCanvas, FrameFit};
@@ -14,6 +14,8 @@ use crate::terminal_graphics::{AnsiCanvas, FrameFit};
 pub enum VisualPath {
     /// Continuous frames through Herdr's owned pane graphics.
     Herdr,
+    /// Continuous frames through the Kitty terminal graphics protocol.
+    Kitty,
     /// Continuous frames through the ANSI half-block renderer.
     Ansi,
     /// No continuous pixels; semantic evidence only.
@@ -33,8 +35,8 @@ pub fn decide_path(
         (_, TuiLiveBackend::Herdr) => VisualPath::SemanticOnly {
             reason: "Herdr pane graphics were requested but the environment is unavailable".into(),
         },
+        (_, TuiLiveBackend::Kitty) => VisualPath::Kitty,
         (_, TuiLiveBackend::Ansi) => VisualPath::Ansi,
-        (_, TuiLiveBackend::Kitty) => VisualPath::Ansi,
         (TuiLiveMode::Auto, TuiLiveBackend::Auto) if herdr_available => VisualPath::Herdr,
         (TuiLiveMode::Auto, TuiLiveBackend::Auto) => VisualPath::SemanticOnly {
             reason: "no native graphics backend detected; use --tui-live on for ANSI".into(),
@@ -152,6 +154,14 @@ mod tests {
             decide_path(TuiLiveMode::On, TuiLiveBackend::Herdr, false),
             VisualPath::SemanticOnly { .. }
         ));
+        assert_eq!(
+            decide_path(TuiLiveMode::On, TuiLiveBackend::Kitty, false),
+            VisualPath::Kitty
+        );
+        assert_eq!(
+            decide_path(TuiLiveMode::Auto, TuiLiveBackend::Kitty, false),
+            VisualPath::Kitty
+        );
         assert_eq!(
             decide_path(TuiLiveMode::Auto, TuiLiveBackend::Ansi, false),
             VisualPath::Ansi

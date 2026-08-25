@@ -306,6 +306,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: AgentCommand,
     },
+    /// Discover and launch installed external coding harnesses.
+    Harness {
+        #[command(subcommand)]
+        action: HarnessCommand,
+    },
     /// Inspect and manage advisory semantic memory.
     Memory {
         #[command(subcommand)]
@@ -1126,6 +1131,25 @@ pub enum AgentCommand {
     },
     /// Print the concise current Glass Agent readiness state.
     Status,
+    /// Delegate one bounded prompt to an installed temporary external agent.
+    Delegate {
+        /// External agent id: codex, claude, or opencode.
+        harness: String,
+        /// Prompt text, or `-` to read the prompt from stdin.
+        prompt: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, value_enum, default_value_t = ExternalAgentSandbox::ReadOnly)]
+        sandbox: ExternalAgentSandbox,
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u64,
+        /// Permit a workspace-write sandbox. Pair with `--yes`.
+        #[arg(long)]
+        allow_mutation: bool,
+        /// Confirm the exact workspace-write delegation.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Execute one schema-validated call through the Glass agent-tool broker.
     #[command(hide = true)]
     Tool {
@@ -1207,10 +1231,28 @@ pub enum AgentCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum HarnessCommand {
+    /// List supported coding harnesses and PATH availability.
+    List,
+    /// Launch one installed harness in the selected project directory.
+    Start {
+        name: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum AgentHarness {
     Local,
     Pi,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ExternalAgentSandbox {
+    ReadOnly,
+    WorkspaceWrite,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1672,6 +1714,26 @@ mod tests {
                     login: false,
                 }
             })
+        ));
+    }
+
+    #[test]
+    fn external_harness_commands_are_available_to_the_cli() {
+        assert!(matches!(
+            Cli::try_parse_from(["glass", "harness", "list"])
+                .unwrap()
+                .command,
+            Some(Commands::Harness {
+                action: HarnessCommand::List
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["glass", "harness", "start", "codex", "--root", "/tmp/project"])
+                .unwrap()
+                .command,
+            Some(Commands::Harness {
+                action: HarnessCommand::Start { ref name, ref root }
+            }) if name == "codex" && root == std::path::Path::new("/tmp/project")
         ));
     }
 

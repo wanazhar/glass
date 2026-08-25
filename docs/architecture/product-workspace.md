@@ -87,10 +87,12 @@ process projections do not delay the first frame.
 
 ## Palette and focus
 
-The palette is generated from typed capabilities and contains fuzzy search,
-descriptions, key hints, contextual ordering, recent commands, parameter hints,
-history, completion, cursor editing, and visible validation errors. It is the
-expert route, not the only normal interaction route.
+The palette is generated from typed surface capabilities and contains fuzzy
+search, descriptions, key hints, parameter hints, history, completion, cursor
+editing, and status errors. Its guided inventory is scoped to the active
+surface, so selecting an action never silently switches destinations. Expert
+routes remain available when typed directly, while `a` is the normal guided
+launcher.
 
 Every focused pane has a visible focus marker and independent scroll. Mouse,
 focus, resize, and bracketed paste events are processed only while their

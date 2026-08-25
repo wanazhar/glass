@@ -310,6 +310,29 @@ glass agent prompt "Explain the failing diagnostic" --harness pi --root .
 
 ```
 
+Glass can also discover and launch installed external coding harnesses through
+the same catalog used by the TUI:
+
+```console
+glass harness list
+glass harness start codex --root .
+```
+
+It can delegate one bounded prompt to the supported temporary adapters without
+making the process a resident session:
+
+```console
+glass agent delegate codex "review the current diff" --root .
+glass agent delegate claude "explain the failing test" --root .
+glass agent delegate opencode "map the project entrypoints" --root .
+```
+
+The TUI exposes the same operations as `:harness list`, `:harness start NAME`,
+and `:harness delegate NAME PROMPT`. Delegation defaults to a read-only
+harness sandbox and returns bounded structured output. Workspace writes require
+`--sandbox workspace-write --allow-mutation --yes`; the resident Pi `delegate`
+tool uses the same approval boundary.
+
 `--update` forces a reinstall of Glass's pinned Pi SDK version; it does not
 silently select an unreviewed upstream version.
 
@@ -388,10 +411,11 @@ Presentation is selected independently from layout:
 - constrained or unknown remote links use 3/6/12 FPS profiles;
 - Mosh remains semantic-only because it synchronizes terminal cells, not
   arbitrary graphics-protocol state;
-- `live auto` enables continuous frames only when Herdr is detected; without
-  Herdr it may remain semantic-only;
-- `live on` permits the bounded ANSI renderer, and
-  `--tui-live-backend kitty` currently maps to that ANSI path;
+- `live auto` enables continuous frames when the selected backend is
+  available; with the default backend it requires Herdr, while explicit Kitty
+  or ANSI selection remains available without Herdr;
+- `live on` uses ANSI by default, or emits the Kitty terminal graphics protocol
+  when `--tui-live-backend kitty` is selected;
 - auto quality reduces capture scale before frame rate and suspends hidden
   browser acquisition.
 

@@ -346,9 +346,77 @@ pub fn trimmed_lines(text: &str, limit: usize) -> String {
         .to_string()
 }
 
+/// Extract a useful final line from a bounded external-agent event stream.
+pub fn external_agent_output(value: &Value) -> String {
+    let output = value.get("output").and_then(Value::as_str).unwrap_or("");
+    let detail = external_stream_text(output)
+        .or_else(|| {
+            value
+                .get("stderr")
+                .and_then(Value::as_str)
+                .filter(|stderr| !stderr.trim().is_empty())
+                .map(|stderr| trimmed_lines(stderr, 1))
+        })
+        .or_else(|| (!output.trim().is_empty()).then(|| trimmed_lines(output, 1)))
+        .unwrap_or_else(|| "no output".into());
+    detail.chars().take(240).collect()
+}
+
+fn external_stream_text(output: &str) -> Option<String> {
+    let mut messages: Vec<String> = Vec::new();
+    for line in output.lines() {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
+        let text = match kind {
+            "item.completed" => event
+                .get("item")
+                .and_then(|item| item.get("text").and_then(Value::as_str)),
+            "assistant" => event
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(stream_content_text),
+            "result" => event.get("result").and_then(Value::as_str),
+            "text" | "message" => event.get("text").and_then(Value::as_str).or_else(|| {
+                event
+                    .get("part")
+                    .and_then(|part| part.get("text").and_then(Value::as_str))
+            }),
+            "content_block_delta" => event
+                .get("delta")
+                .and_then(|delta| delta.get("text").and_then(Value::as_str)),
+            "error" | "api_error" => event
+                .get("error")
+                .and_then(Value::as_str)
+                .or_else(|| event.get("message").and_then(Value::as_str)),
+            "system" if event.get("subtype").and_then(Value::as_str) == Some("api_retry") => {
+                event.get("error").and_then(Value::as_str)
+            }
+            _ => None,
+        };
+        if let Some(text) = text.filter(|text| !text.trim().is_empty())
+            && !messages.iter().any(|message| message == text)
+        {
+            messages.push(text.to_string());
+        }
+    }
+    (!messages.is_empty()).then(|| messages.join("\n"))
+}
+
+fn stream_content_text(content: &Value) -> Option<&str> {
+    content
+        .as_array()?
+        .iter()
+        .find_map(|item| item.get("text").and_then(Value::as_str))
+}
+
 pub fn conversation(events: &[crate::AgentEvent]) -> String {
     let mut items = Vec::new();
     for event in events {
+        if pi_user_message(event) {
+            continue;
+        }
         match event.kind.as_str() {
             "starting" | "ready" | "turn_start" | "turn_end" | "message_start"
             | "agent_settled" => {}
@@ -361,6 +429,7 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                     push_assistant_delta(&mut items, delta);
                 }
             }
+            "message_end" if hidden_custom_message(&event.payload) => {}
             "message_end" => {
                 if let Some(text) = event_text(event) {
                     push_assistant_final(&mut items, text);
@@ -580,6 +649,30 @@ fn finish_streaming(items: &mut [ConversationItem]) {
         *streaming = false;
     }
 }
+fn pi_user_message(event: &crate::AgentEvent) -> bool {
+    event
+        .payload
+        .pointer("/message/role")
+        .and_then(serde_json::Value::as_str)
+        == Some("user")
+        || event
+            .payload
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            == Some("user")
+}
+
+fn hidden_custom_message(payload: &serde_json::Value) -> bool {
+    let Some(message) = payload.get("message") else {
+        return false;
+    };
+    message.get("role").and_then(serde_json::Value::as_str) == Some("custom")
+        && (message.get("display").and_then(serde_json::Value::as_bool) == Some(false)
+            || message
+                .get("customType")
+                .and_then(serde_json::Value::as_str)
+                == Some("glass.context"))
+}
 
 fn event_text(event: &crate::AgentEvent) -> Option<String> {
     let pointers = match event.kind.as_str() {
@@ -671,6 +764,32 @@ mod tests {
         assert!(projected.contains("! executable"));
         assert!(projected.contains("authority trusted-project"));
         assert!(projected.contains("runs `echo unsafe`"));
+    }
+
+    #[test]
+    fn external_agent_output_prefers_final_stream_messages() {
+        let value = serde_json::json!({
+            "output": concat!(
+                "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n",
+                "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"GLASS_REAL_OK\"}}\n",
+                "{\"type\":\"turn.completed\",\"usage\":{\"output_tokens\":1}}\n"
+            ),
+            "stderr": "ignored diagnostic",
+        });
+        assert_eq!(external_agent_output(&value), "GLASS_REAL_OK");
+
+        let claude = serde_json::json!({
+            "output": concat!(
+                "{\"type\":\"system\",\"subtype\":\"init\"}\n",
+                "{\"type\":\"result\",\"result\":\"Claude result\"}\n"
+            )
+        });
+        assert_eq!(external_agent_output(&claude), "Claude result");
+
+        let retry = serde_json::json!({
+            "output": "{\"type\":\"system\",\"subtype\":\"api_retry\",\"error\":\"rate_limit\"}\n"
+        });
+        assert_eq!(external_agent_output(&retry), "rate_limit");
     }
 
     #[test]
@@ -781,6 +900,89 @@ mod tests {
         assert!(!projected.contains("request-1"));
         assert!(!projected.contains("agent_end"));
         assert!(!projected.contains("… streaming"));
+    }
+    #[test]
+    fn conversation_ignores_pi_user_message_echo() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let events = vec![
+            crate::AgentEvent {
+                sequence: 1,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "user".into(),
+                payload: serde_json::json!({"text": "hello"}),
+            },
+            crate::AgentEvent {
+                sequence: 2,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "message_end".into(),
+                payload: serde_json::json!({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "hello"}]
+                    }
+                }),
+            },
+            crate::AgentEvent {
+                sequence: 3,
+                agent_id,
+                timestamp_ms: 0,
+                kind: "message_end".into(),
+                payload: serde_json::json!({
+                    "message": {
+                        "role": "assistant",
+                        "content": [{
+                            "type": "text",
+                            "text": "Hello! How can I help you today?"
+                        }]
+                    }
+                }),
+            },
+        ];
+        assert_eq!(
+            conversation(&events),
+            "YOU\nhello\n\nGLASS AGENT\nHello! How can I help you today?"
+        );
+    }
+
+    #[test]
+    fn conversation_hides_non_display_custom_context_messages() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let events = vec![
+            crate::AgentEvent {
+                sequence: 1,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "message_end".into(),
+                payload: serde_json::json!({
+                    "message": {
+                        "role": "custom",
+                        "customType": "glass.context",
+                        "display": false,
+                        "content": [{
+                            "type": "text",
+                            "text": "{\"authority\":{\"mutationLeaseRequired\":false}}"
+                        }]
+                    }
+                }),
+            },
+            crate::AgentEvent {
+                sequence: 2,
+                agent_id,
+                timestamp_ms: 0,
+                kind: "message_end".into(),
+                payload: serde_json::json!({
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}]
+                    }
+                }),
+            },
+        ];
+        let projected = conversation(&events);
+        assert_eq!(projected, "GLASS AGENT\nhello");
+        assert!(!projected.contains("mutationLeaseRequired"));
     }
 
     #[test]

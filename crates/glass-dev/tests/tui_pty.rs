@@ -481,6 +481,47 @@ fn agent_update_route_requires_confirmation_in_tui() {
     session.settle(Duration::from_millis(300));
     session.kill();
 }
+
+#[test]
+fn external_harness_routes_stay_inside_tui_until_confirmed() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let mut session = Session::start(&binary(), &root, 118, 32);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.send(b"T");
+    assert!(
+        session.wait_for("Workspace opened with", Duration::from_secs(5)),
+        "workspace trust did not complete\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface never rendered after trust\n{}",
+        session.output_tail()
+    );
+    session.send(b":harness list\r");
+    assert!(
+        session.wait_for("External harnesses", Duration::from_secs(5)),
+        "harness catalog did not render in TUI\n{}",
+        session.output_tail()
+    );
+    session.send(
+        b":harness delegate codex inspect current diff --sandbox read-only --timeout-secs 5\r",
+    );
+    assert!(
+        session.wait_for("CONFIRMATION", Duration::from_secs(5)),
+        "external delegate did not stop at Glass confirmation\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+    session.kill();
+}
 #[test]
 fn palette_and_help_survive_real_key_sequences() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
@@ -489,11 +530,37 @@ fn palette_and_help_survive_real_key_sequences() {
     let root = workspace_root();
     let mut session = Session::start(&binary(), &root, 118, 32);
     session.send(b":");
-    session.settle(Duration::from_millis(500));
+    assert!(
+        session.wait_for_visible("SELECT AN ACTION", Duration::from_secs(5)),
+        "command palette did not open\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_visible("Compose", Duration::from_secs(5)),
+        "surface actions missing\n{}",
+        session.output_tail()
+    );
+    for _ in 0..2 {
+        session.send(b"\x1b[B");
+    }
+    session.send(b"\r");
+    assert!(
+        session.wait_for_visible("CONFIRMATION", Duration::from_secs(5)),
+        "arrow selection did not route to the selected action\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+    session.send(b":");
+    assert!(
+        session.wait_for_visible("SELECT AN ACTION", Duration::from_secs(5)),
+        "palette did not reopen after cancelling confirmation"
+    );
     session.send(b"help");
     assert!(
-        session.wait_for("agent", Duration::from_secs(5)),
-        "palette suggestions missing"
+        session.wait_for_visible("Filter:", Duration::from_secs(5)),
+        "palette filtering missing\n{}",
+        session.output_tail()
     );
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
@@ -522,6 +589,19 @@ fn phone_size_keeps_primary_surfaces_reachable() {
         session.wait_for("Agent", Duration::from_secs(5)),
         "phone layout must keep Agent reachable"
     );
+    session.send(b":");
+    assert!(
+        session.wait_for_visible("SELECT AN ACTION", Duration::from_secs(5)),
+        "phone palette did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b[B");
+    assert!(
+        session.wait_for_visible("Setup Pi", Duration::from_secs(5)),
+        "phone palette did not expose guided actions\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
     session.kill();
 }
 

@@ -253,6 +253,39 @@ impl DevelopmentToolRouter {
         let string = |name: &str| required_string(call, name);
         let actor = normalized_actor_id(&context.authorization.actor.id);
         match call.name.as_str() {
+            "glass.agent.delegate" => {
+                let sandbox = crate::external_agents::ExternalSandbox::parse(
+                    optional_string(call, "sandbox").unwrap_or("read-only"),
+                )
+                .map_err(DevelopmentError::InvalidInput)?;
+                if sandbox == crate::external_agents::ExternalSandbox::WorkspaceWrite
+                    && (!context.authorization.allow_mutation
+                        || !context.authorization.confirmed)
+                {
+                    return Err(DevelopmentError::Conflict(
+                        "workspace-write delegation requires explicit mutation authority and confirmation"
+                            .into(),
+                    ));
+                }
+                let timeout = call
+                    .arguments
+                    .get("timeoutSeconds")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(crate::external_agents::DEFAULT_TIMEOUT_SECS);
+                let result = crate::external_agents::delegate(
+                    crate::external_agents::ExternalAgentRequest {
+                        harness: string("harness")?.into(),
+                        root: workspace.root().to_path_buf(),
+                        prompt: string("prompt")?.into(),
+                        sandbox,
+                        timeout: Duration::from_secs(timeout),
+                        allow_mutation: context.authorization.allow_mutation
+                            && context.authorization.confirmed,
+                    },
+                )
+                .map_err(DevelopmentError::Process)?;
+                Ok(serde_json::to_value(result)?)
+            }
             "glass.editor.open" => map_service(
                 workspace
                     .project_mut()
@@ -1582,6 +1615,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.stop",
         "glass.agent.spawn",
         "glass.agent.setup",
+        "glass.agent.delegate",
         "glass.agent.prompt",
         "glass.agent.send",
         "glass.agent.steer",
@@ -1735,10 +1769,31 @@ fn untrusted_tool_allowed(name: &str) -> bool {
 }
 
 fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
+    let (description, input_schema) = if name == "glass.agent.delegate" {
+        (
+            "Delegate one bounded prompt to a temporary installed external agent".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "harness": {"type": "string", "enum": ["codex", "claude", "opencode"]},
+                    "prompt": {"type": "string", "minLength": 1, "maxLength": 65536},
+                    "sandbox": {"type": "string", "enum": ["read-only", "workspace-write"]},
+                    "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+                },
+                "required": ["harness", "prompt"],
+                "additionalProperties": false
+            }),
+        )
+    } else {
+        (
+            format!("Resident Glass Dev operation {name}"),
+            serde_json::json!({"type": "object"}),
+        )
+    };
     ToolDescriptor {
         name: name.into(),
-        description: format!("Resident Glass Dev operation {name}"),
-        input_schema: serde_json::json!({"type":"object"}),
+        description,
+        input_schema,
         mutating,
         available: true,
         unavailable_reason: None,
@@ -2047,7 +2102,7 @@ fn project_observable_result(
     let resource_name = |preferred: &[&str], fallback: &str| {
         preferred
             .iter()
-            .find_map(|name| argument(name))
+            .find_map(|name| argument(name).filter(|value| !value.is_empty()))
             .unwrap_or_else(|| fallback.to_string())
     };
     let mut observed = Vec::<(String, DevelopmentNodeKind, String, String)>::new();
@@ -2370,6 +2425,30 @@ mod tests {
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         }
+    }
+
+    #[test]
+    fn root_file_listing_with_empty_path_keeps_tool_successful() {
+        let mut workspace = workspace();
+        let router = DevelopmentToolRouter::default();
+        let call = ToolCall {
+            id: "list-root".into(),
+            name: "glass.file.list".into(),
+            arguments: json!({"path":""}),
+        };
+        let read_only = context(&workspace, false);
+        let result = router
+            .execute(&mut workspace, &call, &read_only)
+            .expect("listing the project root must succeed");
+        assert!(result["entries"].is_array());
+        assert_eq!(
+            workspace
+                .intelligence()
+                .node("file:list-root")
+                .unwrap()
+                .label,
+            "list-root"
+        );
     }
 
     #[test]
@@ -3053,5 +3132,20 @@ mod tests {
         let replay = workspace.intelligence().replay(0, 128).unwrap();
         assert!(replay.iter().any(|event| event.subsystem == "task"));
         assert!(replay.iter().all(|event| event.rationale.is_none()));
+    }
+
+    #[test]
+    fn external_delegate_is_registered_as_approval_gated_capability() {
+        let descriptor = DevelopmentToolRouter::default()
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == "glass.agent.delegate")
+            .expect("external delegate descriptor");
+        assert!(descriptor.mutating);
+        assert_eq!(
+            descriptor.input_schema["properties"]["sandbox"]["enum"],
+            json!(["read-only", "workspace-write"])
+        );
+        assert!(tool_requires_mutation("glass.agent.delegate"));
     }
 }

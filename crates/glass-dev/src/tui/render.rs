@@ -299,8 +299,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
                 state.editor_scroll_line.min(u16::MAX as usize) as u16,
                 state.editor_scroll_column.min(u16::MAX as usize) as u16,
             ))
-            .block(editor_block)
-            .wrap(Wrap { trim: false }),
+            .block(editor_block),
         rows[1],
     );
 
@@ -3607,6 +3606,41 @@ mod tests {
         let output = rendered(&state, 100, 30);
         assert!(expected.contains("name='x'"));
         assert!(output.contains("name='x'"));
+    }
+
+    #[test]
+    fn fullscreen_editor_cursor_tracks_active_line_without_wrapping() {
+        let mut state = state(TuiLayout::Desktop);
+        state.code_edit_mode = true;
+        state.focused_editor_path = "CHANGELOG.md".into();
+        state.focused_editor_content = "one\nthis is a deliberately long source line that should remain horizontally scrollable instead of wrapping across the editor viewport\nactive line".into();
+        state.focused_editor_line = 3;
+        state.focused_editor_column = 1;
+        state.status = "EDITING".into();
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &state)).unwrap();
+        let active_row = (0..30)
+            .find(|row| {
+                (0..100)
+                    .map(|column| {
+                        terminal
+                            .backend()
+                            .buffer()
+                            .cell((column, *row))
+                            .expect("cell in editor buffer")
+                            .symbol()
+                    })
+                    .collect::<String>()
+                    .contains("active line")
+            })
+            .expect("active source line rendered");
+        assert_eq!(
+            terminal.backend().cursor_position().y,
+            active_row,
+            "terminal cursor must stay on the rendered active source line"
+        );
     }
 
     #[test]

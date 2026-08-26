@@ -2634,7 +2634,7 @@ impl DevTuiState {
         };
         let lines = buffer.content.split('\n').collect::<Vec<_>>();
         let cursor_line = buffer.cursor_line.saturating_sub(1) as usize;
-        let viewport_height = usize::from(self.terminal_height.saturating_sub(7).max(1));
+        let viewport_height = usize::from(self.terminal_height.saturating_sub(8).max(1));
         if cursor_line < self.editor_scroll_line {
             self.editor_scroll_line = cursor_line;
         } else if cursor_line >= self.editor_scroll_line + viewport_height {
@@ -2643,7 +2643,7 @@ impl DevTuiState {
         let gutter_width = lines.len().max(1).to_string().len().max(3);
         let viewport_width = usize::from(
             self.terminal_width
-                .saturating_sub((gutter_width + 7).min(u16::MAX as usize) as u16)
+                .saturating_sub((gutter_width + 6).min(u16::MAX as usize) as u16)
                 .max(1),
         );
         let cursor_column = buffer.cursor_column.saturating_sub(1) as usize;
@@ -4693,6 +4693,41 @@ mod tests {
         assert!(state.composer_input.contains("src/main.rs:1:1"));
         assert!(state.composer_input.contains("Do not edit files"));
 
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn editor_cursor_scroll_matches_fullscreen_source_height() {
+        let root =
+            std::env::temp_dir().join(format!("glass-editor-viewport-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        let content = (1..=30)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        std::fs::write(root.join("src/main.rs"), content).expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open editor buffer");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .set_buffer_cursor("src/main.rs", 23, 1)
+            .expect("set editor cursor");
+        state.refresh_editor_projection();
+        state.editor_scroll_line = 0;
+        state.set_terminal_size(100, 30);
+
+        assert_eq!(state.focused_editor_line, 23);
+        assert_eq!(
+            state.editor_scroll_line, 1,
+            "line 23 must scroll into the 22-row source viewport"
+        );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

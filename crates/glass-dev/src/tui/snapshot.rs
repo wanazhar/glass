@@ -759,14 +759,18 @@ fn compute_snapshot(
                 .get("connected")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
+            let policy = value
+                .get("policyPreset")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("development");
             let revision = value
                 .get("browserRevision")
                 .and_then(serde_json::Value::as_u64)
                 .map_or_else(|| "—".into(), |value| value.to_string());
             if connected {
-                format!("● connected · revision {revision}")
+                format!("● connected · policy {policy} · revision {revision}")
             } else {
-                "○ detached · browser start required".into()
+                format!("○ detached · policy {policy} · browser start required")
             }
         })
         .unwrap_or_else(|error| format!("Browser state failed: {error}"));
@@ -858,7 +862,7 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
         .map(|url| format!("● open App {url}"))
         .unwrap_or_else(|| "○ start App after a URL is detected".into());
     format!(
-        "WELCOME · {}\n{}\n\n✓ workspace {}\n\nNEXT ACTIONS\n◆ [a] actions menu · per-surface flows\n◆ [1] Agent · [s] install Pi · [l] sign in\n◆ [4] Terminal · [s] start detected dev suite\n◆ [Enter] open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+        "WELCOME · {}\n{}\n\n✓ workspace {}\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ :agent setup · install Pi · :agent setup login · sign in\n◆ :process start dev · start detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
         detection.git_branch.as_deref().unwrap_or("no branch"),
         project_line,
         workspace.trust().label(),

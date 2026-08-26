@@ -1,5 +1,6 @@
 use super::command;
 use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
+use glass_browser::browser::policy::PolicyPreset;
 use glass_browser::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAction, BrowserWorkspaceAdapterKind,
     BrowserWorkspaceController, BrowserWorkspaceEntity, BrowserWorkspaceIntent,
@@ -154,6 +155,12 @@ pub enum ResponsiveClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorExitPrompt {
+    Clean,
+    Unsaved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProductMode {
     Build,
     Agent,
@@ -176,8 +183,10 @@ pub struct DevTuiState {
     pub workspace: SharedDevelopmentWorkspace,
     pub surface: DevSurface,
     pub layout: TuiLayout,
-    pub quit: bool,
+    /// Process-scoped unrestricted development mode from `glass --yolo`.
+    pub yolo_mode: bool,
     pub quit_confirmation: bool,
+    pub quit: bool,
     pub command_mode: bool,
     pub command_input: String,
     pub command_cursor: usize,
@@ -199,7 +208,10 @@ pub struct DevTuiState {
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
     pub pending_confirmation: Option<PendingConfirmation>,
+    /// URL retained while the TUI launches a detached browser before navigation.
+    pub pending_browser_navigation: Option<String>,
     pub pending_agent_approval: Option<PendingAgentApproval>,
+    pub editor_exit_prompt: Option<EditorExitPrompt>,
     pub queued_tool_request: Option<(
         crate::development::ToolCall,
         crate::tools::DevelopmentToolContext,
@@ -245,6 +257,8 @@ pub struct DevTuiState {
     pub files: Vec<String>,
     pub selected_file: usize,
     pub code_edit_mode: bool,
+    pub editor_scroll_line: usize,
+    pub editor_scroll_column: usize,
     pub lsp: String,
     pub processes: String,
     pub git: String,
@@ -318,7 +332,7 @@ impl DevTuiState {
         root: impl AsRef<Path>,
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_internal(root, layout, true)
+        Self::open_internal(root, layout, true, false, PolicyPreset::Development)
     }
 
     /// Construct the interactive TUI without doing a full synchronous
@@ -328,15 +342,40 @@ impl DevTuiState {
         root: impl AsRef<Path>,
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_internal(root, layout, false)
+        Self::open_internal(root, layout, false, false, PolicyPreset::Development)
+    }
+
+    /// Construct the TUI with an explicit process-scoped development mode.
+    pub fn open_for_tui_with_mode(
+        root: impl AsRef<Path>,
+        layout: TuiLayout,
+        yolo_mode: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_for_tui_with_policy(root, layout, yolo_mode, PolicyPreset::Development)
+    }
+
+    /// Construct the TUI with explicit development and browser policies.
+    pub fn open_for_tui_with_policy(
+        root: impl AsRef<Path>,
+        layout: TuiLayout,
+        yolo_mode: bool,
+        policy_preset: PolicyPreset,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_internal(root, layout, false, yolo_mode, policy_preset)
     }
 
     fn open_internal(
         root: impl AsRef<Path>,
         layout: TuiLayout,
         initial_refresh: bool,
+        yolo_mode: bool,
+        policy_preset: PolicyPreset,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let workspace = SharedDevelopmentWorkspace::open(root)?;
+        let workspace = SharedDevelopmentWorkspace::open_with_policy(root, policy_preset)?;
+        if yolo_mode {
+            let mut workspace = workspace.lock()?;
+            workspace.agents().set_default_unrestricted(true);
+        }
         let locked = workspace.lock()?;
         let trust = locked.trust();
         let trust_inspection = locked.trust_inspection();
@@ -356,6 +395,7 @@ impl DevTuiState {
                 DevSurface::Agent
             },
             layout,
+            yolo_mode,
             quit: false,
             quit_confirmation: false,
             command_mode: false,
@@ -378,7 +418,9 @@ impl DevTuiState {
             agent_send_job: None,
             selected_agent: None,
             pending_confirmation: None,
+            editor_exit_prompt: None,
             pending_agent_approval: None,
+            pending_browser_navigation: None,
             queued_tool_request: None,
             running_tool_job: None,
             surface_scroll: std::collections::BTreeMap::new(),
@@ -421,6 +463,8 @@ impl DevTuiState {
             files: Vec::new(),
             selected_file: 0,
             code_edit_mode: false,
+            editor_scroll_line: 0,
+            editor_scroll_column: 0,
             lsp: String::new(),
             processes: String::new(),
             git: String::new(),
@@ -502,7 +546,7 @@ impl DevTuiState {
         self.surface_actions().len() + 1
     }
 
-    /// Guided launchers for the current surface. `a` opens the command center.
+    /// Guided launchers for the current surface. `:actions` opens the command center.
     pub fn surface_actions(&self) -> &'static [command::SurfaceAction] {
         command::surface_actions(self.surface)
     }
@@ -582,6 +626,25 @@ impl DevTuiState {
         self.menu_open = false;
         let name = action.label;
         let hint = action.command;
+        if hint == "browser view" {
+            self.surface = DevSurface::App;
+            self.browser_visual_live = !self.browser_visual_live;
+            self.status = if self.browser_visual_live {
+                "Live view starting · command palette can stop it".into()
+            } else {
+                "Live view off · semantic inspection remains available".into()
+            };
+            return;
+        }
+        if hint == "process start dev" {
+            self.request_detected_dev();
+            return;
+        }
+        if hint == "git diff" && self.surface == DevSurface::Git {
+            self.git_diff_requested = true;
+            self.status = "Git diff queued · loading off-thread".into();
+            return;
+        }
         let prefix = action.key;
         if prefix == ":" {
             // Strip documentation placeholders from the editable command so
@@ -611,41 +674,13 @@ impl DevTuiState {
             if self.surface == DevSurface::Code {
                 self.open_selected_file();
             }
-        } else if hint == "d" && self.surface == DevSurface::Git {
-            self.git_diff_requested = true;
-            self.status = "Git diff queued · loading off-thread".into();
-        }
-        // Command-center entries must do what their visible hint promises.
-        // Do not make users close the center and repeat a key from another
-        // mode.
-        else {
-            match hint {
-                "n" => {
-                    self.surface = DevSurface::App;
-                    self.open_palette_with("browser navigate ");
-                }
-                "t" => {
-                    self.surface = DevSurface::App;
-                    self.open_palette_with("browser type ");
-                }
-                "v" => {
-                    self.surface = DevSurface::App;
-                    self.browser_visual_live = true;
-                    self.status = "Live view starting · v stops".into();
-                }
-                "agent update" if self.surface == DevSurface::Agent => {
-                    self.request_agent_update();
-                }
-                "s" if matches!(self.surface, DevSurface::Terminal | DevSurface::More) => {
-                    self.request_detected_dev();
-                }
-                "1" | "T" | "I" | "O" => self.handle_printable(hint.chars().next().unwrap()),
-                "Ctrl-S" if self.surface == DevSurface::Code => self.edit_code_key(
-                    crossterm::event::KeyCode::Char('s'),
-                    crossterm::event::KeyModifiers::CONTROL,
-                ),
-                _ => self.status = format!("{name} is available from this surface"),
-            }
+        } else if hint == "Ctrl-S" && self.surface == DevSurface::Code {
+            self.edit_code_key(
+                crossterm::event::KeyCode::Char('s'),
+                crossterm::event::KeyModifiers::CONTROL,
+            );
+        } else {
+            self.status = format!("{name} is available from this surface");
         }
     }
 
@@ -677,7 +712,7 @@ impl DevTuiState {
         self.palette_error = None;
         self.palette_scroll = 0;
         self.palette_selection = 0;
-        self.status = "Command palette closed · press a for guided launchers".into();
+        self.status = "Command palette closed · press : for guided launchers".into();
     }
 
     pub fn palette_action_indices(&self) -> Vec<usize> {
@@ -717,13 +752,22 @@ impl DevTuiState {
 
     pub fn submit_palette(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let typed = self.command_input.trim().to_string();
-        let command = match self.selected_palette_action() {
-            Some(action) => self.prepare_palette_action(action),
-            None if typed.is_empty() => {
+        let command = match (typed.as_str(), self.selected_palette_action()) {
+            ("a" | "actions" | "help" | "?" | "q" | "quit", _) => {
+                self.command_mode = false;
+                self.command_input.clear();
+                self.command_cursor = 0;
+                self.command_history_index = None;
+                self.palette_scroll = 0;
+                self.palette_selection = 0;
+                Some(typed)
+            }
+            (_, Some(action)) => self.prepare_palette_action(action),
+            (_, None) if typed.is_empty() => {
                 self.status = "No matching palette action · Esc closes".into();
                 return;
             }
-            None => {
+            (_, None) => {
                 self.command_mode = false;
                 self.command_input.clear();
                 self.command_cursor = 0;
@@ -736,15 +780,7 @@ impl DevTuiState {
 
         let Some(input) = command else {
             if !self.command_mode {
-                if let Some((call, context)) = self.queued_tool_request.take() {
-                    match worker.submit_tool(call, context) {
-                        Ok(id) => {
-                            self.running_tool_job = Some(id);
-                            self.status.push_str(" · running in background");
-                        }
-                        Err(error) => self.status = format!("Could not queue tool: {error}"),
-                    }
-                }
+                self.submit_queued_tool(worker);
                 worker.request_refresh();
             }
             return;
@@ -766,15 +802,7 @@ impl DevTuiState {
                 self.status = format!("Error: {error}");
             }
         }
-        if let Some((call, context)) = self.queued_tool_request.take() {
-            match worker.submit_tool(call, context) {
-                Ok(id) => {
-                    self.running_tool_job = Some(id);
-                    self.status.push_str(" · running in background");
-                }
-                Err(error) => self.status = format!("Could not queue tool: {error}"),
-            }
-        }
+        self.submit_queued_tool(worker);
         worker.request_refresh();
     }
 
@@ -797,30 +825,37 @@ impl DevTuiState {
                 }
                 None
             }
-            "n" => {
+            "browser navigate URL" => {
                 self.surface = DevSurface::App;
                 self.open_palette_with("browser navigate ");
-                self.status = "Navigate · type only the URL, then press Enter".into();
+                self.status =
+                    "Navigate · type a URL or domain (https:// optional), then press Enter".into();
                 None
             }
-            "t" => {
+            "browser type TARGET TEXT" => {
                 self.surface = DevSurface::App;
                 self.open_palette_with("browser type ");
-                self.status = "Type · enter the text or target, then press Enter".into();
+                self.status = "Type · enter the target and text, then press Enter".into();
                 None
             }
-            "v" => {
+            "browser view" => {
                 self.command_mode = false;
-                self.browser_visual_live = true;
-                self.status = "Live view starting · v stops".into();
+                self.browser_visual_live = !self.browser_visual_live;
+                self.status = if self.browser_visual_live {
+                    "Live view starting · command palette can stop it".into()
+                } else {
+                    "Live view off · semantic inspection remains available".into()
+                };
                 None
             }
-            "s" if matches!(self.surface, DevSurface::Terminal | DevSurface::More) => {
+            "process start dev"
+                if matches!(self.surface, DevSurface::Terminal | DevSurface::More) =>
+            {
                 self.command_mode = false;
                 self.request_detected_dev();
                 None
             }
-            "d" if self.surface == DevSurface::Git => {
+            "git diff" if self.surface == DevSurface::Git => {
                 self.command_mode = false;
                 self.git_diff_requested = true;
                 self.status = "Git diff queued · loading off-thread".into();
@@ -1242,7 +1277,7 @@ impl DevTuiState {
                 let _ = self.request_agent_login();
             }
             Err(error) => {
-                self.status = format!("Pi readiness unavailable · press s to set up: {error}");
+                self.status = format!("Pi readiness unavailable · use :agent setup: {error}");
             }
         }
     }
@@ -1313,6 +1348,7 @@ impl DevTuiState {
         self.composer_cursor = self.composer_input.len();
         self.composer_steer = false;
         self.code_edit_mode = false;
+        self.editor_exit_prompt = None;
         self.surface = DevSurface::Agent;
         self.open_composer();
         self.status = format!(
@@ -1371,21 +1407,26 @@ impl DevTuiState {
                 return;
             }
         };
-        self.pending_confirmation = Some(PendingConfirmation {
-            call,
-            context,
-            summary: if update {
-                "Refresh the pinned managed Pi SDK".into()
-            } else {
-                "Install or repair the pinned managed Pi SDK".into()
-            },
-        });
-        self.surface = DevSurface::Agent;
-        self.status = if update {
-            "Pi update ready · Enter approves once · Esc cancels".into()
+        let summary = if update {
+            "Refresh the pinned managed Pi SDK"
         } else {
-            "Pi setup ready · Enter approves once · Esc cancels".into()
+            "Install or repair the pinned managed Pi SDK"
         };
+        let queued = match self.queue_or_confirm(call, context, summary.into()) {
+            Ok(queued) => queued,
+            Err(error) => {
+                self.status = format!("Could not queue Pi setup: {error}");
+                return;
+            }
+        };
+        self.surface = DevSurface::Agent;
+        if !queued {
+            self.status = if update {
+                "Pi update ready · Enter approves once · Esc cancels".into()
+            } else {
+                "Pi setup ready · Enter approves once · Esc cancels".into()
+            };
+        }
     }
 
     /// Request an interactive Pi login; the outer TUI loop performs the
@@ -1499,7 +1540,7 @@ impl DevTuiState {
             return;
         }
         if !self.agent_readiness.starts_with("✓ Ready") {
-            self.status = "Pi is not ready · press Esc, then s to install or l to sign in".into();
+            self.status = "Pi is not ready · use :agent setup or :agent setup login".into();
             return;
         }
         if self.composer_input.trim().is_empty() {
@@ -1690,6 +1731,38 @@ impl DevTuiState {
         self.queued_tool_request = Some((call, context));
         Ok(())
     }
+    pub(super) fn queue_or_confirm(
+        &mut self,
+        call: crate::development::ToolCall,
+        context: crate::tools::DevelopmentToolContext,
+        summary: String,
+    ) -> Result<bool, String> {
+        if self.yolo_mode {
+            self.queue_tool_request(call, context)?;
+            self.status = format!("YOLO · {summary} queued");
+            Ok(true)
+        } else {
+            self.pending_confirmation = Some(PendingConfirmation {
+                call,
+                context,
+                summary,
+            });
+            Ok(false)
+        }
+    }
+
+    pub fn submit_queued_tool(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some((call, context)) = self.queued_tool_request.take() else {
+            return;
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status.push_str(" · running in background");
+            }
+            Err(error) => self.status = format!("Could not queue tool: {error}"),
+        }
+    }
 
     pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
         if result.tool == "glass.agent.send" && self.agent_send_job == Some(result.id) {
@@ -1789,7 +1862,7 @@ impl DevTuiState {
                         }
                         Ok(false) => {
                             self.status =
-                                "Pi runtime installed · press l to sign in, then Enter to chat"
+                                "Pi runtime installed · use :agent setup login, then Enter to chat"
                                     .into();
                         }
                         Err(error) => self.status = format!("Pi readiness check failed: {error}"),
@@ -1880,12 +1953,46 @@ impl DevTuiState {
     }
 
     pub fn deny_confirmation(&mut self) {
+        self.pending_browser_navigation = None;
         if let Some(pending) = self.pending_confirmation.take() {
             self.status = format!("Denied · {}", pending.summary);
         }
     }
 
+    /// Queue browser startup or a fresh observation as part of a requested navigation.
+    pub fn prepare_browser_navigation(&mut self, url: &str) -> Result<String, String> {
+        if self.background_action_running() {
+            return Err("another browser action is already awaiting or running".into());
+        }
+        if self.browser_workspace.state().connection == BrowserConnectionPhase::Connected {
+            let (call, context) =
+                self.tool_request("glass.browser.observe", serde_json::json!({}), false)?;
+            self.pending_browser_navigation = Some(url.to_string());
+            self.queued_tool_request = Some((call, context));
+            self.surface = DevSurface::App;
+            return Ok("Browser connected · refreshing page before navigation".into());
+        }
+        let (call, context) =
+            self.tool_request("glass.browser.start", serde_json::json!({}), true)?;
+        self.pending_browser_navigation = Some(url.to_string());
+        let queued = self.queue_or_confirm(
+            call,
+            context,
+            format!("Start browser before navigating to {url}"),
+        )?;
+        self.surface = DevSurface::App;
+        Ok(if queued {
+            "Browser detached · launching; navigation continues automatically".into()
+        } else {
+            "Browser detached · Enter approves launch; navigation continues automatically".into()
+        })
+    }
+
     pub fn handle_printable(&mut self, character: char) {
+        if character == ':' {
+            self.open_palette();
+            return;
+        }
         if self.surface == DevSurface::Trust {
             let decision = match character {
                 'i' | 'I' => {
@@ -1935,9 +2042,8 @@ impl DevTuiState {
             }
         }
 
-        // Agent text wins over legacy single-letter surface aliases. The
-        // event loop already consumes global shortcuts (a, s, l, :, etc.);
-        // digits remain the explicit phone/desktop surface shortcuts.
+        // Agent text wins over navigation. The event loop reserves only
+        // explicit modal controls and the `:` command prefix.
         if self.surface == DevSurface::Agent
             && self.snapshot_trust_label != "untrusted"
             && !character.is_ascii_digit()
@@ -2016,7 +2122,7 @@ impl DevTuiState {
             }
             Err(error) => {
                 self.status = if error.to_string().contains("workspace busy") {
-                    "Development suite unavailable: workspace refresh is still running · press s again"
+                    "Development suite unavailable: workspace refresh is still running · use :s again"
                         .into()
                 } else {
                     format!("Development command unavailable: {error}")
@@ -2035,13 +2141,21 @@ impl DevTuiState {
                 return;
             }
         };
-        self.pending_confirmation = Some(PendingConfirmation {
+        let queued = match self.queue_or_confirm(
             call,
             context,
-            summary: "Start the detected development suite".into(),
-        });
+            "Start the detected development suite".into(),
+        ) {
+            Ok(queued) => queued,
+            Err(error) => {
+                self.status = format!("Development suite unavailable: {error}");
+                return;
+            }
+        };
         self.surface = DevSurface::Terminal;
-        self.status = "Development suite ready · Enter approves once · Esc cancels".into();
+        if !queued {
+            self.status = "Development suite ready · Enter approves once · Esc cancels".into();
+        }
     }
 
     pub fn next_surface(&mut self) {
@@ -2133,16 +2247,51 @@ impl DevTuiState {
             self.status = "No project file selected".into();
             return;
         };
-        match self.workspace.try_lock().and_then(|mut workspace| {
-            workspace
-                .project_mut()
-                .open_buffer(&path, crate::development::Actor::local())
-        }) {
-            Ok(_) => {
-                self.status = format!("Opened {path} · press i to edit");
+        let already_open = self
+            .workspace
+            .try_lock()
+            .map(|workspace| workspace.project().buffer(&path).is_some())
+            .unwrap_or(false);
+        let result = if already_open {
+            Ok(())
+        } else {
+            self.workspace.try_lock().and_then(|mut workspace| {
+                workspace
+                    .project_mut()
+                    .open_buffer(&path, crate::development::Actor::local())
+                    .map(|_| ())
+            })
+        };
+        match result {
+            Ok(()) => {
+                self.editor_buffer_index = self
+                    .workspace
+                    .try_lock()
+                    .ok()
+                    .and_then(|workspace| {
+                        workspace
+                            .project()
+                            .buffers()
+                            .position(|buffer| buffer.path == path)
+                    })
+                    .unwrap_or(0);
                 self.refresh_editor_projection();
+                self.status = if already_open {
+                    format!("Selected {path} · Enter opens the full-screen editor")
+                } else {
+                    format!("Opened {path} · Enter opens the full-screen editor")
+                };
             }
             Err(error) => self.status = format!("Open failed: {error}"),
+        }
+    }
+
+    pub fn open_selected_file_for_edit(&mut self) {
+        let selected_path = self.files.get(self.selected_file).cloned();
+        self.open_selected_file();
+        if selected_path.as_deref() == Some(self.focused_editor_path.as_str()) {
+            self.surface = DevSurface::Code;
+            self.enter_code_edit();
         }
     }
 
@@ -2270,12 +2419,15 @@ impl DevTuiState {
             self.focused_editor_line = buffer.cursor_line;
             self.focused_editor_column = buffer.cursor_column;
             self.focused_editor_selection = buffer.selection.clone();
+            self.ensure_editor_cursor_visible();
         } else {
             self.focused_editor_path.clear();
             self.focused_editor_dirty = false;
             self.focused_editor_line = 0;
             self.focused_editor_column = 0;
             self.focused_editor_selection = None;
+            self.editor_scroll_line = 0;
+            self.editor_scroll_column = 0;
         }
         self.editor = format_editor_buffers(&buffers);
     }
@@ -2332,18 +2484,153 @@ impl DevTuiState {
         if !has_buffer {
             self.open_selected_file();
         }
-        let has_buffer = self.focused_buffer().is_some();
-        if has_buffer {
+        if self.focused_buffer().is_some() {
+            self.surface = DevSurface::Code;
             self.code_edit_mode = true;
+            self.editor_exit_prompt = None;
+            self.ensure_editor_cursor_visible();
             self.status =
-                "EDIT · arrows move · Alt-A ask Pi · Ctrl-S save · Ctrl-Z/Y undo/redo · Esc close"
+                "EDITING · arrows move · Shift+arrows select · Ctrl-S save · Alt-A ask Pi · Esc exit"
                     .into();
         }
     }
 
     pub fn close_code_edit(&mut self) {
         self.code_edit_mode = false;
-        self.status = "Code navigation".into();
+        self.editor_exit_prompt = None;
+        self.surface = DevSurface::Code;
+        self.status = "Code navigation · select a file and press Enter to edit".into();
+    }
+
+    pub fn request_editor_exit(&mut self) {
+        if !self.code_edit_mode {
+            return;
+        }
+        self.refresh_editor_projection();
+        let prompt = if self.focused_editor_dirty {
+            EditorExitPrompt::Unsaved
+        } else {
+            EditorExitPrompt::Clean
+        };
+        self.editor_exit_prompt = Some(prompt);
+        self.status = match prompt {
+            EditorExitPrompt::Clean => "Exit editor? Enter leaves · Esc stays".into(),
+            EditorExitPrompt::Unsaved => {
+                "Unsaved changes · S save · D discard · Q discard and quit · Esc stays".into()
+            }
+        };
+    }
+
+    pub fn cancel_editor_exit(&mut self) {
+        self.editor_exit_prompt = None;
+        self.status = "Still editing · Esc opens exit choices".into();
+    }
+
+    pub fn handle_editor_exit_key(&mut self, code: crossterm::event::KeyCode) {
+        let Some(prompt) = self.editor_exit_prompt else {
+            return;
+        };
+        match prompt {
+            EditorExitPrompt::Clean => match code {
+                crossterm::event::KeyCode::Enter
+                | crossterm::event::KeyCode::Char('q' | 'Q' | 'y' | 'Y') => {
+                    self.close_code_edit();
+                }
+                crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('n' | 'N') => {
+                    self.cancel_editor_exit()
+                }
+                _ => {}
+            },
+            EditorExitPrompt::Unsaved => match code {
+                crossterm::event::KeyCode::Char('s' | 'S') => match self.save_editor_buffer() {
+                    Ok(()) => {
+                        let path = self.focused_editor_path.clone();
+                        self.refresh_editor_projection();
+                        self.close_code_edit();
+                        self.status = format!("Saved {path} · editor closed");
+                    }
+                    Err(error) => {
+                        self.status =
+                            format!("Save failed: {error} · S retry · D discard · Q quit");
+                    }
+                },
+                crossterm::event::KeyCode::Char('d' | 'D') => match self.discard_editor_buffer() {
+                    Ok(()) => {
+                        let path = self.focused_editor_path.clone();
+                        self.refresh_editor_projection();
+                        self.close_code_edit();
+                        self.status = format!("Discarded changes in {path} · editor closed");
+                    }
+                    Err(error) => {
+                        self.status =
+                            format!("Discard failed: {error} · S save · D retry · Q quit");
+                    }
+                },
+                crossterm::event::KeyCode::Char('q' | 'Q') => match self.discard_editor_buffer() {
+                    Ok(()) => {
+                        self.code_edit_mode = false;
+                        self.editor_exit_prompt = None;
+                        self.surface = DevSurface::Code;
+                        self.quit = true;
+                        self.status = "Changes discarded · closing Glass Dev".into();
+                    }
+                    Err(error) => {
+                        self.status =
+                            format!("Discard failed: {error} · S save · D retry · Q quit");
+                    }
+                },
+                crossterm::event::KeyCode::Esc => self.cancel_editor_exit(),
+                _ => {}
+            },
+        }
+    }
+
+    fn save_editor_buffer(&mut self) -> Result<(), String> {
+        let path = self.focused_editor_path.clone();
+        self.workspace
+            .try_lock()
+            .map_err(|error| error.to_string())?
+            .project_mut()
+            .save_buffer(&path)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn discard_editor_buffer(&mut self) -> Result<(), String> {
+        let path = self.focused_editor_path.clone();
+        self.workspace
+            .try_lock()
+            .map_err(|error| error.to_string())?
+            .project_mut()
+            .open_buffer(&path, crate::development::Actor::local())
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn ensure_editor_cursor_visible(&mut self) {
+        let Some(buffer) = self.focused_buffer() else {
+            return;
+        };
+        let lines = buffer.content.split('\n').collect::<Vec<_>>();
+        let cursor_line = buffer.cursor_line.saturating_sub(1) as usize;
+        let viewport_height = usize::from(self.terminal_height.saturating_sub(7).max(1));
+        if cursor_line < self.editor_scroll_line {
+            self.editor_scroll_line = cursor_line;
+        } else if cursor_line >= self.editor_scroll_line + viewport_height {
+            self.editor_scroll_line = cursor_line + 1 - viewport_height;
+        }
+        let gutter_width = lines.len().max(1).to_string().len().max(3);
+        let viewport_width = usize::from(
+            self.terminal_width
+                .saturating_sub((gutter_width + 7).min(u16::MAX as usize) as u16)
+                .max(1),
+        );
+        let cursor_column = buffer.cursor_column.saturating_sub(1) as usize;
+        if cursor_column < self.editor_scroll_column {
+            self.editor_scroll_column = cursor_column;
+        } else if cursor_column >= self.editor_scroll_column + viewport_width {
+            self.editor_scroll_column = cursor_column + 1 - viewport_width;
+        }
     }
 
     pub fn edit_code_key(
@@ -2682,6 +2969,7 @@ impl DevTuiState {
     pub fn set_terminal_size(&mut self, width: u16, height: u16) {
         self.terminal_width = width;
         self.terminal_height = height;
+        self.ensure_editor_cursor_visible();
     }
 
     pub fn refresh(&mut self) {
@@ -2851,7 +3139,8 @@ impl DevTuiState {
             .unwrap_or_else(|error| format!("Process state failed: {error}"));
         let buffers = workspace.project().buffers().cloned().collect::<Vec<_>>();
         self.editor = if buffers.is_empty() {
-            "No file open. Select a file below and press Enter, then i to edit.".into()
+            "No file open. Select a file below and press Enter to open the full-screen editor."
+                .into()
         } else {
             buffers
                 .iter()
@@ -3145,12 +3434,12 @@ impl DevTuiState {
         };
         let workspace_line = format!("✓ workspace {}", trust.label());
         let agent_hint = if self.agent_readiness.starts_with("✓ Ready") {
-            "✓ Glass Agent ready · [i] chat"
+            ":agent ready · type a message or press Enter to chat"
         } else {
-            "○ Pi onboarding · [s] install · [l] sign in"
+            "○ Pi onboarding · use :agent setup or :agent setup login"
         };
         self.workspace_status = format!(
-            "WELCOME · {}\n{}\n\n{}\n{}\n\nNEXT ACTIONS\n◆ [a] actions menu · per-surface flows\n◆ [i] talk to Glass Agent\n◆ [4] terminal · [s] start the detected dev suite\n◆ [Enter] open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+            "WELCOME · {}\n{}\n\n{}\n{}\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ type a message or press Enter to talk to Glass Agent\n◆ :process start dev · start the detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
             detection.git_branch.as_deref().unwrap_or("no branch"),
             project_line,
             agent_hint,
@@ -3520,12 +3809,20 @@ impl DevTuiState {
             }
         };
         self.browser_target_picker = false;
-        self.pending_confirmation = Some(PendingConfirmation {
+        let queued = match self.queue_or_confirm(
             call,
             context,
-            summary: format!("Select browser target · {}", target.title),
-        });
-        self.status = "Target selection ready · Enter approves once · Esc cancels".into();
+            format!("Select browser target · {}", target.title),
+        ) {
+            Ok(queued) => queued,
+            Err(error) => {
+                self.status = format!("Target selection unavailable: {error}");
+                return;
+            }
+        };
+        if !queued {
+            self.status = "Target selection ready · Enter approves once · Esc cancels".into();
+        }
     }
 
     pub fn browser_target_picker_view(&self) -> String {
@@ -3585,6 +3882,74 @@ impl DevTuiState {
                 self.status = "Refreshing semantic browser evidence…".into();
             }
             Err(error) => self.status = format!("Could not refresh browser evidence: {error}"),
+        }
+    }
+
+    /// Refresh the newly started page before issuing a revision-bound navigation.
+    pub fn continue_pending_browser_navigation(
+        &mut self,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        let Some(url) = self.pending_browser_navigation.as_deref() else {
+            return;
+        };
+        let (call, context) =
+            match self.tool_request("glass.browser.observe", serde_json::json!({}), false) {
+                Ok(request) => request,
+                Err(error) => {
+                    let url = self.pending_browser_navigation.take().unwrap_or_default();
+                    self.open_palette_with(&format!("browser navigate {url}"));
+                    self.status = format!("Browser ready · navigation retry required: {error}");
+                    return;
+                }
+            };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Browser ready · preparing navigation to {url}…");
+            }
+            Err(error) => {
+                let url = self.pending_browser_navigation.take().unwrap_or_default();
+                self.open_palette_with(&format!("browser navigate {url}"));
+                self.status = format!("Browser ready · navigation retry required: {error}");
+            }
+        }
+    }
+
+    /// Submit the retained navigation after its fresh page revision arrives.
+    pub fn submit_pending_browser_navigation(
+        &mut self,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        let Some(url) = self.pending_browser_navigation.take() else {
+            return;
+        };
+        let Some(revision) = self.browser_workspace.state().browser_revision else {
+            self.open_palette_with(&format!("browser navigate {url}"));
+            self.status = "Browser launch completed without a usable revision".into();
+            return;
+        };
+        let (call, context) = match self.tool_request(
+            "glass.browser.navigate",
+            serde_json::json!({"url": url, "browserRevision": revision}),
+            true,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.open_palette_with(&format!("browser navigate {url}"));
+                self.status = format!("Browser ready · navigation retry required: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Browser ready · navigating to {url}…");
+            }
+            Err(error) => {
+                self.open_palette_with(&format!("browser navigate {url}"));
+                self.status = format!("Browser ready · navigation retry required: {error}");
+            }
         }
     }
 
@@ -3657,12 +4022,20 @@ impl DevTuiState {
                 return;
             }
         };
-        self.pending_confirmation = Some(PendingConfirmation {
-            summary: format!("{tool} · browser revision guarded"),
+        let queued = match self.queue_or_confirm(
             call,
             context,
-        });
-        self.status = "Browser mutation ready · Enter approves once · Esc cancels".into();
+            format!("{tool} · browser revision guarded"),
+        ) {
+            Ok(queued) => queued,
+            Err(error) => {
+                self.status = format!("App action unavailable: {error}");
+                return;
+            }
+        };
+        if !queued {
+            self.status = "Browser mutation ready · Enter approves once · Esc cancels".into();
+        }
     }
 
     pub(super) fn tool_request(
@@ -3786,7 +4159,8 @@ impl DevTuiState {
 
 fn format_editor_buffers(buffers: &[crate::development::EditorBuffer]) -> String {
     if buffers.is_empty() {
-        return "No file open. Select a file below and press Enter, then i to edit.".into();
+        return "No file open. Select a file below and press Enter to open the full-screen editor."
+            .into();
     }
     buffers
         .iter()
@@ -3851,7 +4225,7 @@ fn format_pi_readiness(readiness: &crate::PiReadiness) -> String {
         format!("{state_line}\nprovider {provider} · {session}")
     } else {
         format!(
-            "{state_line}\nprovider {provider} · {session}{remediation}\n\n[s] `agent setup` repairs the pinned runtime · [u] `agent update` refreshes it · [l] opens Pi `/login`"
+            "{state_line}\nprovider {provider} · {session}{remediation}\n\nUse `:agent setup` to repair the pinned runtime · `:agent update` to refresh it · `:agent setup login` to open Pi `/login`"
         )
     }
 }
@@ -4128,6 +4502,54 @@ mod tests {
     }
 
     #[test]
+    fn leading_agent_message_characters_are_not_commands() {
+        for character in ['a', 'q', 's', 'u', 'l', 'i', 'n'] {
+            let root = std::env::temp_dir().join(format!(
+                "glass-agent-leading-{character}-{}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).expect("create temporary workspace");
+            let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop)
+                .expect("open temporary workspace");
+            state.surface = DevSurface::Agent;
+            state.snapshot_trust_label = "trusted".into();
+            state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.2 · auth ✓".into();
+
+            state.handle_printable(character);
+
+            assert!(
+                state.composer_mode,
+                "character {character:?} did not open composer"
+            );
+            assert_eq!(state.composer_input, character.to_string());
+            std::fs::remove_dir_all(root).expect("remove temporary workspace");
+        }
+    }
+
+    #[test]
+    fn colon_opens_palette_from_every_surface() {
+        for surface in DevSurface::ALL {
+            let root = std::env::temp_dir().join(format!(
+                "glass-palette-surface-{}-{}",
+                surface.label(),
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).expect("create temporary workspace");
+            let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop)
+                .expect("open temporary workspace");
+            state.surface = surface;
+
+            state.handle_printable(':');
+
+            assert!(
+                state.command_mode,
+                "colon did not open palette on {surface:?}"
+            );
+            assert!(!state.composer_mode);
+            std::fs::remove_dir_all(root).expect("remove temporary workspace");
+        }
+    }
+    #[test]
     fn external_delegate_result_is_visible_in_tui_status() {
         let root =
             std::env::temp_dir().join(format!("glass-delegate-status-{}", std::process::id()));
@@ -4237,6 +4659,65 @@ mod tests {
         assert_eq!(buffer.content, "X\nbeta\n");
         assert_eq!((buffer.cursor_line, buffer.cursor_column), (1, 2));
         assert!(buffer.selection.is_none());
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn editor_exit_prompts_save_discard_and_discard_quit() {
+        let root = std::env::temp_dir().join(format!("glass-editor-exit-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        let original = "fn main() {}\n";
+        std::fs::write(root.join("src/main.rs"), original).expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open editor buffer");
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('#'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        state.request_editor_exit();
+        assert_eq!(state.editor_exit_prompt, Some(EditorExitPrompt::Unsaved));
+        state.handle_editor_exit_key(crossterm::event::KeyCode::Char('d'));
+        assert!(!state.code_edit_mode);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/main.rs")).expect("read source"),
+            original
+        );
+
+        state.enter_code_edit();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('#'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        state.request_editor_exit();
+        state.handle_editor_exit_key(crossterm::event::KeyCode::Char('s'));
+        assert!(!state.code_edit_mode);
+        assert!(
+            std::fs::read_to_string(root.join("src/main.rs"))
+                .expect("read saved source")
+                .starts_with('#')
+        );
+        let saved = std::fs::read_to_string(root.join("src/main.rs")).expect("read saved source");
+
+        state.enter_code_edit();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('!'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        state.request_editor_exit();
+        state.handle_editor_exit_key(crossterm::event::KeyCode::Char('q'));
+        assert!(state.quit);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/main.rs")).expect("read discarded source"),
+            saved
+        );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

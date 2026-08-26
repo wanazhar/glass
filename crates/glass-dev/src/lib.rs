@@ -189,7 +189,13 @@ fn run_development_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         quality: cli.tui_live_quality,
         fit: cli.tui_live_fit,
     };
-    tui::run(std::env::current_dir()?, cli.tui_layout, visual_options)
+    tui::run(
+        std::env::current_dir()?,
+        cli.tui_layout,
+        visual_options,
+        cli.yolo,
+        cli.policy,
+    )
 }
 
 fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {

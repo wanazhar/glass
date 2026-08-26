@@ -37,6 +37,30 @@ pub(crate) enum FileKind {
     Plain,
 }
 
+impl FileKind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Rust => "Rust",
+            Self::JavaScript => "JavaScript",
+            Self::TypeScript => "TypeScript",
+            Self::Python => "Python",
+            Self::Go => "Go",
+            Self::Java => "Java",
+            Self::CLike => "C/C++",
+            Self::Shell => "Shell",
+            Self::Json => "JSON",
+            Self::Toml => "TOML",
+            Self::Yaml => "YAML",
+            Self::Markdown => "Markdown",
+            Self::Mermaid => "Mermaid",
+            Self::Html => "HTML",
+            Self::Css => "CSS",
+            Self::Sql => "SQL",
+            Self::Plain => "Plain text",
+        }
+    }
+}
+
 pub(crate) fn classify(path: &str) -> FileKind {
     let lower = path.to_ascii_lowercase();
     if let Some(kind) = match lower.as_str() {
@@ -213,6 +237,138 @@ pub(crate) fn render_editor(
         )));
     }
     Text::from(lines)
+}
+
+pub(crate) fn render_editable_source(
+    path: &str,
+    content: &str,
+    cursor_line: u32,
+    cursor_column: u32,
+    selection: Option<&crate::development::TextSelection>,
+) -> Text<'static> {
+    let selection = selection.filter(|selection| !selection.is_empty());
+    let kind = classify(path);
+    let mut highlighter = SyntaxHighlighter::for_path(path);
+    let mut markdown_fence = None;
+    let mut markdown_highlighter = None;
+    let source_lines = content.split('\n').collect::<Vec<_>>();
+    let gutter_width = source_lines.len().max(1).to_string().len().max(3);
+    let mut lines = Vec::with_capacity(source_lines.len());
+
+    for (index, source) in source_lines.into_iter().enumerate() {
+        let line_number = index as u32 + 1;
+        let active = line_number == cursor_line;
+        let source_spans = editor_source_spans(
+            kind,
+            source,
+            &mut markdown_fence,
+            &mut markdown_highlighter,
+            &mut highlighter,
+        );
+        let source_spans = apply_selection_background(
+            source_spans,
+            selection_columns(selection, line_number, source),
+        );
+        let source_spans = apply_active_line_background(source_spans, active);
+        let source_spans = apply_cursor_style(source_spans, active, cursor_column);
+        let gutter_style = if active {
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .bg(ACTIVE_BACKGROUND)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(MUTED)
+        };
+        let mut rendered = vec![Span::styled(
+            format!(
+                "{}{:>gutter_width$} │ ",
+                if active { "▶" } else { " " },
+                line_number,
+                gutter_width = gutter_width
+            ),
+            gutter_style,
+        )];
+        rendered.extend(source_spans);
+        lines.push(Line::from(rendered));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No file open",
+            Style::default().fg(MUTED),
+        )));
+    }
+    Text::from(lines)
+}
+
+const ACTIVE_LINE_BACKGROUND: Color = Color::Rgb(24, 34, 46);
+
+fn apply_active_line_background(spans: Vec<Span<'static>>, active: bool) -> Vec<Span<'static>> {
+    if !active {
+        return spans;
+    }
+    spans
+        .into_iter()
+        .map(|span| {
+            let style = if span.style.bg.is_none() {
+                span.style.bg(ACTIVE_LINE_BACKGROUND)
+            } else {
+                span.style
+            };
+            Span::styled(span.content.to_string(), style)
+        })
+        .collect()
+}
+
+fn apply_cursor_style(
+    spans: Vec<Span<'static>>,
+    active: bool,
+    cursor_column: u32,
+) -> Vec<Span<'static>> {
+    if !active {
+        return spans;
+    }
+    let cursor_index = cursor_column.saturating_sub(1) as usize;
+    let cursor_style = Style::default()
+        .fg(Color::Black)
+        .bg(ACCENT_BRIGHT)
+        .add_modifier(Modifier::BOLD);
+    let mut rendered = Vec::with_capacity(spans.len() + 1);
+    let mut position = 0;
+    for span in spans {
+        let style = span.style;
+        let mut chunk = String::new();
+        let mut chunk_cursor = None;
+        for character in span.content.chars() {
+            let is_cursor = position == cursor_index;
+            if chunk_cursor != Some(is_cursor) && !chunk.is_empty() {
+                rendered.push(Span::styled(
+                    std::mem::take(&mut chunk),
+                    if chunk_cursor == Some(true) {
+                        cursor_style
+                    } else {
+                        style
+                    },
+                ));
+            }
+            chunk_cursor = Some(is_cursor);
+            chunk.push(character);
+            position += 1;
+        }
+        if !chunk.is_empty() {
+            rendered.push(Span::styled(
+                chunk,
+                if chunk_cursor == Some(true) {
+                    cursor_style
+                } else {
+                    style
+                },
+            ));
+        }
+    }
+    if cursor_index >= position {
+        rendered.push(Span::styled(" ", cursor_style));
+    }
+    rendered
 }
 
 fn editor_line_number(gutter: &str) -> Option<u32> {
@@ -1358,6 +1514,20 @@ mod tests {
                 .iter()
                 .any(|span| span.style.bg == Some(ACTIVE_BACKGROUND))
         );
+    }
+
+    #[test]
+    fn editable_renderer_marks_line_numbers_active_line_and_cursor() {
+        let output = render_editable_source("src/main.rs", "fn main() {}\n", 1, 4, None);
+        assert_eq!(symbols(output.clone()), "▶  1 │ fn main() {}\n   2 │ ");
+        assert!(
+            output.lines[0]
+                .spans
+                .iter()
+                .any(|span| span.style.bg == Some(ACCENT_BRIGHT)),
+            "cursor cell should be visibly highlighted"
+        );
+        assert_eq!(output.lines[0].spans[0].content, "▶  1 │ ");
     }
 
     #[test]

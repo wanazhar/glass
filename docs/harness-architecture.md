@@ -62,12 +62,12 @@ CDP screenshots, or governed mutations are in flight. A refresh latency over
 The primary route is visible and keyboard-first:
 
 - `?` opens the unified keyboard cockpit.
-- `a` opens actions for the current surface.
+- `:actions` opens guided actions for the current surface.
 - `:` remains the expert command palette, not the only way to discover work.
 - `Ctrl-C` is a global quit reflex in every input mode.
 - `Ctrl-X` aborts the selected agent; `Ctrl-D` toggles steer/follow-up mode in the composer.
-- `[/]` switches editor buffers; `d` opens an inline Git diff; `v` toggles
-  embedded live browser pixels.
+- `[/]` switches editor buffers; `:git diff` opens an inline Git diff;
+  `:browser view` toggles embedded live browser pixels.
 - `review` prepares a bounded evidence-aware review prompt; `harness list` and
   `harness start NAME` expose safe handoff to installed external harnesses.
 - Paging keys and mouse wheel scroll content; clicks select navigation or

@@ -2,7 +2,7 @@
 
 use crate::development::{DevelopmentError, DevelopmentResult};
 use crate::development::{RemoteFrame, RemoteInput, RemoteView};
-use glass_browser::browser::policy::BrowserPolicy;
+use glass_browser::browser::policy::{BrowserPolicy, PolicyPreset};
 use glass_browser::browser::session::{
     BrowserSession, SemanticObservationLevel, SessionOptions, WorkflowCheckpoint,
     WorkflowDefinition, WorkflowRunResult,
@@ -62,6 +62,8 @@ fn default_profile() -> String {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserRuntimeState {
+    /// Policy preset governing browser capabilities and host access.
+    pub policy_preset: PolicyPreset,
     /// Whether a browser session is connected.
     pub connected: bool,
     /// PID when this service owns the browser process.
@@ -141,11 +143,16 @@ pub struct BrowserService {
 }
 
 impl BrowserService {
-    /// Create a resident browser worker rooted at `root`.
-    ///
-    /// Commands are serialized through one bounded worker queue. Each command
-    /// waits at most 180 seconds before returning a timeout error.
+    /// Create a resident browser worker with the development policy.
     pub fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
+        Self::new_with_policy(root, PolicyPreset::Development)
+    }
+
+    /// Create a resident browser worker with an explicit authorization preset.
+    pub fn new_with_policy(
+        root: impl AsRef<Path>,
+        policy_preset: PolicyPreset,
+    ) -> DevelopmentResult<Self> {
         let root = root.as_ref().to_path_buf();
         let (commands, receiver) = mpsc::sync_channel::<(BrowserCommand, Reply)>(COMMAND_QUEUE);
         std::thread::Builder::new()
@@ -157,7 +164,7 @@ impl BrowserService {
                 let Ok(runtime) = runtime else {
                     return;
                 };
-                let mut worker = BrowserWorker::new(root);
+                let mut worker = BrowserWorker::new(root, policy_preset);
                 while let Ok((command, reply)) = receiver.recv() {
                     let result = runtime.block_on(worker.execute(command));
                     let _ = reply.send(result);
@@ -360,9 +367,9 @@ impl BrowserService {
         self.call(BrowserCommand::RemoteViewRevoke)
     }
 }
-
 struct BrowserWorker {
     root: PathBuf,
+    policy_preset: PolicyPreset,
     session: Option<BrowserSession>,
     revision: Option<u64>,
     workflow_state: String,
@@ -373,9 +380,10 @@ struct BrowserWorker {
 }
 
 impl BrowserWorker {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, policy_preset: PolicyPreset) -> Self {
         Self {
             root,
+            policy_preset,
             session: None,
             revision: None,
             workflow_state: "idle".into(),
@@ -388,6 +396,7 @@ impl BrowserWorker {
 
     fn state(&self) -> BrowserRuntimeState {
         BrowserRuntimeState {
+            policy_preset: self.policy_preset,
             connected: self.session.is_some(),
             browser_process_id: self
                 .session
@@ -426,7 +435,7 @@ impl BrowserWorker {
                 "browser workspace already has a connected session".into(),
             ));
         }
-        let policy = BrowserPolicy::development(&self.root)
+        let policy = BrowserPolicy::from_preset(self.policy_preset, &self.root)
             .map_err(|error| DevelopmentError::Process(error.to_string()))?;
         let mut builder = SessionOptions::builder()
             .port(config.port)
@@ -869,6 +878,15 @@ mod tests {
                 .contains("browser")
         );
         assert_eq!(service.revoke_remote_view().unwrap()["revoked"], false);
+    }
+
+    #[test]
+    fn explicit_browser_policy_is_exposed_before_startup() {
+        let service =
+            BrowserService::new_with_policy(std::env::temp_dir(), PolicyPreset::Hardened).unwrap();
+        let state = service.state().unwrap();
+        assert_eq!(state["policyPreset"], "hardened");
+        assert_eq!(state["connected"], false);
     }
 
     #[test]

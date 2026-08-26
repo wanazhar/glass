@@ -130,6 +130,7 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
         || state.menu_open
         || state.browser_target_picker
         || state.browser_recovery.is_some()
+        || state.code_edit_mode
     {
         return None;
     }
@@ -218,6 +219,10 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
         render_help(frame, state, area);
         return;
     }
+    if state.code_edit_mode {
+        render_fullscreen_editor(frame, state, area);
+        return;
+    }
     match state.responsive_class(area.width, area.height) {
         ResponsiveClass::Desktop => render_desktop(frame, state, area),
         ResponsiveClass::Compact => render_compact(frame, state, area),
@@ -226,6 +231,185 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     if state.command_mode {
         render_command_palette(frame, state, area);
     }
+}
+fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(4),
+            Constraint::Length(4),
+        ])
+        .split(area);
+    let buffer = state.focused_buffer();
+    let content = buffer
+        .as_ref()
+        .map(|buffer| buffer.content.as_str())
+        .unwrap_or_default();
+    let line_count = content.split('\n').count().max(1);
+    let dirty = if state.focused_editor_dirty {
+        ("● UNSAVED", WARNING)
+    } else {
+        ("○ saved", SUCCESS)
+    };
+    let header = vec![
+        Line::from(vec![
+            Span::styled(
+                " GLASS DEV · EDITOR ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(ACCENT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {} ", compact_path(&state.focused_editor_path, area.width)),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(dirty.0, Style::default().fg(dirty.1)),
+        ]),
+        Line::from(Span::styled(
+            compact_line(
+                &format!(
+                    "Ln {} · Col {} · line {} of {} · syntax {}",
+                    state.focused_editor_line,
+                    state.focused_editor_column,
+                    state.focused_editor_line,
+                    line_count,
+                    file_view::classify(&state.focused_editor_path).label(),
+                ),
+                area.width.saturating_sub(2),
+            ),
+            Style::default().fg(MUTED),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(header).style(Style::default().bg(PANEL_BACKGROUND)),
+        rows[0],
+    );
+
+    let editor_block = surface_block(" SOURCE ", ACCENT_BRIGHT);
+    let editor_inner = editor_block.inner(rows[1]);
+    let text = file_view::render_editable_source(
+        &state.focused_editor_path,
+        content,
+        state.focused_editor_line,
+        state.focused_editor_column,
+        state.focused_editor_selection.as_ref(),
+    );
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(Style::default().fg(TEXT).bg(PANEL_INSET))
+            .scroll((
+                state.editor_scroll_line.min(u16::MAX as usize) as u16,
+                state.editor_scroll_column.min(u16::MAX as usize) as u16,
+            ))
+            .block(editor_block)
+            .wrap(Wrap { trim: false }),
+        rows[1],
+    );
+
+    let footer = vec![
+        Line::from(Span::styled(
+            compact_line(&state.status, area.width.saturating_sub(2)),
+            status_style(state),
+        )),
+        Line::from(Span::styled(
+            "↑↓←→ move · Shift+arrows select · Ctrl-S save · Ctrl-Z/Y undo/redo · Alt-A ask Pi",
+            Style::default().fg(MUTED),
+        )),
+        Line::from(Span::styled(
+            "Esc exit editor · exit prompt protects unsaved work",
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(Style::default().bg(PANEL_BACKGROUND))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(PANEL_BORDER))
+                    .padding(Padding::horizontal(1)),
+            )
+            .wrap(Wrap { trim: true }),
+        rows[2],
+    );
+
+    if let Some(prompt) = state.editor_exit_prompt {
+        render_editor_exit_prompt(frame, area, prompt);
+        return;
+    }
+    if buffer.is_some() && editor_inner.width > 0 && editor_inner.height > 0 {
+        let gutter_width = line_count.to_string().len().max(3);
+        let line = state.focused_editor_line.saturating_sub(1) as usize;
+        let row = line.saturating_sub(state.editor_scroll_line);
+        let column = state.focused_editor_column.saturating_sub(1) as usize;
+        let x = editor_inner.x.saturating_add(
+            (gutter_width + 4)
+                .saturating_add(column)
+                .saturating_sub(state.editor_scroll_column)
+                .min(u16::MAX as usize) as u16,
+        );
+        let y = editor_inner
+            .y
+            .saturating_add(row.min(usize::from(editor_inner.height.saturating_sub(1))) as u16);
+        if x < editor_inner.x.saturating_add(editor_inner.width)
+            && y < editor_inner.y.saturating_add(editor_inner.height)
+        {
+            frame.set_cursor_position((x, y));
+        }
+    }
+}
+
+fn render_editor_exit_prompt(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    prompt: super::state::EditorExitPrompt,
+) {
+    let unsaved = matches!(prompt, super::state::EditorExitPrompt::Unsaved);
+    let width = area.width.saturating_sub(4).min(78);
+    let height = area
+        .height
+        .saturating_sub(4)
+        .min(if unsaved { 10 } else { 7 });
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let content = if unsaved {
+        "UNSAVED CHANGES\n\nS  save and leave editor\nD  discard and leave editor\nQ  discard changes and quit Glass\nEsc stay in editor"
+    } else {
+        "LEAVE THIS FILE?\n\nEnter / Q  leave the editor\nEsc          stay in the editor"
+    };
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(panel_text(content))
+            .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+            .block(
+                Block::default()
+                    .title(if unsaved {
+                        " EXIT · unsaved changes "
+                    } else {
+                        " EXIT EDITOR · confirm "
+                    })
+                    .title_style(
+                        Style::default()
+                            .fg(if unsaved { WARNING } else { ACCENT_BRIGHT })
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(if unsaved { WARNING } else { ACCENT }))
+                    .bg(PANEL_BACKGROUND)
+                    .padding(Padding::horizontal(1)),
+            )
+            .wrap(Wrap { trim: false }),
+        modal,
+    );
 }
 fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect) {
     let width = area.width.saturating_sub(4).min(64);
@@ -264,11 +448,16 @@ fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
         width,
         height,
     };
-    let block = Block::default()
-        .title(format!(
+    let address = navigation_value(state);
+    let title = match address {
+        Some(_) => " NAVIGATE · URL OR DOMAIN · Enter submit · Esc close ".to_string(),
+        None => format!(
             " COMMAND PALETTE · {} · ↑↓ select · Enter run · Esc close ",
             state.surface.label()
-        ))
+        ),
+    };
+    let block = Block::default()
+        .title(title)
         .title_style(
             Style::default()
                 .fg(ACCENT_BRIGHT)
@@ -280,27 +469,42 @@ fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
         .bg(PANEL_BACKGROUND)
         .padding(Padding::horizontal(1));
     let inner = block.inner(modal);
-    let mut lines = vec![
-        palette_fixed_line(
-            "SELECT AN ACTION",
-            inner.width,
-            Style::default()
-                .fg(ACCENT_BRIGHT)
-                .add_modifier(Modifier::BOLD),
-        ),
-        palette_fixed_line(
-            "↑/↓ select · Enter run · Esc close · type only to filter (optional)",
-            inner.width,
-            Style::default().fg(MUTED),
-        ),
-    ];
-    if !state.command_input.trim().is_empty() {
-        lines.push(palette_fixed_line(
-            format!("Filter: {}", state.command_input),
-            inner.width,
-            Style::default().fg(MUTED),
-        ));
-    }
+    let is_navigation = address.is_some();
+    let mut lines = match address {
+        Some(address) => vec![
+            palette_fixed_line(
+                "ENTER A URL OR DOMAIN",
+                inner.width,
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            palette_fixed_line(
+                "https:// is optional · Enter navigates · Esc cancels",
+                inner.width,
+                Style::default().fg(MUTED),
+            ),
+            palette_fixed_line(
+                format!("Address: {address}"),
+                inner.width,
+                Style::default().fg(TEXT),
+            ),
+        ],
+        None => vec![
+            palette_fixed_line(
+                "SELECT AN ACTION",
+                inner.width,
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            palette_fixed_line(
+                "↑/↓ select · Enter run · Esc close · type only to filter (optional)",
+                inner.width,
+                Style::default().fg(MUTED),
+            ),
+        ],
+    };
     lines.push(palette_fixed_line(
         "",
         inner.width,
@@ -309,8 +513,15 @@ fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
     let action_offset = lines.len();
     let indices = state.palette_action_indices();
     if indices.is_empty() {
+        let message = if is_navigation {
+            "Ready · Enter runs this navigation · Esc cancels"
+        } else if !state.command_input.trim().is_empty() {
+            "No matching action · Enter runs the typed command · Ctrl-U clears"
+        } else {
+            "No matching actions · type a command or Esc closes"
+        };
         lines.push(palette_fixed_line(
-            "No matching actions · clear the filter with Ctrl-U",
+            message,
             inner.width,
             Style::default().fg(MUTED),
         ));
@@ -343,17 +554,29 @@ fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
 
 #[cfg(test)]
 fn command_palette_content(state: &DevTuiState) -> String {
+    let address = navigation_value(state);
+    let is_navigation = address.is_some();
     let indices = state.palette_action_indices();
-    let mut lines = vec![
-        "SELECT AN ACTION".to_string(),
-        "↑/↓ select · Enter run · Esc close · type only to filter (optional)".to_string(),
-    ];
-    if !state.command_input.trim().is_empty() {
-        lines.push(format!("Filter: {}", state.command_input));
-    }
+    let mut lines = match address {
+        Some(address) => vec![
+            "ENTER A URL OR DOMAIN".to_string(),
+            "https:// is optional · Enter navigates · Esc cancels".to_string(),
+            format!("Address: {address}"),
+        ],
+        None => vec![
+            "SELECT AN ACTION".to_string(),
+            "↑/↓ select · Enter run · Esc close · type only to filter (optional)".to_string(),
+        ],
+    };
     lines.push(String::new());
     if indices.is_empty() {
-        lines.push("No matching actions · clear the filter with Ctrl-U".into());
+        lines.push(if is_navigation {
+            "Ready · Enter runs this navigation · Esc cancels".into()
+        } else if !state.command_input.trim().is_empty() {
+            "No matching action · Enter runs the typed command · Ctrl-U clears".into()
+        } else {
+            "No matching actions · type a command or Esc closes".into()
+        });
     } else {
         for (visible_index, action_index) in indices.into_iter().enumerate() {
             let action = &state.surface_actions()[action_index];
@@ -370,6 +593,18 @@ fn command_palette_content(state: &DevTuiState) -> String {
         }
     }
     lines.join("\n")
+}
+const BROWSER_NAVIGATE_PREFIX: &str = "browser navigate ";
+
+fn navigation_value(state: &DevTuiState) -> Option<&str> {
+    state.command_input.strip_prefix(BROWSER_NAVIGATE_PREFIX)
+}
+
+fn navigation_cursor(state: &DevTuiState, address: &str) -> usize {
+    state
+        .command_cursor
+        .saturating_sub(BROWSER_NAVIGATE_PREFIX.len())
+        .min(address.len())
 }
 fn palette_fixed_line(content: impl Into<String>, width: u16, style: Style) -> Line<'static> {
     Line::from(Span::styled(
@@ -433,7 +668,7 @@ fn palette_action_hint(command: &str) -> String {
 }
 
 fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let content = "KEYS\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Tab      next surface\n  Esc      back\n  ?        help\n\nWORKSPACE\n  Enter    describe a task\n  a        workspace actions\n  s/l      setup / login\n\nAGENT\n  i        compose a prompt\n  :review  review current changes\n  :harness list\n           list installed harnesses\n  :harness start NAME\n           launch a harness in this terminal\n\nAPP (OPTIONAL)\n  n        address\n  t        type\n  v        live view\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n\nEDITOR\n  Enter    open\n  i        edit\n  Alt-A    ask Pi with the focused buffer\n  Ctrl-S   save\n  Ctrl-Z/Y undo / redo\n\nGIT\n  ↑/↓      changed file\n  Enter    diff\n  Esc      close\n\nCOMMAND PALETTE\n  :        open the full command and shortcut list\n  ↑/↓      browse the list\n  Ctrl-P/N previous / next command history\n  Ctrl-U   clear the command\n  Tab      complete the first matching route\n  Enter    run the command";
+    let content = "KEYS\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Tab      next surface\n  Esc      back\n  ?        help\n  :        command palette\n  Ctrl-C   quit confirmation\n\nWORKSPACE\n  Enter    describe a task\n  :actions workspace actions\n  :agent setup\n           install the managed Pi runtime\n  :agent setup login\n           authenticate a Pi provider\n\nAGENT\n  Enter    start or continue a conversation\n  :agent new\n           start a separate conversation\n  :review  review current changes\n  :harness list\n           list installed harnesses\n  :harness start NAME\n           launch a harness in this terminal\n\nAPP (OPTIONAL)\n  :browser start\n  :browser navigate URL\n  :browser type TARGET TEXT\n  :browser targets\n           inspect and select browser pages\n  :browser human / release\n           take or return browser control\n  :browser view\n           toggle live view\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n\nEDITOR\n  ↑/↓      select a file\n  Enter    open selected file full-screen\n  i        edit the focused buffer\n  Esc      exit editor · prompts before leaving\n  Shift+arrows select text\n  Ctrl-S   save\n  Ctrl-Z/Y undo / redo\n  Alt-A    ask Pi with the focused buffer\n  Unsaved: S save · D discard · Q discard and quit\n\nGIT\n  ↑/↓      changed file\n  Enter    diff\n  Esc      close\n\nCOMMAND PALETTE\n  :        open the full command and shortcut list\n  ↑/↓      browse the list\n  Ctrl-P/N previous / next command history\n  Ctrl-U   clear the command\n  Tab      complete the first matching route\n  Enter    run the command";
     frame.render_widget(
         Paragraph::new(panel_text(content))
             .style(Style::default().fg(TEXT))
@@ -528,14 +763,18 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             status_line(state, rows[2].width.saturating_sub(2)),
         ]
     } else if state.command_mode {
+        let (prefix, input, cursor) = match navigation_value(state) {
+            Some(address) => (" URL: ", address, navigation_cursor(state, address)),
+            None => (" : ", state.command_input.as_str(), state.command_cursor),
+        };
         vec![
             Line::from(input_spans(
-                " : ",
+                prefix,
                 Style::default()
                     .fg(ACCENT_BRIGHT)
                     .add_modifier(Modifier::BOLD),
-                &state.command_input,
-                state.command_cursor,
+                input,
+                cursor,
                 rows[2].width.saturating_sub(6),
             )),
             status_line(state, rows[2].width.saturating_sub(2)),
@@ -576,9 +815,16 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
             .fg(ACCENT_BRIGHT)
             .add_modifier(Modifier::BOLD),
     );
+    let mode_label = if state.yolo_mode {
+        "YOLO · confirmations off"
+    } else {
+        "guarded"
+    };
     let trust = Span::styled(
-        format!("{} ", state.snapshot_trust_label),
+        format!("{} · {mode_label} ", state.snapshot_trust_label),
         Style::default().fg(if state.snapshot_trust_label == "untrusted" {
+            WARNING
+        } else if state.yolo_mode {
             WARNING
         } else {
             MUTED
@@ -1075,7 +1321,7 @@ fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     let conversation = state.conversation_view();
     let landing = if conversation.starts_with("No conversation yet.") {
         if state.agent_readiness.starts_with("✓ Ready") {
-            "START HERE\nDescribe a coding task.\nEnter to chat · Glass inspects, edits, runs, and verifies.\nBrowser opens only for UI work.\n\nNeed another tool? Press a for actions, or use :harness list.".into()
+            "START HERE\nDescribe a coding task.\nEnter to chat · Glass inspects, edits, runs, and verifies.\nBrowser opens only for UI work.\n\nNeed another tool? Use :actions or :harness list.".into()
         } else {
             "SETUP\nChoose Setup Pi runtime or Login from Actions.\nThen return here to describe a coding task.\n\nInstalled coding harnesses remain available from :harness list.".into()
         }
@@ -1216,7 +1462,7 @@ fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 
 fn render_code_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let title = if state.focused_editor_path.is_empty() {
-        " EDITOR · choose a file ".to_string()
+        " EDITOR · choose a file · Enter full-screen ".to_string()
     } else {
         let dirty = if state.focused_editor_dirty {
             "unsaved"
@@ -1224,14 +1470,12 @@ fn render_code_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             "saved"
         };
         format!(
-            " EDITOR · {dirty} · Ln {} Col {} · {} ",
-            state.focused_editor_line,
-            state.focused_editor_column,
-            state.editor_collaboration_summary()
+            " PREVIEW · {dirty} · Ln {} Col {} · Enter full-screen edit ",
+            state.focused_editor_line, state.focused_editor_column,
         )
     };
     let content = if state.editor.trim().is_empty() {
-        "No file open · choose a file from the list"
+        "No file open · ↑/↓ select a file · Enter opens the full-screen editor"
     } else {
         state.editor.as_str()
     };
@@ -2485,21 +2729,32 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             ]),
         ]
     } else if state.command_mode {
+        let (prefix, input, cursor, hint) = match navigation_value(state) {
+            Some(address) => (
+                "URL: ",
+                address,
+                navigation_cursor(state, address),
+                "  Enter navigate · Esc cancel",
+            ),
+            None => (
+                ": ",
+                state.command_input.as_str(),
+                state.command_cursor,
+                if state.command_input.trim().is_empty() {
+                    "  ↑↓ select · Enter run · type only to filter"
+                } else {
+                    "  Enter runs typed command · Esc cancel"
+                },
+            ),
+        };
         let mut spans = input_spans(
-            ": ",
+            prefix,
             Style::default().fg(ACCENT_BRIGHT),
-            &state.command_input,
-            state.command_cursor,
+            input,
+            cursor,
             area.width.saturating_sub(8),
         );
-        spans.push(Span::styled(
-            if state.command_input.trim().is_empty() {
-                "  ↑↓ select · Enter run · type only to filter"
-            } else {
-                "  Filter · ↑↓ select · Enter run"
-            },
-            Style::default().fg(MUTED),
-        ));
+        spans.push(Span::styled(hint, Style::default().fg(MUTED)));
         vec![Line::from(spans)]
     } else {
         let mut line = vec![
@@ -2884,8 +3139,8 @@ mod tests {
     fn help_scroll_and_git_diff_keep_small_cockpits_interactive() {
         let mut state = state(TuiLayout::Mobile);
         state.toggle_help();
-        state.scroll_help(8);
-        assert_eq!(state.help_scroll, 8);
+        state.scroll_help(16);
+        assert_eq!(state.help_scroll, 16);
         assert!(rendered(&state, 48, 18).contains("APP"));
 
         state.help_open = false;
@@ -3227,6 +3482,43 @@ mod tests {
                 .unwrap()
                 .starts_with('#')
         );
+    }
+
+    #[test]
+    fn selected_file_opens_as_full_screen_editor_with_cursor_and_exit_help() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Code;
+        state.selected_file = state
+            .files
+            .iter()
+            .position(|path| path == "Cargo.toml")
+            .unwrap();
+        state.open_selected_file_for_edit();
+        assert!(state.code_edit_mode);
+        let output = rendered(&state, 100, 30);
+        assert!(output.contains("GLASS DEV · EDITOR"));
+        assert!(output.contains("SOURCE"));
+        assert!(
+            output.contains("Esc exit editor"),
+            "rendered output: {output:?}"
+        );
+        assert!(output.contains("Ctrl-S save"));
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &state)).unwrap();
+        let cursor = terminal.backend().cursor_position();
+        assert!(cursor.x > 0);
+        assert!(cursor.y > 0);
+
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('#'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        state.request_editor_exit();
+        let prompt = rendered(&state, 100, 30);
+        assert!(prompt.contains("UNSAVED CHANGES"));
+        assert!(prompt.contains("discard changes and quit Glass"));
     }
 
     #[test]

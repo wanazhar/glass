@@ -928,7 +928,9 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                     }
                     KeyCode::Char('n') if app.command.is_empty() => {
                         app.command = "navigate ".into();
-                        app.status = "Address entry · type URL · Enter navigates".into();
+                        app.status =
+                            "Address entry · type a URL or domain (https:// optional) · Enter navigates"
+                                .into();
                     }
                     KeyCode::Char('t') if app.command.is_empty() => {
                         app.command = "type ".into();

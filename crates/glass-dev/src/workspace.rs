@@ -20,6 +20,7 @@ use crate::tasks::{
 use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
 use crate::trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
+use glass_browser::browser::policy::PolicyPreset;
 use glass_browser::browser::session::{KnowledgeStore, default_knowledge_store_path_for_workspace};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -56,8 +57,16 @@ pub struct DevelopmentWorkspace {
 impl DevelopmentWorkspace {
     /// Open a project and establish generation one of its resident state.
     pub fn open(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
+        Self::open_with_policy(root, PolicyPreset::Development)
+    }
+
+    /// Open with an explicit browser authorization preset.
+    pub fn open_with_policy(
+        root: impl AsRef<Path>,
+        policy_preset: PolicyPreset,
+    ) -> DevelopmentResult<Self> {
         let store = WorkspaceTrustStore::platform_default()?;
-        Self::open_with_store(root, store)
+        Self::open_with_store_and_policy(root, store, policy_preset)
     }
 
     /// Open using an explicit Glass-owned store, primarily for isolated hosts
@@ -65,6 +74,15 @@ impl DevelopmentWorkspace {
     pub fn open_with_store(
         root: impl AsRef<Path>,
         trust_store: WorkspaceTrustStore,
+    ) -> DevelopmentResult<Self> {
+        Self::open_with_store_and_policy(root, trust_store, PolicyPreset::Development)
+    }
+
+    /// Open using an explicit trust store and browser authorization preset.
+    pub fn open_with_store_and_policy(
+        root: impl AsRef<Path>,
+        trust_store: WorkspaceTrustStore,
+        policy_preset: PolicyPreset,
     ) -> DevelopmentResult<Self> {
         let trust_identity = WorkspaceIdentity::inspect(root.as_ref())?;
         let trust = trust_store.status(&trust_identity)?;
@@ -87,8 +105,8 @@ impl DevelopmentWorkspace {
             .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
         let mut agents = AgentRegistry::new(&root)?;
         agents.set_additional_system_prompt(customization.agent_instructions(trust))?;
+        let browser = BrowserService::new_with_policy(&root, policy_preset)?;
         let language = LanguageService::new(&root)?;
-        let browser = BrowserService::new(&root)?;
         let knowledge = KnowledgeStore::open(default_knowledge_store_path_for_workspace(
             "default",
             &root.display().to_string(),
@@ -651,7 +669,6 @@ fn validate_service_name(name: &str) -> DebugResult<()> {
     }
     Ok(())
 }
-
 /// Thread-safe resident handle shared by CLI, TUI, MCP and daemon clients.
 #[derive(Clone)]
 pub struct SharedDevelopmentWorkspace {
@@ -659,7 +676,17 @@ pub struct SharedDevelopmentWorkspace {
 }
 impl SharedDevelopmentWorkspace {
     pub fn open(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
-        let inner = Arc::new(Mutex::new(DevelopmentWorkspace::open(root)?));
+        Self::open_with_policy(root, PolicyPreset::Development)
+    }
+
+    pub fn open_with_policy(
+        root: impl AsRef<Path>,
+        policy_preset: PolicyPreset,
+    ) -> DevelopmentResult<Self> {
+        let inner = Arc::new(Mutex::new(DevelopmentWorkspace::open_with_policy(
+            root,
+            policy_preset,
+        )?));
         let weak = Arc::downgrade(&inner);
         let executor: PiToolExecutor = Arc::new(move |call, allow_mutation, confirmed| {
             let inner = weak.upgrade().ok_or_else(|| {

@@ -22,7 +22,7 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
         label: "Compose message",
         command: "i",
-        key: "i",
+        key: ":",
         description: "ask the resident Glass Agent",
     },
     SurfaceAction {
@@ -34,7 +34,7 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
         label: "Update Pi runtime",
         command: "agent update",
-        key: "u",
+        key: ":",
         description: "refresh the pinned managed SDK",
     },
     SurfaceAction {
@@ -125,16 +125,16 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
 
 const CODE_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
-        label: "Open selected file",
+        label: "Open selected file full-screen",
         command: "Enter",
         key: "Enter",
-        description: "open the focused project file",
+        description: "open the selected project file in the focused editor",
     },
     SurfaceAction {
-        label: "Edit file",
+        label: "Edit focused file",
         command: "i",
-        key: "i",
-        description: "edit the focused buffer",
+        key: ":",
+        description: "open the focused buffer in the full-screen editor",
     },
     SurfaceAction {
         label: "Replace selection",
@@ -195,14 +195,14 @@ const APP_ACTIONS: &[SurfaceAction] = &[
     },
     SurfaceAction {
         label: "Navigate",
-        command: "n",
-        key: "n",
+        command: "browser navigate URL",
+        key: ":",
         description: "enter a page URL",
     },
     SurfaceAction {
         label: "Type into selected",
-        command: "t",
-        key: "t",
+        command: "browser type TARGET TEXT",
+        key: ":",
         description: "type into the selected entity",
     },
     SurfaceAction {
@@ -213,8 +213,8 @@ const APP_ACTIONS: &[SurfaceAction] = &[
     },
     SurfaceAction {
         label: "Live browser view",
-        command: "v",
-        key: "v",
+        command: "browser view",
+        key: ":",
         description: "request native or ANSI browser pixels",
     },
 ];
@@ -222,8 +222,8 @@ const APP_ACTIONS: &[SurfaceAction] = &[
 const TERMINAL_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
         label: "Start detected suite",
-        command: "s",
-        key: "s",
+        command: "process start dev",
+        key: ":",
         description: "queue the project-detected development command",
     },
     SurfaceAction {
@@ -282,8 +282,8 @@ const GIT_ACTIONS: &[SurfaceAction] = &[
     },
     SurfaceAction {
         label: "View selected file diff",
-        command: "d",
-        key: "Enter / d",
+        command: "git diff",
+        key: ":",
         description: "open the focused file diff",
     },
     SurfaceAction {
@@ -330,8 +330,8 @@ const DEBUG_ACTIONS: &[SurfaceAction] = &[
 const MORE_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
         label: "Start detected suite",
-        command: "s",
-        key: "s",
+        command: "process start dev",
+        key: ":",
         description: "queue the project-detected development command",
     },
     SurfaceAction {
@@ -614,7 +614,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
                 .collect::<Vec<_>>()
                 .join(" · ");
             Ok(format!(
-                "Command center: `a` opens guided {} launchers; `:` searches every route. Groups: {}. `tool NAME JSON` exposes every resident tool. Mutations use one-use confirmation and revision guards. Project-provided commands: {}",
+                "Command center: `:actions` opens guided {} launchers; `:` searches every route. Groups: {}. `tool NAME JSON` exposes every resident tool. Mutations use one-use confirmation and revision guards. Project-provided commands: {}",
                 command_group_for(state.surface).label,
                 route_guide(),
                 if project_commands.is_empty() {
@@ -623,6 +623,10 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
                     &project_commands
                 }
             ))
+        }
+        "a" | "actions" => {
+            state.open_menu();
+            Ok("Actions menu opened · ↑↓ select · Enter run · Esc close".into())
         }
         "cockpit" => execute_cockpit(state, parts.collect()),
         "quit" | "q" => {
@@ -664,7 +668,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
             ))
         }
         _ => Err(format!(
-            "unknown command {command}; press a for guided launchers or type help"
+            "unknown command {command}; press : for guided launchers or type :help"
         )),
     }
 }
@@ -1440,7 +1444,8 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             Ok(if ready {
                 "Glass Agent is ready · press Enter or type to start a conversation".into()
             } else {
-                "Glass Agent needs setup · press Enter to install/sign in, or s/u/l for direct actions".into()
+                "Glass Agent needs setup · use :agent setup or :agent setup login, then Enter to chat"
+                    .into()
             })
         }
         "setup" | "update" => {
@@ -1793,6 +1798,11 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         state.surface = DevSurface::Code;
         return Ok("Opened shared editor".into());
     };
+    if action == "edit" {
+        state.surface = DevSurface::Code;
+        state.enter_code_edit();
+        return Ok("Editor edit mode opened · Esc closes".into());
+    }
     if action == "comments" {
         let path = parts.get(1).copied();
         let result = run_tool(state, "glass.editor.comments", json!({"path":path}), false)?;
@@ -2155,17 +2165,39 @@ fn execute_browser(
             _ => return Err("workflow actions: list, run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON], cancel, verify".into()),
         }
     } else {
+        if matches!(action, "human" | "takeover") {
+            let _ = state
+                .browser_workspace
+                .reduce(glass_browser::browser_workspace::BrowserWorkspaceIntent::TakeHumanControl);
+            state.browser = state.browser_workspace_summary();
+            state.surface = DevSurface::App;
+            return Ok("Human browser control acquired · agent mutation paused".into());
+        }
+        if matches!(action, "release" | "reconcile") {
+            state.browser_workspace.reconcile_takeover();
+            state.browser = state.browser_workspace_summary();
+            state.surface = DevSurface::App;
+            return Ok("Browser checkpoint reconciled · control returned to Glass".into());
+        }
         if matches!(action, "targets" | "target") {
             let query = parts.get(1..).unwrap_or_default().join(" ");
             state.request_browser_target_picker(query)?;
             state.surface = DevSurface::App;
             return Ok("Loading browser targets…".into());
         }
-        let visible_revision = state
-            .browser_workspace
-            .state()
-            .browser_revision
-            .ok_or("observe the browser before a revision-bound action");
+        let browser_state = state.browser_workspace.state();
+        let visible_revision = browser_state.browser_revision.unwrap_or(0);
+        if action == "navigate" && (visible_revision == 0 || browser_state.semantic_invalidated) {
+            let url = parts.get(1).ok_or("browser navigate requires URL")?;
+            return state.prepare_browser_navigation(url);
+        }
+        if matches!(
+            action,
+            "back" | "forward" | "reload" | "stop-loading" | "click" | "type" | "scroll"
+        ) && visible_revision == 0
+        {
+            return Err("start and observe the browser before a revision-bound action".into());
+        }
         match action {
             "start" => {
                 let port = parts
@@ -2199,21 +2231,21 @@ fn execute_browser(
             "web-ir" => ("glass.browser.web_ir", json!({}), false),
             "targets" => ("glass.browser.targets", json!({}), false),
             "select" => ("glass.browser.target.select", json!({"targetId":parts.get(1).ok_or("browser select requires TARGET_ID")?}), true),
-            "navigate" => ("glass.browser.navigate", json!({"url":parts.get(1).ok_or("browser navigate requires URL")?,"browserRevision":visible_revision?}), true),
-            "back" | "forward" | "reload" | "stop-loading" => ("glass.browser.act", json!({"action":if action == "stop-loading" { "stopLoading" } else { action },"browserRevision":visible_revision?}), true),
+            "navigate" => ("glass.browser.navigate", json!({"url":parts.get(1).ok_or("browser navigate requires URL")?,"browserRevision":visible_revision}), true),
+            "back" | "forward" | "reload" | "stop-loading" => ("glass.browser.act", json!({"action":if action == "stop-loading" { "stopLoading" } else { action },"browserRevision":visible_revision}), true),
             "click" => {
                 let selected = state.browser_workspace.state().selected();
                 let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser click requires a target or semantic selection")?;
-                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision?);
+                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
                 ("glass.browser.act", json!({"action":"click","target":target,"browserRevision":revision}), true)
             },
             "type" => {
                 let selected = state.browser_workspace.state().selected();
                 let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser type requires a target or semantic selection")?;
-                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision?);
+                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
                 ("glass.browser.act", json!({"action":"type","target":target,"browserRevision":revision,"text":parts.get(2..).unwrap_or_default().join(" ")}), true)
             },
-            "scroll" => ("glass.browser.act", json!({"action":"scroll","dx":parts.get(1).and_then(|value| value.parse::<f64>().ok()).unwrap_or(0.0),"dy":parts.get(2).and_then(|value| value.parse::<f64>().ok()).unwrap_or(600.0),"browserRevision":visible_revision?}), true),
+            "scroll" => ("glass.browser.act", json!({"action":"scroll","dx":parts.get(1).and_then(|value| value.parse::<f64>().ok()).unwrap_or(0.0),"dy":parts.get(2).and_then(|value| value.parse::<f64>().ok()).unwrap_or(600.0),"browserRevision":visible_revision}), true),
             "screenshot" => ("glass.browser.screenshot", json!({}), false),
             "remote-open" => ("glass.browser.remote-view.open", json!({}), true),
             "remote-status" => ("glass.browser.remote-view.status", json!({}), false),
@@ -2527,7 +2559,14 @@ fn run_tool(
         name: name.into(),
         arguments,
     };
-    if mutating {
+    if mutating && state.yolo_mode {
+        if state.background_action_running() {
+            return Err("another tool action is already awaiting or running".into());
+        }
+        state.queue_tool_request(call, context)?;
+        return Ok(json!({"queued": true, "tool": name, "yolo": true}));
+    }
+    if mutating && !state.yolo_mode {
         if state.background_action_running() {
             return Err("another tool action is already awaiting or running".into());
         }
@@ -2646,17 +2685,95 @@ mod tests {
     }
 
     #[test]
-    fn help_explains_the_guided_command_center() {
-        let (mut state, root) = test_state("help");
-        let output = execute(&mut state, "help").expect("help route");
-        assert!(output.contains("`a` opens guided Agent launchers"));
-        assert!(output.contains("Agent: agent"));
-        assert!(output.contains("Build: project · editor · github · lsp · git"));
-        let error = execute(&mut state, "not-a-route").expect_err("unknown route");
-        assert!(error.contains("press a for guided launchers"));
+    fn detached_navigation_guides_browser_start_before_url() {
+        let (mut state, root) = test_state("detached-navigation");
+        let output = execute(&mut state, "browser navigate google.com")
+            .expect("detached navigation should queue startup");
+        assert!(output.contains("Browser detached"));
+        assert_eq!(
+            state.pending_browser_navigation.as_deref(),
+            Some("google.com")
+        );
+        let pending = state
+            .pending_confirmation
+            .as_ref()
+            .expect("browser startup confirmation");
+        assert_eq!(pending.call.name, "glass.browser.start");
+        state.deny_confirmation();
+        assert!(state.pending_browser_navigation.is_none());
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn connected_navigation_refreshes_before_revision_bound_action() {
+        let (mut state, root) = test_state("connected-navigation");
+        state.browser_workspace.connected(true, None, Some(1));
+        let output = execute(&mut state, "browser navigate google.com")
+            .expect("connected navigation should refresh first");
+        assert!(output.contains("refreshing page"));
+        assert_eq!(
+            state.pending_browser_navigation.as_deref(),
+            Some("google.com")
+        );
+        let (call, _) = state
+            .queued_tool_request
+            .take()
+            .expect("fresh browser observation");
+        assert_eq!(call.name, "glass.browser.observe");
+        assert!(state.pending_confirmation.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn help_explains_the_guided_command_center() {
+        let (mut state, root) = test_state("help");
+        let output = execute(&mut state, "help").expect("help route");
+        assert!(output.contains("`:actions` opens guided Agent launchers"));
+        assert!(output.contains("Agent: agent"));
+        assert!(output.contains("Build: project · editor · github · lsp · git"));
+        let error = execute(&mut state, "not-a-route").expect_err("unknown route");
+        assert!(error.contains("press : for guided launchers"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prefixed_browser_control_routes_replace_bare_keys() {
+        let (mut state, root) = test_state("browser-control-prefix");
+
+        let output = execute(&mut state, "browser human").expect("human control route");
+        assert!(output.contains("Human browser control"));
+        assert_eq!(
+            state.browser_workspace.state().input_owner,
+            glass_browser::browser_workspace::BrowserInputOwner::Human
+        );
+
+        let output = execute(&mut state, "browser release").expect("release control route");
+        assert!(output.contains("control returned to Glass"));
+        assert_eq!(
+            state.browser_workspace.state().input_owner,
+            glass_browser::browser_workspace::BrowserInputOwner::Glass
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn yolo_prefixed_mutations_skip_the_confirmation_sheet() {
+        let (mut state, root) = test_state("yolo-prefix");
+        state.yolo_mode = true;
+
+        let output = execute(&mut state, "agent update").expect("queue yolo update");
+
+        assert!(output.contains("queued"));
+        assert!(state.pending_confirmation.is_none());
+        assert_eq!(
+            state
+                .queued_tool_request
+                .as_ref()
+                .map(|(call, _)| call.name.as_str()),
+            Some("glass.agent.setup")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn quit_route_requests_confirmation_without_exiting() {
         let (mut state, root) = test_state("quit");

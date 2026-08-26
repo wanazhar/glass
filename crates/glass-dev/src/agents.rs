@@ -246,6 +246,7 @@ pub struct AgentRegistry {
     additional_system_prompt: Option<String>,
     default_model: Option<String>,
     default_thinking: Option<String>,
+    default_unrestricted: bool,
 }
 
 impl AgentRegistry {
@@ -268,6 +269,7 @@ impl AgentRegistry {
             additional_system_prompt: None,
             default_model: None,
             default_thinking: None,
+            default_unrestricted: false,
         })
     }
 
@@ -335,10 +337,17 @@ impl AgentRegistry {
         self.default_thinking = thinking;
         Ok(())
     }
+    /// Make newly created resident agents unrestricted for this process.
+    pub fn set_default_unrestricted(&mut self, unrestricted: bool) {
+        self.default_unrestricted = unrestricted;
+    }
 
     /// Validate and enqueue an agent; dependencies must be known and successful.
     pub fn create(&mut self, mut spec: AgentSpec) -> DevelopmentResult<AgentId> {
         self.refresh()?;
+        if self.default_unrestricted {
+            spec.unrestricted = true;
+        }
         if spec.model.is_none() {
             spec.model.clone_from(&self.default_model);
         }

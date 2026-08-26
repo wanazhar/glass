@@ -18,6 +18,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use glass_browser::browser::policy::PolicyPreset;
 use glass_browser::browser_workspace::{BrowserConnectionPhase, BrowserWorkspaceIntent};
 use glass_browser::cli::args::{
     TuiLayout, TuiLiveBackend, TuiLiveFit, TuiLiveMode, TuiLiveQuality,
@@ -298,16 +299,17 @@ impl VisualRuntime {
 /// Requires interactive stdin and stdout. `root` is the project workspace;
 /// `layout` selects the desktop/phone composition and `visual_options`
 /// selects the optional browser preview path. Non-interactive callers should
-/// use a CLI command or MCP instead.
 pub fn run(
     root: impl AsRef<Path>,
     layout: TuiLayout,
     visual_options: TuiVisualOptions,
+    yolo_mode: bool,
+    policy_preset: PolicyPreset,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("Glass Dev TUI requires an interactive terminal; use a CLI subcommand or --mcp for non-interactive use".into());
     }
-    let mut state = DevTuiState::open_for_tui(root, layout)?;
+    let mut state = DevTuiState::open_for_tui_with_policy(root, layout, yolo_mode, policy_preset)?;
     let mut visual = VisualRuntime::new(visual_options)?;
     visual.sync_state(&mut state);
     let mut worker = snapshot::SnapshotWorker::spawn(&state);
@@ -340,7 +342,13 @@ pub fn run(
                             KeyCode::Esc | KeyCode::Char('n' | 'N') => state.cancel_quit(),
                             _ => {}
                         }
-                    // Ctrl-C keeps its strongest reflex, but now asks first.
+                    } else if state.editor_exit_prompt.is_some() {
+                        state.handle_editor_exit_key(key.code);
+                    } else if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && state.code_edit_mode
+                    {
+                        state.request_editor_exit();
                     } else if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
@@ -365,19 +373,27 @@ pub fn run(
                         match key.code {
                             KeyCode::Esc => state.close_menu(),
                             KeyCode::Enter => {
+                                let was_live = state.browser_visual_live;
                                 let visual_requested = state.surface == DevSurface::App
                                     && state
                                         .surface_actions()
                                         .get(state.menu_selection)
-                                        .is_some_and(|action| action.command == "v");
+                                        .is_some_and(|action| action.command == "browser view");
                                 state.run_menu_action();
-                                if visual_requested {
-                                    if let Some(reason) = visual.request_live(true) {
+                                if visual_requested && state.browser_visual_live != was_live {
+                                    let live = state.browser_visual_live;
+                                    if let Some(reason) = visual.request_live(live) {
                                         state.browser_visual_live = false;
                                         state.status = format!("Live view unavailable · {reason}");
                                     } else {
                                         visual.sync_state(&mut state);
-                                        state.status = "Live view starting · v stops".into();
+                                        state.status = if live {
+                                            "Live view starting · screenshot worker will update the pane"
+                                                .into()
+                                        } else {
+                                            "Live view off · semantic inspection remains available"
+                                                .into()
+                                        };
                                     }
                                 }
                             }
@@ -408,6 +424,7 @@ pub fn run(
                         match key.code {
                             KeyCode::Esc => {
                                 state.browser_recovery = None;
+                                state.pending_browser_navigation = None;
                                 state.status = "Recovery dismissed".into();
                             }
                             KeyCode::Char('1') => state.accept_browser_recovery(0, &mut worker),
@@ -458,7 +475,7 @@ pub fn run(
                         }
                     } else if state.code_edit_mode {
                         match key.code {
-                            KeyCode::Esc => state.close_code_edit(),
+                            KeyCode::Esc => state.request_editor_exit(),
                             _ => state.edit_code_key(key.code, key.modifiers),
                         }
                     } else if state.composer_mode {
@@ -500,7 +517,9 @@ pub fn run(
                             (KeyCode::Left, _) => state.move_composer_cursor(false),
                             (KeyCode::Right, _) => state.move_composer_cursor(true),
                             (KeyCode::Home, _) => state.composer_cursor = 0,
-                            (KeyCode::End, _) => state.composer_cursor = state.composer_input.len(),
+                            (KeyCode::End, _) => {
+                                state.composer_cursor = state.composer_input.len();
+                            }
                             (KeyCode::Char(character), _) => {
                                 state.insert_composer_text(&character.to_string());
                             }
@@ -512,13 +531,20 @@ pub fn run(
                             (KeyCode::Enter, _) => {
                                 let was_live = state.browser_visual_live;
                                 state.submit_palette(&mut worker);
-                                if !was_live && state.browser_visual_live {
-                                    if let Some(reason) = visual.request_live(true) {
+                                if state.browser_visual_live != was_live {
+                                    let live = state.browser_visual_live;
+                                    if let Some(reason) = visual.request_live(live) {
                                         state.browser_visual_live = false;
                                         state.status = format!("Live view unavailable · {reason}");
                                     } else {
                                         visual.sync_state(&mut state);
-                                        state.status = "Live view starting · v stops".into();
+                                        state.status = if live {
+                                            "Live view starting · screenshot worker will update the pane"
+                                                .into()
+                                        } else {
+                                            "Live view off · semantic inspection remains available"
+                                                .into()
+                                        };
                                     }
                                 }
                             }
@@ -566,47 +592,6 @@ pub fn run(
                                     "Background operation is bounded · Ctrl-C opens quit confirmation"
                                         .into();
                             }
-                            (KeyCode::Char('q'), _) => {
-                                state.request_quit();
-                            }
-                            (KeyCode::Char('a'), _) => state.open_menu(),
-                            (KeyCode::Char(':'), _) => state.open_palette(),
-                            (KeyCode::Char('T'), _) if state.surface == DevSurface::App => {
-                                state.queue_browser_targets(&mut worker)
-                            }
-                            (KeyCode::Char('H'), _) if state.surface == DevSurface::App => {
-                                let _ = state
-                                    .browser_workspace
-                                    .reduce(BrowserWorkspaceIntent::TakeHumanControl);
-                                state.browser = state.browser_workspace_summary();
-                                state.status =
-                                    "Human browser control acquired · agent mutation paused".into();
-                            }
-                            (KeyCode::Char('G'), _) if state.surface == DevSurface::App => {
-                                state.browser_workspace.reconcile_takeover();
-                                state.browser = state.browser_workspace_summary();
-                                state.status =
-                                    "Browser checkpoint reconciled · control returned to Glass"
-                                        .into();
-                            }
-                            (KeyCode::Char('s'), _) if state.surface == DevSurface::Agent => {
-                                state.request_agent_setup();
-                            }
-                            (KeyCode::Char('u'), _) if state.surface == DevSurface::Agent => {
-                                state.request_agent_update();
-                            }
-                            (KeyCode::Char('l'), _) if state.surface == DevSurface::Agent => {
-                                let _ = state.request_agent_login();
-                            }
-                            (KeyCode::Char('s'), _) if state.surface == DevSurface::Terminal => {
-                                state.request_detected_dev();
-                            }
-                            (KeyCode::Char('i'), _) if state.surface == DevSurface::Agent => {
-                                state.start_agent_interaction();
-                            }
-                            (KeyCode::Char('i'), _) if state.surface == DevSurface::Code => {
-                                state.enter_code_edit();
-                            }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Agent => {
                                 state.start_agent_interaction();
                             }
@@ -623,11 +608,8 @@ pub fn run(
                             (KeyCode::Enter, _) if state.surface == DevSurface::Git => {
                                 state.queue_git_diff(&mut worker);
                             }
-                            (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
-                                state.queue_git_diff(&mut worker);
-                            }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Code => {
-                                state.open_selected_file();
+                                state.open_selected_file_for_edit();
                             }
                             (KeyCode::Char(']'), _) if state.surface == DevSurface::Agent => {
                                 state.cycle_agent_selection(1)
@@ -648,42 +630,6 @@ pub fn run(
                             (KeyCode::PageDown, _) => state.scroll_surface(10),
                             (KeyCode::Home, _) => state.scroll_home(),
                             (KeyCode::End, _) => state.scroll_end(),
-                            (KeyCode::Char('v'), _) if state.surface == DevSurface::App => {
-                                if visual.live {
-                                    visual.request_live(false);
-                                    visual.sync_state(&mut state);
-                                    state.status =
-                                        "Live view off · semantic inspection remains available"
-                                            .into();
-                                } else if let Some(reason) = visual.request_live(true) {
-                                    visual.sync_state(&mut state);
-                                    state.status = format!("Live view unavailable · {reason}");
-                                } else {
-                                    visual.sync_state(&mut state);
-                                    state.status = match &visual.path {
-                                        VisualPath::Herdr => {
-                                            "Live view on · Herdr pane graphics · v stops".into()
-                                        }
-                                        VisualPath::Kitty => {
-                                            "Live view on · Kitty terminal graphics · v stops"
-                                                .into()
-                                        }
-                                        VisualPath::Ansi => {
-                                            if state.browser_pane.is_some() {
-                                                "Live view on · ANSI half-block rendering · v stops"
-                                                    .into()
-                                            } else {
-                                                "Live view starting · screenshot worker will update the pane"
-                                                    .into()
-                                            }
-                                        }
-                                        VisualPath::SemanticOnly { .. } => {
-                                            "Live view unavailable · semantic inspection remains available"
-                                                .into()
-                                        }
-                                    };
-                                }
-                            }
                             (KeyCode::Left, modifiers)
                                 if !modifiers.contains(KeyModifiers::ALT) =>
                             {
@@ -711,12 +657,6 @@ pub fn run(
                                     && state.surface == DevSurface::App =>
                             {
                                 state.queue_browser_intent(BrowserWorkspaceIntent::Reload)
-                            }
-                            (KeyCode::Char('n'), _) if state.surface == DevSurface::App => {
-                                state.open_palette_with("browser navigate ")
-                            }
-                            (KeyCode::Char('t'), _) if state.surface == DevSurface::App => {
-                                state.open_palette_with("browser type ")
                             }
                             (KeyCode::Up, _) | (KeyCode::Char('k'), _)
                                 if state.surface == DevSurface::Code =>
@@ -850,10 +790,17 @@ pub fn run(
             worker.submit_screenshot(columns, rows);
             last_visual = Instant::now();
         }
-        // Apply whatever the worker finished; never block on it.
         if let Ok(Some(result)) = worker.try_job_result() {
+            let browser_start = result.tool == "glass.browser.start" && result.result.is_ok();
+            let browser_observe = result.tool == "glass.browser.observe" && result.result.is_ok();
             state.apply_tool_job_result(result);
-            state.queue_browser_observe(&mut worker);
+            if browser_start {
+                state.continue_pending_browser_navigation(&mut worker);
+            } else if browser_observe && state.pending_browser_navigation.is_some() {
+                state.submit_pending_browser_navigation(&mut worker);
+            } else {
+                state.queue_browser_observe(&mut worker);
+            }
         }
         if let Ok(Some(result)) = worker.try_visual_result() {
             match &visual.path {
@@ -982,7 +929,7 @@ fn run_agent_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
             }
             Ok(false) => {
                 state.status =
-                    "Pi needs setup · press Enter to install/sign in, or s/u/l for direct actions"
+                    "Pi needs setup · use :agent setup or :agent setup login, then Enter to chat"
                         .into();
             }
             Err(error) => state.status = format!("Pi readiness check failed: {error}"),

@@ -79,26 +79,25 @@ Use `1`–`5` or `Tab` for Agent, Code, App, Tasks, and More. App uses the same
 revision-bound semantic selection as the desktop and standalone browser
 workspace. Continuous pixels remain off by default.
 
-First-launch agent setup stays inside the TUI. On the Agent surface, press `s`
-to install or repair the pinned managed Pi runtime, `u` to refresh that pinned
-runtime, `l` to open Pi `/login`, and `i` to start a conversation. The
-equivalent palette routes are `:agent setup`, `:agent update`, and
-`:agent setup login`. `a` opens the guided command center; `?` opens contextual
-help. Agent mutations pause on an inline Glass approval card: `Enter` approves
-the exact call once and `Esc` denies it.
+First-launch agent setup stays inside the TUI. On the Agent surface, type a
+message or press `Enter` to open the composer. Use `:agent setup` to install or
+repair the pinned managed Pi runtime, `:agent update` to refresh it, and
+`:agent setup login` to open Pi `/login` in the terminal. `:actions` opens the
+guided command center; `?` opens contextual help. Agent mutations pause on an
+inline Glass approval card: `Enter` approves the exact call once and `Esc`
+denies it.
 
+On the App surface, use `:browser targets` to open a searchable page-target
+picker without changing the active page. Type a title, URL, or target ID;
+arrow keys select a result and `Enter` queues an explicit, one-use target
+selection. Use `:browser type TARGET TEXT` to type into the selected page.
 
-On the App surface, `T` opens a searchable page-target picker without
-changing the active page. Type a title, URL, or target ID; `j`/`k` (or the
-arrow keys) select a result and `Enter` queues an explicit, one-use target
-selection. `t` remains the shortcut for typing into the selected page.
-
-The Terminal surface is the dev-suite entrypoint: `s` starts the detected
-project command behind the same confirmation card, while `a` exposes process
-start, logs, input, and health actions. Browser start from the TUI is headed
-and persistent by default so existing authenticated profiles remain usable;
-use `:browser start --incognito --headless` for a disposable automation
-session.
+The Terminal surface is the dev-suite entrypoint: use `:process start dev` to
+start the detected project command behind the same confirmation card, while
+`:actions` exposes process start, logs, input, and health actions. Browser start
+from the TUI is headed and persistent by default so existing authenticated
+profiles remain usable; use `:browser start --incognito --headless` for a
+disposable automation session.
 
 The Agent surface also owns the task loop: use `:task list` to inspect work,
 `:task create TITLE PROMPT` to queue a verified task, and `:task resume TASK_ID`

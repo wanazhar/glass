@@ -135,10 +135,11 @@ The workspace retains project, process, agent, browser, revision, and
 attention state while the process is alive. A browser failure enters recovery;
 it does not terminate the editor, PTYs, agent, or project session.
 
-First-launch onboarding stays inside the TUI. On the `Agent` surface, press
-`s` to install or repair the pinned Pi runtime, `u` to refresh it, `l` to open
-Pi `/login` in the terminal, then `i` to start a conversation. The equivalent
-palette routes are `:agent setup`, `:agent update`, and `:agent setup login`.
+First-launch onboarding stays inside the TUI. On the `Agent` surface, type a
+message or press `Enter` to open the composer. Use `:agent setup` to install or
+repair the pinned Pi runtime, `:agent update` to refresh it, and
+`:agent setup login` to open Pi `/login` in the terminal. `:actions` opens the
+guided command center.
 Glass keeps the workspace trust decision and one-use mutation confirmation in
 the same flow; it does not require a separate setup command before you can
 inspect the project.
@@ -146,13 +147,13 @@ Once the composer is open, `Enter` sends the draft immediately and leaves the
 composer available for the next prompt. Sent prompts stay visible as `YOU`
 messages while the resident agent streams `GLASS AGENT` text and tool activity;
 send failures keep the draft in the composer with an edit-and-retry message.
-From `Terminal`, press `s` to approve and start the detected development
-command. Use `:` for explicit process, test, LSP, and agent routes. On the
-`Agent` surface, `a` exposes the task loop (`task list`, `task create`,
-`task resume`) and Pi session controls without leaving the TUI. The `More`
-surface can start the private loopback cockpit with `:cockpit start`; it
-returns a tokenized `127.0.0.1` URL for state, task, Git, and agent inspection.
-The cockpit stops with the TUI and never binds a public interface.
+From `Terminal`, use `:process start dev` to approve and start the detected
+development command. Use `:` for explicit process, test, LSP, and agent routes.
+The `Agent` surface exposes the task loop with `:task list`, `:task create`, and
+`:task resume` without leaving the TUI. The `More` surface can start the private
+loopback cockpit with `:cockpit start`; it returns a tokenized `127.0.0.1` URL
+for state, task, Git, and agent inspection. The cockpit stops with the TUI and
+never binds a public interface.
 
 On the `Git` surface, choose **Review pull request** or **Ship pull request**,
 or use `:github review` and `:github ship TITLE`. Review is read-only; ship
@@ -256,12 +257,10 @@ Use these guides for the complete contract:
 - [Workflow definitions and recovery](docs/workflows.md)
 
 ## Browser recovery and targets
-
 An occupied or disconnected CDP endpoint does not force the TUI to exit. On
-the App surface, press `T` for a searchable target picker or use the command
-center (`a`) and choose **Targets**. The picker filters redacted title, URL,
-and target ID text, then queues an explicit target selection after
-confirmation.
+the App surface, use `:browser targets` to open a searchable target picker or
+`:actions` to choose **Targets**. The picker filters redacted title, URL, and
+target ID text, then queues an explicit target selection after confirmation.
 
 Browser startup from the TUI is headed and persistent by default:
 
@@ -397,7 +396,7 @@ evidence, and runtime health remain usable without continuous images.
 
 Command discovery is centralized in the TUI:
 
-- `a` opens the Command Center with launchers for the current surface;
+- `:actions` opens guided launchers for the current surface;
 - `:` searches every route, with the current surface's commands first;
 - `Tab` completes route roots and `?` opens the complete keyboard guide.
 

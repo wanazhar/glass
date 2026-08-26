@@ -300,6 +300,222 @@ pub(crate) fn render_editable_source(
     Text::from(lines)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EditorVisualCursor {
+    pub(crate) row: usize,
+    pub(crate) column: usize,
+}
+
+pub(crate) struct WrappedEditorSource {
+    pub(crate) text: Text<'static>,
+    pub(crate) cursor: Option<EditorVisualCursor>,
+}
+
+#[derive(Clone)]
+struct StyledUnit {
+    character: char,
+    style: Style,
+    source_index: Option<usize>,
+    width: usize,
+    whitespace: bool,
+}
+
+pub(crate) fn render_editable_source_wrapped(
+    path: &str,
+    content: &str,
+    cursor_line: u32,
+    cursor_column: u32,
+    selection: Option<&crate::development::TextSelection>,
+    width: u16,
+) -> WrappedEditorSource {
+    let source = render_editable_source(path, content, cursor_line, cursor_column, selection);
+    let available_width = usize::from(width.max(1));
+    let Text {
+        alignment,
+        style,
+        lines: source_lines,
+    } = source;
+    let mut lines = Vec::new();
+    let mut cursor = None;
+    let cursor_index = cursor_column.saturating_sub(1) as usize;
+
+    for (line_index, (line, source_content)) in source_lines
+        .into_iter()
+        .zip(content.split('\n'))
+        .enumerate()
+    {
+        let actual_source_length = source_content.chars().count();
+        let Some((prefix, source_spans)) = line.spans.split_first() else {
+            lines.push(Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans: Vec::new(),
+            });
+            continue;
+        };
+        let prefix_units = styled_units(prefix);
+        let prefix_width = prefix_units.iter().map(|unit| unit.width).sum::<usize>();
+        let source_width = available_width.saturating_sub(prefix_width).max(1);
+        let active = line_index + 1 == cursor_line as usize;
+        let mut source_units = Vec::new();
+        let mut source_index = 0;
+        for span in source_spans {
+            for character in span.content.chars() {
+                let unit_index = if source_index < actual_source_length {
+                    Some(source_index)
+                } else if active && cursor_index >= actual_source_length {
+                    Some(cursor_index)
+                } else {
+                    None
+                };
+                source_units.push(StyledUnit {
+                    character,
+                    style: span.style,
+                    source_index: unit_index,
+                    width: display_width(character),
+                    whitespace: character.is_whitespace(),
+                });
+                source_index += 1;
+            }
+        }
+        let chunks = wrap_units(source_units, source_width);
+        for (chunk_index, mut chunk) in chunks.into_iter().enumerate() {
+            if chunk.is_empty() && active && cursor_index >= actual_source_length {
+                chunk.push(StyledUnit {
+                    character: ' ',
+                    style: Style::default()
+                        .fg(Color::Black)
+                        .bg(ACCENT_BRIGHT)
+                        .add_modifier(Modifier::BOLD),
+                    source_index: Some(cursor_index),
+                    width: 1,
+                    whitespace: true,
+                });
+            }
+            let mut spans = Vec::new();
+            if chunk_index == 0 {
+                append_units(&mut spans, &prefix_units);
+            } else {
+                append_blank_cells(&mut spans, prefix_width, prefix.style);
+            }
+            let mut column = prefix_width;
+            for unit in chunk {
+                if active && unit.source_index == Some(cursor_index) {
+                    cursor = Some(EditorVisualCursor {
+                        row: lines.len(),
+                        column,
+                    });
+                }
+                append_unit(&mut spans, &unit);
+                column = column.saturating_add(unit.width);
+            }
+            lines.push(Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans,
+            });
+        }
+    }
+
+    WrappedEditorSource {
+        text: Text {
+            alignment,
+            style,
+            lines,
+        },
+        cursor,
+    }
+}
+
+fn styled_units(span: &Span<'_>) -> Vec<StyledUnit> {
+    span.content
+        .chars()
+        .map(|character| StyledUnit {
+            character,
+            style: span.style,
+            source_index: None,
+            width: display_width(character),
+            whitespace: character.is_whitespace(),
+        })
+        .collect()
+}
+
+fn display_width(character: char) -> usize {
+    Span::raw(character.to_string()).width().max(1)
+}
+
+fn wrap_units(units: Vec<StyledUnit>, width: usize) -> Vec<Vec<StyledUnit>> {
+    if units.is_empty() {
+        return vec![Vec::new()];
+    }
+    let width = width.max(1);
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < units.len() {
+        let mut index = start;
+        let mut used: usize = 0;
+        let mut last_break = None;
+        while index < units.len() {
+            let unit_width = units[index].width;
+            if index > start && used.saturating_add(unit_width) > width {
+                break;
+            }
+            used = used.saturating_add(unit_width);
+            index += 1;
+            if units[index - 1].whitespace {
+                last_break = Some(index);
+            }
+            if used >= width {
+                break;
+            }
+        }
+        let end = if index < units.len() {
+            last_break
+                .filter(|break_at| *break_at > start)
+                .unwrap_or(index)
+        } else {
+            index
+        };
+        let end = end.max(start + 1).min(units.len());
+        chunks.push(units[start..end].to_vec());
+        start = end;
+    }
+    chunks
+}
+
+fn append_units(spans: &mut Vec<Span<'static>>, units: &[StyledUnit]) {
+    for unit in units {
+        append_unit(spans, unit);
+    }
+}
+
+fn append_blank_cells(spans: &mut Vec<Span<'static>>, width: usize, style: Style) {
+    for _ in 0..width {
+        append_unit(
+            spans,
+            &StyledUnit {
+                character: ' ',
+                style,
+                source_index: None,
+                width: 1,
+                whitespace: true,
+            },
+        );
+    }
+}
+
+fn append_unit(spans: &mut Vec<Span<'static>>, unit: &StyledUnit) {
+    if let Some(previous) = spans.last_mut()
+        && previous.style == unit.style
+    {
+        let mut content = previous.content.to_string();
+        content.push(unit.character);
+        *previous = Span::styled(content, unit.style);
+    } else {
+        spans.push(Span::styled(unit.character.to_string(), unit.style));
+    }
+}
+
 const ACTIVE_LINE_BACKGROUND: Color = Color::Rgb(24, 34, 46);
 
 fn apply_active_line_background(spans: Vec<Span<'static>>, active: bool) -> Vec<Span<'static>> {
@@ -1528,6 +1744,59 @@ mod tests {
             "cursor cell should be visibly highlighted"
         );
         assert_eq!(output.lines[0].spans[0].content, "▶  1 │ ");
+    }
+
+    #[test]
+    fn wrapped_editable_source_renders_cursor_on_empty_active_line() {
+        let wrapped = render_editable_source_wrapped("src/main.rs", "", 1, 1, None, 24);
+        let cursor = wrapped.cursor.expect("empty-line cursor");
+        assert_eq!(cursor.row, 0);
+        assert!(cursor.column > 0);
+        assert_eq!(wrapped.text.lines.len(), 1);
+    }
+
+    #[test]
+    fn wrapped_editable_source_keeps_cursor_inside_visual_rows() {
+        let content = "one two three four five six seven eight nine ten eleven twelve";
+        let wrapped = render_editable_source_wrapped("src/main.rs", content, 1, 55, None, 24);
+        let cursor = wrapped.cursor.expect("wrapped source cursor");
+        assert!(cursor.row > 0);
+        assert!(cursor.column < 24);
+        assert!(wrapped.text.lines.len() > 2);
+        assert!(
+            wrapped.text.lines.iter().all(|line| line.width() <= 24),
+            "wrapped editor rows must fit the requested width"
+        );
+    }
+
+    #[test]
+    fn wrapped_editable_source_preserves_selection_across_visual_rows() {
+        let selection = crate::development::TextSelection {
+            anchor: crate::development::TextPosition { line: 1, column: 6 },
+            active: crate::development::TextPosition {
+                line: 1,
+                column: 55,
+            },
+        };
+        let wrapped = render_editable_source_wrapped(
+            "src/main.rs",
+            "one two three four five six seven eight nine ten eleven twelve",
+            1,
+            1,
+            Some(&selection),
+            24,
+        );
+        let selected_rows = wrapped
+            .text
+            .lines
+            .iter()
+            .filter(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.style.bg == Some(ACTIVE_BACKGROUND))
+            })
+            .count();
+        assert!(selected_rows > 1);
     }
 
     #[test]

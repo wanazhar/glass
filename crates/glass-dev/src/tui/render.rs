@@ -285,35 +285,66 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
 
     let editor_block = surface_block(" SOURCE ", ACCENT_BRIGHT);
     let editor_inner = editor_block.inner(rows[1]);
-    let text = file_view::render_editable_source(
-        &state.focused_editor_path,
-        content,
-        state.focused_editor_line,
-        state.focused_editor_column,
-        state.focused_editor_selection.as_ref(),
-    );
-    frame.render_widget(
-        Paragraph::new(text)
-            .style(Style::default().fg(TEXT).bg(PANEL_INSET))
-            .scroll((
-                state.editor_scroll_line.min(u16::MAX as usize) as u16,
-                state.editor_scroll_column.min(u16::MAX as usize) as u16,
-            ))
-            .block(editor_block),
-        rows[1],
-    );
+    let wrapped_cursor = if state.editor_soft_wrap {
+        let wrapped = file_view::render_editable_source_wrapped(
+            &state.focused_editor_path,
+            content,
+            state.focused_editor_line,
+            state.focused_editor_column,
+            state.focused_editor_selection.as_ref(),
+            editor_inner.width.max(1),
+        );
+        let cursor = wrapped.cursor;
+        frame.render_widget(
+            Paragraph::new(wrapped.text)
+                .style(Style::default().fg(TEXT).bg(PANEL_INSET))
+                .scroll((state.editor_scroll_line.min(u16::MAX as usize) as u16, 0))
+                .block(editor_block),
+            rows[1],
+        );
+        cursor
+    } else {
+        let text = file_view::render_editable_source(
+            &state.focused_editor_path,
+            content,
+            state.focused_editor_line,
+            state.focused_editor_column,
+            state.focused_editor_selection.as_ref(),
+        );
+        frame.render_widget(
+            Paragraph::new(text)
+                .style(Style::default().fg(TEXT).bg(PANEL_INSET))
+                .scroll((
+                    state.editor_scroll_line.min(u16::MAX as usize) as u16,
+                    state.editor_scroll_column.min(u16::MAX as usize) as u16,
+                ))
+                .block(editor_block),
+            rows[1],
+        );
+        None
+    };
 
+    let (editor_help, exit_help) = if area.width < 40 {
+        ("Arrows · Alt-W · Ctrl-S", "Esc exit · Ctrl-C quit")
+    } else if area.width < 70 {
+        (
+            "Arrows · Shift select · Alt-W wrap · Ctrl-S save",
+            "Esc exit · Ctrl-C quit",
+        )
+    } else {
+        (
+            "↑↓←→ move · Shift select · Alt-W wrap · Ctrl-S save · Ctrl-Z/Y undo · Alt-A ask Pi",
+            "Esc exit editor · exit prompt protects unsaved work",
+        )
+    };
     let footer = vec![
         Line::from(Span::styled(
             compact_line(&state.status, area.width.saturating_sub(2)),
             status_style(state),
         )),
+        Line::from(Span::styled(editor_help, Style::default().fg(MUTED))),
         Line::from(Span::styled(
-            "↑↓←→ move · Shift+arrows select · Ctrl-S save · Ctrl-Z/Y undo/redo · Alt-A ask Pi",
-            Style::default().fg(MUTED),
-        )),
-        Line::from(Span::styled(
-            "Esc exit editor · exit prompt protects unsaved work",
+            exit_help,
             Style::default()
                 .fg(ACCENT_BRIGHT)
                 .add_modifier(Modifier::BOLD),
@@ -337,19 +368,33 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         return;
     }
     if !state.focused_editor_path.is_empty() && editor_inner.width > 0 && editor_inner.height > 0 {
-        let gutter_width = line_count.to_string().len().max(3);
-        let line = state.focused_editor_line.saturating_sub(1) as usize;
-        let row = line.saturating_sub(state.editor_scroll_line);
-        let column = state.focused_editor_column.saturating_sub(1) as usize;
-        let x = editor_inner.x.saturating_add(
-            (gutter_width + 4)
-                .saturating_add(column)
-                .saturating_sub(state.editor_scroll_column)
-                .min(u16::MAX as usize) as u16,
-        );
-        let y = editor_inner
-            .y
-            .saturating_add(row.min(usize::from(editor_inner.height.saturating_sub(1))) as u16);
+        let (x, y) = if let Some(cursor) = wrapped_cursor {
+            let row = cursor.row.saturating_sub(state.editor_scroll_line);
+            (
+                editor_inner
+                    .x
+                    .saturating_add(cursor.column.min(u16::MAX as usize) as u16),
+                editor_inner.y.saturating_add(
+                    row.min(usize::from(editor_inner.height.saturating_sub(1))) as u16,
+                ),
+            )
+        } else {
+            let gutter_width = line_count.to_string().len().max(3);
+            let line = state.focused_editor_line.saturating_sub(1) as usize;
+            let row = line.saturating_sub(state.editor_scroll_line);
+            let column = state.focused_editor_column.saturating_sub(1) as usize;
+            (
+                editor_inner.x.saturating_add(
+                    (gutter_width + 4)
+                        .saturating_add(column)
+                        .saturating_sub(state.editor_scroll_column)
+                        .min(u16::MAX as usize) as u16,
+                ),
+                editor_inner.y.saturating_add(
+                    row.min(usize::from(editor_inner.height.saturating_sub(1))) as u16,
+                ),
+            )
+        };
         if x < editor_inner.x.saturating_add(editor_inner.width)
             && y < editor_inner.y.saturating_add(editor_inner.height)
         {
@@ -3641,6 +3686,45 @@ mod tests {
             active_row,
             "terminal cursor must stay on the rendered active source line"
         );
+    }
+
+    #[test]
+    fn fullscreen_editor_soft_wrap_keeps_cursor_on_wrapped_cell() {
+        let mut state = state(TuiLayout::Mobile);
+        state.code_edit_mode = true;
+        state.editor_soft_wrap = true;
+        state.focused_editor_path = "src/main.rs".into();
+        state.focused_editor_content = format!("{}\n", "word ".repeat(80));
+        state.focused_editor_line = 1;
+        state.focused_editor_column = 180;
+        state.status = "EDITING".into();
+        state.set_terminal_size(32, 16);
+        let narrow_output = rendered(&state, 32, 16);
+        assert!(narrow_output.contains("Esc exit"));
+
+        let backend = TestBackend::new(32, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &state)).unwrap();
+        let cursor = terminal.backend().cursor_position();
+        let cell = terminal
+            .backend()
+            .buffer()
+            .cell((cursor.x, cursor.y))
+            .expect("cursor cell in editor buffer");
+        assert_eq!(cell.fg, Color::Black);
+        assert_eq!(cell.bg, ACCENT_BRIGHT);
+        assert!(state.editor_scroll_line > 0);
+    }
+
+    #[test]
+    fn mobile_code_view_wraps_long_preview_lines() {
+        let mut state = state(TuiLayout::Mobile);
+        state.surface = DevSurface::Code;
+        state.focused_editor_path = "src/main.rs".into();
+        state.editor = "a long preview line that should wrap on a phone terminal and keep its final marker visible".into();
+
+        let output = rendered(&state, 48, 24);
+        assert!(output.contains("final marker"));
     }
 
     #[test]

@@ -259,6 +259,7 @@ pub struct DevTuiState {
     pub files: Vec<String>,
     pub selected_file: usize,
     pub code_edit_mode: bool,
+    pub editor_soft_wrap: bool,
     pub editor_scroll_line: usize,
     pub editor_scroll_column: usize,
     pub lsp: String,
@@ -470,6 +471,7 @@ impl DevTuiState {
             files: Vec::new(),
             selected_file: 0,
             code_edit_mode: false,
+            editor_soft_wrap: false,
             editor_scroll_line: 0,
             editor_scroll_column: 0,
             lsp: String::new(),
@@ -2629,12 +2631,32 @@ impl DevTuiState {
     }
 
     fn ensure_editor_cursor_visible(&mut self) {
-        let Some(buffer) = self.focused_buffer() else {
+        if self.focused_editor_path.is_empty() {
             return;
-        };
-        let lines = buffer.content.split('\n').collect::<Vec<_>>();
-        let cursor_line = buffer.cursor_line.saturating_sub(1) as usize;
+        }
         let viewport_height = usize::from(self.terminal_height.saturating_sub(8).max(1));
+        if self.editor_soft_wrap {
+            let wrapped = super::file_view::render_editable_source_wrapped(
+                &self.focused_editor_path,
+                &self.focused_editor_content,
+                self.focused_editor_line,
+                self.focused_editor_column,
+                self.focused_editor_selection.as_ref(),
+                self.terminal_width.saturating_sub(4).max(1),
+            );
+            let Some(cursor) = wrapped.cursor else {
+                return;
+            };
+            self.editor_scroll_column = 0;
+            if cursor.row < self.editor_scroll_line {
+                self.editor_scroll_line = cursor.row;
+            } else if cursor.row >= self.editor_scroll_line + viewport_height {
+                self.editor_scroll_line = cursor.row + 1 - viewport_height;
+            }
+            return;
+        }
+        let lines = self.focused_editor_content.split('\n').collect::<Vec<_>>();
+        let cursor_line = self.focused_editor_line.saturating_sub(1) as usize;
         if cursor_line < self.editor_scroll_line {
             self.editor_scroll_line = cursor_line;
         } else if cursor_line >= self.editor_scroll_line + viewport_height {
@@ -2643,10 +2665,10 @@ impl DevTuiState {
         let gutter_width = lines.len().max(1).to_string().len().max(3);
         let viewport_width = usize::from(
             self.terminal_width
-                .saturating_sub((gutter_width + 6).min(u16::MAX as usize) as u16)
+                .saturating_sub((gutter_width + 8).min(u16::MAX as usize) as u16)
                 .max(1),
         );
-        let cursor_column = buffer.cursor_column.saturating_sub(1) as usize;
+        let cursor_column = self.focused_editor_column.saturating_sub(1) as usize;
         if cursor_column < self.editor_scroll_column {
             self.editor_scroll_column = cursor_column;
         } else if cursor_column >= self.editor_scroll_column + viewport_width {
@@ -2654,11 +2676,29 @@ impl DevTuiState {
         }
     }
 
+    pub fn toggle_editor_soft_wrap(&mut self) {
+        self.editor_soft_wrap = !self.editor_soft_wrap;
+        self.editor_scroll_line = 0;
+        self.editor_scroll_column = 0;
+        self.ensure_editor_cursor_visible();
+        self.status = if self.editor_soft_wrap {
+            "Soft wrap ON · source lines reflow to the editor width".into()
+        } else {
+            "Soft wrap OFF · horizontal scrolling follows source columns".into()
+        };
+    }
+
     pub fn edit_code_key(
         &mut self,
         code: crossterm::event::KeyCode,
         modifiers: crossterm::event::KeyModifiers,
     ) {
+        if code == crossterm::event::KeyCode::Char('w')
+            && modifiers.contains(crossterm::event::KeyModifiers::ALT)
+        {
+            self.toggle_editor_soft_wrap();
+            return;
+        }
         let Some(buffer) = self.focused_buffer() else {
             self.status = "No open buffer".into();
             return;
@@ -4693,6 +4733,50 @@ mod tests {
         assert!(state.composer_input.contains("src/main.rs:1:1"));
         assert!(state.composer_input.contains("Do not edit files"));
 
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn editor_soft_wrap_toggle_scrolls_visual_rows_and_resets_horizontal_scroll() {
+        let root =
+            std::env::temp_dir().join(format!("glass-editor-soft-wrap-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        let content = format!("{}\n", "word ".repeat(80));
+        std::fs::write(root.join("src/main.rs"), content).expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Mobile).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open editor buffer");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .set_buffer_cursor("src/main.rs", 1, 180)
+            .expect("set editor cursor");
+        state.refresh_editor_projection();
+        state.set_terminal_size(32, 16);
+        state.enter_code_edit();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('w'),
+            crossterm::event::KeyModifiers::ALT,
+        );
+
+        assert!(state.editor_soft_wrap);
+        assert!(state.editor_scroll_line > 0);
+        assert_eq!(state.editor_scroll_column, 0);
+        assert!(state.status.contains("Soft wrap ON"));
+
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('w'),
+            crossterm::event::KeyModifiers::ALT,
+        );
+        assert!(!state.editor_soft_wrap);
+        assert!(state.editor_scroll_column > 0);
+        assert!(state.status.contains("Soft wrap OFF"));
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

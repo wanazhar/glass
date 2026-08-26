@@ -235,6 +235,8 @@ pub struct DevTuiState {
     /// Index of the editor buffer focused by the Code surface.
     pub editor_buffer_index: usize,
     pub focused_editor_path: String,
+    /// Cached editor content used while the shared workspace is busy.
+    pub focused_editor_content: String,
     pub focused_editor_dirty: bool,
     pub focused_editor_line: u32,
     pub focused_editor_column: u32,
@@ -447,6 +449,7 @@ impl DevTuiState {
             conversation_cursor: 0,
             editor_buffer_index: 0,
             focused_editor_path: String::new(),
+            focused_editor_content: String::new(),
             focused_editor_dirty: false,
             focused_editor_line: 0,
             focused_editor_column: 0,
@@ -2431,6 +2434,7 @@ impl DevTuiState {
         self.editor_checkpoints = checkpoints;
         if let Some(buffer) = buffers.get(self.editor_buffer_index) {
             self.focused_editor_path = buffer.path.clone();
+            self.focused_editor_content = buffer.content.clone();
             self.focused_editor_dirty = buffer.dirty;
             self.focused_editor_line = buffer.cursor_line;
             self.focused_editor_column = buffer.cursor_column;
@@ -2438,6 +2442,7 @@ impl DevTuiState {
             self.ensure_editor_cursor_visible();
         } else {
             self.focused_editor_path.clear();
+            self.focused_editor_content.clear();
             self.focused_editor_dirty = false;
             self.focused_editor_line = 0;
             self.focused_editor_column = 0;
@@ -4537,7 +4542,7 @@ mod tests {
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.surface = DevSurface::Agent;
         state.snapshot_trust_label = "trusted".into();
-        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.2 · auth ✓".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
 
         state.handle_printable('c');
 
@@ -4559,7 +4564,7 @@ mod tests {
                 .expect("open temporary workspace");
             state.surface = DevSurface::Agent;
             state.snapshot_trust_label = "trusted".into();
-            state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.2 · auth ✓".into();
+            state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
 
             state.handle_printable(character);
 
@@ -4586,7 +4591,7 @@ mod tests {
 
         state.surface = DevSurface::Agent;
         state.snapshot_trust_label = "trusted".into();
-        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.2 · auth ✓".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
         state.handle_printable('a');
         assert!(state.composer_mode);
         assert_eq!(state.composer_input, "a");

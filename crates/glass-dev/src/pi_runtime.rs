@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const EVENT_CAPACITY: usize = 256;
 const RUNTIME_SOURCE: &str = include_str!("../assets/pi-runtime.mjs");
-pub const PINNED_PI_SDK_VERSION: &str = "0.84.2";
+pub const PINNED_PI_SDK_VERSION: &str = "0.84.3";
 const MINIMUM_NODE_VERSION: (u64, u64, u64) = (22, 19, 0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -736,7 +736,7 @@ pub fn pi_readiness() -> DevelopmentResult<PiReadiness> {
                     detail: if compatible {
                         format!("compatible {source} Pi SDK")
                     } else {
-                        format!("{source} Pi SDK version is missing or older than 0.84.2")
+                        format!("{source} Pi SDK version is missing or older than 0.84.3")
                     },
                 },
                 agent_dir,
@@ -1393,7 +1393,7 @@ mod tests {
     #[test]
     fn readiness_version_and_expiry_checks_are_deterministic() {
         assert_eq!(parse_version("v22.19.0"), Some((22, 19, 0)));
-        assert_eq!(parse_version("0.84.2-beta.1"), Some((0, 84, 2)));
+        assert_eq!(parse_version("0.84.3-beta.1"), Some((0, 84, 3)));
         assert_eq!(parse_version("invalid"), None);
         assert!(credential_expired(&serde_json::json!({"expires":1})));
         assert!(!credential_expired(&serde_json::json!({

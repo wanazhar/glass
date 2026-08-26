@@ -241,11 +241,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
             Constraint::Length(4),
         ])
         .split(area);
-    let buffer = state.focused_buffer();
-    let content = buffer
-        .as_ref()
-        .map(|buffer| buffer.content.as_str())
-        .unwrap_or_default();
+    let content = state.focused_editor_content.as_str();
     let line_count = content.split('\n').count().max(1);
     let dirty = if state.focused_editor_dirty {
         ("● UNSAVED", WARNING)
@@ -341,7 +337,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         render_editor_exit_prompt(frame, area, prompt);
         return;
     }
-    if buffer.is_some() && editor_inner.width > 0 && editor_inner.height > 0 {
+    if !state.focused_editor_path.is_empty() && editor_inner.width > 0 && editor_inner.height > 0 {
         let gutter_width = line_count.to_string().len().max(3);
         let line = state.focused_editor_line.saturating_sub(1) as usize;
         let row = line.saturating_sub(state.editor_scroll_line);
@@ -3592,6 +3588,25 @@ mod tests {
         let prompt = rendered(&state, 100, 30);
         assert!(prompt.contains("UNSAVED CHANGES"));
         assert!(prompt.contains("discard changes and quit Glass"));
+    }
+
+    #[test]
+    fn fullscreen_editor_keeps_projected_content_when_workspace_is_busy() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Code;
+        state.selected_file = state
+            .files
+            .iter()
+            .position(|path| path == "Cargo.toml")
+            .unwrap();
+        state.open_selected_file_for_edit();
+        let expected = state.focused_editor_content.clone();
+        let workspace = state.workspace.clone();
+        let _workspace_guard = workspace.lock().expect("workspace lock");
+
+        let output = rendered(&state, 100, 30);
+        assert!(expected.contains("name='x'"));
+        assert!(output.contains("name='x'"));
     }
 
     #[test]

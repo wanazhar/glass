@@ -387,6 +387,16 @@ impl DevTuiState {
         let trust_prompt = trust == crate::WorkspaceTrust::Untrusted
             && trust_inspection.iter().any(|item| item.trust_required);
         drop(locked);
+        let agent_readiness = crate::pi_runtime::pi_readiness()
+            .map(|readiness| format_pi_readiness(&readiness))
+            .unwrap_or_else(|error| format!("Agent unavailable · {error}"));
+        let initial_status = if trust_prompt {
+            "Trust required · I inspect · O untrusted · 1 once · T project".to_string()
+        } else if agent_readiness.starts_with("✓ Ready") {
+            "Ready · describe a coding task".to_string()
+        } else {
+            "Pi setup required · press :actions or Enter to continue".to_string()
+        };
         let mut state = Self {
             workspace,
             surface: if trust_prompt {
@@ -444,15 +454,9 @@ impl DevTuiState {
             editor_comments: Vec::new(),
             editor_proposals: Vec::new(),
             editor_checkpoints: Vec::new(),
-            status: if trust_prompt {
-                "Trust required · I inspect · O untrusted · 1 once · T project".into()
-            } else {
-                "Ready · describe a coding task".into()
-            },
+            status: initial_status,
             agents: String::new(),
-            agent_readiness: crate::pi_runtime::pi_readiness()
-                .map(|readiness| format_pi_readiness(&readiness))
-                .unwrap_or_else(|error| format!("Agent unavailable · {error}")),
+            agent_readiness,
             harnesses: crate::harness::summary(),
             agent_login_requested: false,
             harness_launch_requested: None,
@@ -645,6 +649,10 @@ impl DevTuiState {
             self.status = "Git diff queued · loading off-thread".into();
             return;
         }
+        if self.surface == DevSurface::Trust && matches!(hint, "I" | "O" | "1" | "T") {
+            self.handle_printable(hint.chars().next().expect("trust action hint is non-empty"));
+            return;
+        }
         let prefix = action.key;
         if prefix == ":" {
             // Strip documentation placeholders from the editable command so
@@ -699,7 +707,7 @@ impl DevTuiState {
         self.palette_scroll = 0;
         self.palette_selection = 0;
         self.status = format!(
-            "Command palette · {} actions · ↑↓ select · Enter run",
+            "Command search · {} actions · ↑↓ select · Enter run",
             self.surface.label()
         );
     }
@@ -1993,6 +2001,10 @@ impl DevTuiState {
             self.open_palette();
             return;
         }
+        if character == 'a' && self.surface != DevSurface::Agent {
+            self.open_menu();
+            return;
+        }
         if self.surface == DevSurface::Trust {
             let decision = match character {
                 'i' | 'I' => {
@@ -2059,6 +2071,10 @@ impl DevTuiState {
             return;
         }
 
+        if self.surface == DevSurface::Code && character == 'i' {
+            self.enter_code_edit();
+            return;
+        }
         if self.responsive_class(self.terminal_width, self.terminal_height)
             == ResponsiveClass::Phone
         {
@@ -4403,6 +4419,36 @@ mod tests {
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
+    #[test]
+    fn trust_action_menu_dispatches_keyboard_hints() {
+        let root = std::env::temp_dir().join(format!("glass-trust-menu-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.surface = DevSurface::Trust;
+
+        state.open_menu();
+        state.menu_selection = 0;
+        state.run_menu_action();
+        assert!(!state.menu_open);
+        assert!(
+            state
+                .status
+                .contains("Inspecting exact repository configuration")
+        );
+
+        state.open_menu();
+        state.menu_selection = 1;
+        state.run_menu_action();
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert!(
+            state
+                .status
+                .contains("Workspace opened with untrusted authority")
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
 
     #[test]
     fn browser_context_url_redaction_preserves_path_only() {
@@ -4524,6 +4570,28 @@ mod tests {
             assert_eq!(state.composer_input, character.to_string());
             std::fs::remove_dir_all(root).expect("remove temporary workspace");
         }
+    }
+    #[test]
+    fn action_shortcut_opens_menu_without_stealing_ready_agent_text() {
+        let root =
+            std::env::temp_dir().join(format!("glass-action-shortcut-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+
+        state.surface = DevSurface::Terminal;
+        state.handle_printable('a');
+        assert!(state.menu_open);
+        state.close_menu();
+
+        state.surface = DevSurface::Agent;
+        state.snapshot_trust_label = "trusted".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.2 · auth ✓".into();
+        state.handle_printable('a');
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "a");
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
     #[test]

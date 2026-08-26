@@ -375,9 +375,14 @@ fn action_menu_opens_and_renders_entries() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
+    session.send(b"4");
+    assert!(
+        session.wait_for("TERMINAL", Duration::from_secs(5)),
+        "terminal surface never rendered"
+    );
     session.send(b"a");
     assert!(
-        session.wait_for("Compose message", Duration::from_secs(5)),
+        session.wait_for("Start detected suite", Duration::from_secs(5)),
         "action menu entries missing"
     );
     session.send(b"\x1b");
@@ -787,10 +792,10 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
         "Agent surface never rendered after trust"
     );
 
-    session.send(b"a");
+    session.send(b":");
     assert!(
         session.wait_for("Compose message", Duration::from_secs(5)),
-        "Agent launcher entries missing"
+        "Agent command center entries missing"
     );
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));

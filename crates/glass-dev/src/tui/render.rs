@@ -499,12 +499,19 @@ fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
                     .add_modifier(Modifier::BOLD),
             ),
             palette_fixed_line(
-                "↑/↓ select · Enter run · Esc close · type only to filter (optional)",
+                "Command search · ↑/↓ select · Enter run · Esc close · type only to filter (optional)",
                 inner.width,
                 Style::default().fg(MUTED),
             ),
         ],
     };
+    if !state.command_input.is_empty() {
+        lines.push(palette_fixed_line(
+            format!("Filter: {}", state.command_input),
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    }
     lines.push(palette_fixed_line(
         "",
         inner.width,
@@ -565,7 +572,8 @@ fn command_palette_content(state: &DevTuiState) -> String {
         ],
         None => vec![
             "SELECT AN ACTION".to_string(),
-            "↑/↓ select · Enter run · Esc close · type only to filter (optional)".to_string(),
+            "Command search · ↑/↓ select · Enter run · Esc close · type only to filter (optional)"
+                .to_string(),
         ],
     };
     lines.push(String::new());
@@ -607,8 +615,12 @@ fn navigation_cursor(state: &DevTuiState, address: &str) -> usize {
         .min(address.len())
 }
 fn palette_fixed_line(content: impl Into<String>, width: u16, style: Style) -> Line<'static> {
+    let content = content.into();
+    let mut padded_content = String::with_capacity(content.len() + 1);
+    padded_content.push(' ');
+    padded_content.push_str(&content);
     Line::from(Span::styled(
-        palette_row_text(&content.into(), width),
+        palette_row_text(&padded_content, width),
         style,
     ))
 }
@@ -888,6 +900,12 @@ fn compact_line(text: &str, width: u16) -> String {
     compact.push('…');
     compact
 }
+fn compact_multiline(text: &str, width: u16) -> String {
+    text.lines()
+        .map(|line| compact_line(line, width))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let items = DevSurface::PRIMARY
@@ -1111,8 +1129,8 @@ fn render_trust_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         rows[0],
         " TRUST ",
         format!(
-            "{pending} pending · {}\nI inspect · O open\n1 trust once · T trust project",
-            state.snapshot_trust_label
+            "{} pending review · {}\nI inspect · O open\n1 trust once · T trust project",
+            pending, state.snapshot_trust_label
         ),
         WARNING,
     );
@@ -1321,9 +1339,9 @@ fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     let conversation = state.conversation_view();
     let landing = if conversation.starts_with("No conversation yet.") {
         if state.agent_readiness.starts_with("✓ Ready") {
-            "START HERE\nDescribe a coding task.\nEnter to chat · Glass inspects, edits, runs, and verifies.\nBrowser opens only for UI work.\n\nNeed another tool? Use :actions or :harness list.".into()
+            "START HERE\nDescribe a coding task.\nEnter to chat or type a message.\nGlass inspects, edits, runs, verifies.\nBrowser opens only for UI work.".into()
         } else {
-            "SETUP\nChoose Setup Pi runtime or Login from Actions.\nThen return here to describe a coding task.\n\nInstalled coding harnesses remain available from :harness list.".into()
+            "SETUP\nPress :actions.\nChoose Setup Pi runtime · Enter to install.\nChoose Authenticate if installed.\nThen Enter or type to chat.".into()
         }
     } else {
         conversation
@@ -1394,7 +1412,7 @@ fn render_agent_workspace_context(frame: &mut Frame<'_>, state: &DevTuiState, ar
 fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let items = if state.files.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "No files",
+            "No files yet · refresh is still running",
             Style::default().fg(MUTED),
         )))]
     } else {
@@ -1475,7 +1493,7 @@ fn render_code_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         )
     };
     let content = if state.editor.trim().is_empty() {
-        "No file open · ↑/↓ select a file · Enter opens the full-screen editor"
+        "No file open · ↑/↓ select a file · Enter opens full-screen · i edits"
     } else {
         state.editor.as_str()
     };
@@ -1721,7 +1739,7 @@ fn render_app_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         ])
         .split(area);
     let address = if browser.url.is_empty() {
-        "No page".into()
+        "No page yet · :browser navigate URL".into()
     } else {
         compact_path(&browser.url, rows[0].width.saturating_sub(18))
     };
@@ -1797,13 +1815,12 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
         ACCENT_BRIGHT,
     );
     if process_lines.is_empty() {
-        render_panel(
-            frame,
-            rows[1],
-            " PROCESSES ",
-            "No managed processes yet",
-            ACCENT_BRIGHT,
-        );
+        let empty_state = if state.processes.trim().is_empty() {
+            "No managed processes yet\ns starts the detected suite · a opens actions\n:process start dev runs a custom command".to_string()
+        } else {
+            format!("No managed processes yet\n{}", state.processes.trim())
+        };
+        render_panel(frame, rows[1], " PROCESSES ", empty_state, ACCENT_BRIGHT);
     } else {
         let table_rows = process_lines
             .into_iter()
@@ -1848,11 +1865,13 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
 }
 
 fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let items = if state.tasks.trim().is_empty() {
-        vec![ListItem::new(Line::from(Span::styled(
-            "No tasks",
-            Style::default().fg(MUTED),
-        )))]
+    let task_count = status_line_count(&state.tasks);
+    let guided_empty =
+        state.tasks.trim().is_empty() || state.tasks.trim_start().starts_with("No tasks.");
+    let items = if guided_empty {
+        vec![ListItem::new(panel_text(
+            "No tasks yet.\na opens actions · :task create TITLE PROMPT",
+        ))]
     } else {
         state
             .tasks
@@ -1865,7 +1884,6 @@ fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             })
             .collect::<Vec<_>>()
     };
-    let task_count = status_line_count(&state.tasks);
     frame.render_widget(
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
@@ -1941,7 +1959,7 @@ fn git_entry_status_color(entry: &crate::git::GitStatusEntry) -> Color {
 fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let items = if state.git_entries.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "No changed files",
+            "No changed files · working tree clean",
             Style::default().fg(MUTED),
         )))]
     } else {
@@ -2028,7 +2046,7 @@ fn render_git_diff_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
             frame,
             area,
             " DIFF ",
-            "Choose a file\nEnter actions",
+            "Choose a file with ↑/↓\nEnter actions · d opens its diff",
             PURPLE,
         );
         return;
@@ -2037,7 +2055,7 @@ fn render_git_diff_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
         frame,
         area,
         " DIFF ",
-        format!("{path}\nEnter actions"),
+        format!("{path}\nEnter actions · d opens its diff"),
         PURPLE,
     );
 }
@@ -2107,39 +2125,63 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         rows[0],
         format!(" DEBUG · {session_count} "),
         &state.debugger,
-        "No debugger sessions",
+        "No debugger sessions\nUse :actions to start a session",
     );
     render_panel(frame, rows[1], " TESTS ", test_status, WARNING);
 }
 
 fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let phone = matches!(
+        state.responsive_class(area.width, area.height),
+        ResponsiveClass::Phone
+    ) && area.width < 80;
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(7)])
+        .constraints([
+            Constraint::Length(if phone { 4 } else { 5 }),
+            Constraint::Min(5),
+        ])
         .split(area);
-    let narrow = area.width < 60
-        || matches!(
-            state.responsive_class(area.width, area.height),
-            ResponsiveClass::Phone
-        );
-    let kernel_count = state
-        .kernels
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count();
-    render_panel(
-        frame,
-        rows[0],
-        " SERVICES ",
-        format!(
+    let narrow = area.width < 60 || phone;
+    let kernel_count = status_line_count(&state.kernels);
+    let summary = compact_multiline(
+        &format!(
             "{} skills · {} tools · {kernel_count} kernels\n{}\nCOCKPIT {}",
             state.snapshot_skills_count,
             state.snapshot_tools_count,
             activity_summary(state),
             state.private_cockpit_status(),
         ),
-        ACCENT_BRIGHT,
+        rows[0].width.saturating_sub(4),
     );
+    render_panel(frame, rows[0], " SERVICES ", summary, ACCENT_BRIGHT);
+    if phone {
+        let columns = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(rows[1]);
+        let pi_content = compact_multiline(
+            &format!(
+                "{}\n{}\n{}\n{}",
+                state
+                    .agent_readiness
+                    .lines()
+                    .next()
+                    .unwrap_or("Pi unavailable"),
+                agent_progress(state),
+                state.experiments.lines().next().unwrap_or("No experiments"),
+                state.replay.lines().next().unwrap_or("No replay"),
+            ),
+            columns[0].width.saturating_sub(4),
+        );
+        render_panel(frame, columns[0], " PI · WORKSPACE ", pi_content, PURPLE);
+        let route_content = compact_multiline(
+            "workspace · experiments\nkernels · replay\n:harness list\n:harness start NAME",
+            columns[1].width.saturating_sub(4),
+        );
+        render_panel(frame, columns[1], " ROUTES ", route_content, WARNING);
+        return;
+    }
     let columns = if narrow {
         Layout::default()
             .direction(Direction::Vertical)
@@ -2159,11 +2201,8 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             ])
             .split(rows[1])
     };
-    render_panel(
-        frame,
-        columns[0],
-        " PI ",
-        format!(
+    let pi_content = compact_multiline(
+        &format!(
             "{}\n{}\n{kernel_count} kernels",
             state
                 .agent_readiness
@@ -2172,17 +2211,22 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 .unwrap_or("Pi unavailable"),
             agent_progress(state),
         ),
-        PURPLE,
+        columns[0].width.saturating_sub(4),
+    );
+    render_panel(frame, columns[0], " PI ", pi_content, PURPLE);
+    let experiments_content = compact_multiline(
+        &format!(
+            "{}\n{}",
+            state.experiments.lines().next().unwrap_or("No experiments"),
+            state.replay.lines().next().unwrap_or("No replay"),
+        ),
+        columns[1].width.saturating_sub(4),
     );
     render_panel(
         frame,
         columns[1],
         " EXPERIMENTS ",
-        format!(
-            "{}\n{}",
-            state.experiments.lines().next().unwrap_or("No experiments"),
-            state.replay.lines().next().unwrap_or("No replay"),
-        ),
+        experiments_content,
         ACCENT_BRIGHT,
     );
     let installed_harnesses = state
@@ -2192,10 +2236,9 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .take(4)
         .collect::<Vec<_>>()
         .join("\n");
-    render_panel(
-        frame,
-        columns[2],
-        " ROUTES ",
+    let routes = if narrow {
+        "workspace · experiments · kernels · replay\n:harness list\n:harness start NAME".to_string()
+    } else {
         format!(
             "workspace · experiments · kernels · replay\n\nHARNESS CATALOG\n{}\n\n:harness list\n:harness start NAME",
             if installed_harnesses.is_empty() {
@@ -2203,9 +2246,10 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             } else {
                 &installed_harnesses
             }
-        ),
-        WARNING,
-    );
+        )
+    };
+    let routes_content = compact_multiline(&routes, columns[2].width.saturating_sub(4));
+    render_panel(frame, columns[2], " ROUTES ", routes_content, WARNING);
 }
 
 fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -2922,6 +2966,17 @@ mod tests {
         state.status = "browser failed".into();
         assert!(rendered(&state, 48, 18).contains("× browser failed"));
     }
+    #[test]
+    fn setup_landing_explains_in_tui_recovery() {
+        let mut state = state(TuiLayout::Mobile);
+        state.surface = DevSurface::Agent;
+        state.agent_readiness = "○ Needs setup".into();
+        let output = rendered(&state, 48, 18);
+
+        assert!(output.contains("SETUP"));
+        assert!(output.contains("Press :actions"));
+        assert!(output.contains("Enter to install"));
+    }
 
     #[test]
     fn agent_surface_exposes_workspace_context() {
@@ -3028,6 +3083,24 @@ mod tests {
         let terminal = rendered(&state, 140, 40);
         assert!(terminal.contains("0 processes"));
         assert!(terminal.contains("No managed processes yet"));
+    }
+    #[test]
+    fn compact_more_surface_keeps_service_routes_reachable() {
+        let mut state = state(TuiLayout::Mobile);
+        state.surface = DevSurface::More;
+        let output = rendered(&state, 48, 18);
+        assert!(output.contains("0 kernels"));
+        assert!(output.contains("PI"));
+        assert!(output.contains("ROUTES"));
+    }
+
+    #[test]
+    fn guided_task_empty_state_keeps_creation_command_visible() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Tasks;
+        let output = rendered(&state, 140, 40);
+        assert!(output.contains("No tasks yet."));
+        assert!(output.contains(":task create TITLE PROMPT"));
     }
 
     #[test]

@@ -318,8 +318,16 @@ pub fn run(
     let mut last_refresh = Instant::now();
     let mut last_visual = Instant::now();
     let mut last_render = Instant::now() - Duration::from_millis(33);
+    let mut previous_overlay_mask = 0_u16;
     loop {
         let size = guard.terminal.size()?;
+        let overlay_mask = terminal_overlay_mask(&state);
+        if overlay_mask != previous_overlay_mask {
+            guard
+                .terminal
+                .resize(Rect::new(0, 0, size.width, size.height))?;
+            previous_overlay_mask = overlay_mask;
+        }
         state.set_terminal_size(size.width, size.height);
         let kitty_area =
             render::browser_visual_area(&state, Rect::new(0, 0, size.width, size.height))
@@ -592,6 +600,12 @@ pub fn run(
                                     "Background operation is bounded · Ctrl-C opens quit confirmation"
                                         .into();
                             }
+                            (KeyCode::Char('s'), _) if state.surface == DevSurface::Terminal => {
+                                state.request_detected_dev();
+                            }
+                            (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
+                                state.queue_git_diff(&mut worker);
+                            }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Agent => {
                                 state.start_agent_interaction();
                             }
@@ -622,6 +636,9 @@ pub fn run(
                             }
                             (KeyCode::Char('['), _) if state.surface == DevSurface::Code => {
                                 state.cycle_editor_buffer(-1)
+                            }
+                            (KeyCode::Char('T' | 't'), _) if state.surface == DevSurface::App => {
+                                state.queue_browser_targets(&mut worker);
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::App => {
                                 state.queue_browser_intent(BrowserWorkspaceIntent::ActivateSelected)
@@ -706,10 +723,29 @@ pub fn run(
                 Event::Mouse(mouse) => match mouse.kind {
                     crossterm::event::MouseEventKind::ScrollUp => state.scroll_surface(-3),
                     crossterm::event::MouseEventKind::ScrollDown => state.scroll_surface(3),
-                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                        if let Some(surface) =
-                            navigation_surface_at(state.terminal_width, mouse.column, mouse.row)
-                        {
+                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                        if !state.quit_confirmation
+                            && state.editor_exit_prompt.is_none()
+                            && !state.help_open
+                            && !state.menu_open
+                            && !state.command_mode
+                            && !state.composer_mode
+                            && !state.code_edit_mode
+                            && state.pending_confirmation.is_none()
+                            && state.pending_agent_approval.is_none()
+                            && !state.browser_target_picker
+                            && state.browser_recovery.is_none()
+                            && !state.git_diff_open =>
+                    {
+                        let responsive =
+                            state.responsive_class(state.terminal_width, state.terminal_height);
+                        let header_height = if state.composer_mode { 3 } else { 2 };
+                        if let Some(surface) = navigation_surface_at(
+                            responsive,
+                            header_height,
+                            mouse.column,
+                            mouse.row,
+                        ) {
                             state.surface = surface;
                             state.status = format!("{} selected", surface.label());
                         }
@@ -882,20 +918,69 @@ pub fn run(
         if let Some(snapshot) = worker.take_pending() {
             state.apply_snapshot(&snapshot);
         }
-        // The render gate above bounds terminal writes at roughly 30fps.
     }
+
     let kitty_cleanup = visual.shutdown();
     guard.write_bytes(&kitty_cleanup)?;
     drop(worker);
     Ok(())
 }
+fn terminal_overlay_mask(state: &DevTuiState) -> u16 {
+    let mut mask = 0_u16;
+    if state.command_mode {
+        mask |= 1 << 0;
+    }
+    if state.composer_mode {
+        mask |= 1 << 1;
+    }
+    if state.menu_open {
+        mask |= 1 << 2;
+    }
+    if state.help_open {
+        mask |= 1 << 3;
+    }
+    if state.code_edit_mode {
+        mask |= 1 << 4;
+    }
+    if state.browser_target_picker {
+        mask |= 1 << 5;
+    }
+    if state.browser_recovery.is_some() {
+        mask |= 1 << 6;
+    }
+    if state.git_diff_open {
+        mask |= 1 << 7;
+    }
+    if state.pending_confirmation.is_some() {
+        mask |= 1 << 8;
+    }
+    if state.pending_agent_approval.is_some() {
+        mask |= 1 << 9;
+    }
+    if state.quit_confirmation {
+        mask |= 1 << 10;
+    }
+    if state.editor_exit_prompt.is_some() {
+        mask |= 1 << 11;
+    }
+    mask
+}
 
-/// Map a left-click on the desktop navigation column to the surface it selects.
-/// Returns `None` for clicks outside the visible list.
-fn navigation_surface_at(width: u16, column: u16, row: u16) -> Option<DevSurface> {
-    let (nav_width, header_height): (u16, u16) = if width < 72 { (0, 0) } else { (22, 3) };
+/// Map a left-click on the desktop or compact navigation column to a surface.
+/// The caller supplies the rendered header height so composer mode stays aligned.
+fn navigation_surface_at(
+    responsive: ResponsiveClass,
+    header_height: u16,
+    column: u16,
+    row: u16,
+) -> Option<DevSurface> {
+    let nav_width = match responsive {
+        ResponsiveClass::Desktop => 24,
+        ResponsiveClass::Compact => 22,
+        ResponsiveClass::Phone => return None,
+    };
     let first_item_row = header_height.saturating_add(1);
-    if width < 72 || column >= nav_width || row < first_item_row {
+    if column >= nav_width || row < first_item_row {
         return None;
     }
     DevSurface::PRIMARY
@@ -1092,11 +1177,30 @@ mod tests {
 
     #[test]
     fn mouse_navigation_maps_rows_inside_the_visible_list() {
-        assert_eq!(navigation_surface_at(120, 2, 4), Some(DevSurface::Agent));
-        assert_eq!(navigation_surface_at(120, 2, 5), Some(DevSurface::Code));
-        assert_eq!(navigation_surface_at(120, 2, 10), Some(DevSurface::Debug));
-        assert_eq!(navigation_surface_at(120, 2, 3), None);
-        assert_eq!(navigation_surface_at(120, 22, 4), None);
-        assert_eq!(navigation_surface_at(71, 2, 4), None);
+        assert_eq!(
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 3),
+            Some(DevSurface::Agent)
+        );
+        assert_eq!(
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 4),
+            Some(DevSurface::Code)
+        );
+        assert_eq!(
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 9),
+            Some(DevSurface::Debug)
+        );
+        assert_eq!(
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 2),
+            None
+        );
+        assert_eq!(
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 24, 3),
+            None
+        );
+        assert_eq!(navigation_surface_at(ResponsiveClass::Phone, 2, 2, 3), None);
+        assert_eq!(
+            navigation_surface_at(ResponsiveClass::Compact, 3, 2, 4),
+            Some(DevSurface::Agent)
+        );
     }
 }

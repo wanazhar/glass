@@ -374,6 +374,12 @@ const TRUST_ACTIONS: &[SurfaceAction] = &[
         description: "review executable project settings",
     },
     SurfaceAction {
+        label: "Open read-only workspace",
+        command: "O",
+        key: "O",
+        description: "continue with read-only project authority",
+    },
+    SurfaceAction {
         label: "Trust once",
         command: "1",
         key: "1",

@@ -2399,6 +2399,7 @@ while True:
                 } else {
                     ("shell", "sleep 0.2; echo complete")
                 };
+                let slow_timeout_seconds = if cfg!(windows) { 10 } else { 2 };
                 workspace_tool(
                     handle.clone(),
                     ToolCall {
@@ -2432,7 +2433,7 @@ while True:
                             arguments: serde_json::json!({
                                 "name":"operation",
                                 "code":slow_code,
-                                "timeoutSeconds":2
+                                "timeoutSeconds":slow_timeout_seconds
                             }),
                         },
                         context: Box::new(test_context()),

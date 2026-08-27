@@ -1081,6 +1081,7 @@ mod tests {
         unauthorized
             .write_all(b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .unwrap();
+        unauthorized.shutdown(std::net::Shutdown::Write).unwrap();
         let mut unauthorized_response = Vec::new();
         unauthorized
             .read_to_end(&mut unauthorized_response)
@@ -1094,6 +1095,7 @@ mod tests {
         );
         let mut authorized = TcpStream::connect(cockpit.address()).unwrap();
         authorized.write_all(request.as_bytes()).unwrap();
+        authorized.shutdown(std::net::Shutdown::Write).unwrap();
         let mut authorized_response = Vec::new();
         authorized.read_to_end(&mut authorized_response).unwrap();
         let authorized_response = String::from_utf8_lossy(&authorized_response);

@@ -12,7 +12,7 @@ not reused.
 | Field | Exact record |
 |---|---|
 | Version/date | `0.3.13` / `2026-08-27`; registry publication: `2026-08-27T22:46:08.545203Z` (`glass-browser`) and `2026-08-27T22:47:16.875295Z` (`glass-dev`) |
-| Source | `SOURCE_SHA=b52d1d261b1efbc44c7e27910ef411d876f42f11`; `origin/main` at closure resolved to the same SHA |
+| Source | `SOURCE_SHA=b52d1d261b1efbc44c7e27910ef411d876f42f11`; `HEAD`, `origin/main`, and the tag commit matched this SHA at release closure; post-closure evidence commit: `103f836` |
 | Signed tag | `v0.3.13` annotated tag object `e146819ed54b28fb5ba97c43cc518aa7b6355da5`; tag commit `b52d1d261b1efbc44c7e27910ef411d876f42f11`; local `git tag -v v0.3.13` reported a good signature |
 | GitHub signature | GitHub reports the tag object as `verified: true`, `reason: valid`, with verified tag commit `b52d1d261b1efbc44c7e27910ef411d876f42f11`; verification timestamp `2026-08-27T22:33:02Z` |
 | Main CI | Run [`33109504414`](https://github.com/wanazhar/glass/actions/runs/33109504414), `headSha=b52d1d261b1efbc44c7e27910ef411d876f42f11`, terminal conclusion `success`; all five jobs passed |
@@ -23,7 +23,7 @@ not reused.
 | Native | Exact-tag run [`33124702884`](https://github.com/wanazhar/glass/actions/runs/33124702884), `headSha=b52d1d261b1efbc44c7e27910ef411d876f42f11`, conclusion `success`; Linux native Pi/experiments/Chromium job `98699909842` and Windows named-pipe lifecycle job `98699909725` both passed |
 | Fuzz | Release-source run [`33122935776`](https://github.com/wanazhar/glass/actions/runs/33122935776), tested SHA `b52d1d261b1efbc44c7e27910ef411d876f42f11`, conclusion `success`; `mcp_frame`, `cdp_message`, `ax_dom`, `locator`, `url_policy`, and `semantic_contracts` all passed |
 | GitHub Release | [`v0.3.13`](https://github.com/wanazhar/glass/releases/tag/v0.3.13), tag `v0.3.13`, `draft=false`, `prerelease=false`, latest release, source-only, no assets; published `2026-08-27T22:55:36Z` |
-| Closure | `python3 scripts/check-github-releases.py` passed with 39 published tags and 4 retained failed candidates; `python3 scripts/check-release-documentation.py` passed with 11 documents; `python3 scripts/check-version-sync.py` passed at `0.3.13`; `git status --porcelain` was empty and `HEAD`, `origin/main`, and `v0.3.13^{commit}` all resolved to the source SHA |
+| Closure | `python3 scripts/check-github-releases.py` passed with 39 published tags and 4 retained failed candidates; `python3 scripts/check-release-documentation.py` passed with 11 documents; `python3 scripts/check-version-sync.py` passed at `0.3.13`; the release-closure tree was clean and `HEAD`, `origin/main`, and `v0.3.13^{commit}` then resolved to the source SHA; evidence was committed afterward as `103f836` |
 
 The exact records were also captured in machine-readable form:
 
@@ -43,7 +43,7 @@ CLEAN_INSTALL=release run 33122935793 / publication job 98696590084; exact cargo
 NATIVE_RUN=33124702884; EXPECTED_SHA=b52d1d261b1efbc44c7e27910ef411d876f42f11; jobs=98699909842,98699909725; conclusion=success
 FUZZ_RUN=33122935776; tested_sha=b52d1d261b1efbc44c7e27910ef411d876f42f11; scope=exact; targets=mcp_frame,cdp_message,ax_dom,locator,url_policy,semantic_contracts; conclusion=success
 GITHUB_RELEASE=https://github.com/wanazhar/glass/releases/tag/v0.3.13; tag=v0.3.13; draft=false; prerelease=false; latest=true; source_only=true; assets=none; published=2026-08-27T22:55:36Z
-CLOSURE=check-github-releases passed (39 published, 4 retained failed); check-release-documentation passed (11 documents); check-version-sync passed; clean tree; HEAD=origin/main=v0.3.13^{commit}=b52d1d261b1efbc44c7e27910ef411d876f42f11
+CLOSURE=check-github-releases passed (39 published, 4 retained failed); check-release-documentation passed (11 documents); check-version-sync passed; release-closure tree clean with HEAD=origin/main=v0.3.13^{commit}=b52d1d261b1efbc44c7e27910ef411d876f42f11; post-closure evidence commit=103f836
 ```
 
 The initial exact-tag CI attempt was retained as an audit note because its

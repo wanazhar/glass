@@ -2100,7 +2100,8 @@ mod tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "operation {operation_id} remained {state:?}, expected {expected:?}"
+                "operation {operation_id} remained {state:?}, expected {expected:?}; failure_reason={:?}",
+                operations.lock().unwrap().records[operation_id].failure_reason
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

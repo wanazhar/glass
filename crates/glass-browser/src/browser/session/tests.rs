@@ -2202,13 +2202,16 @@ async fn popup_topology_that_never_becomes_quiet_fails_closed_at_deadline() {
         assess_popup_topology(&snapshot, &topology, true).unwrap()
     };
     let moving_topology = Arc::clone(&topology);
+    let (movement_started_tx, movement_started_rx) = tokio::sync::oneshot::channel();
     let movement = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(5));
-        for _ in 0..20 {
-            interval.tick().await;
+        moving_topology.lock().await.sequence += 1;
+        let _ = movement_started_tx.send(());
+        loop {
+            tokio::time::sleep(Duration::from_millis(5)).await;
             moving_topology.lock().await.sequence += 1;
         }
     });
+    movement_started_rx.await.unwrap();
     let started = tokio::time::Instant::now();
 
     let error = wait_for_stable_popup_topology(

@@ -2900,7 +2900,11 @@ mod tests {
             "[package]\nname='x'\nversion='0.1.0'\n",
         )
         .unwrap();
-        DevTuiState::open(root, layout).unwrap()
+        let mut state = DevTuiState::open(root, layout).unwrap();
+        // Render tests must not depend on whether the host has Pi installed.
+        state.agent_readiness = "✓ Ready · test runtime".into();
+        state.status = "Ready · describe a coding task".into();
+        state
     }
 
     fn rendered(state: &DevTuiState, width: u16, height: u16) -> String {

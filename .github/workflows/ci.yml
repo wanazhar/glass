@@ -16,6 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install Python for Windows kernel fixtures
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
       - name: Check both product packages
         run: |
           cargo check --package glass-browser --all-targets --all-features --locked

@@ -26,7 +26,7 @@ doc = false
 all-features = true
 
 [dependencies]
-glass-browser = { version = "=0.3.12", path = "../glass-browser" }
+glass-browser = { version = "=0.3.13", path = "../glass-browser" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

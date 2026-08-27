@@ -5,6 +5,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-08-27
+
 ### Added
 
 - Added path-aware Code/editor and diff rendering with syntect plus a
@@ -13,12 +15,46 @@ and intends to use [Semantic Versioning](https://semver.org/).
   Kotlin, Dart, and Dockerfile-like paths; diff hunks retain syntax highlighting
   with add/remove backgrounds.
 
+- Added actor-attributed editor collaboration: durable line comments and
+  resolution, reviewable replacement proposals with pending, accepted,
+  rejected, and stale states, and named in-memory checkpoints. Proposals retain
+  their base content and revision and become stale instead of overwriting a
+  changed buffer. The Code surface exposes `editor comment PATH START END TEXT`,
+  `editor comment-selection TEXT`, `editor propose PATH SUMMARY TEXT`,
+  `editor proposals`, and `editor checkpoint NAME` commands.
+
 ### Changed
 
 - Reframed the Glass Dev TUI and embedded Pi prompt around a coding workspace:
   the Agent landing surface now presents repository changes, checks, and the
   optional browser app view alongside the conversation. Browser automation
   remains an explicit UI-work surface instead of the product's default.
+
+- Made `glass` a complete in-TUI development-suite entry point: trust,
+  readiness, Pi setup/login, the composer, project files, PTYs, tests, LSP,
+  Git, tasks, and browser controls are reachable without a separate CLI or
+  daemon bootstrap. `:actions` and surface command menus expose the guided
+  routes; `glass harness` lists or launches installed harnesses, while
+  bounded delegation uses `glass agent delegate` and `:harness delegate`.
+
+- Added a bounded live-browser presentation path for Kitty terminal graphics
+  alongside Herdr and ANSI half-block output. `--tui-live` remains off by
+  default; explicit backend selection supports `auto`, `herdr`, `kitty`, and
+  `ansi`, with bounded `data`, `balanced`, and `smooth` quality profiles and
+  `contain`, `cover`, and `actual` fitting for ANSI sampling. Semantic output
+  remains the recovery path when live pixels are disabled or unavailable.
+
+- Updated the managed Pi runtime workflow to the current pinned SDK `0.84.3`.
+  Agent readiness, setup/update, resident-session selection, retryable turns,
+  and governed tool execution remain exposed through the TUI and CLI without
+  silently selecting an upstream version.
+
+### Fixed
+
+- Synchronized wrapped editor source rows, selections, and cursor positions
+  with the source viewport. Long lines now wrap within the available pane,
+  retain their syntax and selection styling, and place the visual cursor at
+  the corresponding wrapped row and column, including the end-of-line case.
 
 ## [0.3.12] - 2026-08-22
 

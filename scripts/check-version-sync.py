@@ -32,6 +32,16 @@ versions = {
     "clients/typescript/package.json": json.loads(
         (root / "clients/typescript/package.json").read_text()
     )["version"],
+    "clients/typescript/package-lock.json": json.loads(
+        (root / "clients/typescript/package-lock.json").read_text()
+    )["version"],
+    "packages/pi-runtime/package.json": json.loads(
+        (root / "packages/pi-runtime/package.json").read_text()
+    )["version"],
+    "packages/pi-runtime/package-lock.json": json.loads(
+        (root / "packages/pi-runtime/package-lock.json").read_text()
+    )["version"],
+
 }
 
 client_identity_patterns = {

@@ -31,7 +31,7 @@ build_status=passed
 if ! cargo build --package glass-dev --release --locked >/dev/null; then build_status=failed; fi
 package_status=passed
 if ! cargo package --package glass-browser --locked --allow-dirty --no-verify >/dev/null || \
-   ! cargo package --package glass-dev --locked --allow-dirty --no-verify >/dev/null; then package_status=failed; fi
+   ! cargo package --package glass-dev --locked --allow-dirty --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"' >/dev/null; then package_status=failed; fi
 deny_status=failed
 if command -v cargo-deny >/dev/null 2>&1 && cargo deny check >/dev/null; then deny_status=passed; fi
 audit_status=failed
@@ -94,7 +94,7 @@ check_commands = {
     "documentation-coverage": "python3 scripts/check-documentation-coverage.py",
     "documentation-depth": "python3 scripts/check-documentation-depth.py",
     "build": "cargo build --package glass-dev --release --locked",
-    "package": "cargo package --package glass-browser --locked --allow-dirty --no-verify && cargo package --package glass-dev --locked --allow-dirty --no-verify",
+    "package": "cargo package --package glass-browser --locked --allow-dirty --no-verify && cargo package --package glass-dev --locked --allow-dirty --no-verify --config 'patch.crates-io.glass-browser.path=\"crates/glass-browser\"'",
     "deny": "cargo deny check",
     "audit": "cargo audit",
     "fuzz-check": "cargo fetch --manifest-path fuzz/Cargo.toml --locked && cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets",

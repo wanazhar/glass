@@ -1,142 +1,175 @@
-# Glass terminal UI
+# Standalone Browser TUI
 
-Status: Current standalone Browser TUI reference (the separate `glass-dev`
-Development TUI is documented in [Development TUI](development-tui.md))
+Status: Current standalone Browser TUI reference (Glass 0.3.13 source behavior).
 
-## Design principles
-
-- Preserve the command-first workflow and semantic page projection.
-- Keep semantic selection movement local; document the async browser operations
-  that can still occupy the standalone event loop.
-- Retain only bounded page text, status, command, and visual state.
-- Make action state auditable without exposing internal decision data.
-
-## Overall structure
-
-```text
-┌────────────────────────────── Header (5 rows) ─────────────────────────────┐
-│ connection · revision · presentation · owner · focus · status              │
-├────────────────────────── Semantic page / help ────────────────────────────┤
-│ bounded observation, target selection, workflow state, or help             │
-├────────────────────────────── Command (3 rows) ────────────────────────────┤
-│ visual path · status · > command                                           │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-The semantic page and header are the primary audit surface. They show
-connection state, revision, selected entity, bounded observation, workflow
-state, and the latest operation status without exposing raw implementation
-payloads.
+This is the independently installable browser-only terminal product. It owns a
+`BrowserSession` and a `BrowserWorkspaceController` with the `Standalone`
+adapter. It does not own project files, editors, processes, tasks, agents,
+Git, or debugger state. The Glass Dev product has a separate event loop,
+`DevTuiState`, and `SnapshotWorker`; its contract is in
+[Development TUI](development-tui.md).
 
 ## Ownership and flow
 
 ```text
-crossterm input ──> BrowserTui reducer ──> BrowserSession / workspace
-                         │                         │
-                         └──── Ratatui render <────┘
+Crossterm event
+      |
+      v
+BrowserTui (one async app object)
+  command · mode · status · page
+  BrowserSession + Standalone workspace controller
+      |                         |
+      +-- awaited browser I/O   +-- local semantic reducer
+      |                         |
+      v                         v
+  Browser backend/CDP       Ratatui frame
 ```
 
-The standalone Browser TUI owns its `BrowserSession`, command buffer,
-`BrowserWorkspaceController`, semantic page projection, and visual state in
-one async application object. Browser controls and command submissions are
-async methods on that object and are awaited by the event loop. This TUI does
-not expose a generic cancellation-token worker boundary for every browser
-command.
+The standalone event loop awaits browser commands on its application object.
+Semantic selection movement is local and does not send a CDP highlight request
+for each arrow or wheel event. Browser actions are revision-guarded by the
+shared workspace controller. Unlike Glass Dev, this TUI has no generic worker
+boundary for every browser command; slow browser I/O can occupy its event-loop
+task while awaited.
 
-Semantic selection movement is local: arrow keys, `j`/`k`, mouse wheel, and
-semantic clicks update the rendered selection without issuing a CDP highlight
-request for every movement. `Enter` performs the selected revision-guarded
-action. The `glass-dev` product uses a separate `SnapshotWorker` for governed
-background jobs; do not conflate the two implementations.
+## Layout and state projection
 
-## Interactions
+The renderer always reserves a five-row bordered header, a bounded content area,
+and a three-row bordered command footer. Width changes the content presentation
+and title but not the ownership model.
 
-| Input | Scope | Behavior |
-|---|---|---|
-| Enter | command input | parse and asynchronously execute one browser command |
-| Esc | command/overlay | clear the command buffer and close the active workspace overlay |
-| q / Ctrl-C | app | close the owned session and restore the terminal |
-| arrows / `j`/`k` | semantic page | move the local selected entity when the command is empty |
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ GLASS BROWSER · class                                      5 │
+│ connection · browser revision · presentation · owner · focus │
+│ latest operation status                                      │
+├──────────────────────────────────────────────────────────────┤
+│ bounded semantic page / help / target list                  │
+│ selected entity and workflow evidence; pixels only if opted  │
+├──────────────────────────────────────────────────────────────┤
+│ visual path · status · > command                            3 │
+└──────────────────────────────────────────────────────────────┘
+```
 
-`observe`, `dom`, and `snapshot` in the TUI all refresh compact `PageContext`.
-The TUI is an operational dashboard, so full DOM inspection remains an explicit
-CLI/MCP capability rather than an unbounded right-panel payload.
+Phone is ≤72 columns, Compact is 73–109, and Desktop is ≥110. The current
+renderer classifies by width; height constrains the content pane, which remains
+at least five rows. Phone title is `GLASS BROWSER · PHONE`, Compact and Desktop
+use their corresponding labels. Content is bounded before rendering. The
+header keeps connection phase, browser revision, presentation path, input owner,
+focus, and latest status visible in every class.
 
-## Command inventory
+The controller owns these state dimensions: `Detached`, `Starting`, `Connected`,
+`Recovering`, or `Failed` connection; selected semantic entity and revision;
+target list; `Glass`, human, or agent input owner; semantic scroll and focus;
+workflow text; and `Herdr`, Kitty, Sixel, ANSI, or Semantic-only presentation.
+Disconnects and revision failures remain visible rather than erasing the prior
+semantic evidence.
 
-The TUI exposes the common interactive and platform-console operations without
-requiring raw JSON:
+## Input routing
+
+Input is keyboard-first. `Enter` with a non-empty command submits and awaits one
+command; `Enter` with an empty command activates the selected semantic entity.
+`Esc` clears the command and returns Help/Semantic mode to Browser mode, or
+closes the current browser workspace overlay. `q` and Ctrl-C exit directly in
+this standalone product (Glass Dev uses a quit confirmation).
+
+| Input | Behavior |
+|---|---|
+| `l` with empty command | prefill `launch auto` and launch/recover on a free port |
+| `a` with empty command | prefill `attach ` for a verified DevTools port |
+| `n` with empty command | prefill `navigate ` for a URL/domain (`https://` optional) |
+| `t` with empty command | prefill `type ` for selected semantic input |
+| `Enter` with empty command | activate the selected semantic target |
+| `Enter` with command | parse and asynchronously await one browser command |
+| Up/Down or `j`/`k` with empty command | move local semantic selection; selection wraps/clamps per controller |
+| mouse wheel | move local semantic selection; it is not browser pixel scrolling |
+| left click in semantic rows | select the clicked bounded semantic entity |
+| `Tab` / `Shift-Tab` | move workspace focus, including command/footer focus |
+| `Alt-Left` / `Alt-Right` | guarded browser Back/Forward |
+| `Ctrl-R` | guarded browser Reload |
+| `?` with empty command | show help; Esc returns to Browser mode |
+| `:` with empty command | announce command-line mode; typing fills the command buffer |
+| Backspace | remove the final command character |
+| paste | normalize CR/LF to spaces and cap insertion at 8,192 characters |
+| `q` / Ctrl-C | close browser session and restore terminal |
+
+Focus loss closes the current browser overlay. Key-release events are ignored;
+only key presses enter the reducer. Browser commands that fail set a visible
+error and mark the workspace disconnected where appropriate, with recovery
+choices such as reconnect, `launch auto`, or `launch PORT`.
+
+## Command surface
+
+The prompt accepts the following commands without requiring raw JSON:
 
 | Area | Commands |
 |---|---|
-| Navigation and observation | `navigate`, `observe`, `semantic`, `text`, `dom`, `screenshot` |
-| Guarded interactions | `click`, `double click`, `hover`, `type`, `clear`, `check`, `uncheck`, `select`, `scroll`, `press`, `shortcut` |
-| Browser handling | `accept-dialog`, `dismiss-dialog`, `dismiss-consent`, `evaluate` |
-| Workflows and intent | `workflow`, `resolve-intent`, `intent execute` |
-| Local platform state | `profiles`, `knowledge`, `daemon status`, `daemon doctor`, `daemon logs`, `daemon recovery` |
+| Lifecycle | `launch auto`, `launch PORT`, `attach PORT`, `reconnect`, `stop` |
+| Navigation | `navigate URL`; Back/Forward/Reload/Stop-loading are guarded keyboard intents |
+| Observation | `observe`, `semantic`, `screenshot`, `state` |
+| Selection | `targets`, `select ID` |
+| Interaction | `type TEXT`, `scroll PIXELS` |
+| Workflow | `workflow list`, `workflow run FILE`, `workflow pause`, `workflow resume FILE`, `workflow cancel`, `workflow verify` |
+| Presentation | `live on`, `live off` |
+| Exit/help | `help`, `quit`, `exit`, `q` |
 
-Target discovery, frame selection, storage, downloads, uploads, diagnostics,
-policy configuration, certification, and extension administration remain
-explicit CLI/MCP/library operations. Keeping those bounded interfaces out of
-the command prompt avoids inventing a second syntax for their structured
-inputs; their supported fields and semantics are documented in the respective
-interface guides.
+`observe` refreshes the bounded accessibility `PageContext`; `semantic`
+selects the semantic presentation. Target discovery, frame selection, storage,
+downloads/uploads, diagnostics, policy, certification, and extension
+administration remain explicit CLI/MCP/library contracts rather than a second
+unbounded prompt syntax.
+`select ID` invalidates prior semantic references and requires fresh observation.
+Actions such as the selected-target type carry the expected browser revision and
+fail closed when stale. `stop` stops the browser but keeps the TUI workspace
+object; reconnect/launch/attach restore a usable session explicitly. Back,
+Forward, Reload, and Stop-loading are exposed as keyboard intents rather than
+standalone command strings.
 
-## State variants
+## Loading, empty, busy, and failure states
 
-- Loading: show connection status and activity entry while session starts.
-- Busy: retain previous page state, animate a small status indicator, accept cancellation.
-- Error: show the current error overlay and retain prior page state.
-- Empty: show no-page-loaded text.
-- Constrained: preserve command and status bars; panel content truncates to the available terminal viewport.
+- **Loading:** retain the previous bounded page when available and show the
+  operation in the header/footer.
+- **Empty/detached:** show `No browser session` and the START HERE routes for
+  launch, attach, navigate, and help.
+- **Busy:** the event loop is awaiting the selected browser operation; status
+  remains visible, but standalone commands do not provide a universal
+  cancellation-token action. Use the browser's explicit stop/reconnect command
+  after control returns.
+- **Error/disconnected:** preserve semantic state where safe, expose the error,
+  and guide reconnect, launch-auto, or explicit-port recovery.
+- **Help:** replace content with the bounded command reference; Esc restores
+  Browser mode.
+- **Constrained:** preserve header/footer and truncate content to the available
+  height; never send an unbounded DOM or screenshot into the pane.
 
-## Runtime rules
+## Live browser presentation
 
-- The event loop renders before polling input and redraws on its bounded polling
-  cadence.
-- Browser controls and command submissions remain async, but slow browser I/O
-  can occupy the event loop while that operation is awaited.
-- Semantic selection movement is local-only and therefore remains immediate.
-- ANSI live capture samples a bounded PNG into an `AnsiPane`; Herdr frames use
-  a latest-frame queue. Live capture is explicit and disabled by default.
-- The semantic text, status, command input, and visual pane are bounded before
-  rendering.
-- A terminal guard restores raw mode, alternate screen, cursor, and graphics
-  state on normal exit, Ctrl-C, quit, and close.
+Live pixels are explicit and bounded. CLI policy selects Herdr when available,
+otherwise Kitty/ANSI as configured, with Semantic-only when no allowed path is
+usable. Live mode is disabled unless `--tui-live on` or `auto` requests it; the
+`live on|off` command changes that state. ANSI decodes a bounded screenshot into
+an `AnsiPane`; Herdr consumes latest-frame-only messages; Kitty emits native
+graphics after the Ratatui pass and clears/repositions when geometry changes.
+A failed capture visibly reports the failure and turns live mode off; it never
+claims pixels are active. Hidden/non-Browser content is not rendered over.
 
-## Tests
+Visual refresh uses the configured quality interval and fit policy. The semantic
+page and status remain the authority even while a visual frame is pending. The
+standalone app does not import Glass Dev's project/editor/agent snapshot worker.
 
-Unit tests cover reducer state transitions, command parsing, responsive
-classes, semantic selection, live-path choice, and visual quality bounds. The
-TUI also provides read-only local daemon inspection commands: `daemon status`,
-`daemon doctor`, `daemon logs`, and `daemon recovery`. These commands
-render bounded JSON in the inspector pane without starting a browser operation.
+## Terminal lifecycle
 
-## Remote and phone presentation
+The TUI requires interactive stdin and stdout. `TerminalGuard` enables raw mode,
+alternate screen, mouse capture, focus reporting, and bracketed paste. On q,
+Ctrl-C, command `quit`/`exit`, normal return, or an error, it shuts down native
+graphics, closes the owned browser session, disables those modes, leaves the
+alternate screen, and shows the cursor. A browser session is closed by the
+standalone app; unrelated project state is not touched.
 
-The standalone Browser TUI has three width classes: phone at 72 columns or
-fewer, compact through 109 columns, and desktop above that. Its layout contains
-a bordered five-row header, a bounded semantic/content pane, and a three-row
-command footer. The header shows connection, browser revision, presentation,
-input owner, focus, and the current status. The footer shows the visual path,
-status, and command buffer.
+## Source of truth
 
-The standalone Browser TUI has no development-surface navigation. Its command
-buffer supports browser navigation, observation, semantic inspection, target
-selection, workflows, and live presentation. `j`/`k`, arrows, mouse wheel, and
-semantic clicks move local selection; `Enter` activates the selected target.
-`Alt-Left`/`Alt-Right` perform guarded history navigation and `Ctrl-R` reloads.
-`Esc` clears the command buffer and closes the current workspace overlay.
-
-Live pixels are explicit and bounded. The visual path is selected from the CLI
-policy: Herdr when available, otherwise ANSI when allowed. ANSI decodes a
-bounded screenshot into an `AnsiPane`; Herdr receives latest-frame-only PNG
-messages. Live capture is disabled by default, and an unavailable capture
-reports a visible failure rather than silently claiming that live view is
-active. The development product's phone layout and `SnapshotWorker` are
-separate; see [Development TUI](development-tui.md).
-
-The browser connection controller keeps semantic state and revision failures
-visible after a disconnect. Launch, attach, reconnect, stop, targets, and
-Remote View remain explicit commands. See [Browser connection controller and
-Remote View](connection-presentation.md) and [Mobile and Remote Development](../mobile-remote.md).
+See [`tui/app.rs`](../../crates/glass-browser/src/tui/app.rs), the shared
+[`browser_workspace/mod.rs`](../../crates/glass-browser/src/browser_workspace/mod.rs),
+and the browser connection/presentation contracts in
+[`connection.rs`](../../crates/glass-browser/src/connection.rs) and
+[`terminal_graphics/mod.rs`](../../crates/glass-browser/src/terminal_graphics/mod.rs).

@@ -1,7 +1,7 @@
 # Glass v0.3.3 issue #33 delivery analysis
 
 Status: Complete local release candidate
-Status: Historical record; superseded by the current 0.3.12 source/release evidence.
+Status: Historical record; superseded by the current 0.3.13 source/release evidence.
 
 Issue [#33](https://github.com/wanazhar/glass/issues/33) and its
 authoritative packaging/browser-recovery amendment define the release

@@ -4,6 +4,11 @@ This guide takes you from installation to one verified Glass workflow. Choose
 the path that matches your goal. All paths use local processes and local state;
 Glass does not provide a hosted browser, code service, or autonomous planner.
 
+**Status: Current 0.3.13 source behavior.** This guide follows the checked-in
+source checkout; checkout-only TUI behavior is labeled as current source, not
+as an immutable published-release guarantee.
+
+
 ## Before you begin
 
 You need stable Rust 1.88 or newer for a source installation. Browser-backed
@@ -54,6 +59,23 @@ for custom registries, pinned versions, unmanaged builds, and recovery.
 platform status, policy, profiles, daemon health, stores, and remediation. A
 `degraded` result identifies each missing dependency instead of partially
 starting a session.
+
+## Prepare Pi directly (optional)
+
+The direct development-product commands are useful before opening the TUI:
+
+```console
+glass agent doctor
+glass agent status
+glass agent setup
+glass agent setup --login
+glass agent setup --update
+```
+
+`setup` installs or repairs the pinned managed SDK; `--login` opens Pi's
+provider login flow in the terminal, and `--update` forces a reinstall of that
+pinned version. Nothing is downloaded merely by starting Glass. The focused
+`glass-browser` package has no Pi or development-agent routes.
 
 The two packages intentionally compete for the `glass-browser` command in one
 Cargo root. Use the [package transition](installation.md#install-from-source)
@@ -133,35 +155,72 @@ cd /path/to/project
 glass
 ```
 
-Use `1`–`8` or `Tab` for desktop Agent, Code, App, Terminal, Tasks, Git,
-Debug, and More. Phone uses `1`–`5` for Agent, Code, App, Tasks, and More.
-Enter `:` to open fuzzy command discovery. The same printable navigation works
-over SSH.
-
-Useful first commands in the TUI command bar:
+The complete first-run path is:
 
 ```text
-editor open README.md
-editor search TODO
-process start dev cargo run
-lsp start rust-analyzer rust-analyzer
-lsp diagnostics rust-analyzer src/main.rs
-browser start
-browser targets
-agent doctor
-agent setup
-agent status
-task list
+glass → Trust (if required) → Agent → Pi setup/login → composer
+       └─ I inspect · O open · 1 trust once · T trust project
 ```
 
-The resident process owns the editor buffers, PTYs, language services, browser
-controller, agent adapter, and event timeline. Browser recovery replaces only
-the browser session; project and process state stays alive.
+An untrusted repository opens `Trust`; choose `I`, `O`, `1`, or `T` as shown
+in the footer. Until a local choice, repository-controlled execution remains
+blocked. On `Agent`, type a prompt or press `Enter`. If Pi is not ready,
+`:agent setup` queues installation/repair of the pinned runtime; approve with
+`Enter`/`Y` or cancel with `Esc`/`N`. Run `:agent setup login` to hand the
+terminal to Pi `/login` and exit Pi to return. `:agent update` refreshes the
+pinned runtime; `:agent doctor` and `:agent status` report readiness.
 
-Continuous browser pixels are off by default. `live on` enables a bounded,
-ephemeral terminal renderer. `screenshot evidence.png` is a separate explicit
-capture. See [Terminal UI architecture](architecture/tui.md) for state and key
-ownership.
+When ready, `Enter` sends the composer draft and leaves it open for the next
+prompt; `Esc` closes it. `Ctrl-D` toggles steer mode; default follow-up mode
+queues the next message. Sent prompts stay as `YOU`, and `GLASS AGENT` streams
+the reply and tool activity. A failed send restores the draft for editing and
+retry; background work retains newly typed text. Mutating calls pause for
+one-use approval (`Enter`/`Y` approve, `Esc`/`N` deny).
+
+Desktop uses `1`–`8` for Agent, Code, App, Terminal, Tasks, Git, Debug, and
+More. Phone uses `1`–`5` for Agent, Code, App, Tasks, and More. Auto chooses
+phone below 72 columns or 22 rows, compact below 118 columns or 32 rows, and
+desktop otherwise; override with `--tui-layout mobile|compact|desktop`.
+`Tab`/`Shift-Tab` cycle surfaces, `:` opens filtered command discovery, `a`
+opens the current surface action menu, and `?` opens help.
+
+Use these first routes:
+
+```text
+:process start dev                 # detected dev suite, confirmation-gated
+:task list                         # inspect task state
+:cockpit start                     # More: private loopback cockpit
+:browser start                     # headed, persistent browser
+:browser targets                   # search and select a page target
+```
+
+On Code, select a file and press `Enter` (or `i`) to enter the full-screen
+editor. The read-only preview wraps long lines on narrow terminals while
+preserving syntax highlighting. In the editor, `Alt-W` toggles soft wrap
+(off by default); on, lines wrap at whitespace where possible with continuation
+gutters and synchronized cursor/selection/highlighting. Off horizontally
+scrolls source columns. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo, and
+`Alt-A` asks Pi with focused path/cursor/selection and unsaved content attached,
+with an explicit do-not-edit request. `Esc` and `Ctrl-C` open the exit prompt:
+clean buffers leave with `Enter`/`Q`/`Y`; unsaved buffers offer `S` save,
+`D` discard, `Q` discard-and-quit, or `Esc`/`N` stay.
+
+The Code `REVIEW` panel exposes anchored comments, proposals, and checkpoints.
+Use `:editor comment-selection TEXT`, `:editor comment PATH START END TEXT`,
+`:editor comment-resolve ID`, `:editor propose PATH SUMMARY TEXT`, `:editor
+proposals`, `:editor accept ID`, `:editor reject ID`, `:editor checkpoint NAME`,
+`:editor restore CHECKPOINT_ID`, and `:editor replace-selection TEXT`.
+Proposals are exact-base and become stale on conflicting edits; resident
+buffers change only until `:editor save PATH` or `Ctrl-S`.
+
+The resident process owns editor buffers, PTYs, language services, browser,
+agent, and event state. Browser recovery leaves project, process, editor, and
+agent state alive.
+
+Continuous browser pixels are off by default. In the development TUI use
+`:browser view` to toggle the selected presentation backend; use
+`--tui-live ...` before launch to choose it. The standalone browser TUI uses
+`live on`/`live off`.
 
 ## Path C: observe and act in a browser
 
@@ -223,11 +282,17 @@ render policy, and an SSH environment variable does not prove graphics
 support.
 
 The semantic-first phone UI works without pixels. Use Herdr or tmux to retain
-the PTY across detach. Use `live on` for an ephemeral terminal view. In the TUI
-command palette, run `browser remote-open` for a tokenized loopback view, then
-configure the matching SSH local forward and open the printed local URL in the
-forwarded mobile browser. Use `browser remote-status` while sharing and
-`browser remote-revoke` when finished. Never expose Chrome CDP publicly.
+the PTY across detach. In the development TUI, use `:browser view` for the
+selected live backend. For the private iPhone browser, run `:browser
+remote-open`; Glass prints a tokenized loopback URL and a hint equivalent to:
+
+```console
+ssh -N -L PORT:127.0.0.1:PORT USER@HOST
+```
+
+Run that forward from the iPhone-side network, then open the printed local URL
+in Safari. Use `:browser remote-status` while sharing and `:browser
+remote-revoke` when finished. Never expose Chrome CDP publicly.
 
 Follow [Mobile and remote development](mobile-remote.md) for forwarding,
 Herdr, Mosh, Remote View, browser recovery, terminal compatibility, and
@@ -280,6 +345,8 @@ errors, and optional development-runtime APIs.
 |---|---|---|
 | `doctor` cannot find Chrome | No supported executable was discovered | Install system Chrome/Chromium, run `install-chromium` where supported, or pass `--chrome-path`. |
 | Chrome exits with profile status 21 | A confined browser cannot access a host profile path | Upgrade to 0.3.4 or newer; Glass automatically selects Snap Chromium's accessible persistent profile root. |
+| Pi not ready or setup/login fails | Node, the pinned SDK, or provider auth is unavailable | Run `glass agent doctor`, retry `glass agent setup`/`glass agent setup --login`, or update with `glass agent setup --update`; the TUI remains available. |
+| Live backend unavailable or capture fails | Requested native graphics path or screenshot was not usable | Use `:browser view` with semantic-only state, choose explicit ANSI, or turn live mode off; semantic observation remains available. |
 | Port `9222` is occupied | Another process owns the preferred CDP port | In the TUI run `browser start`; the recovery sheet can attach to a verified endpoint, launch an isolated browser on a free local port, or retry `9222`. Project and agent state remain alive. |
 | Multiple targets found | More than one page is eligible | Run `browser targets` (optionally followed by a query), then select the intended target from the App surface. |
 | LSP unavailable | The detected language server is missing or failed initialization | Install the server, inspect diagnostics, and retry; Glass does not fabricate diagnostics. |

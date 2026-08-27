@@ -5,6 +5,11 @@ library. It drives local Chrome or Chromium through a transport-neutral
 contract with CDP as the production backend. It does not bundle a browser,
 host a remote browser service, or infer an autonomous action plan.
 
+**Status: Current 0.3.13 source behavior.** This is the browser-only package;
+the complete development TUI, project runtime, Pi Agent, editor, PTYs, and
+Remote View belong to `glass-dev` and are not exported here.
+
+
 The package provides:
 
 - the `glass-browser` command for browser-only CLI, TUI, MCP, daemon, semantic,
@@ -47,6 +52,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ## Observe, act, verify
 
+This package owns browser lifecycle, semantic observation, guarded actions,
+workflows, MCP, daemon, and its standalone browser TUI. It does not provide
+the `glass` development command, project/agent/harness routes, native code
+editor, PTY dev-suite launcher, or development-TUI Remote View.
+
 ```console
 glass-browser navigate https://example.com
 glass-browser observe --level interactive
@@ -58,12 +68,35 @@ JavaScript, and form values are explicit operations and may require policy
 capabilities. Locators must resolve exactly one current target; stale revisions
 fail before browser input.
 
-Use a disposable session for untrusted browsing:
+The standalone browser TUI starts structured-only by default. Its first screen
+offers `l` to launch a local browser, `a` to attach a verified DevTools port,
+`n` to navigate, `t` to type, `j`/`k` to select semantic entities, and `Enter`
+to activate. Use `live on`/`live off` in that TUI; these are not `glass-dev`
+development-TUI commands. For disposable state:
 
 ```console
 glass-browser --policy hardened --incognito \
-  --policy-allow-host example.com \
-  navigate https://example.com
+  --policy-allow-host example.com navigate https://example.com
+```
+
+### Standalone terminal presentation
+
+The standalone browser TUI is structured-first and responsive: terminals up to
+72 columns use phone composition, up to 109 columns use compact composition,
+and wider terminals use desktop composition. Continuous browser pixels are off
+by default. With `--tui-live auto` and backend `auto`, Herdr is used only when
+detected; otherwise the TUI remains semantic-only. `--tui-live on` with
+backend `auto` uses the bounded ANSI fallback. Explicit `kitty` emits Kitty
+graphics and explicit `ansi` uses the portable cell renderer; an unavailable
+explicit Herdr backend remains semantic-only. `--tui-live-quality
+data|balanced|smooth` targets approximately 3/6/12 FPS, and
+`--tui-live-fit contain|cover|actual` controls ANSI fitting (`contain` is the
+default; native image paths use contain). If a requested backend cannot
+initialize, the TUI reports the failure and remains semantic-only.
+
+```console
+glass-browser --tui-live on --tui-live-backend kitty tui
+glass-browser --tui-live on --tui-live-backend ansi --tui-live-quality data tui
 ```
 
 ## Rust quick start

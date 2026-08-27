@@ -1,7 +1,7 @@
 # Glass v0.3.4 issue #34 delivery analysis
 
 Status: Active direct local development
-Status: Historical record; superseded by the current 0.3.12 source/release evidence.
+Status: Historical record; superseded by the current 0.3.13 source/release evidence.
 
 Issue [#34](https://github.com/wanazhar/glass/issues/34) is authoritative for
 this release. A capability counts only when a real resident subsystem owns its

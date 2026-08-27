@@ -2,7 +2,7 @@
 
 Status: Local workflow complete; GitHub key enrollment and exact-tag gates pending
 
-Status: Historical checkpoint; superseded by the current 0.3.12 source/release evidence.
+Status: Historical checkpoint; superseded by the current 0.3.13 source/release evidence.
 
 ## Implementation
 

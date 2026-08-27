@@ -1,17 +1,34 @@
 # Glass delivery plans
 
-## Current source line: Glass 0.3.12 and post-tag work
+## Current source line: Glass 0.3.13
 
-Status: 0.3.12 was released and publicly verified on 2026-08-22. This checkout
-also contains post-tag source-rendering work; see the `Unreleased` changelog
-and current guides for behavior in the working tree. The [documentation index](../INDEX.md#glass-documentation)
-records the current source-line scope; historical plan and release-analysis
-bodies below are retained for audit provenance.
+Status: Current 0.3.13 source behavior for the 2026-08-27 release record.
+The `0.3.12` release notes and migration guide are historical records for the
+earlier tagged release; they are not current-source instructions. The
+[documentation index](../INDEX.md#glass-documentation) is the navigation map
+for this source line.
+
+The [0.3.13 release notes](../releases/0.3.13.md) and
+[0.3.13 migration guide](../migration/0.3.13.md) route the current release
+contract. The [0.3.13 release evidence](../release-evidence.md#0.3.13-release-evidence)
+holds exact-source records and pending fields for external validation. The
+historical [0.3.12 release notes](../releases/0.3.12.md) and
+[0.3.12 migration guide](../migration/0.3.12.md) retain their original
+version claims.
+
+| Current source area | Status and reference |
+|---|---|
+| TUI onboarding and development-suite launch | 0.3.13; [Development TUI](../architecture/development-tui.md) and [Development Runtime](../development-runtime.md) |
+| Editor source/diff rendering, soft-wrap, cursor synchronization, and review state | 0.3.13; [Development TUI](../architecture/development-tui.md) and [Development Runtime](../development-runtime.md) |
+| Actor-attributed editor collaboration | 0.3.13; [Development Runtime](../development-runtime.md) and [MCP tool catalog](../mcp-tools.md) |
+| Kitty/live browser presentation | 0.3.13; [Mobile and remote](../mobile-remote.md) and [browser connection](../architecture/browser-connection.md) |
+| Pi runtime and external harness workflow | 0.3.13 with Pi SDK 0.84.3; [Native Pi SDK runtime](../pi-sdk-runtime.md), [Development Runtime](../development-runtime.md), and [CLI](../cli.md) |
 
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and
-release provenance; the current source and release evidence are 0.3.12.
+release provenance; published release evidence remains 0.3.12. Current-checkout
+additions are listed in the current 0.3.13 source section above.
 
 Issue [#36](https://github.com/wanazhar/glass/issues/36) is the authoritative
 urgent product-repair contract. The 35-pillar baseline, locked architecture,
@@ -35,7 +52,8 @@ next task starts.
 ## Historical plan: Glass v0.3.5 issue #35
 
 Status: Historical/superseded — this 0.3.5 audit body is retained for issue and
-release provenance; the current source and release evidence are 0.3.12.
+release provenance; published release evidence remains 0.3.12. Current-checkout
+additions are listed in the current 0.3.13 source section above.
 
 Issue [#35](https://github.com/wanazhar/glass/issues/35) is the authoritative
 sixteen-pillar trust and runtime-convergence contract. The audited baseline,
@@ -101,7 +119,8 @@ implementation record is
 ## Historical plan: Glass v0.3.3 issue #33
 
 Status: Historical/superseded — this 0.3.3 audit body is retained for issue and
-release provenance; the current source and release evidence are 0.3.12.
+release provenance; published release evidence remains 0.3.12. Current-checkout
+additions are listed in the current 0.3.13 source section above.
 
 Issue #33 and its authoritative amendment define 15 integration pillars, 53
 mandatory release checkboxes, scenarios A–K, full-suite command exposure and
@@ -165,7 +184,8 @@ active; its first foundation phase is [stable runtime platform](tasks/platform-0
 ## Historical plan: Glass v0.3.1 issue #31
 
 Status: Historical/superseded — this 0.3.1 audit body is retained for issue and
-release provenance; the current source and release evidence are 0.3.12.
+release provenance; published release evidence remains 0.3.12. Current-checkout
+additions are listed in the current 0.3.13 source section above.
 
 The authoritative [issue #31](https://github.com/wanazhar/glass/issues/31)
 defines four mandatory pillars—semantic memory, multi-surface understanding,
@@ -194,7 +214,8 @@ and independent review.
 ## Historical plan: Glass v0.3.2 issue #32
 
 Status: Historical/superseded — this 0.3.2 audit body is retained for issue and
-release provenance; the current source and release evidence are 0.3.12.
+release provenance; published release evidence remains 0.3.12. Current-checkout
+additions are listed in the current 0.3.13 source section above.
 
 Issue #32 is an architectural epic. The original thin-slice interpretation was
 rejected during the issue/comment audit; the current candidate is reviewed
@@ -243,19 +264,18 @@ The post-issue-32 product enhancements are defined in the
 [delivery analysis](analysis/mobile-cockpit.md) and implemented as the atomic
 [mobile-cockpit-001](tasks/mobile-cockpit-001.md) task.
 
-## Active plan: best-in-class agent browser
+## Proposed plan: best-in-class agent browser
 
+Status: Proposed draft — requires owner approval before implementation; it is
+not a commitment for the current `0.3.13` source line.
 
-Status: Draft — requires owner approval before implementation
-
-The active goal is to make Glass a deterministic, memory-efficient browser
+The proposed goal is to make Glass a deterministic, memory-efficient browser
 control layer that humans and agents prefer over mature alternatives for local
 Chrome automation.
 
 Analysis and scorecard:
 
 - [Best-in-class browser analysis](analysis/best-in-class-browser.md)
-- [Agent browser automation design](../architecture/automation.md)
 
 ### Task order
 

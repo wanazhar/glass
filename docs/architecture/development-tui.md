@@ -1,118 +1,294 @@
-# Glass Dev product workspace
+# Glass Dev TUI
 
-Status: Current 0.3.12 source behavior
+Status: Current 0.3.13 source behavior (current-source changes are included here, not as a published-release claim).
 
-Glass Dev presents user work rather than its internal service registry. The
-desktop navigation has eight primary destinations:
+This document is the architecture contract for the `glass`/Glass Dev terminal
+workspace. The standalone browser-only TUI is a different product and reducer;
+see [Glass terminal UI](tui.md). The private HTTP cockpit is a presentation of
+the same development workspace, not another TUI authority; see
+[Remote development cockpit](mobile-cockpit.md).
 
-```text
-Agent · Code · App · Terminal · Tasks · Git · Debug · More
-```
-
-Kernels, experiments, replay, daemon/workspace status, customization, and
-trust inspection live under `More` or the command palette. Phone has five
-direct destinations:
+## Ownership and event flow
 
 ```text
-Agent · Code · App · Tasks · More
+Crossterm press/paste/mouse/resize/focus
+                 |
+                 v
+        Glass Dev event loop
+   (modal precedence + reducer calls)
+                 |
+        +--------+---------+
+        |                  |
+        v                  v
+ DevTuiState          SnapshotWorker
+ local focus,         refresh/tool/screenshot jobs
+ cursors, drafts,     (one resident workspace handle)
+ modals, selection           |
+        |                    v
+        +------------ DisplaySnapshot
+                     (latest immutable projection)
+                              |
+                              v
+                       Ratatui renderer
 ```
 
-The same `DevelopmentWorkspace` remains authoritative. Changing destinations
-does not create another editor, process, task, browser, or agent owner.
+`DevTuiState` owns surface selection, responsive class, per-surface scroll,
+command and composer input/cursors, modal state, editor cursor/selection and
+scroll projection, browser workspace controller, and the latest display fields.
+`SnapshotWorker` owns expensive refresh passes and governed tool/screenshot
+jobs. It publishes the latest versioned `DisplaySnapshot`; rendering never
+waits for a refresh. UI callbacks use `try_lock`; a workspace lock held by an
+actor becomes a visible wait/error status rather than a terminal freeze.
 
-## Interaction
+The worker requests are `Refresh`, `RefreshConversation`, `Tool`,
+`Screenshot`, and `ShutDown`. Refresh covers file listing, Git, agent history,
+processes, tests and the other resident projections. Conversation refresh is a
+cheap high-frequency tail pass. At most one coalesced refresh/conversation or
+visual request is pending; tool and screenshot results return by bounded
+channels. A worker job is not performed by the input loop.
 
-| Input | Behavior |
+Startup uses `open_for_tui`: the first frame is an immediate cockpit with guided
+empty fields, then the worker hydrates projections. The synchronous `open`
+helper remains for non-interactive callers. Dropping the worker requests
+shutdown and joins when no bounded job is still running; active bounded work
+must not delay terminal restoration.
+
+## Surfaces, layouts, and state ownership
+
+The shared workspace remains the authority for project buffers, actors,
+processes, tasks, Git, browser, agents, and revisions. Switching a surface
+only changes the projection; it does not create a second owner.
+
+```text
+Desktop (body: navigation | surface | context)
+┌──────────────────────────────────────────────────────────────┐
+│ header: GLASS DEV · surface · root · trust/mode        2 rows│
+├───────────────┬───────────────────────────┬──────────────────┤
+│ SURFACES 24   │ active surface (55%)      │ context ≥30      │
+├───────────────┴───────────────────────────┴──────────────────┤
+│ status/footer: status (2 rows; composer makes it 3)          │
+└──────────────────────────────────────────────────────────────┘
+
+Compact (body: navigation | surface)
+┌──────────────────────────────────────────────────────────────┐
+│ header 2 rows (3 with composer)                              │
+├──────────────────────┬───────────────────────────────────────┤
+│ SURFACES 22          │ active surface, minimum 36             │
+├──────────────────────┴───────────────────────────────────────┤
+│ status/footer 2 rows (3 with composer)                       │
+└──────────────────────────────────────────────────────────────┘
+
+Phone (single responsive pane)
+┌────────────────────────────────────────┐
+│ header 2 rows                          │
+├────────────────────────────────────────┤
+│ active surface, minimum 5 rows         │
+├────────────────────────────────────────┤
+│ status 2 rows, or input + status 3     │
+└────────────────────────────────────────┘
+```
+
+Auto layout selects Phone below 72 columns **or** 22 rows, Compact below 118
+columns **or** 32 rows, and Desktop otherwise. `--tui-layout desktop`,
+`compact`, or `mobile` forces a class. Phone is geometry-responsive, not a
+separate touch authority. Desktop and Compact expose the same state with
+fewer columns; Compact removes the context column. In active surfaces, panels
+stack below 84 columns (and always on Phone); content is bounded and truncated
+rather than allowed to grow the terminal. Each `DevSurface` has independent
+scroll.
+
+### Responsive footer guidance
+
+The normal Desktop/Compact footer is allocated two rows but renders one status
+line inside its bordered area. Opening the Agent composer makes it three rows and
+renders an input line followed by a status line. Opening the command palette
+also uses the three-row allocation; its editable command/filter line carries
+the selection or navigation hint. Phone uses the same two/three-row allocation:
+normal status, or composer/palette input plus status. Full-screen editor help is
+shortened below 70 columns and reduced to `Arrows · Alt-W · Ctrl-S` below 40
+columns; the exit-protection line remains visible. Footer copy is guidance, not
+a second keybinding or state owner.
+
+| Surface | Authoritative projection | Guided empty/loading behavior |
+|---|---|---|
+| Trust | trust label and exact inspection items | starts here when project trust is required; `I` inspect, `O` open untrusted, `1` trust once, `T` trust project |
+| Agent | readiness, conversation bubbles, event/tool cards, approval | `START HERE` when Pi is ready; `SETUP` directs to `:actions` when Pi is unavailable |
+| Code | bounded files, focused buffer, cursor/dirty state, review comments/proposals/checkpoints, LSP | no files/file open messages direct to selection and Enter; no diagnostics is a valid state |
+| App | embedded `BrowserWorkspaceController`: connection, target, semantic entities, workflow, visual path | detached/no page/loading/failed/recovery/semantic-only states stay visible |
+| Terminal | managed process rows with health, PID, command and detected URL | `s` starts the detected suite; `a` opens actions; no process is an empty state |
+| Tasks | bounded task rows and status summary | no tasks directs to `a` or `:task create TITLE PROMPT` |
+| Git | branch/change rows, selected file and inline diff | clean tree is explicit; diff loading is visible and off-thread |
+| Debug | debugger sessions and test evidence | no sessions directs to `:actions` |
+| More | Pi/readiness, kernels, experiments/replay, harnesses and routes | service counts and unavailable subsystems remain explicit |
+
+## Navigation and modal routing
+
+The event loop routes the strongest guard first: quit confirmation, editor exit
+prompt, Ctrl-C/editor handling, help, command-center menu, browser target
+picker/recovery, Git diff, agent approval, mutation confirmation, full-screen
+editor, composer, command palette, then ordinary surface input. `Esc` closes
+the active modal/overlay; it does not cancel a running worker job.
+
+| Input | Route and behavior |
 |---|---|
-| `1`-`8` desktop | Agent, Code, App, Terminal, Tasks, Git, Debug, More |
-| `1`-`5` phone | Agent, Code, App, Tasks, More |
-| `Tab` / `Shift-Tab` | move between product destinations |
-| `j` / `k`, arrows, wheel | scroll the focused pane; App `j`/`k` moves semantic selection |
-| `i` in Agent | open the ordinary no-ID conversation composer |
-| `:` | open a cursor-editable fuzzy action palette scoped to the active surface; type a command directly for expert routes such as `help`, `quit`, or `view` |
-| `Y`/Enter or `N`/Esc | approve one frozen mutation or deny it |
-| `H` / `G` in App | take human control / reconcile and return Glass control |
-| `?` | open keyboard help; `j`/`k` and PageUp/PageDown scroll help |
-| `Esc` | close the active modal, editor, palette, diff, recovery sheet, or confirmation |
-| `Ctrl-C` | restore the terminal and quit immediately, including during background work |
-| `d` in Git | queue the diff load off-thread and open the inline diff when ready |
-| `v` in App | toggle bounded ANSI live view; failure clears the toggle and reports the reason |
-| mouse, paste, focus, resize | processed while their terminal modes are enabled |
+| `1`–`8` (desktop/compact) | Agent, Code, App, Terminal, Tasks, Git, Debug, More |
+| `1`–`5` (Phone) | Agent, Code, App, Tasks, More |
+| `Tab` / `Shift-Tab` | next/previous primary surface |
+| Left/Right | previous/next surface (unless Alt-modified browser history) |
+| Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
+| PageUp/PageDown, Home/End | surface scroll/page or bounds |
+| `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
+| `?` | help; `j`/`k`, PageUp/PageDown and Home/End scroll; `?`/Esc closes |
+| `Enter` on Agent | start/continue the agent interaction; with text focus, submit composer |
+| `Enter` on Code | open selected file; in the Code preview, enter full-screen editor |
+| `[` / `]` | cycle Agent session or Code buffer |
+| `T` on App | queue browser target picker; App Enter activates selected semantic entity |
+| `Alt-Left` / `Alt-Right` on App | guarded browser Back/Forward |
+| `Ctrl-R` on App | guarded browser reload |
+| `d` on Git | queue selected/full diff in the worker; inline diff opens when ready |
+| `s` on Terminal | queue the project-detected development suite |
+| `Y`/Enter or `N`/Esc | approve/deny the one frozen mutation confirmation or agent approval |
+| `Ctrl-C` | outside editor opens quit confirmation; in editor opens editor-exit choices; confirmed quit restores terminal |
+| `Esc` | close current modal, palette, diff, recovery, or editor prompt; running work remains bounded |
+| mouse left-click | select a navigation tab when no modal/editor is active; wheel scrolls the focused surface |
+| paste/focus/resize | accepted while terminal modes are enabled; focus loss closes browser overlays |
 
-The Agent composer creates or addresses the current assistant session without
-requiring an agent ID. `Enter` submits immediately, keeps the composer open,
-and renders the submitted text optimistically while the resident event stream
-adds assistant deltas and tool activity. The send, steer, follow-up, and abort
-requests use the governed background actor path; the input loop never performs
-the agent broker operation itself. If an App entity is selected, the composer
-supplies its reference and visible revision as bounded context and transfers
-mutation ownership to the agent. Human takeover pauses agent browser mutation
-until reconciliation. If another background job is active, submitting keeps
-the composer draft instead of dropping it; transport failures keep the draft
-and expose an edit-and-retry state.
+The command center lists actions for the current surface plus Search commands and
+Quit. Search accepts a typed route, including expert commands such as
+`help`/`quit`; action placeholders are prefilled without `NAME`, `PATH`, or
+other argument tokens. Browser action commands are delegated to the embedded
+browser workspace and preserve its revision checks.
 
-## Designed projections
+## First launch and agent composer
 
-- Agent shows readiness, conversation, tool/event cards, and confirmation.
-- Code shows line-numbered buffers, cursor/dirty/actor state and diagnostics.
-- App renders the canonical `BrowserWorkspace` semantic selection and workflow.
-- Terminal shows named PTYs, health, PID, transport and detected URL.
-- Tasks use `✓ verified`, `◇ settled`, `× failed`, `! blocked`, and `● active`.
-- Git shows branch/ahead-behind and change rows; discard, commit and push require
-  the frozen confirmation sheet.
-- Debug shows sessions, processes, breakpoints, watches, tests and source state.
+On construction Glass reads workspace trust and Pi readiness without blocking on
+the full projection. A trust-required project starts on Trust. Otherwise Agent
+is selected: a ready Pi shows `Ready · describe a coding task`, while an
+unconfigured Pi shows `Pi setup required · press :actions or Enter to continue`.
+The `:actions` routes are `agent setup`, `agent update`, `agent setup login`, and
+`agent doctor`; login temporarily hands the terminal to Pi and resumes Glass.
+`--yolo` is process-scoped unrestricted development mode and is shown in the
+header; it does not create a second workspace.
 
-The Git workflow also exposes `github status` and `github review` from the
-command palette. `github ship TITLE [--draft]` creates a pull request only
-after the same one-use confirmation; GitHub authentication and origin checks
-remain explicit.
+The Agent composer is a local draft with a character cursor. `i`, Enter on the
+Agent surface, or typing a non-digit Agent character opens it. `Enter` submits
+immediately and keeps the composer open; submitted text is rendered
+optimistically, while the worker/event stream appends assistant deltas and tool
+activity. `Ctrl-D` toggles steer mode for an active turn; `Ctrl-X` aborts the
+selected agent. `Ctrl-A/E/U/W` move to start/end, clear, or delete a word;
+Left/Right and Backspace edit the draft. Bracketed paste is inserted as one
+bounded edit. A send is a governed background request and never executes from
+the input loop. If another job is active, the draft is retained and the send
+waits; a failed transport marks the pending message failed and restores its
+draft for edit-and-retry.
 
-## Code and diff rendering
+## Code projection and editor
 
-Code and inline Git diffs choose syntax from the path, not from file contents.
-The renderer uses bundled syntect grammars where available and keeps a
-deterministic manual/plain fallback when a path has no grammar. TypeScript
-(`.ts`, `.tsx`, `.mts`, `.cts`) uses the JavaScript grammar; Swift and Dart
-use the C++ grammar; Kotlin (`.kt`, `.kts`) uses the Java grammar; and
-Dockerfile-like names use the shell grammar.
+Code navigation and full-screen editing are separate modes. Code shows a
+bounded file list, syntax-aware source preview, review summary and diagnostics.
+Selecting a file opens/refreshes a shared `EditorBuffer`; the full-screen editor
+projects the same buffer, actor, dirty bit, cursor and selection. Comments are
+anchored to line ranges; proposals carry base hash/revision and can become
+accepted, rejected, or stale; checkpoints are named project-scoped persisted snapshots that restore in-memory buffers without writing disk. `Alt-A`
+prepares the focused buffer and current cursor/selection for an Agent prompt;
+the attachment includes unsaved text and is bounded, with the agent able to
+request the remainder through file tools.
 
-Markdown files render headings, lists, links, and inline code, and highlight
-fenced blocks delimited by backticks or tildes. Fence language tokens support
-the same TypeScript, Swift, Kotlin, and Dart aliases. Mermaid files (`.mmd` or
-`.mermaid`) and supported `flowchart`, `graph`, and `sequenceDiagram` sources
-render deterministic terminal diagrams; unsupported forms remain styled source.
-Diffs track each file path from its `---`/`+++` headers, show old/new line
-numbers and add/remove backgrounds, then apply the path grammar to changed
-content.
+Editor collaboration actions are command-palette routes on the Code surface:
+`editor comment-selection TEXT` (or `editor comment PATH START END TEXT`),
+`editor comment-resolve ID`, `editor replace-selection TEXT`,
+`editor propose PATH SUMMARY TEXT`, `editor proposals`,
+`editor accept ID`/`editor reject ID`, `editor checkpoint NAME`,
+`editor checkpoints`, and `editor restore CHECKPOINT_ID`. Mutating routes are
+queued through the same governed confirmation and revision context as agent
+tools; read routes refresh the Code projection. A proposal whose base hash or
+revision no longer matches is stale rather than silently applied.
 
-Raw JSON is not a default product surface. Governed Inspect/export tools remain
-available for expert diagnosis.
+```text
+source buffer (one-based line/column)
+        │ shared projection
+        ├── Code preview + files/review/LSP
+        └── full-screen editor
+             │
+             ├── cursor + optional anchored selection
+             ├── dirty/save/undo/redo
+             └── scroll (line + column)
+```
 
-## Execution, responsiveness, and cleanup
+`Ctrl-S` saves; `Ctrl-Z`/`Ctrl-Y` undo/redo; arrows move and Shift+arrows
+extend the selection; Enter inserts a newline and Backspace deletes. `Alt-W`
+toggles soft-wrap. No-wrap is the default: source columns are preserved and
+horizontal scroll follows the cursor. Soft-wrap reflows each source line to the
+editor inner width, repeats a blank gutter on continuation rows, maps the
+one-based cursor to its visual row/column, and disables horizontal scrolling.
+Changing modes resets scroll and re-runs cursor visibility. Cursor visibility
+is kept synchronized after edits, movement, resize, projection refresh and
+selection changes.
 
-`SnapshotWorker` owns refresh, conversation, browser screenshot, and governed
-tool jobs. It publishes a versioned `DisplaySnapshot`; the renderer consumes
-resident projections without locking the workspace. Workspace access from
-input callbacks uses a non-blocking lock attempt, so an actor-held browser,
-Git, process, or project operation reports a wait state instead of freezing the
-terminal. Startup renders an initial cockpit before the first full projection
-pass; the worker hydrates the remaining surfaces immediately after.
+`Esc` never silently loses work. A clean buffer opens an exit prompt where
+Enter/`Q` leaves or Esc stays. An unsaved buffer offers `S` save and leave, `D`
+discard and leave, `Q` discard and quit Glass, or Esc stay. Save/discard errors
+remain in the prompt with retry guidance.
 
-Confirmed mutations retain their exact serialized call and revision context.
-Agent setup, browser recovery, Git diff, editor-adjacent reads, and agent
-composer actions use the same worker boundary. Active bounded jobs do not delay
-terminal restoration during shutdown.
+## Browser visual plane and dev-suite actions
 
-## Responsive behavior and cleanup
+App embeds the canonical browser workspace with adapter kind
+`EmbeddedDevelopment`; standalone Browser TUI uses `Standalone` and must not be
+mixed with this surface. The App visual plane keeps semantic inspection live
+while optional pixels are displayed. `:browser start`, `:browser navigate URL`,
+`:browser observe`, `:browser targets`, and guarded type/activate actions go
+through `SnapshotWorker` tool requests. Target selection and actions carry the
+expected browser revision; stale references fail closed and require a fresh
+observation. Browser start failures expose a recovery sheet: attach a compatible
+endpoint, launch an isolated automatic port, retry the preferred port (where
+applicable), or dismiss. Project and agent state survive browser recovery.
 
-Auto layout uses phone below 72 columns or 22 rows, compact below 118 columns
-or 32 rows, and desktop otherwise. Explicit layout overrides remain available.
-Each destination owns independent scroll state. Phone tests exercise 48x18,
-64x24 and 80x24 flows.
+`browser view` (from the App action menu or palette) toggles live presentation;
+there is no standalone `v` toggle in the Glass Dev reducer (`v` selects App in
+wide navigation). The selected path is Herdr, Kitty, or bounded ANSI when
+available and allowed, otherwise Semantic-only with a visible reason. In App,
+ANSI frames use a bounded `AnsiPane`; Herdr uses its latest-frame queue; Kitty
+writes native graphics after Ratatui and clears/repositions on geometry change.
+Live capture is off by default unless CLI live mode is On/Auto, and an
+unavailable path clears the toggle instead of claiming success. Visual requests
+are coalesced and do not block key handling.
 
-The terminal guard enables and later disables raw mode, alternate screen,
-mouse capture, focus reporting, and bracketed paste. Idle workers are joined at
-their lifecycle boundary; active bounded jobs are allowed to finish or detach
-without delaying terminal restoration. A browser recovery sheet never destroys
-project state. Phone mode is a geometry-responsive single-pane layout, not a
-touch-specific authority path.
+Terminal process actions are governed and bounded: `s` queues the detected
+project dev command, while palette routes can start a custom command, inspect
+logs, stop/restart/remove, resize, send input, report health, and list detected
+ports. Process rows distinguish starting/healthy/exited/stopped/failed; output
+and URLs are bounded. Tasks, Git mutations, browser actions, editor proposals,
+and agent tools retain exact authorization, generation, and project-revision
+context; confirmations are one-use and denial is explicit.
+
+## Rendering states and cleanup
+
+Every surface preserves its prior projection while loading or busy and exposes
+an actionable status. Empty means no data (not a hidden error); errors retain
+previous data when safe and show recovery text; constrained terminals retain
+header/footer and truncate panel content. App additionally distinguishes
+Detached, Starting, Connected, Recovering, and Failed browser connection phases,
+plus semantic-only and live presentation. Agent distinguishes setup, drafting,
+sending, tool-running, approval, failed-send and settled conversation states.
+Git diff loading is visibly `Loading Git diff…`; browser observation and live
+screenshots are similarly marked pending.
+
+`TerminalGuard` enables raw mode, alternate screen, mouse capture, focus
+reporting, and bracketed paste. Its Drop path disables all of them, leaves the
+alternate screen, and shows the cursor. The same cleanup is used after normal
+quit, confirmed Ctrl-C quit, startup failure, and external-harness handoff;
+external harnesses suspend these modes, run in the real terminal, then clear and
+redraw on resume. Kitty graphics receive an explicit clear on shutdown or pane
+change. Cleanup never destroys the shared project/workspace state.
+
+## Source of truth
+
+The implementation contracts are in
+[`tui/state.rs`](../../crates/glass-dev/src/tui/state.rs),
+[`tui/mod.rs`](../../crates/glass-dev/src/tui/mod.rs),
+[`tui/render.rs`](../../crates/glass-dev/src/tui/render.rs),
+[`tui/snapshot.rs`](../../crates/glass-dev/src/tui/snapshot.rs),
+[`tui/file_view.rs`](../../crates/glass-dev/src/tui/file_view.rs), and
+[`development/editor.rs`](../../crates/glass-dev/src/development/editor.rs).
+The shared browser contract is
+[`browser_workspace/mod.rs`](../../crates/glass-browser/src/browser_workspace/mod.rs).

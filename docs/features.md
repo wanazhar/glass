@@ -1,13 +1,18 @@
 # Complete feature reference
 
-This reference maps shipped capability domains to their user-visible entry
-points in `0.3.12`; it is not a cross-platform certification claim. The
-machine-readable target status is in
+This reference maps capability domains to their user-visible entry points in
+the current source checkout; it is not a cross-platform certification claim.
+The machine-readable target status is in
 [feature-parity.json](feature-parity.json).
 
-This page describes the current `0.3.12` source checkout. The published
-`0.3.12` docs.rs pages are released Rust API artifacts and may not include
-newer checkout-only TUI or CLI surfaces.
+**Status: Current 0.3.13 source behavior.** This reference describes the
+checked-in source checkout. Checkout-only TUI/editor/collaboration behavior is
+current source, not an immutable published-release claim.
+
+
+Published `0.3.12` docs.rs pages are released Rust API artifacts and may not
+include newer checkout-only TUI or CLI surfaces; they are not a substitute for
+this source-behavior reference.
 
 
 ## Interfaces
@@ -30,7 +35,7 @@ newer checkout-only TUI or CLI surfaces.
 | Downloads/uploads/clipboard | dedicated commands | common clipboard keys only | dedicated tools | session APIs | [CLI](cli.md) |
 | Policy/security | global policy options | effective policy status | startup policy and typed denials | `BrowserPolicy` and capability types | [Policy](policy.md) |
 | Workspaces/daemon | `workspace`, `daemon` | daemon status | workspace and lease tools | `workspace`, `daemon` modules | [Daemon](daemon.md) |
-| Development Runtime | `project`, `agent` | Development workspace | `project.*`, `agent.*` | `development` module | [Development Runtime](development-runtime.md) |
+| Development Runtime | `project`, `agent` | Development workspace | `glass.project.*`, `glass.agent.*` | `development` module | [Development Runtime](development-runtime.md) |
 | Terminal/remote browser view | `browser`, `session`; Remote View is development-TUI-only | semantic-first Browser view; Herdr or bounded ANSI, plus tokenized loopback Remote View | metadata only; no MCP pixel stream | `connection`, `presentation`, `terminal_graphics`, `development::remote_view` | [Mobile/remote](mobile-remote.md) |
 
 | Backends/surfaces/replay | `backend`, `surfaces`, `replay` | bounded status | corresponding tools | backend/surface/replay contracts | [Architecture](architecture/README.md) |
@@ -140,38 +145,61 @@ The project runtime provides canonical-root detection, bounded file listing
 and reads, native buffers, atomic saves, undo/redo, fuzzy search, PTYs, process
 health/output, real rust-analyzer diagnostics, source/runtime graph, semantic
 breakpoints, actor-attributed timeline/events, replay, Git worktree
-experiments, collaboration claims, Neovim probes, resident sessions, reconnect
-capsules, attention inbox, verification cards, evidence-aware review prompts,
-and a fixed-path external harness bridge.
+experiments, collaboration claims, Neovim probes, resident sessions,
+reconnect capsules, attention inbox, verification cards, evidence-aware review
+prompts, and a fixed-path external harness bridge.
 
 Project reads are handle-bound and capped. Mutations stay inside the canonical
 root and record actor provenance. Prompt text and tool arguments are represented
 in audit state by bounded metadata and digests, not raw values.
 
-The Code surface's source and diff renderers classify each file or hunk by
-path. They use bundled `syntect` grammars first, then deterministic manual
-highlighting; unknown formats deliberately remain plain text. Path aliases
-cover TypeScript, Swift, Kotlin, Dart, and Dockerfile-like names. Markdown
-headings and inline markup are styled directly, fenced code tracks its
-declared language, and recognized Mermaid flowcharts and sequence diagrams
-receive a terminal-native preview. Unrecognized Mermaid remains readable
-source text.
-
-
 Desktop exposes eight destinations—Agent, Code, App, Terminal, Tasks, Git,
-Debug, and More. Phone exposes Agent, Code, App, Tasks, and More without
-function keys. App selection carries the visible browser revision
-automatically.
+Debug, and More. Phone exposes Agent, Code, App, Tasks, and More. Auto layout
+uses phone below 72 columns or 22 rows, compact below 118 columns or 32 rows,
+and desktop otherwise; `--tui-layout` can force a mode.
 
-The optional live browser policy uses Herdr-owned graphics when Herdr is
-detected. `live auto` may remain semantic-only without Herdr on the default
-backend; explicit Kitty emits the Kitty terminal graphics protocol, while
-`live on` defaults to bounded ANSI rendering. Mosh remains semantic-only. The
-private iPhone path uses the development TUI's `:browser remote-open` route,
-which starts a loopback-only tokenized Remote View and prints an SSH-forward
-hint; `browser remote-view open` is not a standalone CLI command. Configure SSH
-local port forwarding and open the resulting local URL in Safari. Glass never
-opens CDP publicly.
+First-run Agent onboarding is in the TUI. Trust-required projects first show
+`I` inspect, `O` open untrusted, `1` trust once, and `T` trust project. Agent
+typing or `Enter` opens the composer when Pi is ready; otherwise `:agent setup`
+installs/repairs the pinned runtime, `:agent setup login` opens Pi `/login`,
+and `:agent update` refreshes it. Composer `Enter` sends and stays open;
+`Esc` closes; failed sends keep the draft for retry. Mutations use one-use
+approval cards.
+
+The Code file preview is read-only and wraps long lines on narrow terminals.
+`Enter` or `i` enters full-screen editing. `Alt-W` toggles soft wrap off by
+default; wrapped source uses whitespace-aware reflow and continuation gutters,
+keeping cursor, selection, and syntax highlighting synchronized. Off uses
+horizontal source-column scrolling. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo,
+`Alt-A` attaches focused path/cursor/selection and unsaved content to a
+do-not-edit Pi prompt, and `Esc`/`Ctrl-C` opens the exit guard. Clean buffers
+accept `Enter`/`Q`/`Y`; unsaved buffers offer `S` save, `D` discard,
+`Q` discard-and-quit, or `Esc`/`N` stay.
+
+The `REVIEW` panel summarizes open anchored comments, pending exact-base
+proposals, and checkpoints. Collaboration routes include `:editor
+comment-selection TEXT`, `:editor comment PATH START END TEXT`, `:editor
+comment-resolve ID`, `:editor propose PATH SUMMARY TEXT`, `:editor proposals`,
+`:editor accept ID`, `:editor reject ID`, `:editor checkpoint NAME`, `:editor
+restore CHECKPOINT_ID`, and `:editor replace-selection TEXT`. Conflicting
+claims and stale proposal bases fail closed; resident buffers change until
+`:editor save PATH` or `Ctrl-S`.
+
+The optional development-TUI browser presentation is semantic-first and
+pixel-off by default. `:browser view` toggles the selected path. With
+`--tui-live auto` and backend `auto`, Herdr is used only when detected;
+otherwise presentation stays semantic-only. `--tui-live on` with backend
+`auto` uses bounded ANSI; explicit Kitty emits Kitty graphics and explicit
+ANSI uses true-color half-blocks. An unavailable explicit Herdr backend remains
+semantic-only. Quality `data|balanced|smooth` targets approximately 3/6/12 FPS;
+failed capture clears live mode. The standalone `glass-browser` TUI uses
+`live on`/`live off` and has no project, agent, editor, PTY, or Remote View
+routes.
+
+The development-TUI `:browser remote-open` route starts a tokenized,
+revocable, loopback-only Remote View and prints an SSH-forward hint. It is not
+a standalone `glass-browser` command. Chrome CDP, Remote View, and application
+servers must remain private.
 
 
 ## Backends and surfaces
@@ -192,7 +220,7 @@ Repository clients in `clients/typescript` and `clients/python` are thin MCP
 clients, not browser runtimes. They negotiate capabilities, expose browser and
 Development Runtime helpers, maintain bounded request state, support
 cancellation, cursor-based project events, process-health waits, reconnect
-workflows, and mutation-lease scopes. They are part of the current `0.3.12`
+workflows, and mutation-lease scopes. They are part of the current `0.3.13`
 source checkout, not published npm or PyPI packages.
 
 Run their browser-free conformance smokes:

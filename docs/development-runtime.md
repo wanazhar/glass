@@ -1,18 +1,13 @@
 # Development Runtime
 
-The Development Runtime is the browser-independent foundation of the complete
-`glass-dev` product. It owns a canonical project, bounded files and buffers,
-real pseudo-terminal (PTY) processes, language-server state, attributed events,
-source/runtime links, experiments, and agent tools. The TUI, CLI, MCP server,
-TypeScript client, and Python client call the same Rust contracts.
+**Status: Current 0.3.13 source behavior.** Features added after the `0.3.13`
+source baseline are marked **Unreleased**. This guide describes the `glass-dev` development workspace, not the browser-only crate. It owns one canonical project root, bounded files and editor buffers, PTY processes, language services, graph and timeline evidence, resident agents, tasks, and optional browser context. The TUI, MCP, daemon, and Rust clients use these Rust-owned services; they do not maintain separate project state.
 
-`glass-dev` owns this runtime directly and depends one-way on ordinary public
-`glass-browser` APIs. There is no browser feature bridge. The package installs
-both `glass` and the browser-only `glass-browser` entry point.
+See [Architecture overview](architecture/README.md) for module ownership. See [CLI reference](cli.md) for installed syntax and [Native Pi SDK runtime](pi-sdk-runtime.md) for agent lifecycle.
 
-## Start a project session
+## Boundary and startup
 
-Install and inspect without launching Chrome:
+Install the complete product and inspect a project without starting Chrome:
 
 ```console
 cargo install glass-dev --locked
@@ -20,81 +15,40 @@ cd /path/to/project
 glass project inspect --root .
 ```
 
-For later registry releases, `glass update --dry-run` previews the resolved
-package and root and `glass update` updates the existing `glass-dev` owner. See
-[Installation and operations](installation.md#update-a-cargo-installation) for
-the source-provenance and package-transition rules.
+`ProjectWorkspace::open` canonicalizes the root, detects project markers, loads `glass.toml` (preferred) or `.glass.toml`, opens the bounded timeline, and initializes resident services. Detection does not execute a detected command. `glass update --dry-run` and `glass update` update the existing Cargo-installed owner; see [Installation and operations](installation.md#update-a-cargo-installation).
 
-Glass canonicalizes the root before it creates state. It detects Rust,
-JavaScript/TypeScript, Python, and Go markers; package manager, build system,
-formatter, framework, available language servers, default commands, and an
-optional configured browser URL. `glass.toml` takes precedence over
-`.glass.toml`. Detection never executes a command.
+A new or changed filesystem identity opens as `Untrusted`. Inspection, static reads, search, Git metadata, and manual browser operations remain available. Project hooks, skills, configured tools, tests, language-server overrides, Pi, kernels, experiments, and task execution require a local trust decision. `--yolo` does not bypass workspace trust. See [Workspace trust](workspace-trust.md).
 
-Start the resident workspace with `glass`. Use the TUI or MCP when the runtime
-must retain editor buffers, PTYs, language servers, agent sessions, browser
-context, or event cursors across operations. Use the CLI for finite,
-browser-free inspection and `--wait` process work.
-
-Opening a project starts in `Untrusted` unless its current filesystem identity
-matches the Glass-owned external trust store. Static files, search, Git
-metadata, configuration review, and manual browser use remain available;
-project hooks, skills, commands, tools, tests, LSP/DAP overrides, Pi, kernels,
-and experiments do not execute before a local decision. The TUI presents the
-decision before activation on desktop, compact, and phone layouts. See
-[Workspace trust](workspace-trust.md) for inspection, persistence, and
-authority details. `--yolo` never bypasses workspace trust.
+The one-shot CLI opens and closes a workspace for one request. A resident TUI owns one workspace until exit. A stdio MCP server keeps a bounded registry for its process. The daemon shares workspaces between authenticated local clients. Registries hold at most eight projects and evict an idle project after 30 minutes. Closing a workspace terminates owned services and processes; it never deletes project files.
 
 ## Ownership and lifecycle
 
 ```text
 canonical project root
         │
-        └─ ProjectWorkspace
-             ├─ tree snapshot/cache
-             ├─ native editor buffers and claims
-             ├─ ProcessManager (maximum 32 owned jobs)
-             ├─ LanguageServiceManager
-             ├─ source/runtime graph
-             ├─ attributed bounded timeline
-             └─ optional local or Pi harness
-                    │
-                    └─ optional attached Browser Workspace context
+        ▼
+DevelopmentWorkspace (generation + trust)
+ ├─ ProjectWorkspace (tree, buffers, editor revisions, timeline, graph)
+ ├─ ProcessManager (owned PTY trees)
+ ├─ LanguageService / TestService / Debugger sessions
+ ├─ AgentRegistry ── one worker + one Pi session per resident agent
+ ├─ TaskScheduler ── task records above AgentRegistry
+ ├─ DevelopmentToolRouter (revision, trust, actor, confirmation)
+ └─ BrowserService (optional attached browser context)
+        │
+        └─ TUI SnapshotWorker (display projections only; never state owner)
 ```
 
-The one-shot CLI creates a workspace for one command and closes it. A stdio
-MCP server retains a bounded canonical-root registry for that server process.
-The daemon shares its own registry across authenticated local clients. The TUI
-owns one resident project workspace. Registries retain at most eight projects
-and evict an idle project after 30 minutes.
+`DevelopmentWorkspace` owns the generation and resident service registries. `ProjectWorkspace` owns project files, in-memory buffers, editor revisions, actor attribution, comments, proposals, checkpoints, timeline, and graph. `AgentRegistry` owns worker threads and Pi child processes. `TaskScheduler` owns task records but is currently in-memory; the daemon ticks it while its workspace actor is alive. Pi session files and timeline/checkpoint files are separate persisted artifacts. A worker, TUI snapshot, or external harness cannot become the project authority.
 
-`project.session.status` reports the resident MCP lifecycle.
-`project.session.detach` stops ownership and removes the registry entry. MCP
-stdio shutdown, daemon shutdown, or idle eviction also closes the session.
-Closing a workspace shuts down language servers and terminates owned process
-trees; it does not delete project files.
+Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Mutations also require a trusted workspace, actor attribution, and the applicable mutation authority or confirmation.
 
 ## Project files and tree
 
-List the bounded tree:
+Use bounded project operations:
 
 ```console
 glass project files --root .
-```
-
-The result contains entries plus `limit`, `truncated`, ignored directories,
-and skipped symlinks. The default maximum is 2,048 entries. Glass excludes
-generated or vendor roots such as `.git`, `target`, `node_modules`, and
-`.glass` before they consume the scan budget. Symlinks are not followed into
-unknown or external trees.
-
-The resident tree is cached and invalidated by Glass file mutations. A caller
-must treat `truncated: true` as an incomplete inventory, not an empty or fully
-scanned suffix.
-
-Read, search, and mutate:
-
-```console
 glass project read README.md --root .
 glass project search BrowserSession --root .
 glass project edit notes.txt --content "reviewed\n" --root .
@@ -103,401 +57,118 @@ glass project rename notes.txt docs/drafts/notes.txt --root .
 glass project delete docs/drafts/notes.txt --yes --root .
 ```
 
-Relative paths are limited to 512 bytes. Absolute paths, parent traversal, and
-symlink escape fail with `PathOutsideWorkspace`. Delete requires explicit
-confirmation and removes only a file or empty directory. Glass does not
-recursively delete a project tree.
+| Resource | Current bound and state |
+|---|---|
+| One file read or write | 512 KiB; valid UTF-8 for reads |
+| Editor or existing-file buffer | 1 MiB |
+| Tree inventory | 2,048 entries; result reports `truncated`, ignored directories, and skipped symlinks |
+| Relative path | 512 bytes; parent traversal, absolute paths, and symlink escape fail |
+| Timeline | 512 retained events with bounded payloads |
+| Workspace actors | 64 actor identities |
+
+The tree skips generated/vendor roots such as `.git`, `target`, `node_modules`, and `.glass` before consuming the inventory bound. It does not follow unknown or external symlinks. Delete removes one file or empty directory only; it does not recursively remove a tree. Treat `truncated: true` as incomplete inventory.
 
 ## Native editor and conflict rules
 
-Opening a file creates a bounded editor buffer with the disk fingerprint and
-an actor claim. Saves write atomically. A save fails when:
+Opening a file creates an in-memory `EditorBuffer` with content, disk `originalHash`, dirty flag, one-based cursor, optional selection, and actor. Buffers are not automatically persisted. `Ctrl-S` or `glass.editor.save` compares the current disk hash with `originalHash` and then writes atomically through the project actor. Undo and redo retain at most 256 content entries per path. A save never overwrites an external change.
 
-- the file changed externally after the buffer opened;
-- another actor owns a conflicting edit claim;
-- the path resolves outside the canonical root;
-- the content or retained buffer limits are exceeded; or
-- the filesystem operation fails.
+The native editor supports arrows, text insertion, `Enter`, `Backspace`, `Shift` plus arrows for a selection, `Ctrl-S`, `Ctrl-Z`, `Ctrl-Y`, `Alt-A` to prepare an agent prompt, and `Esc` to open the editor-exit prompt. The exit prompt protects unsaved content; `Ctrl-C` follows the modal quit path rather than silently discarding it. `Tab` remains product navigation outside editor mode. `Delete` has no editor mutation binding.
 
-The failure does not overwrite disk. Reopen or reread the file, compare the
-new content, reconcile the actor claim, and apply a new edit.
+`Alt-W` toggles soft wrapping. With wrapping enabled, source lines reflow to the available editor width, the horizontal scroll resets, and cursor visibility is calculated from the visual wrapped row. With wrapping disabled, source lines remain one row each and horizontal scrolling follows source columns. The renderer measures terminal cell width, preserves syntax and selection backgrounds, pads continuation rows under the line-number gutter, and renders a cursor cell even at end-of-line. This is presentation state only; the buffer cursor and selection remain one-based source positions.
 
-TUI editor keys:
+Editor collaboration is explicit, not automatic. `ProjectWorkspace::collaboration().claim(EditClaim)` records a read or write claim and rejects overlapping write claims from different actors. Opening or saving a buffer does **not** create or enforce a claim. Claim subscribers receive a bounded event stream; `release_actor` removes that actor's claims. Comments, proposals, and checkpoints are separate state:
 
-| Key | Action |
-|---|---|
-| arrows | move the cursor |
-| text, `Enter` | insert content |
-| `Backspace` | remove content |
-| `Ctrl-S` | atomically save with actor attribution |
-| `Ctrl-Z`, `Ctrl-Y` | undo or redo in the current buffer |
-| `Esc` | leave editor mode and return to Code navigation |
+| State | API/tool examples | Recovery |
+|---|---|---|
+| Comment `open`/`resolved` | `glass.editor.comment.add`, `.resolve` | Resolve an existing comment; invalid ranges are rejected |
+| Proposal `pending`/`accepted`/`rejected`/`stale` | `.proposal.create`, `.accept`, `.reject` | Recreate from current content when base content changed |
+| Checkpoint | `.checkpoint.create`, `.restore` | Restore open buffers; inspect disk before saving |
 
-`Tab` remains product-destination navigation outside the editor, and `Delete`
-has no editor mutation binding. Glass-native rendering remains the state owner.
-Neovim can act as an optional editing engine; it does not own project, browser,
-process, graph, actor, or timeline state.
-
-## Source and diff rendering
-
-The Code view and inline Git diff select syntax by path. Syntect provides the
-bundled grammar when one is available; unknown paths use deterministic manual
-rendering or plain text rather than content-based language detection. The
-supported path aliases include TypeScript (`.ts`, `.tsx`, `.mts`, `.cts`) via
-JavaScript, Swift and Dart via C++, Kotlin (`.kt`, `.kts`) via Java, and
-Dockerfile-like names via the shell grammar.
-
-Markdown (`.md`, `.markdown`, `.mdx`, and README names) styles headings, lists,
-links, and inline code. Fenced blocks delimited by backticks or tildes select
-the language token and highlight TypeScript, Swift, Kotlin, or Dart aliases.
-Mermaid (`.mmd` and `.mermaid`) renders supported flowcharts, graphs, and
-sequence diagrams as deterministic terminal diagrams; unsupported forms stay
-as styled source.
-
-Diff rendering follows each file path from its `---`/`+++` headers, displays
-old/new line numbers and add/remove backgrounds, and applies that path's
-grammar to changed lines. A path without a grammar retains the plain/manual
-fallback.
+A proposal must match the exact original content and hash. A changed buffer marks it stale and does not overwrite the buffer. Exact selection replacement is Unicode-safe and clears the selection. Neovim is optional and remains a managed editing engine; Glass retains project, actor, browser, process, graph, and timeline ownership. See [Development TUI architecture](architecture/development-tui.md).
 
 ## Processes and PTYs
 
-Start a finite job from the CLI:
+Start finite or resident work:
 
 ```console
 glass project run check --command "cargo check" --wait --root .
 ```
 
-Start a long-running server in the TUI command bar:
+In the TUI command palette, use `process start NAME COMMAND`; through the router use `glass.process.start` with `wait: false` for a resident process. Every managed process uses a real PTY, a 32 KiB retained output tail, a unique name, and explicit `running`, `exited`, `stopped`, or `failed` state plus `starting`, `healthy`, `exited`, `stopped`, or `failed` health. A project owns at most 32 registered processes. Input is capped at 16 KiB. PTY resize dimensions must be non-zero.
 
-```text
-project run dev npm run dev
-```
+Glass owns the process tree. Unix uses a process group; Windows uses a kill-on-close Job Object. `stop` performs graceful termination and bounded escalation. `restart` stops and removes the old record before starting the saved command. `remove` requires a stopped process. Poll failures are surfaced as failed state and retained output, not discarded. An exited record remains until removal or workspace close.
 
-Or use MCP `project.process.start` with `wait: false`. The resident project
-session then owns the process.
+## Diagnostics and persistent LSP
 
-Process contracts:
-
-- maximum 32 managed jobs per project session;
-- a real PTY for terminal-compatible input/output;
-- bounded retained output rather than an unbounded log;
-- explicit running, exited, failed, degraded-poll, and stopped state;
-- input and resize only for a live owned job;
-- unique process names; and
-- graceful interrupt/terminate followed by bounded hard-kill escalation.
-
-On Unix, Glass owns a process group so descendants cannot outlive the
-workspace. On Windows, the development feature uses a kill-on-close Job
-Object. A polling failure is returned as degraded state; it is not silently
-discarded.
-
-Use `glass project process --help` for list/start/stop/restart/remove/input/
-resize/output syntax. Stop a job before removing its record. An exited process
-can retain bounded output until explicit removal or workspace eviction.
-
-## Tests, lint, and detected commands
-
-Run detected finite commands:
+Detected commands supply defaults only when project evidence exists:
 
 ```console
 glass project test --root .
 glass project lint --root .
-```
-
-Detection supplies defaults only when project evidence exists. A configured or
-explicit command remains the authority. Glass records start, completion,
-status, and actor evidence; it does not reinterpret a failing exit status as a
-passing test because diagnostics were empty.
-
-Use a named `project run` command for tools outside the detected test/lint
-contract. Treat command strings as local code execution under the current user
-and project trust boundary.
-
-## Diagnostics and persistent LSP
-
-For a fresh server in the resident TUI, start it before requesting
-diagnostics. Enter these commands in the command palette:
-
-```text
-lsp start rust-analyzer rust-analyzer
-lsp diagnostics rust-analyzer src/main.rs
-```
-
-The one-shot `project diagnostics` convenience command uses the Rust
-diagnostics path and starts its dedicated client as needed:
-
-```console
 glass project diagnostics src/main.rs --root .
 ```
 
-In a resident workspace, one language-service manager owns the server process
-and JSON-RPC channel. It sends:
+Use `project run` for another command. Exit status is authoritative; empty diagnostics do not turn a failed command into success. PTY output, test runs, LSP events, graph links, and live-update proofs are attributed to actors and revisions.
 
-1. `initialize` and `initialized` once;
-2. monotonic `didOpen` and `didChange` document versions;
-3. `didSave` after an attributed save;
-4. `didClose` when the buffer closes; and
-5. `shutdown` followed by `exit` before process reap.
-
-The service also supports bounded hover, definition, references, document
-symbols, formatting, and rename operations where the selected server provides
-them. Responses are bounded and matched to request IDs. Missing executables,
-protocol failures, timeouts, and malformed responses are explicit errors;
-Glass does not fabricate diagnostics or silently start a new server for each
-request.
-
-Detected server names are `rust-analyzer`, `typescript-language-server`,
-`pyright-langserver`, and `gopls`. Installation is external to Glass.
+The resident language service owns one server and JSON-RPC channel. It sends `initialize`, monotonic `didOpen`/`didChange` versions, `didSave`, `didClose`, then `shutdown`/`exit`. Missing executables, malformed responses, protocol errors, and timeouts are explicit failures. Detected names include `rust-analyzer`, `typescript-language-server`, `pyright-langserver`, and `gopls`; installation is external to Glass.
 
 ## Source/runtime graph and live evidence
 
-Discover and inspect links:
-
-```console
-glass project graph discover --root .
-glass project graph entity action.checkout.submit --root .
-glass project graph source src/checkout.rs --root .
-glass project link action.checkout.submit src/checkout.rs \
-  --start-line 40 --end-line 72 --root .
-```
-
-Every link has direction, provenance, confidence, and evidence. An explicit
-`data-glass-entity="..."` marker is the strongest built-in source-to-runtime
-bridge. Framework names, file proximity, or matching strings do not become
-confirmed runtime ownership without evidence.
-
-A source save creates a pending live-update state. It becomes confirmed only
-after an attached browser produces a strictly newer semantic revision with
-compatible evidence. Without a browser, the result remains pending rather
-than claiming that hot reload succeeded.
-
-`project diff` combines code, process, semantic-link, workflow, and explicit
-visual status. Visual state is `not-captured` until a screenshot or comparison
-is requested.
+A source save is only a pending live update. It becomes confirmed after an attached browser reports a strictly newer compatible semantic revision. Without that evidence, Glass reports pending rather than claiming hot reload.
 
 ## Timeline, inbox, and replay
 
-Every meaningful project operation records an attributed, bounded event. The
-timeline persists under the platform local-data `glass/development` root using
-a hash of the canonical project path. It stores event metadata and bounded
-payloads. It does not persist prompt text, authored secret values, complete
-process output, page content, cookies, or pixels.
-
-Inspect it:
-
-```console
-glass project timeline --root .
-glass project replay --root .
-```
-
-The mobile attention inbox derives `needsAttention`, `running`, and `recent`
-cards from the same timeline. MCP `project.inbox` exposes the bounded
-projection. Replay reconstructs a bounded sequence of attributed revisions;
-it does not re-execute shell commands or browser input.
-
-Reconnect capsules persist only control-plane identity, selected view/cursor,
-target and revision metadata, attention title, and live preferences. They do
-not claim that a PTY survived a process or machine crash.
+`project timeline` and `project replay` inspect bounded attributed events; replay reconstructs state and never re-executes shell commands or browser input.
 
 ## Agents and actor authority
 
-Attach an external actor:
+Glass has four distinct agent paths:
 
-```console
-glass project attach reviewer --root .
-```
+| Path | Ownership and behavior | Entry point |
+|---|---|---|
+| Deterministic local harness | Synchronous, browser-independent `glass.harness.v1` reducer. It resolves bounded references and scripted prompts such as `read PATH`, `files`, `process list`, and `diff`; it has no model provider or persistent session. | `glass agent hello/prompt --harness local --root .` |
+| Native Pi resident agent | `AgentRegistry` worker with a persistent native `AgentSession`, governed Glass tools, and optional browser context. | TUI Agent surface; `glass.agent.*`; see [Native Pi SDK runtime](pi-sdk-runtime.md) |
+| External harness handoff | Fixed executable names discovered on `PATH`; Glass hands the terminal to the selected interactive program and resumes after exit. It does not emulate or register that program. | `glass harness list`; `glass harness start NAME --root .` |
+| One-shot delegation | Temporary Codex, Claude, or OpenCode child. Read-only is default; output and errors are bounded; no resident identity or session is created. | `glass agent delegate HARNESS PROMPT --root .` |
 
-The actor appears in the attributed timeline. Actor identity is evidence, not
-automatic mutation authority. File claims, project revisions, browser
-revisions, policy, confirmation, and the shared mutation lease remain
-independent checks.
+`glass agent prompt --harness pi` is the compatibility Pi command adapter for a one-shot CLI request. It is not the resident native `AgentSession` path. Use the TUI or daemon-backed resident agent for steering, follow-up, approvals, and persistent ownership.
 
-The deterministic local harness resolves bounded references such as
-`@workspace`, `@diagnostic`, `@run:last`, `@file:PATH`, `@entity:ID`, and
-`@replay:INDEX`:
-
-```console
-glass agent hello --root .
-glass agent prompt "Inspect @workspace and @diagnostic" --root .
-```
-
-The native Pi SDK runtime owns one persistent `AgentSession` per resident agent.
-It supports prompt, steer, follow-up, model discovery/selection, thinking
-level, abort, resume, clone, fork, compaction, and history. Pi is not required
-for project or browser use.
-
-The TUI Agent surface keeps this path in one terminal: `Enter` or `i` opens
-the resident Pi composer, `s`/`u` queue runtime setup or update, and `l` hands
-the terminal to Pi for interactive provider login. `review` pre-fills an
-evidence-aware review prompt without editing files. `harness list` discovers
-fixed external coding-harness binaries on `PATH`; `harness start NAME` hands
-the terminal to one installed harness and resumes Glass after it exits. The
-handoff never interpolates a user-supplied shell command and remains behind
-workspace trust.
-
-Glass loads the release-pinned SDK through private length-prefixed IPC, with
-built-in tools, ambient extensions, skills, prompt templates, themes, and
-context-file discovery disabled. The embedded
-`pi-glass-system.md` prompt makes Glass revisions, structured-first browser
-evidence, privacy, narrow-terminal output, and truthful effect reporting part
-of every turn without importing arbitrary user or project Pi configuration.
-
-A Glass-owned SDK tool exposes the workspace router. Every call crosses the
-same Rust gateway used by the local harness, with schema/result bounds, actor
-attribution, revision guards, confinement, mutation authority, leases, and
-browser ownership preserved.
-
-For a mutation, the trusted extension serializes the complete tool call before
-asking. Glass blocks that tool while its confirmation sheet shows the
-tool name and bounded effect evidence: path/name, redacted command preview, byte
-counts, replacement counts, and short SHA-256 evidence for content or commands. `Y`/Enter or the
-Approve once button authorizes the same frozen call once. `N`/Esc denies.
-Requests expire after 120 seconds, duplicate/concurrent
-and stale responses fail closed, and an approval is consumed once. It does not
-authorize a retry, changed arguments, another tool, or another session. The
-one-shot CLI adapter has no interactive host, so it immediately denies every UI
-request instead of hanging. Raw patch content and secret-looking environment
-assignment values are not placed in status or audit messages. Exact edit blocks
-must each match once against the same original file and may not overlap; the
-combined write is atomic and fails if the file changes after opening.
-
-The SDK receives no second unconfined filesystem or shell path. Coding,
-process, browser, and workflow calls all return to the resident workspace actor,
-so persistent ownership and revision/lease checks are shared with CLI, TUI,
-daemon, and MCP callers.
-
-Provider/model choice is Pi-owned: built-in providers and supported
-`models.json` custom providers remain available. Glass defaults to cached model
-catalogs, an ephemeral Pi session, and no ambient resources. Operators may set
-`GLASS_PI_ONLINE_CATALOG=1`, `GLASS_PI_PERSIST_SESSION=1`, or
-`GLASS_PI_TRUSTED_RESOURCES=1`. Trusted resources load ambient context files,
-extensions, skills, prompt templates, and themes; because extensions execute
-local code outside the broker, that opt-in is equivalent to trusting those
-installed resources with the user's account. It also removes the extension-tool
-allowlist, making every tool registered by those extensions selectable. Pi's raw
-built-in tools remain off because Glass overrides their standard coding names.
-
-### Unrestricted launch
-
-`glass --yolo` is the explicit no-approval development mode. For the lifetime
-of that Glass process it:
-
-- skips the Glass-owned confirmation sheet for every Pi mutation;
-- automatically accepts any Pi extension `confirm` RPC that still occurs;
-- authorizes private broker mutations without `--allow-mutation --yes` being
-  supplied manually;
-- loads ambient Pi context, extensions, skills, prompt templates, themes, and
-  every tool registered by those extensions; and
-- treats browser policy capabilities as explicitly allowed rather than
-  confirmation-required.
-
-The phone and desktop cockpit keep a visible `YOLO` marker/capability warning.
-This mode trusts the model, prompt context, project, commands, and installed Pi
-extensions with the current operating-system account. It intentionally does
-not remove stale-revision checks, browser/workspace mutation leases, explicit
-host denials, path checks performed by individual file tools, JSON/RPC limits,
-timeouts, or result bounds. Shell commands and trusted extensions are arbitrary
-local code and are not confined to the project root.
-
-Pi's prompt response only acknowledges queueing. Glass therefore continues
-consuming SDK events until `agent_settled` (an earlier `agent_end` may still
-be followed by retry, compaction, or queued continuation), forwards bounded
-message/tool/completion events to the Agent view, and drops token-level
-`message_update` noise before it can cause terminal redraws. The resident
-worker multiplexes commands with output at 50 ms or better, so `steer`,
-`follow-up`, and `abort` can be delivered while an agent turn is running.
-One-shot CLI prompts wait for the settled agent result; use the resident TUI
-for controls that target an active turn. IPC frames are capped at 16 MiB, the
-reader applies bounded backpressure, and one-shot responses retain only the
-newest display-worthy events.
-
-An attached Browser Workspace adds ephemeral target, origin, semantic summary,
-browser revision, workflow, memory-scope, and authority references. Browser
-tools are absent while detached or recovering. Context never bypasses lease,
-revision, policy, or confirmation requirements.
-
-## Experiments
-
-Create one isolated Git worktree experiment:
-
-```console
-glass project experiment create alternative --port 3101 --root .
-```
-
-Glass creates a `glass/experiment/NAME` branch and a sibling
-`.glass-worktrees/REPOSITORY/NAME` worktree. The experiment records its dev
-port, browser URL, and agent thread, and can collect bounded code/test/semantic/
-workflow comparison evidence.
-
-The runtime does not automatically delete an experiment branch. Before a full
-uninstall or manual cleanup, inspect `git worktree list`, remove each unwanted
-worktree with `git worktree remove /exact/path`, and decide separately whether
-to delete its branch.
-
-## Neovim integration
-
-Probe the installed executable and embedded RPC path:
-
-```console
-glass project neovim probe --root .
-```
-
-The probe runs a normal executable check and a real
-`nvim --embed --headless --clean` Msgpack-RPC buffer create/set/get round trip.
-Headless Lua stdout is not accepted as RPC evidence.
-
-`glass project neovim start` launches compatibility Mode A in a managed PTY.
-The 0.3.3 design keeps Glass-native rendering and state ownership while using
-Neovim as an optional editor engine. Probe failure does not disable the native
-editor.
-
-## CLI, MCP, TUI, and client mapping
-
-| Capability | CLI | MCP | TUI |
-|---|---|---|---|
-| detection/tree/read/search | `project inspect/files/read/search` | `project.*` query tools | Project view and palette |
-| edit/save | `project edit` | revision/actor-bound edit tools | native editor, `Ctrl-S` |
-| process lifecycle | `project run/process/test/lint` | resident process tools | Process view |
-| diagnostics/LSP | `project diagnostics` | diagnostic and editor tools | Project diagnostics card |
-| graph/diff | `project graph/link/diff` | graph and verification tools | Diff view |
-| events/replay/inbox | `project timeline/replay` | cursor subscription and inbox | Overview/Agent views |
-| harness | `agent ...` | agent gateway tools | resident Agent view |
-
-TypeScript and Python clients wrap MCP. They do not bypass MCP initialization,
-bounds, leases, or server ownership.
+The trusted native Pi tool gateway provides read, list, search, edit, write, process, test, LSP, Git, browser, workflow, debugger, and task capabilities according to availability. A mutation is checked again at execution time; stale revisions, leases, path confinement, trust, and confirmation still apply. See [MCP integration](mcp.md) for transport semantics.
 
 ## Failure and recovery matrix
 
-| Failure | Effect | Safe recovery |
+| Failure | Effect | Recovery |
 |---|---|---|
-| path escapes root | no filesystem mutation | choose a relative in-root path; do not follow an external symlink |
-| external buffer change | save refused | reread, compare, reopen, then apply a new edit |
-| actor claim conflict | save refused | reconcile/release the claim and retry from the current revision |
-| process poll degraded | process state uncertain; output retained | inspect again, then stop the owned job if necessary |
-| language server missing/crashed | no fabricated diagnostics | install/restart the server and reopen the document |
-| browser disconnect | browser tools/revisions invalidated; project remains alive | reconnect, launch, attach, or choose semantic-only mode |
-| MCP project eviction | resident buffers/process ownership closed | reattach the canonical root and restart required processes |
-| interrupted mutation | effect may be incomplete | inspect timeline/current state and reconcile before retry |
+| Path outside canonical root, invalid UTF-8, or size bound | No mutation; `PathOutsideWorkspace` or `InvalidInput` | Use a relative in-root path and a bounded UTF-8 file |
+| External disk change or stale proposal | Save/accept fails with `Conflict`; disk is unchanged | Reread, compare, reopen or recreate proposal, then retry |
+| Explicit write-claim overlap | New claim fails; existing buffers remain | Release/reconcile the actor claim and claim a non-overlapping range |
+| PTY poll, process, or LSP failure | State is failed/degraded; retained output/evidence remains | Inspect, stop/restart the owned service, or install the missing executable |
+| Agent worker/Pi process exits | Agent becomes `failed`; dependent agents/tasks do not become success | Inspect `lastError`, restart a failed/cancelled agent or create a new session |
+| Browser disconnect or recovery | Browser tools and revisions become unavailable; project remains alive | Reconnect/attach or continue in semantic-only mode |
+| Workspace generation/revision conflict | Tool is rejected before execution | Inspect current workspace and issue a fresh call |
+| TUI exit with unsaved buffer | Exit prompt blocks discard | Save, or explicitly choose the discard path |
 
-## Privacy and retained state
+## Verification and evidence
 
-- Project files change only through explicit file commands or editor saves.
-- PTY commands execute with the current user's local authority.
-- Timeline and reconnect data are bounded and exclude prompt/source/output
-  bodies by contract.
-- Browser semantics are structured-first; screenshots and visual comparisons
-  are explicit.
-- Agent gateway payloads and results are size-bounded and record digests rather
-  than sensitive values.
-- Full uninstall requires separate package and retained-state cleanup. See
-  [Fully uninstall Glass](installation.md#fully-uninstall-glass).
+Source-level evidence includes:
+
+- `development::project::tests::file_writes_are_confined_and_atomic` and `project_tree_reports_ignore_and_symlink_semantics`;
+- `editor_save_records_actor_and_clears_dirty_state`, `editor_undo_redo_and_external_change_conflicts_are_explicit`, `editor_selection_replacement_is_atomic_and_unicode_safe`, and `editor_comments_replay_and_proposals_require_approval`;
+- `editor_checkpoints_restore_unsaved_buffers_and_survive_reopen` and `editor_proposals_become_stale_on_buffer_conflict`;
+- `development::collaboration::tests` for explicit overlapping-write claims;
+- `process` tests for PTY lifecycle, output bounds, stop/restart, and degraded polling;
+- `tui::state` tests for soft-wrap cursor scrolling, Shift selection, and modal exit behavior; and
+- `tui::snapshot::tests::snapshot_worker_publishes_and_applies_without_blocking_ui` for non-blocking projection.
+
+Run the targeted tests from the repository when validating a change. Do not treat the presence of a resident agent, a detected command, or a browser connection as proof that its work succeeded; inspect the returned status and evidence.
 
 ## Related guides
 
-- [Complete feature reference](features.md)
-- [CLI reference](cli.md)
-- [MCP integration](mcp.md)
-- [Mobile and remote development](mobile-remote.md)
+- [Native Pi SDK runtime](pi-sdk-runtime.md)
+- [Autonomous task DAGs](task-dag.md)
+- [Coding harness architecture](harness-architecture.md)
 - [Development TUI architecture](architecture/development-tui.md)
-- [Semantic execution](semantic-execution.md)
+- [Local daemon](daemon.md)
+- [Workspace trust](workspace-trust.md)
+- [CLI reference](cli.md)
 - [Security](../SECURITY.md)

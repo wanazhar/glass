@@ -1,7 +1,7 @@
 id: certification-036-005
 scope: integration and release certification
 status: complete
-Status: Historical checkpoint; superseded by the current 0.3.12 source/release evidence.
+Status: Historical checkpoint; superseded by the current 0.3.13 source/release evidence.
 depends-on: [mobile-onboarding-036-004]
 
 ## Objective

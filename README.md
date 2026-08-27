@@ -6,6 +6,11 @@ the native terminal UI, local agent harness, files, editor, PTYs, tests,
 diagnostics, and Git diff live together in one revision-aware workspace. Browser
 intelligence is an integrated optional app surface for UI work and verification.
 
+
+**Status: Current 0.3.13 source behavior.** The TUI, editor, Pi integration,
+collaboration affordances, and terminal presentation notes below describe this
+checkout; current-source changes are not claimed as published-release behavior.
+
 The complete product is `glass-dev`, which installs both `glass` and
 `glass-browser`. The focused `glass-browser` package provides the standalone
 browser control plane and `glass_browser` Rust crate without the development
@@ -42,7 +47,7 @@ and revision checks.
 The packages intentionally share the `glass-browser` executable name and
 cannot own it in the same Cargo installation root. Follow the tested
 [installation and ownership-transition guide](docs/installation.md).
-The command and feature notes below describe the current `0.3.12` source
+The command and feature notes below describe the current `0.3.13` source
 checkout. Published `0.3.12` docs.rs pages are released Rust API artifacts;
 they are not a substitute for checking this checkout's TUI and CLI behavior.
 
@@ -135,30 +140,48 @@ The workspace retains project, process, agent, browser, revision, and
 attention state while the process is alive. A browser failure enters recovery;
 it does not terminate the editor, PTYs, agent, or project session.
 
-First-launch onboarding stays inside the TUI. On the `Agent` surface, type a
-message or press `Enter` to open the composer. Use `:agent setup` to install or
-repair the pinned Pi runtime, `:agent update` to refresh it, and
-`:agent setup login` to open Pi `/login` in the terminal. `:actions` opens the
-guided command center.
-Glass keeps the workspace trust decision and one-use mutation confirmation in
-the same flow; it does not require a separate setup command before you can
-inspect the project.
-Once the composer is open, `Enter` sends the draft immediately and leaves the
-composer available for the next prompt. Sent prompts stay visible as `YOU`
-messages while the resident agent streams `GLASS AGENT` text and tool activity;
-send failures keep the draft in the composer with an edit-and-retry message.
-From `Terminal`, use `:process start dev` to approve and start the detected
-development command. Use `:` for explicit process, test, LSP, and agent routes.
-The `Agent` surface exposes the task loop with `:task list`, `:task create`, and
-`:task resume` without leaving the TUI. The `More` surface can start the private
-loopback cockpit with `:cockpit start`; it returns a tokenized `127.0.0.1` URL
-for state, task, Git, and agent inspection. The cockpit stops with the TUI and
-never binds a public interface.
+First-launch onboarding stays inside the TUI:
 
-On the `Git` surface, choose **Review pull request** or **Ship pull request**,
-or use `:github review` and `:github ship TITLE`. Review is read-only; ship
-requires GitHub CLI authentication and the same one-use confirmation used by
-other mutations.
+```text
+glass → Trust (only when required) → Agent → Pi readiness → composer
+                                      │
+                         :agent setup / :agent setup login
+                                      │
+                         Enter sends → Glass Agent streams
+```
+
+On an untrusted project, Glass opens `Trust` first. `I` inspects, `O` opens
+without trust, `1` trusts once, and `T` trusts the project; repository-controlled
+execution stays blocked until a local decision. On `Agent`, type a message or
+press `Enter` to begin. If Pi is not ready, the same flow queues `:agent setup`
+to install or repair the pinned managed runtime; approve the one-use setup
+request with `Enter`/`Y`, or cancel with `Esc`/`N`. Then use `:agent setup login`
+to hand this terminal to Pi's `/login`; exit Pi to return to Glass. `:agent
+update` refreshes the pinned runtime. `:agent doctor` and `:agent status` show
+readiness without secrets.
+
+When the composer is open, `Enter` sends the draft and leaves the composer
+available for the next prompt; `Esc` closes it. `Ctrl-D` toggles steer mode,
+which interrupts a running turn, while the default follow-up mode queues the
+next message. Sent prompts remain visible as `YOU` messages while the resident
+agent streams `GLASS AGENT` text and tool activity. A send failure restores the
+draft with an edit-and-retry message; a busy background operation keeps new
+text in the composer. Every Pi mutation pauses on a Glass approval card:
+`Enter`/`Y` approves that serialized call once and `Esc`/`N` denies it.
+
+Use `:actions` for the current surface's guided command center. The Terminal
+surface starts the detected development suite with `:process start dev`; its
+action menu also exposes logs, input, stop, and health. The Agent surface owns
+`:task list`, `:task create TITLE PROMPT`, and `:task resume TASK_ID`. The More
+surface starts the private cockpit with `:cockpit start`; it returns a
+tokenized loopback URL and stops with Glass. Git offers read-only `:github
+review` and confirmation-gated `:github ship TITLE`.
+
+The resident workspace keeps project, process, editor, agent, browser, revision,
+and attention state while Glass is alive. A browser failure enters recovery; it
+does not terminate the editor, PTYs, agent, or project session.
+
+
 
 Read the [Development Runtime guide](docs/development-runtime.md) for files,
 editor ownership, processes, LSP, source/runtime graph, timeline, replay,
@@ -166,8 +189,20 @@ experiments, agents, and Neovim integration.
 
 ## Terminal workspace
 
-Glass adapts by terminal geometry without treating a narrow screen as proof of
-a slow network.
+Glass chooses layout from terminal geometry only: Auto is phone below 72
+columns or 22 rows, compact below 118 columns or 32 rows, and desktop
+otherwise. Override with `--tui-layout mobile|compact|desktop`; layout does not
+prove network speed or graphics support.
+
+```text
+Desktop: [Agent Code App Terminal Tasks Git Debug More]  →  surface
+          [navigation] [active surface / editor / browser] [context]
+          [status and command/composer footer]
+
+Phone:   [header]
+         [one active surface: Agent | Code | App | Tasks | More]
+         [status, or composer/command input]
+```
 
 | Key | Desktop | Phone |
 |---|---|---|
@@ -180,14 +215,36 @@ a slow network.
 | `7` | Debug | - |
 | `8` | More | - |
 
+`Tab`/`Shift-Tab` move between available surfaces. `?` opens scrollable help,
+`:` opens surface-filtered command discovery, `a` opens the surface action menu,
+and `Ctrl-L` redraws. `Enter` activates the selected file/browser entity or
+starts Agent interaction. Mouse is optional; printable navigation works over
+SSH/Mosh.
 
-`Tab` and `Shift-Tab` move between views. `?` opens help, `:` or `/` opens
-command discovery, and `Ctrl-L` redraws. Essential phone navigation uses
-printable keys and does not require function keys or mouse input.
+On Code, the file list and editor preview are read-only until full-screen edit:
+long preview lines wrap to the pane width on narrow terminals while retaining
+their path-aware highlighting. Select a file and press `Enter` (or `i`) for the
+full-screen editor. `Alt-W` toggles visual soft wrapping **off by default**;
+when on, source lines wrap at whitespace where possible, continuation rows keep
+their gutter alignment, and cursor, selection, and syntax highlighting remain
+aligned. When off, horizontal scrolling follows source columns. In either
+mode, arrows move, `Shift`+arrows select, `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y`
+undo/redo, `Alt-A` asks Pi with the unsaved buffer attached, and `Esc` opens
+the exit guard. `Ctrl-C` also opens the editor exit prompt (it does not
+immediately quit). Clean files require `Enter`/`Q`/`Y` to leave; unsaved files
+offer `S` save, `D` discard, `Q` discard-and-quit, or `Esc`/`N` stay.
 
-The browser view is structured-first. Continuous pixels are off by default.
-Use `live on` only when visual steering is useful, and use an explicit
-`screenshot PATH` when you need persistent visual evidence.
+The Code `REVIEW` panel shows open anchored comments, pending proposals, and
+checkpoints. Use `:editor comment-selection TEXT`, `:editor comment PATH START
+END TEXT`, `:editor comment-resolve ID`, `:editor propose PATH SUMMARY TEXT`,
+`:editor proposals`, `:editor accept ID`, `:editor reject ID`, `:editor
+checkpoint NAME`, and `:editor restore CHECKPOINT_ID`. Proposals require the
+exact base content and become stale on conflicting edits; checkpoints and
+proposals change resident buffers until `:editor save PATH` or `Ctrl-S`.
+The browser view is structured-first. Continuous pixels are off by default;
+use `:browser view` in the development TUI to toggle the selected backend, and
+use `live on`/`live off` only in the standalone `glass-browser` TUI. Use an
+explicit screenshot command when persistent evidence is needed.
 
 ## Source and diff rendering
 
@@ -303,11 +360,12 @@ bounded project, browser, workflow, and resident-runtime tools:
 glass agent hello --harness pi --root .
 glass agent doctor
 glass agent setup
+glass agent setup --login
 glass agent setup --update
 glass agent models --root .
 glass agent prompt "Explain the failing diagnostic" --harness pi --root .
-
 ```
+
 
 Glass can also discover and launch installed external coding harnesses through
 the same catalog used by the TUI:
@@ -369,8 +427,8 @@ diagnostics, verification, Git status, semantic inspection, Web IR, and task
 planning are also available as explicit `glass_*` tools.
 
 Pi retains its configured provider/model catalog, including supported custom
-providers from `models.json`; use `project pi models` and model selection from
-the cockpit. `GLASS_PI_ONLINE_CATALOG=1` permits live catalog refresh,
+providers from `models.json`; use `glass agent models` or the Agent surface.
+`GLASS_PI_ONLINE_CATALOG=1` permits live catalog refresh,
 `GLASS_PI_PERSIST_SESSION=1` opts into Pi session persistence, and
 `GLASS_PI_TRUSTED_RESOURCES=1` opts into ambient Pi context files, extensions,
 skills, templates, and themes, and removes Glass's extension-tool allowlist so
@@ -402,34 +460,37 @@ Command discovery is centralized in the TUI:
 
 The Command Center shows the safe next action and an example invocation, so
 most workflows do not require memorizing the resident command inventory.
+Presentation is selected independently from layout and transport. In the
+development TUI, `--tui-live off` is the default. With `--tui-live auto` and
+backend `auto`, Herdr is used only when detected; otherwise presentation stays
+semantic-only. `--tui-live on` with backend `auto` uses bounded ANSI. An
+explicit `--tui-live-backend kitty` emits Kitty terminal graphics, while
+explicit `ansi` uses true-color half-block cells; an unavailable explicit
+Herdr backend remains semantic-only. Quality `data`, `balanced`, and `smooth`
+profiles target approximately 3, 6, and 12 FPS. Mosh and terminals without
+graphics remain usable through semantic state.
 
-Presentation is selected independently from layout:
+Use `:browser view` in the development TUI to toggle the selected presentation
+path; `live on`/`live off` are standalone `glass-browser` TUI commands, not
+development-TUI commands. Herdr is optional and can own the persistent PTY for
+detach/reattach; tmux remains compatible.
+For iPhone viewing, use the development TUI's private Remote View:
 
-- local balanced and smooth profiles request 30 and 60 FPS;
-- verified fast remote links use higher bounded profiles;
-- constrained or unknown remote links use 3/6/12 FPS profiles;
-- Mosh remains semantic-only because it synchronizes terminal cells, not
-  arbitrary graphics-protocol state;
-- `live auto` enables continuous frames when the selected backend is
-  available; with the default backend it requires Herdr, while explicit Kitty
-  or ANSI selection remains available without Herdr;
-- `live on` uses ANSI by default, or emits the Kitty terminal graphics protocol
-  when `--tui-live-backend kitty` is selected;
-- auto quality reduces capture scale before frame rate and suspends hidden
-  browser acquisition.
+```text
+:browser remote-open
+:browser remote-status
+:browser remote-revoke
+```
 
-Use Herdr when you want agent-aware persistent PTYs across SSH detach and
-reattach. tmux remains compatible. For iPhone viewing, use the private
-loopback Remote View path:
+Glass prints a tokenized loopback URL and a hint equivalent to:
 
-The active BrowserSession's private iPhone path is exposed by the development
-TUI's `:browser remote-open` route. It starts a tokenized, loopback-only,
-revocable view and prints its SSH-forward hint. `browser remote-view open` is
-not a standalone CLI command; configure the matching SSH local port forward,
-then open the printed local URL in Safari.
+```console
+ssh -N -L PORT:127.0.0.1:PORT USER@HOST
+```
 
-The application server, Remote View, and Chrome CDP must remain private; the
-iOS SSH client owns the local port forward.
+Run the forward from the iPhone-side network and open the printed local URL in
+Safari. Remote View is not a standalone `glass-browser` command. The
+application server, Remote View, and Chrome CDP must remain private.
 
 Follow [Mobile and remote development](docs/mobile-remote.md) for exact Herdr,
 Mosh, terminal-graphics, Remote View, troubleshooting, and security
@@ -489,7 +550,7 @@ the Glass MCP control plane. They expose typed browser and Development Runtime
 helpers, cursor-based event subscriptions, deadline-aware waits, process
 health, mutation-lease scopes, and edit-and-verify flows.
 
-They are repository clients for the 0.3.12 source line, not published npm or
+They are repository clients for the 0.3.13 source line, not published npm or
 PyPI packages and not browser runtimes:
 
 - [TypeScript client](clients/typescript/README.md)
@@ -519,16 +580,16 @@ workflows.
 
 ## Support and evidence
 
-| Item | 0.3.12 source status |
+| Item | 0.3.13 source status |
 |---|---|
-| Linux ARM64 | Native Chromium evidence recorded for the current release |
-| Linux x86-64 | Native Pi, experiment, and Chromium evidence recorded for the release source |
-| macOS x86-64 / ARM64 | Browser-free CI contract; native runtime certification pending |
-| Windows | Browser-free CI plus native named-pipe daemon lifecycle; native PTY/browser certification pending |
+| Linux ARM64 | Native Chromium evidence for exact `0.3.13` source pending; tracked in [release evidence](docs/release-evidence.md) |
+| Linux x86-64 | Native Pi, experiment, and Chromium evidence for exact `0.3.13` source pending; tracked in [release evidence](docs/release-evidence.md) |
+| macOS x86-64 / ARM64 | Browser-free CI contract; exact `0.3.13` native runtime certification pending and tracked in [release evidence](docs/release-evidence.md) |
+| Windows | Browser-free CI plus native named-pipe daemon lifecycle capability; exact `0.3.13` native PTY/browser certification pending and tracked in [release evidence](docs/release-evidence.md) |
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox / WebKit / Safari automation | Unsupported; iPhone Safari is a forwarded viewing client, not a Glass backend |
-| `glass-browser 0.3.12`, `glass-dev 0.3.12` | Current release source; public registry state is recorded in release evidence |
-| `0.3.11` | Previous published stable release |
+| `glass-browser 0.3.13`, `glass-dev 0.3.13` | Current release source; public registry state is recorded in release evidence |
+| `0.3.12` | Previous published stable release |
 
 A source build, cross-compilation, or browser-free CI run is not native browser
 certification. Read the [feature-parity matrix](docs/feature-parity.md),

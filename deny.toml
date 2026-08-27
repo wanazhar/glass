@@ -1,5 +1,11 @@
 [advisories]
 yanked = "deny"
+# Pre-existing transitive unmaintained bincode/yaml-rust notices; informational,
+# with no CVSS, and cargo-deny reports no safe upgrade.
+ignore = [
+  "RUSTSEC-2025-0141",
+  "RUSTSEC-2024-0320",
+]
 
 [licenses]
 confidence-threshold = 0.8

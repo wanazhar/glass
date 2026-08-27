@@ -1,13 +1,13 @@
 {
   "name": "@glass-dev/pi-runtime",
-  "version": "0.3.7",
+  "version": "0.3.13",
   "private": true,
   "type": "module",
   "description": "Glass-owned framed AgentSession SDK runtime for Pi",
   "main": "src/index.mjs",
   "engines": { "node": ">=22.19.0" },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.2"
+    "@earendil-works/pi-coding-agent": "0.84.3"
   },
   "scripts": {
     "check": "node --check src/index.mjs"

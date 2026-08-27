@@ -1,5 +1,53 @@
 # Release evidence
 
+## 0.3.13 release evidence
+
+Status: Pending exact-source evidence for version `0.3.13`, release date
+`2026-08-27`. This section is an explicit record template: every pending
+field must be replaced by observed command output, a workflow record, a
+registry response, or a GitHub record before the matching checklist gate is
+closed. Evidence from older releases is not reused.
+
+### Exact-source record
+
+| Field | Required exact record |
+|---|---|
+| Version/date | `0.3.13` / `2026-08-27`; publication timestamp: **PENDING** |
+| Source | `SOURCE_SHA`: **PENDING** (full 40-character commit); `origin/main` at closure: **PENDING** |
+| Signed tag | `v0.3.13` tag object and tag commit SHA: **PENDING**; local `git tag -v` result: **PENDING** |
+| GitHub signature | Tag signature `verified`, reason, and verified tag commit: **PENDING** |
+| Main CI | Run ID: **PENDING**; `headSha`: **PENDING**; terminal conclusion: **PENDING** |
+| Release workflow | Exact-tag run ID: **PENDING**; `headSha`: **PENDING**; terminal conclusion: **PENDING** |
+| Registry | `glass-browser 0.3.13` endpoint/status/timestamp/yanked: **PENDING**; `glass-dev 0.3.13` endpoint/status/timestamp/yanked: **PENDING** |
+| Installation | Exact-version clean registry install and `glass`, `glass-browser`, `glass-dev` help output: **PENDING** |
+| Native | Exact-tag certification run ID, `EXPECTED_SHA`, platform jobs, and conclusions: **PENDING**; bounded non-exact evidence, if any: **PENDING** |
+| Fuzz | Release-source fuzz run ID, tested SHA, targets, and conclusion: **PENDING**; non-exact scope label, if applicable: **PENDING** |
+| GitHub Release | URL, tag, draft/prerelease/latest flags, source-only/assets state, and publication timestamp: **PENDING** |
+| Closure | `check-github-releases.py` and final documentation-validator outputs: **PENDING**; clean tree and synchronized branch record: **PENDING**; issue/update record: **PENDING** |
+
+Use the following structure when replacing pending values so each claim stays
+bound to one source revision:
+
+```text
+VERSION=0.3.13
+RELEASE_DATE=2026-08-27
+SOURCE_SHA=<full commit SHA>
+TAG=v0.3.13
+TAG_COMMIT_SHA=<commit resolved by the tag>
+MAIN_CI_RUN=<run ID>; headSha=<SOURCE_SHA>; conclusion=<terminal result>
+RELEASE_RUN=<exact-tag run ID>; headSha=<SOURCE_SHA>; conclusion=<terminal result>
+GLASS_BROWSER_REGISTRY=<endpoint>; version=0.3.13; yanked=<true|false>; timestamp=<UTC>
+GLASS_DEV_REGISTRY=<endpoint>; version=0.3.13; yanked=<true|false>; timestamp=<UTC>
+CLEAN_INSTALL=<exact commands and observed help results>
+NATIVE_RUN=<run ID>; EXPECTED_SHA=<SOURCE_SHA>; jobs=<bounded results>
+FUZZ_RUN=<run ID>; tested_sha=<SHA>; scope=<exact or bounded non-exact>
+GITHUB_RELEASE=<URL>; tag=v0.3.13; draft=<...>; prerelease=<...>; latest=<...>; source_only=<...>
+CLOSURE=<validator outputs, clean-tree result, synchronized refs, issue record>
+```
+
+Until these fields contain exact records, the 0.3.13 checklist remains open.
+
+
 ## 0.3.12 release evidence
 
 This record tracks the exact signed source and publication gates for the

@@ -874,13 +874,13 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
     };
     let trust = Span::styled(
         format!("{} · {mode_label} ", state.snapshot_trust_label),
-        Style::default().fg(if state.snapshot_trust_label == "untrusted" {
-            WARNING
-        } else if state.yolo_mode {
-            WARNING
-        } else {
-            MUTED
-        }),
+        Style::default().fg(
+            if state.snapshot_trust_label == "untrusted" || state.yolo_mode {
+                WARNING
+            } else {
+                MUTED
+            },
+        ),
     );
     let path = Span::styled(
         compact_path(&state.snapshot_root, area.width.saturating_sub(24)),

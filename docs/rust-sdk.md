@@ -1,30 +1,41 @@
 # Rust SDK
 
+Status: Current 0.3.13 source behavior (including current-source work in this checkout)
+
+The workspace publishes two Rust packages with different boundaries:
+
+* `glass-browser` (`glass_browser`) is the browser-control library and
+  browser-only CLI product.
+* `glass-dev` (`glass_dev`) is the development runtime, resident agent/Pi
+  integration, project/editor/process tooling, and the `glass` CLI product.
+
 The public `browser_workspace` module provides the bounded, revision-safe
 controller, state, intent, action, capability, entity, target, layout, focus,
-ownership, and presentation contracts used by both Glass terminal products.
+ownership, and presentation contracts used by the browser and development
+terminal products.
 
-The `glass-browser` package exports the `glass_browser` library. The library
-owns the same policy, revision, semantic, workflow, workspace, and result
-contracts used by the CLI, TUI, MCP server, and daemon.
+The `glass-browser` package exports the `glass_browser` library. It owns the
+policy, revision, semantic, workflow, workspace, and result contracts used by
+the browser CLI, browser TUI, MCP server, daemon, and Rust callers.
 
 The focused browser API is documented at
-[`docs.rs/glass-browser`](https://docs.rs/glass-browser). The complete
-development workspace API is documented at
+[`docs.rs/glass-browser`](https://docs.rs/glass-browser). The development
+runtime API is documented at
 [`docs.rs/glass-dev`](https://docs.rs/glass-dev).
 
-docs.rs renders the Rust API surface. Some benchmark-style Cargo examples use
-development-only dependencies and are therefore not scraped into the docs.rs
-example index; the checked-in runnable examples catalog remains the complete
-source-level example inventory.
-
-This guide's module map follows the current `0.3.12` source checkout. The
-published `0.3.12` docs.rs pages are separate released artifacts: use them to
-verify the published API, while using this checkout for newer source-level
-surfaces such as `browser_workspace`.
+docs.rs renders published Rust API artifacts. This guide follows the checked-in
+source, which is version `0.3.13` with current-source work; published `0.3.12`
+docs.rs pages are immutable release evidence. Verify newer source-level
+surfaces, including `browser_workspace`, against this checkout rather than
+assuming they were part of the published release. Some benchmark-style Cargo
+examples use development-only dependencies and are not all listed in the
+docs.rs example index; the checked-in examples catalog remains the source-level
+inventory.
 
 
 ## Dependency and features
+
+Use the focused browser crate when embedding browser control:
 
 ```toml
 [dependencies]
@@ -34,15 +45,26 @@ serde_json = "1" # only needed when your application reads/writes JSON contracts
 ```
 
 Cargo aliases the package to `glass`, so Rust imports use `glass::…`. Without
-the alias, imports use `glass_browser::…`.
+the alias, imports use `glass_browser::…`. The development runtime is a
+separate package:
 
-| Feature | Default | Purpose |
+```toml
+glass-dev = "0.3"
+```
+
+Use `glass_dev::…` for project/editor/process/LSP, resident Pi, harness,
+collaboration, Git, and TUI APIs. `glass-dev` depends on `glass-browser`; the
+browser crate does not depend on `glass-dev`, so browser-only embeddings do not
+acquire the development runtime.
+
+| `glass-browser` feature | Default | Purpose |
 |---|---:|---|
 | `visual-compare` | no | PNG comparison helpers for explicit screenshot checks |
 | `fuzzing` | no | Fuzz-only hooks; do not enable in normal applications |
 
-docs.rs builds all features. A default library build remains browser-focused
-and does not pull the PTY/config dependencies.
+docs.rs builds all features. The default `glass-browser` library remains
+browser-focused; development runtime dependencies such as PTY integration are
+in `glass-dev`, not optional browser features.
 
 ## Session ownership
 
@@ -232,6 +254,15 @@ edits and links remain attributable.
 schema, authorization, and confirmation. Audit events store argument byte
 count/digest and result metadata, not argument values.
 
+### Managed Pi boundary
+
+`glass_dev::pi_runtime` exposes `PiReadiness`, `PiReadinessComponent`,
+`PiReadinessState`, `PiSessionRequest`, and `PINNED_PI_SDK_VERSION`
+(`0.84.3`). `PiReadiness` checks Node (currently 22.19.0 or newer), the
+managed SDK, authentication, provider, and session state. `PiSessionRequest`
+is the native resident-session protocol used by the development agent runtime;
+it is distinct from the CLI's legacy one-shot `PiHarness` RPC adapter.
+
 ## Backends, surfaces, and presentation
 
 - `browser_backend` defines semantic requests, responses, profiles,
@@ -246,10 +277,14 @@ count/digest and result metadata, not argument values.
 - `presentation` owns frame metadata, geometry/revision mapping, latest-frame
   mailbox, payload ownership events, and metrics. It does not own browser or
   terminal transports.
-- `terminal_graphics` provides Kitty protocol and semantic render adapters.
-  The development TUI's live policy selects Herdr, explicit Kitty, or bounded
-  ANSI; `live auto` may remain semantic-only without Herdr when no explicit
-  native backend was selected.
+- `terminal_graphics` provides Herdr-owned pane, Kitty protocol, ANSI canvas,
+  and semantic render adapters. The development TUI's live policy selects
+  `Herdr`, explicit `Kitty`, or bounded `Ansi`; `Auto` may remain
+  semantic-only when no native backend is detected.
+- Live quality is bounded to data (~3 FPS), balanced (~6 FPS), or smooth (~12
+  FPS). ANSI fit supports `contain`, `cover`, and `actual`; native image paths
+  use `contain`. These are CLI/TUI policy inputs, not browser-session
+  ownership.
 
 
 ## Protocol, MCP, daemon, and results
@@ -268,16 +303,22 @@ receive a local result ID rather than an unbounded transport payload.
 
 ## Public module map
 
+Module paths are package-qualified below because both packages expose a
+`browser` and a `tui` module. This is the checked-in public Rust surface; the
+generated rustdoc pages and source exports are the authority for individual
+items.
+
+### `glass-browser` (`glass_browser`)
+
 | Module | Contract |
 |---|---|
-| `browser` | Chrome/CDP lifecycle, session API, policies, profiles, actions, observations, workflows, knowledge |
+| `browser` | Chrome/CDP lifecycle, session API, policies, profiles, actions, observations, workflows, and advisory knowledge |
 | `browser_backend` | Transport-neutral semantic backend contract and dispatcher |
 | `browser_workspace` | Bounded revision-safe browser UI state, actions, focus, ownership, layout, and presentation contracts |
 | `capabilities` | Versioned discovery and negotiation manifest |
-| `cli` | Clap types and shared command runner |
+| `cli` | Clap argument definitions and browser command dispatch |
 | `connection` | Independent connection environment, presentation profiles, policy reasons, and observatory metrics |
 | `daemon` | Local socket, isolated MCP sessions, leases, and recovery |
-| `development` | Project files, buffers, PTYs, events, graph, replay, harnesses, collaboration |
 | `extensions` | Manifest, permission, registry, sandbox, and guarded-action boundary |
 | `extraction` | Strict source-labelled evidence extraction |
 | `mcp` | JSON-RPC/MCP stdio server, prompts, resources, and tool dispatch |
@@ -289,10 +330,42 @@ receive a local result ID rather than an unbounded transport payload.
 | `surfaces` | Bounded multi-surface understanding and bridge grants |
 | `task_compiler` | Deterministic Task Protocol to execution-plan compiler |
 | `task_protocol` | Strict authored semantic task contract |
-| `terminal_graphics` | Kitty protocol and semantic render adapters |
-| `tui` | Standalone Browser TUI reducer, responsive layouts, semantic selection, and bounded Herdr/Kitty/ANSI live presentation |
+| `terminal_graphics` | Herdr, Kitty, ANSI, and semantic terminal render adapters |
+| `tui` | Standalone browser TUI reducer, responsive layouts, semantic selection, and bounded live presentation |
 | `web_ir` | Stable Web IR reconciliation, validation, diff, and continuity |
 | `workspace` | Workspace identity, ownership, attachments, lifecycle, and persistence |
+
+`update` is an implementation module and is not public. The browser crate does
+not export the Development Runtime; project files, native editors, PTYs, LSP,
+Pi, Neovim, Git, and collaboration belong to `glass-dev`.
+
+### `glass-dev` (`glass_dev`)
+
+| Module | Contract |
+|---|---|
+| `agents` | Resident Pi scheduling, lifecycle, evidence, and approval state |
+| `browser` | Development-browser service configuration, state, and worker handle |
+| `cli` | `glass` command dispatch for development routes |
+| `customization` | User/project configuration, skills, and custom commands |
+| `daemon` | Resident development daemon integration |
+| `debugger` | Debugger and semantic breakpoint support |
+| `development` | Project files, buffers, editors, PTYs, LSP, graph, replay, and collaboration |
+| `experiments` | Isolated Git worktree experiments and comparison |
+| `external_agents` | One-shot adapters for installed external coding agents |
+| `git` | Governed Git workspace operations |
+| `github` | GitHub status, review, and pull-request shipping operations |
+| `harness` | Discovery and safe launch of installed coding harnesses |
+| `intelligence` | Development graph and causal intelligence projections |
+| `kernels` | Kernel process and runtime integration |
+| `lsp` | LSP-facing language-service integration |
+| `mcp` | Development MCP server and tool integration |
+| `pi_runtime` | Managed Pi runtime readiness and sessions |
+| `tasks` | Task scheduling, retry, evidence, and verification requirements |
+| `testing` | Test execution and result collection |
+| `tools` | Governed development-tool routing |
+| `trust` | Workspace trust decisions and persistence |
+| `tui` | Resident development terminal application and surface routing |
+| `workspace` | Workspace ownership and shared handles |
 
 ## Errors and privacy
 

@@ -1,6 +1,6 @@
 # Complete MCP tool catalog
 
-This catalog names every browser tool in the `0.3.12` client-conformance inventory.
+This catalog names all 100 browser tools in the current `0.3.13` client-conformance inventory.
 The full `glass` command also merges its live `glass.*` Development Workspace
 catalog at runtime; these tools are governed by actor, authority, confirmation,
 workspace-generation, and project-revision metadata.
@@ -21,7 +21,7 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 
 | Family | Exact tools | Scope |
 |---|---|---|
-| `glass.agent` | `glass.agent.abort`, `glass.agent.approve`, `glass.agent.clone-session`, `glass.agent.compact`, `glass.agent.entries`, `glass.agent.follow-up`, `glass.agent.fork`, `glass.agent.hello`, `glass.agent.list`, `glass.agent.messages`, `glass.agent.model`, `glass.agent.models`, `glass.agent.name`, `glass.agent.new-session`, `glass.agent.prompt`, `glass.agent.rewind`, `glass.agent.send`, `glass.agent.sessions`, `glass.agent.setup`, `glass.agent.spawn`, `glass.agent.stats`, `glass.agent.steer`, `glass.agent.switch-session`, `glass.agent.thinking`, `glass.agent.tree` | Persistent Pi sessions, background composer delivery, governed runtime setup, steering, lifecycle, model state, tool-call approval, and evidence. `rewind` branches a Pi session from an earlier entry and requires trusted-workspace mutation authority plus per-call confirmation; `sessions` lists resumable sessions and `tree` exposes branchable entries without mutation or confirmation. |
+| `glass.agent` | `glass.agent.abort`, `glass.agent.approve`, `glass.agent.clone-session`, `glass.agent.compact`, `glass.agent.delegate`, `glass.agent.entries`, `glass.agent.follow-up`, `glass.agent.fork`, `glass.agent.hello`, `glass.agent.list`, `glass.agent.messages`, `glass.agent.model`, `glass.agent.models`, `glass.agent.name`, `glass.agent.new-session`, `glass.agent.prompt`, `glass.agent.rewind`, `glass.agent.send`, `glass.agent.sessions`, `glass.agent.setup`, `glass.agent.spawn`, `glass.agent.stats`, `glass.agent.steer`, `glass.agent.switch-session`, `glass.agent.thinking`, `glass.agent.tree` | Persistent Pi sessions, background composer delivery, governed runtime setup, steering, lifecycle, model state, tool-call approval, and evidence. `rewind` branches a Pi session from an earlier entry and requires trusted-workspace mutation authority plus per-call confirmation; `sessions` lists resumable sessions and `tree` exposes branchable entries without mutation or confirmation. |
 | `glass.browser` | `glass.browser.act`, `glass.browser.attach`, `glass.browser.diff`, `glass.browser.navigate`, `glass.browser.observe`, `glass.browser.reconnect`, `glass.browser.remote-view.open`, `glass.browser.remote-view.revoke`, `glass.browser.remote-view.status`, `glass.browser.screenshot`, `glass.browser.semantic`, `glass.browser.snapshot`, `glass.browser.start`, `glass.browser.state`, `glass.browser.stop`, `glass.browser.target.select`, `glass.browser.targets`, `glass.browser.web_ir` | Resident Chrome lifecycle, revision-safe actions, observations, bounded live Web IR evidence, targets, explicit loopback Remote View, and evidence. |
 | `glass.capabilities` | `glass.capabilities.inspect` | Effective resident-tool availability and unavailable reasons. |
 | `glass.command` | `glass.command.run` | Bounded foreground command execution attributed to the Pi actor. |
@@ -49,13 +49,16 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 | `glass.workflow` | `glass.workflow.cancel`, `glass.workflow.list`, `glass.workflow.pause`, `glass.workflow.record`, `glass.workflow.resume`, `glass.workflow.run`, `glass.workflow.verify` | Durable workflow lifecycle, verification, and recording. |
 | `glass.workspace` | `glass.workspace.delete`, `glass.workspace.inspect`, `glass.workspace.list`, `glass.workspace.resume`, `glass.workspace.suspend`, `glass.workspace.trust.inspect`, `glass.workspace.trust.status` | Workspace lifecycle, identity-bound trust status, and exact executable configuration inspection. |
 
-The checked-in development conformance fixture pins this exact inventory.
-Clients must still use `tools/list` for schemas and the negotiated capability
-agreement for availability; an inventory entry is not authority to mutate.
+The checked-in `0.3.13` development conformance fixture pins the full 330-tool
+inventory, including `glass.agent.delegate`; the documentation coverage gate
+checks every fixture entry against this catalog. The browser-only conformance
+fixture covers 100 tools. Clients must still use `tools/list` for schemas and the
+negotiated capability agreement for availability; an inventory entry is not
+authority to mutate.
 ## Legacy project and agent names
 
 The `project.*` and local-harness `agent.*` names below document the 0.3.4
-compatibility vocabulary. They are not part of the `0.3.12` negotiated inventory
+compatibility vocabulary. They are not part of the `0.3.13` negotiated inventory
 and new clients must use the `glass.*` resident development tools above. A
 server may retain selected executable aliases during source migration, but an
 unadvertised alias is not a public capability and must not be probed as one.

@@ -1,22 +1,157 @@
-# Remote development cockpit
+# Private development cockpit and mobile presentation
 
-Status: Historical 0.3.3 design reference; not the current phone implementation
+Status: Current 0.3.13 source behavior (private cockpit API); the former card
+and capsule design is historical and is not an implementation contract.
 
-> The card-based Overview, six-view dock, touch Send/Cancel target, `inbox`,
-> `notify`, and capsule interaction model below are retained as design history.
-> The current implementation is the five-destination geometry-responsive TUI
-> documented in [Development TUI](development-tui.md) and [Mobile and Remote
-> Development](../mobile-remote.md). Do not use this document as a current
-> command or layout reference.
+This document covers the Glass Dev private cockpit and how a remote/mobile
+operator may present the same development workspace. It does **not** define a
+second phone TUI. The current Glass Dev TUI is one geometry-responsive reducer
+with Desktop, Compact, and Phone classes; see
+[Development TUI](development-tui.md). The standalone browser-only TUI is a
+separate product and adapter; see [Standalone Browser TUI](tui.md).
 
-## Purpose and boundaries
+## Boundaries and ownership
 
-The cockpit is an intentionally remote presentation of the same Glass
-workspace. It preserves agent, semantic, project, test, process and command
-state without depending on browser pixels. It does not turn MCP into an image
-transport, expose a public relay, or replace Herdr/Mosh/SSH as transport owner.
+```text
+Glass Dev TUI / local browser client / SSH-forwarded browser
+                              |
+                              v
+                 LocalCockpit (127.0.0.1:ephemeral)
+                 token URL + one cockpit thread
+                              |
+                              v
+                 SharedDevelopmentWorkspace
+       trust · generation/revision · agents · tasks · Git · GitHub
+```
 
-## Runtime ownership
+`LocalCockpit` binds only to IPv4 loopback on an OS-selected ephemeral port,
+generates a random URL-safe token, and serves a small private HTML view plus
+JSON endpoints. It receives the same `SharedDevelopmentWorkspace` handle as
+Glass Dev. It does not own Chrome pixels, a browser session, editor buffers,
+PTYs, a resident agent loop, or a second task authority. The TUI's
+`SnapshotWorker` remains the owner of Glass Dev background refresh/tool/screenshot
+jobs; cockpit requests are handled by the private cockpit thread and execute
+through the governed workspace tool path.
+
+This is intentionally not a public relay or image transport. For a remote
+operator, forward the loopback port with SSH (or the operator's existing
+approved transport); do not expose the listener directly. Browser Remote View
+is a distinct browser presentation subsystem and must not be conflated with
+this workspace-state cockpit.
+
+## Current responsive presentation
+
+The HTML view is intentionally small and responsive to the browser viewport. It
+presents loopback-only workspace state rather than the historical six-view
+phone dock. The current Rust TUI owns the authoritative terminal layouts:
+
+```text
+Auto Glass Dev layout
+  width < 72 or height < 22  -> Phone (single pane)
+  width < 118 or height < 32 -> Compact (navigation + surface)
+  otherwise                  -> Desktop (navigation + surface + context)
+
+Phone TUI
+┌──────────────────────────────┐
+│ header · trust/mode · status │ 2 rows
+├──────────────────────────────┤
+│ one active Agent/Code/App/   │ min 5 rows
+│ Tasks/More surface           │
+├──────────────────────────────┤
+│ status, or composer + status │ 2 / 3 rows
+└──────────────────────────────┘
+```
+
+Phone exposes five direct destinations: Agent, Code, App, Tasks, and More.
+Desktop and Compact expose Agent, Code, App, Terminal, Tasks, Git, Debug, and
+More; Compact removes the context column. Phone changes geometry only: the
+same shared workspace, revision checks, agent ownership, and worker boundaries
+apply. Desktop/Compact/Phone details, modal precedence, editor projection,
+and key routing are authoritative in [Development TUI](development-tui.md),
+not duplicated here.
+
+The private HTML cockpit currently displays a refreshable state document and a
+GitHub review action. Its state schema contains:
+
+| Field | Ownership and meaning |
+|---|---|
+| `schemaVersion` | development cockpit schema identifier |
+| `root` | canonical project root display |
+| `generation` / `projectRevision` | workspace and project optimistic-concurrency guards |
+| `trust` | current workspace trust label |
+| `agents` | bounded resident-agent snapshot or an embedded error |
+| `tasks` | bounded task snapshots or an embedded error |
+| `git` | Git status, `null` outside a repository, or an embedded error |
+| `github` | cached GitHub origin/auth/review status |
+
+No browser screenshot, prompt text, source buffer, secret-bearing URL, token,
+PTY output, or arbitrary raw workspace payload is added to this state contract.
+
+## HTTP contract and lifecycle
+
+After `cockpit start` (from the Glass Dev command palette), the state owns a
+URL shaped like `http://127.0.0.1:PORT/TOKEN/`. The token is required as the
+first path segment; requests without it receive `401`. Supported routes are:
+
+| Method and route | Behavior |
+|---|---|
+| `GET /TOKEN/` | serve the private HTML view |
+| `GET /TOKEN/v1/health` | return `{"ok":true}` |
+| `GET /TOKEN/v1/state` | return the bounded workspace state above |
+| `POST /TOKEN/v1/command` | execute one governed tool request |
+
+`LocalCockpit` accepts at most 128 KiB per request and emits at most 512 KiB per
+response. The connection read timeout is two seconds. Unknown routes return
+`404`; malformed/invalid requests return `400`; workspace conflicts return
+`409`; state/tool or oversized-response failures return `503`. Responses are
+`no-store` and the connection closes after each response.
+
+A command request has `name`, optional `arguments`, optional `allowMutation`,
+optional `confirmed`, and optional `expectedGeneration` and
+`expectedProjectRevision`. Names are non-empty, at most 128 bytes, and limited
+to ASCII letters/digits plus `.`, `-`, and `_`. The effective mutation
+permission is `allowMutation && confirmed`; the request actor is the external
+`cockpit` actor. Omitted expected generation/revision values are filled from
+the current workspace, while supplied stale values fail closed through the
+normal development tool contract. The browser client must not treat a `200`
+response as permission to bypass trust or revision checks.
+
+```text
+GET state  ──> read shared workspace ──> bounded JSON
+POST command ──> parse + bounds
+              ──> expected generation/revision
+              ──> governed execute_tool
+              └─> result or 400/409/503
+```
+
+Starting an already-running private cockpit returns its existing local URL.
+Stopping it drops the listener and joins its thread; dropping the Glass Dev
+state also shuts it down. `cockpit status` reports `running · URL` or
+`not running · use cockpit start`. Project identity and state remain in the
+shared workspace when a browser disconnects or the cockpit is stopped.
+
+## Remote/mobile security and recovery rules
+
+- Keep the tokenized URL private; loopback binding is a required boundary, not
+  an optional deployment mode.
+- Use SSH port forwarding for remote access. This cockpit has no public relay,
+  account/session service, or mobile-specific authority path.
+- Treat `generation` and `projectRevision` as optimistic concurrency values.
+  On `409`, reload state and rebuild the action rather than retrying a stale
+  mutation blindly.
+- A browser failure does not destroy workspace state. Browser recovery and
+  semantic-only operation belong to the embedded Browser workspace in the App
+  surface; visual pixels remain optional and bounded.
+- Trust, confirmation, and actor policy remain enforced by the development
+  tool executor even when a command originates from the cockpit.
+
+## Historical design evidence (not current behavior)
+
+The following records the former 0.3.3 cockpit proposal for traceability only.
+It is immutable design history, not a command, layout, worker, or security
+contract for the checked-in implementation.
+
+### Historical resident session and capsule model
 
 ```text
 MCP/TUI/client
@@ -28,26 +163,25 @@ ResidentDevelopmentSessions ── bounded LRU / idle expiry
      ├── managed PTY jobs and bounded output
      └── reconnect capsule (non-sensitive preferences/cursors only)
              │
-             └── BrowserConnectionController (replaceable subsystem)
+             └── BrowserConnectionController
 ```
 
-The resident project session survives browser disconnect/recovery. Capsules do
-not persist command input, prompts, pixels, cookies, temporary ports/tokens,
-browser PIDs or stale target IDs.
+The proposal expected a resident session to survive browser recovery and a
+non-sensitive capsule to retain view/scroll/live preferences. It explicitly
+excluded prompts, command input, pixels, cookies, temporary ports/tokens,
+browser PIDs, and stale target IDs.
 
-## Overall phone layout
+### Historical phone card layout
 
 ```text
 ┌─ glass / checkout ─ SSH · semantic ┐
-│ agent RUNNING · app ATTACHED · r83 │  sticky workspace/connection header
+│ agent RUNNING · app ATTACHED · r83 │
 ├─ NEEDS YOU (1) ────────────────────┤
-│ ! browser port conflict      Enter │  urgent cards precede telemetry
+│ ! browser port conflict      Enter │
 ├─ AGENT ────────────────────────────┤
 │ observe → patch → HMR → verify     │
-│ editing src/cart.rs                │
 ├─ LIVE APP ─────────────────────────┤
 │ /checkout · rev 83 · fresh         │
-│ visual assist: snapshot       Open │
 ├─ UNDERSTANDING ────────────────────┤
 │ checkout.form · submit enabled     │
 ├─ TESTS / PROCESS ──────────────────┤
@@ -58,21 +192,13 @@ browser PIDs or stale target IDs.
 └────────────────────────────────────┘
 ```
 
-The Overview is an adaptive card stack. At normal phone heights it renders
-separate needs-attention, live-app, agent, understanding, and process cards.
-At short terminal heights it collapses to a two- or three-card priority window;
-`PageUp` and `PageDown` page through the remaining cards. The project/status
-header, command composer, navigation, and help/status footer remain visible.
-Browser pixels are a preview or deliberate burst and cannot displace command
-input, agent state, or process health.
+The historical Overview was an adaptive stack of needs-attention, live-app,
+agent, understanding, and process cards. Short terminals collapsed to a
+two/three-card priority window with PageUp/PageDown paging. A sticky project
+header, composer/navigation, and help/status footer remained visible. Browser
+pixels were only a preview and could not displace agent or process state.
 
-The terminal-native rendering approximates the issue-pinned iOS/Android visual
-language with rounded Unicode card borders, dark panel surfaces, cyan browser
-and semantic state, purple agent state, green runtime/verification state,
-status chips, a preview inset, and a visible command cursor. It does not claim
-pixel identity with native phone controls.
-
-## Focused views
+### Historical views and interaction table
 
 ```text
 Overview ─ summary cards and attention
@@ -83,78 +209,25 @@ Project  ─ files, editor buffer and diagnostics
 Process  ─ PTYs, tests, logs and lifecycle controls
 ```
 
-Each view has loading, empty, busy, error and constrained states. Browser also
-has probing, recovery, target-picker, disconnected, semantic-only and Remote
-View-active states.
+The proposal gave `1`–`6` view selection, Tab cycling, `:` action sheets, `?`
+context help, `inbox`, `notify on|off|status`, `tap` semantic actions,
+`verify card`, `capsule save|show|clear`, and `live quality auto`. It also
+specified `browser ...` probe/launch/attach/target/reconnect/disconnect and
+`browser remote-view open`, plus Y/Enter and N/Esc for a 120-second mutation
+sheet. None of these are current private cockpit routes.
 
-## Interaction contract
+### Historical render and visual rules
 
-The phone interaction layer provides a contextual action dock, searchable
-action sheet, touch Send/Cancel target, confirmation sheet, bounded transient
-toasts, in-process command history, focus-aware capture, and explicit stale-frame
-veil. All touch actions reduce to the same typed commands as keyboard input;
-there is no parallel mobile authority path.
+The proposal decoupled reducer and renderer, coalesced bursts, and capped local
+presentation at 60 cell frames/s, measured remotes at 30, and constrained or
+unknown/Mosh transports at 20. It dropped key releases and noisy mouse
+move/release/drag events, bounded bracketed paste, and retained latest browser
+frames under backpressure. Kitty frames carried geometry/generation identity and
+were not retransmitted for status-only redraws. It suspended capture for hidden
+Browser views and materialized only a newest PNG plus an ANSI thumbnail in
+Overview.
 
-Mouse, focus, and bracketed-paste reporting are scoped to the alternate-screen
-terminal guard and disabled during every cleanup path. Command history and
-drafts are never written to the reconnect capsule. Only the non-sensitive view
-and scroll projection joins the existing target/revision/live preferences.
-
-| Input or command | Behavior |
-|---|---|
-| `1`–`6` | Select a focused view without function/control keys. |
-| `Tab` / `Shift-Tab` | Cycle focused views. |
-| `:` | Open a filtered command palette with browser lifecycle actions. |
-| `?` | Toggle contextual shortcut/help content. |
-| `inbox` | Open the bounded attention summary. |
-| `notify on\|off\|status` | Control deduplicated terminal-bell attention. |
-| `tap` / `tap N` | Show/activate bounded revision-bound semantic actions. |
-| `verify card` | Show compact code/runtime/semantic/visual evidence. |
-| `capsule save\|show\|clear` | Manage non-sensitive reconnect state. |
-| `live quality auto` | Apply connection-aware scale/rate adaptation and show its reason. |
-| `browser ...` | Probe, launch, attach, pick target, reconnect, disconnect or select semantic-only. |
-| `browser remote-view open` | Create scoped loopback view and SSH-forward guidance. |
-| `Y`/Enter or `N`/Esc | Approve one exact Pi mutation call or deny it; unanswered sheets expire after 120 seconds. |
-| `Esc` | Close the focused overlay/sheet before affecting background work. |
-
-No essential action requires function keys, mouse reporting or a terminal image
-protocol. Touch/mouse may activate visible tabs/cards when the terminal emits
-events.
-
-## Render scheduling
-
-The event reducer and renderer are deliberately decoupled. Input, browser,
-development, resize, focus and live-frame events update state immediately, but
-bursts are coalesced before the next presentation deadline. Local terminals are
-capped at 60 cell frames per second, measured fast remotes at 30, and
-constrained, unknown or Mosh transports at 20. The deadline branch has priority
-once due, so continuous input cannot starve presentation. Ratatui then diffs the
-complete new buffer against the previous frame and writes only changed cells.
-
-This pacing affects terminal presentation, not browser authority or event
-processing. Browser and development events are still consumed while a frame is
-pending, bounded browser channels retain backpressure, and the newest state
-appears on the next frame. Terminal input comes from Crossterm's asynchronous
-event stream, so an idle cockpit does not wake every 50 ms to poll and resize
-bursts collapse into the paced redraw. Key-release events never enter the
-reducer, while press and repeat events do. Mouse move, release and drag noise is
-dropped because the cockpit has no hover or drag authority. Bracketed command
-paste is validated and inserted in one bounded pass instead of one
-layout-invalidating edit per character.
-
-ANSI live frames decode into one bounded byte buffer and sample that buffer
-directly. Fit coordinates are computed once per axis rather than once per cell,
-and a two-buffer cell scratch space is reused across frames. Kitty presentation
-promotes the newest pending frame after the Ratatui cell pass, emits each
-geometry/generation identity once, and never retransmits an unchanged PNG merely
-because a status line or spinner caused another cell render. The validated
-decoded payload moves into the Kitty mailbox without another full-frame copy.
-Desktop and compact layouts do not retain the phone-only thumbnail allocation.
-Cached root, action, and Overview regions avoid duplicating Ratatui layout
-construction inside the same frame; standalone test renders retain deterministic
-fallbacks.
-
-## Semantic tap overlay
+Its semantic overlay bound actions to browser and geometry revisions:
 
 ```text
 ┌─ Semantic actions · revision 83 ───┐
@@ -165,65 +238,20 @@ fallbacks.
 └────────────────────────────────────┘
 ```
 
-Selection is bound to browser and geometry revisions. Stale targets fail
-closed and prompt a fresh observation.
+Stale targets failed closed and requested fresh observation. The historical
+browser recovery sheet offered automatic-port launch, inspect/attach, explicit
+port choice, or semantic-only mode while retaining project/agent/process
+state. Its attention order was blocking failure/confirmation, current agent
+action, app health, semantic freshness, process/tests, diff, then telemetry;
+notification bodies excluded prompts, output, source, secrets, frames, and
+tokens.
 
-## Browser recovery sheet
+## Source of truth
 
-```text
-┌─ BROWSER NEEDS ATTENTION ──────────┐
-│ Port 9222 is busy                  │
-│ unrelated listener detected       │
-│ project / agent / processes alive │
-│                                   │
-│ > Launch on automatic port        │
-│   Inspect / attach                │
-│   Choose port                     │
-│   Semantic only                   │
-│                                   │
-│ Enter choose · Esc later          │
-└───────────────────────────────────┘
-```
-
-The sheet closes without quitting Glass. Target selection is a bounded
-filterable list with privacy-aware URL projection. The same controller actions
-exist in compact/wide overlays and the command palette.
-
-## Attention, cards and privacy
-
-Attention is ordered: blocking confirmation/failure, current agent action,
-live-app health, semantic freshness, process/tests, diff, low-level telemetry.
-Items are deduplicated and bounded. Notification bodies contain no prompt,
-process output, source content, secret-bearing URL, frame or token.
-
-Verification cards contain bounded outcomes, changed-file count, semantic
-revision and explicit visual status. Visual status is `not-captured` until an
-explicit screenshot/comparison supplies evidence.
-
-## Adaptive live view
-
-Auto mode begins with the profile selected from independent transport/graphics
-evidence. Pressure reduces capture scale before frame rate. Local
-balanced/smooth target 30/60 FPS; 3/6/12 FPS profiles are constrained remote
-visual-assist modes only. Hidden Browser views suspend terminal capture. A
-manual selection disables adaptation until auto is restored. Overview retains
-one bounded newest PNG and materializes a small ANSI thumbnail only when needed,
-so Herdr and Kitty sessions retain a portable card preview without continuing
-background capture.
-
-## Tests
-
-- A populated 46x50 Ratatui buffer test verifies the reference hierarchy,
-  rounded cards, preview inset, palette, composer and navigation; a 40x20 test
-  verifies bounded Overview paging, and existing compact/wide tests guard the
-  shared responsive reducer.
-- Reducer tests cover every printable navigation route, overlay focus, help,
-  command filtering, clickable Overview destinations, the Remote View action,
-  evidence-derived status labels, async agent attribution and semantic stale
-  refusal.
-- Browser recovery tests cover compatible/unrelated/unknown listeners, target
-  selection, semantic-only and reconnect without project identity loss.
-- Design-asset validation verifies decodable images; the populated phone buffer
-  is asserted against their information hierarchy and a real 40x20 PTY test
-  covers executable rendering and terminal restoration.
-- Resident/capsule/inbox/card tests retain their bounds and privacy contracts.
+The private cockpit implementation is
+[`development/cockpit.rs`](../../crates/glass-dev/src/development/cockpit.rs),
+and its TUI integration is in
+[`tui/state.rs`](../../crates/glass-dev/src/tui/state.rs) and
+[`tui/render.rs`](../../crates/glass-dev/src/tui/render.rs). The shared browser
+connection/presentation contract is
+[`browser_workspace/mod.rs`](../../crates/glass-browser/src/browser_workspace/mod.rs).

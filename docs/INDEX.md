@@ -1,10 +1,15 @@
 # Glass documentation
 
-These guides describe the complete Glass product in this `0.3.12` source
-checkout. Published release notes remain scoped to the tagged release; the
-working-tree changelog records changes after that tag. `glass-browser 0.3.12`
-and `glass-dev 0.3.12` are the current release crates. `Local only` means a
-capability exists in the checkout but is not part of the published contract.
+Status: Current 0.3.13 source behavior; release documentation is dated
+2026-08-27 and external publication evidence is tracked separately.
+
+These guides describe the complete Glass product in the current `0.3.13`
+source checkout. The `0.3.13` release notes and migration guide route the
+current source contract; the signed `v0.3.12` release and its migration record
+remain historical. The working-tree changelog keeps an empty `Unreleased`
+section for future changes followed by the 0.3.13 entries. `Local only` means
+a capability exists in the checkout but is not part of an external release
+record.
 Platform certification remains separate from source availability; see
 [cross-platform feature parity](feature-parity.md).
 
@@ -28,6 +33,8 @@ installation; this index owns the cross-product documentation map.
 |---|---|---|
 | Trying Glass for the first time | [Getting started](getting-started.md) | [Installation](installation.md), [CLI](cli.md) |
 | Developing a project in the terminal | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [daemon](daemon.md) |
+| Editing, reviewing, or collaborating on source | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [MCP tool catalog](mcp-tools.md) |
+| Launching or delegating to coding harnesses | [Development Runtime](development-runtime.md) | [CLI](cli.md), [Native Pi SDK runtime](pi-sdk-runtime.md) |
 | Running resident Pi agents | [Native Pi SDK runtime](pi-sdk-runtime.md) | [Development Runtime](development-runtime.md), [daemon](daemon.md) |
 | Automating a repair DAG | [Autonomous task DAGs](task-dag.md) | [Native Pi SDK runtime](pi-sdk-runtime.md), [daemon](daemon.md) |
 | Running persistent analysis code | [Persistent kernels](kernels.md) | [Workspace trust](workspace-trust.md), [MCP tool catalog](mcp-tools.md) |
@@ -209,8 +216,10 @@ current user instructions.
   client, and validation evidence.
 - [Tag signing](tag-signing.md) — current `unknown_key` evidence, maintainer
   identity repair, and the GitHub-verification release gate.
-- [Glass 0.3.12 release notes](releases/0.3.12.md) — current substantive
-  feature, security, migration, limitation, and validation summary.
+- [Glass 0.3.13 release notes](releases/0.3.13.md) — current dated release
+  source record; exact publication evidence is maintained separately.
+- [Glass 0.3.12 release notes](releases/0.3.12.md) — historical immutable
+  tagged-release record.
 - [Glass 0.3.11 release notes](releases/0.3.11.md) — previous published
   release record.
 - [Glass 0.3.10 release notes](releases/0.3.10.md) — immutable failed
@@ -224,9 +233,12 @@ current user instructions.
 - [Glass 0.3.6 release notes](releases/0.3.6.md) — failed exact-tag candidate
   retained for audit history; it was not published to crates.io.
 - [Glass 0.3.5 release notes](releases/0.3.5.md) — previous release record.
-- [Changelog](../CHANGELOG.md) — user-visible changes.
-- [Migrate from 0.3.11 to 0.3.12](migration/0.3.12.md) — Pi runtime, TUI,
-  responsiveness, browser, Agent, and documentation hardening.
+- [Changelog](../CHANGELOG.md) — empty `Unreleased` section followed by the
+  0.3.13 release entries and immutable historical release entries.
+- [Migrate from 0.3.12 to 0.3.13](migration/0.3.13.md) — current upgrade
+  contract for package ownership, Pi 0.84.3, TUI, editor, and browser changes.
+- [Migrate from 0.3.11 to 0.3.12](migration/0.3.12.md) — historical upgrade
+  contract for the tagged release.
 - [Migrate from 0.3.9 to 0.3.11](migration/0.3.11.md) — previous published
   release migration.
 - [Migrate 0.3.9 to 0.3.10](migration/0.3.10.md) — historical failed
@@ -239,5 +251,6 @@ current user instructions.
 - [Migrate 0.3.4 to 0.3.5](migration/0.3.5.md) — previous package, trust,
   runtime, and tooling transition.
 - [30-second demo](demo.md) — short operator demonstration.
-- [Delivery plans](plan/README.md) — implementation history and active work;
-  these records are not substitutes for current user references.
+- [Delivery plans](plan/README.md) — current-source navigation, proposed work,
+  and historical implementation records; these are not current user
+  instructions.

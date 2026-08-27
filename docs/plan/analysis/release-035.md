@@ -5,7 +5,7 @@ Status: Active direct implementation. Issue
 had no comments or timeline amendments when this analysis was recorded on
 2026-08-11. No push, tag, publication, GitHub Release, or issue mutation is
 authorized by this plan.
-Status: Historical record; superseded by the current 0.3.12 source/release evidence.
+Status: Historical record; superseded by the current 0.3.13 source/release evidence.
 
 ## Release thesis and locked decisions
 

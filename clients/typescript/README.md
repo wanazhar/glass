@@ -6,7 +6,7 @@ semantic observations, knowledge, targets, frames, storage, checkpoints,
 diagnostics, browser controls, and the complete local Development Runtime.
 
 The client does not include Chrome, Chromium, or another browser runtime.
-It is a repository client for the `0.3.12` source line and is not currently
+It is a repository client for the `0.3.13` source line and is not currently
 published to npm. Install/build it from this checkout and pair it with the
 exact matching Glass executable.
 
@@ -85,7 +85,7 @@ a substitute for negotiation.
 
 ## Development Runtime
 
-Glass 0.3.12 development operations use the negotiated `glass.*` catalog. Use
+Glass 0.3.13 development operations use the negotiated `glass.*` catalog. Use
 the generic typed `call<T>()` boundary with the schema returned by
 `listTools()`; retired `project.*` cockpit schemas are not negotiated by the
 new Glass Dev runtime:

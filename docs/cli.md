@@ -1,11 +1,14 @@
 # CLI reference
+Status: Current 0.3.13 source behavior (including current-source work in this checkout)
+
 
 Run `glass --help` or `glass COMMAND --help` for the exact syntax for the
 installed version.
 
-The checked-in [CLI inventory](cli-inventory.json) records the exact public
-top-level and nested command tree for documentation drift validation. Live
-`--help` remains the authority for flags, defaults, and positional arguments.
+The checked-in [CLI inventory](cli-inventory.json) is the generated schema
+authority used by documentation drift validation. This reference follows the
+current source checkout, including development-product routes; live `--help`
+remains the authority for installed flags, defaults, and positional arguments.
 
 ## Global options
 
@@ -22,7 +25,8 @@ top-level and nested command tree for documentation drift validation. Live
 | `--profile NAME` | `default` | Use a persistent browser profile. |
 | `--incognito` | off | Use a disposable browser profile. |
 | `--attach` | off | Connect to an existing CDP endpoint. |
-| `--target-id ID` | automatic | Select a page target. |
+| `--session NAME` | none | Attach browser operations to a named persistent local session; resolves its verified loopback port. |
+| `--target-id ID` | automatic | Select a page target (required when the endpoint exposes more than one page target). |
 | `--frame-id ID` | main frame | Select a frame. |
 | `--port PORT` | `9222` | Set the local CDP port. |
 | `--headed` | off | Show the Chrome window. |
@@ -43,8 +47,25 @@ top-level and nested command tree for documentation drift validation. Live
 | `--tui-live-backend auto\|herdr\|kitty\|ansi` | `auto` | Select Herdr, Kitty terminal graphics, or bounded ANSI rendering; `auto` prefers Herdr and otherwise falls back to ANSI only for `live on`. |
 | `--tui-live-quality data\|balanced\|smooth` | `balanced` | Select the adaptive capture size and target frame rate. |
 | `--tui-live-fit contain\|cover\|actual` | `contain` | Select ANSI sampling; Kitty and other native image backends use contain. |
+The TUI policy options are independent: layout uses terminal geometry; transport
+uses the measured link classification; and graphics uses active protocol
+evidence. `--tui-live off` keeps the browser semantic-only. `auto` captures
+pixels only when the selected native path is available, while `on` permits the
+bounded ANSI fallback. With backend `auto`, Herdr is preferred; an explicit
+unavailable `herdr` path remains semantic-only. Explicit `kitty` selects the
+Kitty protocol, and explicit `ansi` selects true-color half-block rendering.
+Quality profiles target approximately 3 FPS/data, 6 FPS/balanced, and 12
+FPS/smooth within bounded capture sizes. `contain` is used by native image
+backends; ANSI additionally supports `cover` and `actual`.
+
+`--mcp` is a top-level option (not inherited by subcommands); it starts the
+stdio server and reserves stdout for protocol frames.
 
 Place global options before or after the subcommand.
+Compatibility spellings are limited to the aliases defined by Clap:
+`--chrome` for `--chrome-path` and `--semantic-level` for `observe --level`.
+The command names in this reference are canonical; TUI palette words are not
+CLI aliases.
 
 Set `GLASS_CONFIG_HOME` to select the configuration and profile root. If it is
 not set, Glass uses the operating system configuration directory.
@@ -146,7 +167,8 @@ confirmation flags, and output schemas.
 | `certify` | `run`, `plan`, `release`, `replay`, `replay-diff` |
 | `workspace` | `list`, `inspect`, `suspend`, `resume`, `delete` |
 | `project` | `inspect`, `files`, `search`, `read`, `edit`, `mkdir`, `rename`, `delete`, `diagnostics`, `run`, `test`, `lint`, `process`, `diff`, `link`, `graph`, `breakpoint`, `timeline`, `replay`, `neovim`, `experiment`, `attach` |
-| `agent` | `doctor`, `setup`, `status`, `hello`, `prompt`, `steer`, `follow-up`, `models`, `set-model`, `thinking`, `abort`, `new-session` |
+| `agent` | `doctor`, `setup`, `status`, `delegate`, `hello`, `prompt`, `steer`, `follow-up`, `models`, `set-model`, `thinking`, `abort`, `new-session` |
+| `harness` | `list`, `start` |
 | `memory` | `status`, `inspect`, `explain`, `forget`, `export`, `prune`, `reindex` |
 | `browser` | `tui` (or omit the subcommand to launch the browser workspace) |
 | `session` | `start`, `status`, `open`, `stop` |
@@ -154,7 +176,7 @@ confirmation flags, and output schemas.
 | `backend` | `status`, `capabilities`, `test` |
 | `daemon` | `start`, `status`, `stop`, `doctor`, `logs`, `acknowledge-recovery` |
 | `replay` | `inspect`, `diff`, `attach` |
-| `profiles` | `list`, `create`, `delete` |
+| `profiles` | `list`, `create`, `delete` (subcommand optional; no subcommand lists) |
 | `knowledge` | `list`, `show`, `explain`, `stats`, `export`, `import`, `invalidate`, `purge` |
 | `result` | `show`, `purge` |
 | `workflow` | run a workflow, or `compile`, `format`, `preview`, `diff`, `record`, `validate`, `lint`, `templates`, `init` |
@@ -175,6 +197,73 @@ Nested development inventories are exact:
 Project mutations remain confined to the canonical root. Certification and
 replay inspect evidence; they do not replay browser input as an unguarded
 command stream. Hidden implementation commands are not public CLI contracts.
+
+### Exact nested syntax
+
+The following forms are the public Clap routes. `FILE`, `PATH`, `ID`, and
+`NAME` are positional values unless shown as options. Run the corresponding
+`--help` for the full inherited global-option list.
+
+| Route | Syntax and defaults |
+|---|---|
+| `certify` | `run --scenario FILE --fixture FILE --url URL [--workflow-root DIR] [--inputs FILE] [-o FILE]`; `plan --scenario FILE --fixture FILE`; `release --version VERSION --scenarios FILE --observations FILE [--replays FILE]`; `replay --scenario FILE --input FILE`; `replay-diff --scenario FILE --before FILE --after FILE` |
+| `workspace` | `list`; `inspect ID`; `suspend ID`; `resume ID`; `delete ID` |
+| `project` | `inspect|files [--root .]`; `search QUERY [--limit 64] [--root .]`; `read PATH [--root .]`; `edit PATH (--content TEXT \| --input FILE) [--root .]`; `mkdir PATH [--root .]`; `rename FROM TO [--root .]`; `delete PATH [--yes] [--root .]`; `diagnostics PATH [--root .]`; `run NAME [--command COMMAND] [--wait] [--root .]`; `test|lint [--root .]`; `process [--root .] SUBCOMMAND`; `diff|timeline [--root .]`; `link ENTITY PATH --start-line N --end-line N [--provenance explicit-marker] [--confidence 1.0] [--detail TEXT] [--root .]`; `graph [--root .] SUBCOMMAND`; `breakpoint KIND ENTITY BEFORE AFTER [--root .]`; `replay [--start 0] [--limit 64] [--root .]`; `neovim [--root .] SUBCOMMAND`; `experiment [--root .] create NAME --port PORT`; `attach ACTOR [--root .]` |
+| `project process` | `list`; `start NAME COMMAND [--wait]`; `stop|restart|remove NAME`; `input NAME INPUT`; `resize NAME COLS ROWS`; `output NAME` |
+| `project graph` | `discover`; `entity ENTITY`; `source PATH [--line N]` |
+| `replay` | `inspect SCENARIO INPUT`; `diff SCENARIO BEFORE AFTER`; `attach SCENARIO INPUT` |
+| `agent` | `doctor`; `setup [--sdk-entry FILE] [--agent-dir DIR] [--update] [--login]` (`--agent-dir` requires `--sdk-entry`); `status`; `delegate HARNESS PROMPT [--root .] [--sandbox read-only\|workspace-write] [--timeout-secs 600] [--allow-mutation] [--yes]`; `hello [--root .] [--harness local\|pi]`; `prompt TEXT [--root .] [--harness local\|pi]`; `steer TEXT [--root .] [--harness pi]`; `follow-up TEXT [--root .]`; `models [--root .]`; `set-model PROVIDER MODEL_ID [--root .]`; `thinking LEVEL [--root .]`; `abort|new-session [--root .]` |
+| `harness` | `list`; `start NAME [--root .]` |
+| `memory` | `status`; `inspect|explain|forget RECORD_ID`; `export [PATH]`; `prune`; `reindex` |
+| `surfaces` | `inspect|coverage FILE` |
+| `backend` | `status|capabilities|test FILE` |
+| `profiles` | `list`; `create NAME`; `delete NAME`; omitting the subcommand lists profiles |
+| `knowledge` | `list`; `show|explain RECORD_ID`; `stats`; `export [PATH]`; `import FILE`; `invalidate RECORD_ID stale\|contradicted\|quarantined [--reason TEXT] [--observed-at RFC3339]`; `purge ORIGIN` |
+| `result` | `show RESULT_ID [--section NAME]`; `purge --older-than AGE` (for example `7d` or `24h`) |
+| `workflow` | `FILE` executes; `compile|format FILE [-o FILE]`; `preview|validate FILE`; `diff BEFORE AFTER`; `record [--input FILE] [-o FILE]`; `lint FILE [--warnings-as-errors]`; `templates [NAME] [-o FILE]`; `init NAME [-o FILE]` |
+| `task` | `validate FILE`; `compile FILE IR [-o FILE] [--explain]`; `execute FILE --expected-revision N [--confirm]` |
+| `ir` | `validate|inspect|canonical FILE`; `diff BEFORE AFTER [--summary]`; `continuity BEFORE AFTER ENTITY_ID` |
+| `daemon` | `start|status|stop|doctor [--socket PATH] [--status PATH]`; `logs [--status PATH]`; `acknowledge-recovery --request-id ID... [--status PATH]` |
+| `checkpoint` | `export`; `import [FILE]` (stdin when omitted) |
+| `snapshot` | `create`; `list`; `inspect SNAPSHOT_ID`; `diff FROM TO`; `purge` |
+
+### Top-level utility syntax
+
+| Route | Syntax and defaults |
+|---|---|
+| `update` | `[--dry-run] [--version REQUIREMENT] [--force] [--registry NAME]` |
+| `install-chromium` | `[--update]` |
+| `capabilities` | no positional arguments |
+| `doctor` | `[--json]` |
+| `mcp-config` | `[--client generic\|claude-code\|codex]` (default `generic`), `[--print]` |
+| `delete-profile` | `NAME` |
+| `browser` | optional `tui` |
+| `session` | `start|status|stop|open [NAME]` (default `default`) |
+| `help` | `[TOPIC]` |
+| `tui` | no positional arguments |
+
+The browser command surface is the flat route list above. Common guarded
+forms include `navigate URL [--timeout-ms 20000]`, `observe [--level
+summary|interactive|structured|detailed|raw] [--region ID]`, `screenshot
+[-o screenshot.png] [--format png|jpeg|webp] [--quality 0..100] [--scale
+0.1..4.0]`, `batch [JSON_FILE|-] [--atomic] [--mode unguarded|fixed|chain]
+[--expected-revision N]`, and `fill-form --fields JSON
+[--expected-revision N]`. `upload TARGET FILE...` requires 1–16 regular files.
+`scroll` defaults to `--dx 0 --dy 600`; `wait CONDITION` defaults to
+`--timeout-ms 10000`; `diagnostics` defaults to `--duration-ms 1000`, and
+`download DIRECTORY` defaults to `--timeout-ms 30000`. `screenshot` rejects
+PNG quality and enforces its format/target/clip conflicts.
+
+The browser workspace routes are exactly `glass browser` and `glass browser
+tui`. `browser start`, `browser targets`, `browser remote-open`, and similar
+names are TUI command-palette routes, not Clap commands; see
+[the development TUI guide](architecture/development-tui.md). The
+`glass-browser` executable is the browser-only product: its help hides the development
+`project` and `agent` routes. The shared parser still recognizes `harness` so
+the command can report a product-boundary error, but external harness launch
+is supported only by `glass`. `glass` exposes the complete development tree.
+The checked-in [CLI inventory](cli-inventory.json) is generated schema
+authority; live `--help` wins if an installed binary differs.
 
 ### Family contracts
 
@@ -210,22 +299,14 @@ glass browser
 glass browser tui
 ```
 
-The resident development TUI has separate command-palette routes. Use
-`browser start` to launch or attach the workspace browser (headed and
-persistent by default), and `browser targets` to load and select its current
-pages. `browser targets` takes an optional text query; it does not take a
-port. For a disposable session, use the current flags:
-
-```text
-browser start --incognito --headless
-browser targets checkout
-```
-
-If startup reports a busy or unusable endpoint, the TUI keeps the project and
-agent alive and opens recovery choices: attach to a verified compatible
-endpoint, launch an isolated browser on a free local port, retry the preferred
-port, or dismiss. Use `browser start` for subsequent retries; the project and
-agent remain available throughout recovery.
+The browser TUI owns browser startup, target selection, and recovery. Its
+command palette has routes such as `:browser start`, `:browser targets
+QUERY`, and `:browser remote-open`; these are not Clap subcommands. Browser
+startup is lazy until an explicit launch or browser operation. A busy or
+unusable endpoint is kept in the TUI recovery flow rather than silently
+reused. See [the development TUI guide](architecture/development-tui.md) and
+[browser connection](architecture/browser-connection.md) for that UI-owned
+state machine.
 
 Persistent browser ownership is a separate top-level family:
 
@@ -238,17 +319,16 @@ glass session stop review
 
 Omitting the name uses `default`. `start` launches the named owner, `status`
 inspects it without starting Chrome, `open` prints its attach command, and
-`stop` closes the owned browser.
+`stop` closes the owned browser. `--session NAME` attaches browser operations
+to an already-started named session; it does not create one.
 
-For a private mobile view from the development TUI, use
-`browser remote-open`, inspect it with `browser remote-status`, and revoke it
-with `browser remote-revoke`.
-
-
-Standalone utility commands are `update`, `install-chromium`, `capabilities`,
-`doctor`, `mcp-config`, `delete-profile`, and `tui`. With no command or prompt, `glass`
-opens the TUI. The `glass-browser` executable exposes the browser-control
-subset; use its own `--help` as the installed-version authority.
+Top-level utility routes are `update`, `install-chromium`, `capabilities`,
+`doctor`, `mcp-config`, `delete-profile`, `help`, and `tui`. With no command or
+prompt, `glass` opens the development TUI in an interactive terminal; with
+redirected stdin/stdout it prints its start-here message instead. `--mcp`
+starts the MCP stdio server and must be supplied as a top-level option. The
+`glass-browser` executable is the browser-only binary; use its own
+`--help` for the installed subset.
 
 ## Semantic observations
 
@@ -288,7 +368,6 @@ glass type 'hello' --target r7:b43 --expected-revision 7
 
 Glass rejects a stale revision before it sends the browser action. The result
 contains typed status, previous and current revisions, an execution ID, and
-
 bounded verification evidence.
 
 `glass archive-targets` exports the current page-target inventory without
@@ -306,6 +385,14 @@ accepted only when the active policy permits it.
 The revision option is available on navigation, actions, scrolling, keyboard,
 drag, upload, popup, and form-fill commands. Existing calls without the option
 remain compatible.
+
+For conservative recovery, `glass recover-run EXECUTION_ID` inspects a possibly
+indeterminate execution without dispatching a new mutation. An `indeterminate`
+result means the browser may have accepted input: observe current state,
+reconcile references, or resume only a validated workflow checkpoint. Do not
+blindly repeat the action. `checkpoint export` and `checkpoint import [FILE]`
+operate on bounded redacted workflow checkpoints; import reads stdin when FILE
+is omitted.
 
 ## Workflow and authoring
 
@@ -406,38 +493,51 @@ interactive dev servers, input, resize, restart, and live output. Use
 infer framework source maps or confirm live updates without browser revision
 evidence.
 
-The deterministic local harness is available through:
+The deterministic local harness is available through `agent hello` and
+`agent prompt`. `--harness local` uses Glass's local deterministic adapter.
+`--harness pi` selects the one-shot legacy `PiHarness` RPC adapter; it starts
+Pi with `--mode rpc --no-approve --no-builtin-tools` for this request. These
+commands are not the resident native Pi AgentSession. The resident
+`AgentRegistry`/Pi session is owned by the development TUI and is controlled
+with its agent routes; see [the runtime guide](development-runtime.md).
 
 ```console
-glass agent hello --root .
-glass agent prompt "read README.md" --root .
+glass agent hello --harness local --root .
+glass agent prompt "read README.md" --harness local --root .
 glass agent hello --harness pi --root .
-glass agent models --root .
 glass agent prompt "Explain @diagnostic" --harness pi --root .
-glass agent steer "focus on the failing test" --root .
 ```
 
-The Pi path uses Glass's embedded system prompt and a single bounded SDK gateway
-rather than Pi's raw filesystem/shell implementation. Run `glass agent doctor`,
-`glass agent setup [--login]`, or `glass agent status` to install or inspect
-Node, SDK, provider/auth, and session readiness; `glass agent setup --update`
-forces a reinstall of the pinned managed SDK without selecting an unreviewed
-upstream version. `glass agent setup --login` opens Pi's provider login flow.
-A one-shot Pi prompt (`doctor`, `setup`, and `status` are the lifecycle
-subcommands.) waits for `agent_settled`; steer, follow-up, and abort remain
-useful in the resident TUI where the same SDK session stays active. A mutation
-freezes and privately serializes its exact arguments, then pauses on a Glass
-approval sheet. `Y`/Enter approves once; `N`/Esc denies. The approval expires
-after 120 seconds and cannot authorize a retry or reshaped call. Exact edits
-must still match uniquely and are applied atomically. One-shot CLI Pi requests
-have no interactive approval host and therefore deny mutations.
+Pi readiness is separate from the legacy request adapter. Run `glass agent
+doctor` or `glass agent status` to inspect Node, the pinned managed SDK,
+provider/authentication, and session readiness. `glass agent setup` installs
+the managed `@earendil-works/pi-coding-agent` SDK at the exact pinned version
+`0.84.3`; `glass agent setup --update` reinstalls it. Use `--sdk-entry FILE`
+to select an existing SDK entry and `--agent-dir DIR` with it to select an
+existing credential/model directory. `--login` opens Pi's provider login flow
+after setup. One-shot Pi requests wait for `agent_settled`; extension UI
+requests are denied because a one-shot caller has no safe approval host.
 
-The standard tool behavior is explicit and bounded. `read` accepts one-based
-`offset` and `limit`; `ls` accepts a path prefix and limit; `grep` is a literal
-UTF-8 search with optional path prefix, `*`/`?` glob, case folding, context, and
-limit; `find` matches project paths with `*` and `?`; `edit` applies one atomic
-set of unique exact replacements; and `bash` has a caller-selected timeout
-capped at 300 seconds.
+The standard Glass tool behavior is explicit and bounded. `read` accepts
+one-based `offset` and `limit`; `ls` accepts a path prefix and limit; `grep`
+is a literal UTF-8 search with optional path prefix, `*`/`?` glob, case
+folding, context, and limit; `find` matches project paths with `*` and `?`;
+`edit` applies one atomic set of unique exact replacements; and `bash` has a
+caller-selected timeout capped at 300 seconds.
+
+The collaborative native editor is TUI-owned. Its palette routes include
+`:editor open PATH`, `:editor edit`, `:editor selection PATH`,
+`:editor replace PATH OLD NEW`, `:editor replace-selection TEXT`,
+`:editor save PATH`, `:editor undo PATH`, `:editor redo PATH`,
+`:editor comments [PATH]`, `:editor comment PATH START END TEXT`,
+`:editor comment-selection TEXT`, `:editor comment-resolve ID`,
+`:editor proposals`, `:editor propose PATH SUMMARY TEXT`,
+`:editor accept ID`, `:editor reject ID`, `:editor checkpoints`,
+`:editor checkpoint NAME`, `:editor restore CHECKPOINT_ID`, and
+`:editor search QUERY`. These are command-palette routes, not Clap aliases;
+they update the shared editor projection and use the TUI's confirmation,
+selection, and recovery state. The CLI `project edit PATH` remains the
+single-file native-buffer mutation with `--content` or `--input`.
 
 ### External harness parity
 
@@ -466,16 +566,25 @@ glass agent delegate opencode "summarize the project entrypoints" --root .
 
 The TUI equivalent is `:harness delegate NAME PROMPT`, with optional
 `--sandbox`, `--timeout-secs`, `--allow-mutation`, and `--yes` tokens. The
-prompt can be `-` to read it from stdin in the CLI. Delegation uses the
-selected harness's structured output mode, captures bounded stdout/stderr, and
-returns JSON with the exit status, timeout, transport, and truncation flags.
+prompt can be `-` to read it from stdin in the CLI. `NAME` must be `codex`,
+`claude`, or `opencode`; each installed executable is resolved from `PATH`.
 The default sandbox is `read-only`; `--sandbox workspace-write` requires both
-`--allow-mutation` and `--yes` (or the process-scoped `--yolo` flag). Glass
-passes the workspace root as a process argument, never through a shell.
+`--allow-mutation` and `--yes` (or the process-scoped `--yolo` flag). Timeout
+defaults to 600 seconds and must be 1..3600 seconds. Prompts are limited to
+64 KiB; captured stdout is limited to 256 KiB and stderr to 64 KiB, with
+truncation flags in the JSON result. Glass passes the canonical workspace
+root as a process argument, never through a shell.
 
-The resident Glass Agent exposes the same capability as the governed `delegate`
-tool / `glass.agent.delegate`. It remains approval-gated, bounded, and
-ephemeral.
+Delegation uses the selected harness's structured output mode and returns JSON
+with exit status, timeout, transport, sandbox, duration, output, stderr, and
+truncation fields. A nonzero child exit or timeout prints the result before
+returning a failing CLI status. The child is temporary and is never
+registered as a resident Glass Agent.
+
+The resident Glass Agent exposes a separate governed `delegate` tool /
+`glass.agent.delegate` route. It remains approval-gated, bounded, and
+ephemeral; it is not the legacy one-shot Pi adapter or an external harness
+process.
 
 ### Unrestricted Pi mode
 
@@ -499,8 +608,9 @@ can execute arbitrary commands as the current OS user, so those components can
 operate outside the project root.
 
 Pi's configured providers and `models.json` models are available through
-`project pi models` and model selection. The default uses the cached catalog,
-ephemeral session, and only the Glass-owned extension. Set
+`agent models` and `agent set-model PROVIDER MODEL_ID`; `agent thinking LEVEL`
+sets the thinking level. The default uses the cached catalog, ephemeral
+session, and only the Glass-owned extension. Set
 `GLASS_PI_ONLINE_CATALOG=1` for catalog refresh,
 `GLASS_PI_PERSIST_SESSION=1` for Pi-managed session persistence, or
 `GLASS_PI_TRUSTED_RESOURCES=1` to load ambient context files, extensions,
@@ -527,13 +637,14 @@ glass tui
 
 `update` is browser-free. It updates the Cargo package that owns the invoked
 executable, preserves its detected install root, and uses `--locked`. Optional
-`--version`, `--force`, and `--registry` values pass through as bounded Cargo
-install choices. It fails instead of guessing for unmanaged binaries,
-ambiguous owners, or an implicit source-channel change. See
+`--version REQUIREMENT`, `--force`, and `--registry NAME` values pass through
+as bounded Cargo install choices. It fails instead of guessing for unmanaged
+binaries, ambiguous owners, or an implicit source-channel change. See
 [Installation and operations](installation.md#update-a-cargo-installation) for
 the complete ownership, provenance, custom-root, and Windows contracts.
 
-`delete-profile` remains an alias for profile deletion.
+`delete-profile NAME` is a separate top-level route retained alongside
+`profiles delete NAME`; both delete one profile.
 
 `export-cookies FILE` and `import-cookies FILE` provide explicit profile
 state transfer. They require the persistent-profile capability. Imports are
@@ -567,10 +678,11 @@ stdout. `text` emits plain text. `screenshot` writes PNG by default, accepts
 `--full-page`, `--clip`, and `--target` are mutually exclusive. The output
 extension is not silently rewritten, so keep it consistent with the selected
 format.
-
-Diagnostics use stderr. With `--trace-on-error`, Glass writes a bounded
-failure trace to stderr. The trace includes compact observation and target and
-frame state. It does not include raw page data or secret values.
+All structured command results, including `diagnostics`, use compact JSON on
+stdout. `text` emits plain text. Operational logs and warnings use stderr.
+With `--trace-on-error`, Glass writes one bounded failure trace to stderr; it
+contains compact observation, target, and frame state, not raw page data or
+secret values.
 
 ## Live-site smoke tests
 

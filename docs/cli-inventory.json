@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "binaries": {
     "glass": [
-      "update", "install-chromium", "certify", "workspace", "project", "agent",
+      "update", "install-chromium", "certify", "workspace", "project", "agent", "harness",
       "memory", "surfaces", "backend", "daemon", "replay", "capabilities",
       "doctor", "mcp-config", "profiles", "knowledge", "result",
       "delete-profile", "navigate", "click", "preflight", "click-at",
@@ -20,7 +20,7 @@
       "clipboard-read", "clipboard-write", "browser", "session", "tui"
     ],
     "glass-browser": [
-      "update", "install-chromium", "certify", "workspace", "memory", "surfaces",
+      "update", "install-chromium", "certify", "workspace", "harness", "memory", "surfaces",
       "backend", "daemon", "replay", "capabilities", "doctor", "mcp-config",
       "profiles", "knowledge", "result", "delete-profile", "navigate",
       "click", "preflight", "click-at", "click-expect-popup", "double-click",
@@ -45,7 +45,7 @@
     "project graph": ["discover", "entity", "source"],
     "project neovim": ["probe", "start"],
     "project experiment": ["create"],
-    "agent": ["doctor", "setup", "status", "hello", "prompt", "steer", "follow-up", "models", "set-model", "thinking", "abort", "new-session"],
+    "agent": ["doctor", "setup", "status", "delegate", "hello", "prompt", "steer", "follow-up", "models", "set-model", "thinking", "abort", "new-session"],
     "memory": ["status", "inspect", "explain", "forget", "export", "prune", "reindex"],
     "surfaces": ["inspect", "coverage"],
     "backend": ["status", "capabilities", "test"],

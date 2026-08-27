@@ -558,7 +558,7 @@ export class GlassClient {
         schemas: { action: [1], observation: [1], workflow: [1], checkpoint: [1] },
       },
       capabilities: {},
-      clientInfo: { name: "glass-typescript-client", version: "0.3.12" },
+      clientInfo: { name: "glass-typescript-client", version: "0.3.13" },
     });
     const manifest = (result as { glass?: GlassCapabilityManifest }).glass;
     if (!manifest) throw new Error("Glass capability manifest missing from initialize response");
@@ -626,7 +626,7 @@ export class GlassClient {
 
   /**
    * Legacy 0.3.4 cockpit helpers below are retained only for source migration.
-   * Glass 0.3.12 does not advertise their `project.*`/`agent.*` tools; new code
+   * Glass 0.3.13 does not advertise their `project.*`/`agent.*` tools; new code
    * must use `call()` with the negotiated `glass.*` catalog.
    */
   projectInspect(root = "."): Promise<ProjectInspectResult> {

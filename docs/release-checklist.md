@@ -4,12 +4,160 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release checkout is `glass-browser` and `glass-dev` version `0.3.12`.
+The release checkout is `glass-browser` and `glass-dev` version `0.3.13`.
 Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
 targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
 Windows receives browser-free source checks and native named-pipe daemon
 certification; native browser/PTY support is not certified.
+
+## 0.3.13 release
+
+This section is the active release record for the exact 0.3.13 source and
+2026-08-27 release date. Every gate remains open until its evidence is
+recorded in [`release-evidence.md`](release-evidence.md).
+
+### Gate 0 — approval and one candidate version
+
+- [ ] Obtain explicit approval for the exact `VERSION`, source push, signed tag,
+      crates.io publication, GitHub Release, and issue update.
+- [ ] Choose one stable `VERSION` and release date. Do not reuse a failed
+      candidate tag or silently change the version during the run.
+- [ ] Update the workspace/package versions, `Cargo.lock`, Rust client metadata,
+      changelog, release notes, release evidence, feature-parity metadata, and
+      every current-version assertion in the validation scripts.
+- [ ] Confirm the release notes contain the required headings and no
+      pre-publication wording such as “unpublished”, “candidate”, “not ready”,
+      or “do not publish”. Run the release-note generator and validator before
+      tagging.
+
+### Gate 1 — validate the candidate source before any tag
+
+Run the complete local gate set, not a narrowed substitute:
+
+```console
+cargo fmt --all -- --check
+python3 scripts/check-version-sync.py
+python3 scripts/check-feature-parity.py
+python3 scripts/check-release-documentation.py
+python3 scripts/check-documentation-coverage.py
+python3 scripts/check-documentation-depth.py
+python3 scripts/check-reliability-matrix.py
+python3 scripts/check-public-readonly-adapters.py
+python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
+scripts/check-rust-workspace.sh test
+scripts/check-rust-workspace.sh clippy
+RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps
+cargo deny check
+cargo audit
+cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets
+scripts/release-validate.sh
+```
+
+- [ ] Run the recorded live-browser and PTY suites where the release evidence
+      requires them; record the target, architecture, browser, Rust toolchain,
+      and exact commands.
+- [ ] Package both crates and inspect their file lists:
+
+```console
+cargo package --package glass-browser --locked
+cargo package --package glass-dev --locked --no-verify \
+  --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
+```
+
+- [ ] Run both crates.io publish dry runs without uploading:
+
+```console
+cargo publish --package glass-browser --locked --dry-run --no-verify
+cargo publish --package glass-dev --locked --dry-run --no-verify \
+  --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
+```
+
+- [ ] Run the clean-install/upgrade smoke test from the previous published
+      version. Do not treat a local `cargo install --path` as a registry test.
+- [ ] Confirm the working tree contains no generated profiles, screenshots,
+      logs, package archives, or unrelated changes.
+
+### Gate 2 — commit and prove the exact source
+
+- [ ] Commit the candidate with the release metadata and documentation only
+      after Gate 1 passes.
+- [ ] Push the release commit to `main`; capture `SOURCE_SHA` and verify
+      `origin/main` resolves to that exact SHA.
+- [ ] Wait for the complete main CI workflow for `SOURCE_SHA`. Query the run's
+      `headSha` and `conclusion`; do not accept “the latest CI is green” when it
+      tested a different commit.
+- [ ] If CI fails and is rerun, record both the original failed run and the
+      successful rerun. A successful rerun does not erase the original failure.
+
+### Gate 3 — generate, sign, and push exactly one tag
+
+- [ ] Generate the tagged release notes from `SOURCE_SHA`:
+
+```console
+python3 scripts/generate-release-notes.py \
+  --version "$VERSION" \
+  --tag "v$VERSION" \
+  --commit "$SOURCE_SHA" \
+  --repository wanazhar/glass \
+  --run-url "https://github.com/wanazhar/glass/actions/runs/$CI_RUN_ID" \
+  --output "/tmp/glass-release-notes-$VERSION.md"
+```
+
+- [ ] Re-run the release-documentation and release-note validators after
+      generating the notes.
+- [ ] Create a signed annotated tag on `SOURCE_SHA`, verify it locally with
+      `git tag -v`, and verify GitHub reports the tag signature as valid.
+- [ ] Push the tag only after the source CI and signature checks pass. Never
+      move, delete, or force-update a published or failed release tag.
+
+### Gate 4 — let the exact-tag workflow publish
+
+- [ ] Confirm that `v$VERSION` triggered
+      `.github/workflows/crates-release.yml`; capture its exact run ID.
+- [ ] Watch the entire run to a terminal `success` conclusion:
+
+```console
+gh run watch "$RELEASE_RUN_ID" --exit-status --interval 15
+gh run view "$RELEASE_RUN_ID" --json status,conclusion,headSha,jobs
+```
+
+- [ ] Confirm the workflow completed validation, package checks, dry runs,
+      registry-state checks, ordered publication (`glass-browser` first,
+      `glass-dev` second), clean registry installs, and GitHub Release creation.
+- [ ] Do not run a separate `cargo publish`, `gh release create`, or manual
+      registry upload while the exact-tag workflow is running. If the workflow
+      fails, stop and use the recovery rules below.
+
+### Gate 5 — verify public publication and native evidence
+
+- [ ] Query the exact crates.io version endpoint for both crates with an
+      explicit user agent. Require HTTP 200, the exact version, and
+      `yanked: false`.
+- [ ] Search for and clean-install both exact registry versions, then run the
+      installed `glass`, `glass-browser`, and `glass-dev` help smoke checks.
+- [ ] Verify the GitHub Release for `v$VERSION` is non-draft, non-prerelease,
+      marked latest, source-only, and attached to the exact signed tag.
+- [ ] Dispatch native certification for the exact tag and exact
+      `EXPECTED_SHA`; record the run ID and every job result.
+- [ ] Record the fuzz workflow run that tested the release source. If it tested
+      a different commit, label it as non-exact-source evidence rather than
+      claiming exact-tag fuzz coverage.
+
+### Gate 6 — record and close
+
+- [ ] Add the source SHA, signed tag, CI run, release run, publication
+      timestamps, crate states, clean-install result, native run, fuzz run, and
+      GitHub Release URL to `docs/release-evidence.md`.
+- [ ] Mark the versioned checklist section complete only after every Gate 0–5
+      proof is recorded.
+- [ ] Run `python3 scripts/check-github-releases.py` and the documentation
+      validators against the final tree.
+- [ ] Confirm `git status --short` is clean and `main` is synchronized with
+      `origin/main`.
+- [ ] Only now announce the release, close the issue, or start the next
+      version.
+
 
 ## 0.3.12 release
 

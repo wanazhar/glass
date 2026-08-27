@@ -9,6 +9,8 @@ jobs:
     name: Browser-free ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      RUST_MIN_STACK: 4194304
     strategy:
       fail-fast: false
       matrix:

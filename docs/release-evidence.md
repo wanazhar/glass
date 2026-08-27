@@ -2,51 +2,54 @@
 
 ## 0.3.13 release evidence
 
-Status: Pending exact-source evidence for version `0.3.13`, release date
-`2026-08-27`. This section is an explicit record template: every pending
-field must be replaced by observed command output, a workflow record, a
-registry response, or a GitHub record before the matching checklist gate is
-closed. Evidence from older releases is not reused.
+Status: Closed. The exact signed source, publication, native certification,
+fuzz, installation, and GitHub Release records below are bound to
+`b52d1d261b1efbc44c7e27910ef411d876f42f11`; evidence from older releases is
+not reused.
 
 ### Exact-source record
 
-| Field | Required exact record |
+| Field | Exact record |
 |---|---|
-| Version/date | `0.3.13` / `2026-08-27`; publication timestamp: **PENDING** |
-| Source | `SOURCE_SHA`: **PENDING** (full 40-character commit); `origin/main` at closure: **PENDING** |
-| Signed tag | `v0.3.13` tag object and tag commit SHA: **PENDING**; local `git tag -v` result: **PENDING** |
-| GitHub signature | Tag signature `verified`, reason, and verified tag commit: **PENDING** |
-| Main CI | Run ID: **PENDING**; `headSha`: **PENDING**; terminal conclusion: **PENDING** |
-| Release workflow | Exact-tag run ID: **PENDING**; `headSha`: **PENDING**; terminal conclusion: **PENDING** |
-| Registry | `glass-browser 0.3.13` endpoint/status/timestamp/yanked: **PENDING**; `glass-dev 0.3.13` endpoint/status/timestamp/yanked: **PENDING** |
-| Installation | Exact-version clean registry install and `glass`, `glass-browser`, `glass-dev` help output: **PENDING** |
-| Native | Exact-tag certification run ID, `EXPECTED_SHA`, platform jobs, and conclusions: **PENDING**; bounded non-exact evidence, if any: **PENDING** |
-| Fuzz | Release-source fuzz run ID, tested SHA, targets, and conclusion: **PENDING**; non-exact scope label, if applicable: **PENDING** |
-| GitHub Release | URL, tag, draft/prerelease/latest flags, source-only/assets state, and publication timestamp: **PENDING** |
-| Closure | `check-github-releases.py` and final documentation-validator outputs: **PENDING**; clean tree and synchronized branch record: **PENDING**; issue/update record: **PENDING** |
+| Version/date | `0.3.13` / `2026-08-27`; registry publication: `2026-08-27T22:46:08.545203Z` (`glass-browser`) and `2026-08-27T22:47:16.875295Z` (`glass-dev`) |
+| Source | `SOURCE_SHA=b52d1d261b1efbc44c7e27910ef411d876f42f11`; `origin/main` at closure resolved to the same SHA |
+| Signed tag | `v0.3.13` annotated tag object `e146819ed54b28fb5ba97c43cc518aa7b6355da5`; tag commit `b52d1d261b1efbc44c7e27910ef411d876f42f11`; local `git tag -v v0.3.13` reported a good signature |
+| GitHub signature | GitHub reports the tag object as `verified: true`, `reason: valid`, with verified tag commit `b52d1d261b1efbc44c7e27910ef411d876f42f11`; verification timestamp `2026-08-27T22:33:02Z` |
+| Main CI | Run [`33109504414`](https://github.com/wanazhar/glass/actions/runs/33109504414), `headSha=b52d1d261b1efbc44c7e27910ef411d876f42f11`, terminal conclusion `success`; all five jobs passed |
+| Exact-tag CI | Run [`33122935752`](https://github.com/wanazhar/glass/actions/runs/33122935752), `headSha=b52d1d261b1efbc44c7e27910ef411d876f42f11`; the initial attempt was marked failed with exit code 101, then the failed jobs were rerun without source changes and all five jobs passed |
+| Release workflow | Run [`33122935793`](https://github.com/wanazhar/glass/actions/runs/33122935793), `headSha=b52d1d261b1efbc44c7e27910ef411d876f42f11`, terminal conclusion `success`; validation job `98694083729`, publication job `98696590084`, GitHub Release job `98698847173` |
+| Registry | [`glass-browser 0.3.13`](https://crates.io/api/v1/crates/glass-browser/0.3.13) returned HTTP 200, exact version `0.3.13`, published at `2026-08-27T22:46:08.545203Z`, `yanked: false`; [`glass-dev 0.3.13`](https://crates.io/api/v1/crates/glass-dev/0.3.13) returned HTTP 200, exact version `0.3.13`, published at `2026-08-27T22:47:16.875295Z`, `yanked: false` |
+| Installation | Release job `98696590084` installed exact registry versions with `cargo install glass-browser --version =0.3.13 --locked` and `cargo install glass-dev --version =0.3.13 --locked` into separate clean roots; `glass-browser --help`, `glass --help`, and the full-product `glass-browser --help` all exited successfully |
+| Native | Exact-tag run [`33124702884`](https://github.com/wanazhar/glass/actions/runs/33124702884), `headSha=b52d1d261b1efbc44c7e27910ef411d876f42f11`, conclusion `success`; Linux native Pi/experiments/Chromium job `98699909842` and Windows named-pipe lifecycle job `98699909725` both passed |
+| Fuzz | Release-source run [`33122935776`](https://github.com/wanazhar/glass/actions/runs/33122935776), tested SHA `b52d1d261b1efbc44c7e27910ef411d876f42f11`, conclusion `success`; `mcp_frame`, `cdp_message`, `ax_dom`, `locator`, `url_policy`, and `semantic_contracts` all passed |
+| GitHub Release | [`v0.3.13`](https://github.com/wanazhar/glass/releases/tag/v0.3.13), tag `v0.3.13`, `draft=false`, `prerelease=false`, latest release, source-only, no assets; published `2026-08-27T22:55:36Z` |
+| Closure | `python3 scripts/check-github-releases.py` passed with 39 published tags and 4 retained failed candidates; `python3 scripts/check-release-documentation.py` passed with 11 documents; `python3 scripts/check-version-sync.py` passed at `0.3.13`; `git status --porcelain` was empty and `HEAD`, `origin/main`, and `v0.3.13^{commit}` all resolved to the source SHA |
 
-Use the following structure when replacing pending values so each claim stays
-bound to one source revision:
+The exact records were also captured in machine-readable form:
 
 ```text
 VERSION=0.3.13
 RELEASE_DATE=2026-08-27
-SOURCE_SHA=<full commit SHA>
+SOURCE_SHA=b52d1d261b1efbc44c7e27910ef411d876f42f11
 TAG=v0.3.13
-TAG_COMMIT_SHA=<commit resolved by the tag>
-MAIN_CI_RUN=<run ID>; headSha=<SOURCE_SHA>; conclusion=<terminal result>
-RELEASE_RUN=<exact-tag run ID>; headSha=<SOURCE_SHA>; conclusion=<terminal result>
-GLASS_BROWSER_REGISTRY=<endpoint>; version=0.3.13; yanked=<true|false>; timestamp=<UTC>
-GLASS_DEV_REGISTRY=<endpoint>; version=0.3.13; yanked=<true|false>; timestamp=<UTC>
-CLEAN_INSTALL=<exact commands and observed help results>
-NATIVE_RUN=<run ID>; EXPECTED_SHA=<SOURCE_SHA>; jobs=<bounded results>
-FUZZ_RUN=<run ID>; tested_sha=<SHA>; scope=<exact or bounded non-exact>
-GITHUB_RELEASE=<URL>; tag=v0.3.13; draft=<...>; prerelease=<...>; latest=<...>; source_only=<...>
-CLOSURE=<validator outputs, clean-tree result, synchronized refs, issue record>
+TAG_OBJECT_SHA=e146819ed54b28fb5ba97c43cc518aa7b6355da5
+TAG_COMMIT_SHA=b52d1d261b1efbc44c7e27910ef411d876f42f11
+MAIN_CI_RUN=33109504414; headSha=b52d1d261b1efbc44c7e27910ef411d876f42f11; conclusion=success
+EXACT_TAG_CI_RUN=33122935752; rerun_failed_jobs=98701360098,98701360971,98701361554,98701361573,98701395817; headSha=b52d1d261b1efbc44c7e27910ef411d876f42f11; conclusion=success
+RELEASE_RUN=33122935793; headSha=b52d1d261b1efbc44c7e27910ef411d876f42f11; conclusion=success
+GLASS_BROWSER_REGISTRY=https://crates.io/api/v1/crates/glass-browser/0.3.13; version=0.3.13; yanked=false; timestamp=2026-08-27T22:46:08.545203Z
+GLASS_DEV_REGISTRY=https://crates.io/api/v1/crates/glass-dev/0.3.13; version=0.3.13; yanked=false; timestamp=2026-08-27T22:47:16.875295Z
+CLEAN_INSTALL=release run 33122935793 / publication job 98696590084; exact cargo installs and glass, glass-browser, and full-product glass-browser --help all exited successfully
+NATIVE_RUN=33124702884; EXPECTED_SHA=b52d1d261b1efbc44c7e27910ef411d876f42f11; jobs=98699909842,98699909725; conclusion=success
+FUZZ_RUN=33122935776; tested_sha=b52d1d261b1efbc44c7e27910ef411d876f42f11; scope=exact; targets=mcp_frame,cdp_message,ax_dom,locator,url_policy,semantic_contracts; conclusion=success
+GITHUB_RELEASE=https://github.com/wanazhar/glass/releases/tag/v0.3.13; tag=v0.3.13; draft=false; prerelease=false; latest=true; source_only=true; assets=none; published=2026-08-27T22:55:36Z
+CLOSURE=check-github-releases passed (39 published, 4 retained failed); check-release-documentation passed (11 documents); check-version-sync passed; clean tree; HEAD=origin/main=v0.3.13^{commit}=b52d1d261b1efbc44c7e27910ef411d876f42f11
 ```
 
-Until these fields contain exact records, the 0.3.13 checklist remains open.
-
+The initial exact-tag CI attempt was retained as an audit note because its
+test job received exit code 101 even though its emitted test summaries were
+green. GitHub's failed-job rerun on the same immutable source passed all jobs;
+no tag, crate, or release record was changed.
 
 ## 0.3.12 release evidence
 

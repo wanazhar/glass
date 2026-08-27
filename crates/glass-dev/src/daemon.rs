@@ -2092,7 +2092,8 @@ mod tests {
         operation_id: &str,
         expected: DevelopmentOperationState,
     ) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline =
+            std::time::Instant::now() + Duration::from_secs(if cfg!(windows) { 20 } else { 5 });
         loop {
             let state = operations.lock().unwrap().records[operation_id].state;
             if state == expected {
@@ -2399,7 +2400,6 @@ while True:
                 } else {
                     ("shell", "sleep 0.2; echo complete")
                 };
-                let slow_timeout_seconds = if cfg!(windows) { 10 } else { 2 };
                 workspace_tool(
                     handle.clone(),
                     ToolCall {
@@ -2411,6 +2411,23 @@ while True:
                 )
                 .await
                 .unwrap();
+                if cfg!(windows) {
+                    workspace_tool(
+                        handle.clone(),
+                        ToolCall {
+                            id: "operation-kernel-warmup".into(),
+                            name: "glass.eval.execute".into(),
+                            arguments: serde_json::json!({
+                                "name":"operation",
+                                "code":"print('ready')",
+                                "timeoutSeconds":10
+                            }),
+                        },
+                        test_context(),
+                    )
+                    .await
+                    .unwrap();
+                }
 
                 let (first, created) = operations
                     .lock()
@@ -2433,7 +2450,7 @@ while True:
                             arguments: serde_json::json!({
                                 "name":"operation",
                                 "code":slow_code,
-                                "timeoutSeconds":slow_timeout_seconds
+                                "timeoutSeconds":2
                             }),
                         },
                         context: Box::new(test_context()),

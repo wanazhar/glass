@@ -399,7 +399,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         )
     } else {
         (
-            "Esc normal · hjkl w/b % gd ]c hunks · i insert · Ctrl-S save · Alt-A ask",
+            "Esc normal · hjkl · dif/dia · gd ]c · i insert · Ctrl-S save · Alt-A ask",
             "Esc exit editor · exit prompt protects unsaved work",
         )
     };

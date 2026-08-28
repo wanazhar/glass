@@ -2,8 +2,8 @@
 //!
 //! Motions, operators, textobjects, jump lists, hunks, ghosts, and prove-it
 //! compile live here so the fullscreen editor is a runtime, not a notepad.
-//! Tree-sitter is not required for pair/word/fold textobjects; brace folds
-//! use the existing lexical matcher.
+//! Syntax-aware objects come from the incremental tree-sitter cache; word
+//! and pair objects still have a lexical fallback.
 
 use crate::development::editor::{
     fold_regions, matching_bracket, text_position_at_offset, text_position_offset,
@@ -48,11 +48,74 @@ pub enum Motion {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextObject {
-    InnerWord,
-    AroundWord,
-    InnerPair(char, char),
-    AroundPair(char, char),
-    Function,
+    Word {
+        around: bool,
+    },
+    Pair {
+        open: char,
+        close: char,
+        around: bool,
+    },
+    Function {
+        around: bool,
+    },
+    Argument {
+        around: bool,
+    },
+    Parameter {
+        around: bool,
+    },
+    Field {
+        around: bool,
+    },
+    String {
+        around: bool,
+    },
+    Comment {
+        around: bool,
+    },
+    Class {
+        around: bool,
+    },
+}
+
+pub fn textobject_from_key(character: char, around: bool) -> Option<TextObject> {
+    Some(match character {
+        'w' => TextObject::Word { around },
+        'f' => TextObject::Function { around },
+        'a' | ',' => TextObject::Argument { around },
+        'p' => TextObject::Parameter { around },
+        '.' => TextObject::Field { around },
+        's' => TextObject::String { around },
+        'c' | '/' => TextObject::Comment { around },
+        't' => TextObject::Class { around },
+        '(' | ')' | 'b' => TextObject::Pair {
+            open: '(',
+            close: ')',
+            around,
+        },
+        '{' | '}' | 'B' => TextObject::Pair {
+            open: '{',
+            close: '}',
+            around,
+        },
+        '[' | ']' => TextObject::Pair {
+            open: '[',
+            close: ']',
+            around,
+        },
+        '"' => TextObject::Pair {
+            open: '"',
+            close: '"',
+            around,
+        },
+        '\'' => TextObject::Pair {
+            open: '\'',
+            close: '\'',
+            around,
+        },
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +185,8 @@ pub struct EditorEngine {
     pub pending_count: u32,
     pub pending_g: bool,
     pub pending_find: Option<char>,
+    /// `Some(false)` waits for an inner textobject, `Some(true)` for around.
+    pub pending_around: Option<bool>,
     pub yank: String,
     pub jumps: Vec<Jump>,
     pub jump_index: usize,
@@ -155,6 +220,7 @@ impl EditorEngine {
         self.pending_count = 0;
         self.pending_g = false;
         self.pending_find = None;
+        self.pending_around = None;
     }
 
     pub fn count(&self) -> u32 {
@@ -270,11 +336,19 @@ pub fn textobject_selection(
 ) -> Option<TextSelection> {
     let position = clamp_position(content, position);
     match object {
-        TextObject::InnerWord | TextObject::AroundWord => word_object(content, position, object),
-        TextObject::InnerPair(open, close) | TextObject::AroundPair(open, close) => {
-            pair_object(content, position, open, close, object)
-        }
-        TextObject::Function => function_object(content, position),
+        TextObject::Word { around } => word_object(content, position, around),
+        TextObject::Pair {
+            open,
+            close,
+            around,
+        } => pair_object(content, position, open, close, around),
+        TextObject::Function { around } => function_object(content, position, around),
+        TextObject::Argument { .. }
+        | TextObject::Parameter { .. }
+        | TextObject::Field { .. }
+        | TextObject::String { .. }
+        | TextObject::Comment { .. }
+        | TextObject::Class { .. } => None,
     }
 }
 
@@ -524,7 +598,7 @@ fn match_pair(content: &str, position: TextPosition) -> Option<TextPosition> {
     text_position_at_offset(content, byte_offset)
 }
 
-fn word_object(content: &str, position: TextPosition, object: TextObject) -> Option<TextSelection> {
+fn word_object(content: &str, position: TextPosition, around: bool) -> Option<TextSelection> {
     let offset = text_position_offset(content, position)?;
     let bytes = content.as_bytes();
     if bytes.is_empty() {
@@ -538,7 +612,7 @@ fn word_object(content: &str, position: TextPosition, object: TextObject) -> Opt
     while end < bytes.len() && is_word(bytes[end] as char) {
         end += 1;
     }
-    if matches!(object, TextObject::AroundWord) {
+    if around {
         while end < bytes.len() && bytes[end].is_ascii_whitespace() {
             end += 1;
         }
@@ -554,7 +628,7 @@ fn pair_object(
     position: TextPosition,
     open: char,
     close: char,
-    object: TextObject,
+    around: bool,
 ) -> Option<TextSelection> {
     let offset = text_position_offset(content, position)?;
     let chars = content.chars().collect::<Vec<_>>();
@@ -590,9 +664,10 @@ fn pair_object(
         }
     }
     let end = end?;
-    let (anchor_idx, active_idx) = match object {
-        TextObject::InnerPair(_, _) => (start + 1, end),
-        _ => (start, end + 1),
+    let (anchor_idx, active_idx) = if around {
+        (start, end + 1)
+    } else {
+        (start + 1, end)
     };
     let anchor = content.char_indices().nth(anchor_idx)?.0;
     let active = content
@@ -606,20 +681,34 @@ fn pair_object(
     })
 }
 
-fn function_object(content: &str, position: TextPosition) -> Option<TextSelection> {
+fn function_object(content: &str, position: TextPosition, around: bool) -> Option<TextSelection> {
     let regions = fold_regions(content);
     let region = regions
         .into_iter()
         .rev()
         .find(|region| position.line >= region.start_line && position.line <= region.end_line)?;
+    if around || region.end_line <= region.start_line + 1 {
+        return Some(TextSelection {
+            anchor: TextPosition {
+                line: region.start_line,
+                column: 1,
+            },
+            active: TextPosition {
+                line: region.end_line,
+                column: line_len(content, region.end_line).saturating_add(1).max(1),
+            },
+        });
+    }
     Some(TextSelection {
         anchor: TextPosition {
-            line: region.start_line,
+            line: region.start_line + 1,
             column: 1,
         },
         active: TextPosition {
-            line: region.end_line,
-            column: line_len(content, region.end_line).saturating_add(1).max(1),
+            line: region.end_line.saturating_sub(1),
+            column: line_len(content, region.end_line.saturating_sub(1))
+                .saturating_add(1)
+                .max(1),
         },
     })
 }
@@ -639,8 +728,16 @@ mod tests {
             line: 2,
             column: 16,
         };
-        let inner = textobject_selection(source, inside_call, TextObject::InnerPair('(', ')'))
-            .expect("paren object");
+        let inner = textobject_selection(
+            source,
+            inside_call,
+            TextObject::Pair {
+                open: '(',
+                close: ')',
+                around: false,
+            },
+        )
+        .expect("paren object");
         assert!(inner.active.column >= inner.anchor.column);
         let _ = (
             GutterMark::Lsp,
@@ -649,14 +746,27 @@ mod tests {
             GutterMark::Page,
             GutterMark::Proof,
         );
-        let function =
-            textobject_selection(source, start, TextObject::Function).expect("function fold");
+        let function = textobject_selection(source, start, TextObject::Function { around: true })
+            .expect("function fold");
         assert_eq!(function.anchor.line, 1);
         assert_eq!(function.active.line, 3);
-        assert!(textobject_selection(source, start, TextObject::InnerWord).is_some());
-        assert!(textobject_selection(source, start, TextObject::AroundWord).is_some());
+        assert!(textobject_selection(source, start, TextObject::Word { around: false }).is_some());
+        assert!(textobject_selection(source, start, TextObject::Word { around: true }).is_some());
         assert!(
-            textobject_selection(source, inside_call, TextObject::AroundPair('(', ')')).is_some()
+            textobject_selection(
+                source,
+                inside_call,
+                TextObject::Pair {
+                    open: '(',
+                    close: ')',
+                    around: true
+                }
+            )
+            .is_some()
+        );
+        assert_eq!(
+            textobject_from_key('f', false),
+            Some(TextObject::Function { around: false })
         );
         assert_eq!(GutterMark::Proof.glyph(), '✓');
     }

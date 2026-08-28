@@ -3,6 +3,7 @@
 mod command;
 mod editor;
 mod file_view;
+mod parse;
 mod projection;
 /// Rendering primitives and frame composition for the development TUI.
 pub mod render;

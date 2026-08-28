@@ -1,8 +1,10 @@
 use super::command;
 use super::editor::{
-    self as native, EditorEngine, EditorMode, GhostText, Motion, Operator, apply_motion,
-    compile_prove_it, evidence_card, line_hunks, textobject_selection, TextObject,
+    self as native, EditorEngine, EditorMode, GhostText, Motion, Operator, TextObject,
+    apply_motion, compile_prove_it, evidence_card, line_hunks, textobject_from_key,
+    textobject_selection,
 };
+use super::parse::IncrementalSyntax;
 use crate::development::TextSelection;
 use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
 use glass_browser::browser::policy::PolicyPreset;
@@ -277,6 +279,7 @@ pub struct DevTuiState {
     pub editor_scroll_line: usize,
     pub editor_scroll_column: usize,
     pub editor_engine: EditorEngine,
+    pub syntax: IncrementalSyntax,
     pub last_verify: Option<String>,
     pub factory_split: bool,
     pub lsp: String,
@@ -504,6 +507,7 @@ impl DevTuiState {
                 mode: EditorMode::Insert,
                 ..EditorEngine::default()
             },
+            syntax: IncrementalSyntax::new(),
             last_verify: None,
             factory_split: true,
             lsp: String::new(),
@@ -2677,6 +2681,9 @@ impl DevTuiState {
             self.focused_editor_column = buffer.cursor_column;
             self.focused_editor_selection = buffer.selection.clone();
             self.ensure_editor_cursor_visible();
+            let path = self.focused_editor_path.clone();
+            let content = self.focused_editor_content.clone();
+            self.syntax.sync(&path, &content);
         } else {
             self.focused_editor_path.clear();
             self.focused_editor_content.clear();
@@ -2750,8 +2757,7 @@ impl DevTuiState {
             self.editor_engine.enter_insert();
             self.refresh_editor_hunks();
             self.status =
-                "INSERT · Esc normal · i insert · gd definition · ]c hunk · Ctrl-S save · Alt-A ask"
-                    .into();
+                "INSERT · Esc normal · i insert · dif function · dia argument · gd · Ctrl-S".into();
         }
     }
 
@@ -2769,7 +2775,7 @@ impl DevTuiState {
             EditorMode::Insert | EditorMode::Select | EditorMode::Agent => {
                 self.editor_engine.enter_normal();
                 self.status =
-                    "NORMAL · hjkl move · w/b word · d/c ops · v select · i insert · Esc exit"
+                    "NORMAL · hjkl · d/c/y · iw/if/ia/ic/is · v select · i insert · Esc exit"
                         .into();
             }
             EditorMode::Normal => self.request_editor_exit(),
@@ -3093,6 +3099,43 @@ impl DevTuiState {
             return;
         }
         let count = self.editor_engine.count();
+        if let crossterm::event::KeyCode::Char(character) = code
+            && let Some(around) = self.editor_engine.pending_around
+        {
+            if let Some(object) = textobject_from_key(character, around) {
+                self.apply_textobject(&path, &content, cursor, object);
+            } else {
+                self.editor_engine.clear_pending();
+                self.status = format!("Unknown textobject '{character}'");
+            }
+            return;
+        }
+        if self.editor_engine.pending_operator.is_some() {
+            match code {
+                crossterm::event::KeyCode::Char('i') => {
+                    self.editor_engine.pending_around = Some(false);
+                    self.status =
+                        "inner textobject · w word · f fn · a arg · c comment · s string".into();
+                    return;
+                }
+                crossterm::event::KeyCode::Char('a') => {
+                    self.editor_engine.pending_around = Some(true);
+                    self.status =
+                        "around textobject · w word · f fn · a arg · c comment · s string".into();
+                    return;
+                }
+                crossterm::event::KeyCode::Char('f') => {
+                    self.apply_textobject(
+                        &path,
+                        &content,
+                        cursor,
+                        TextObject::Function { around: true },
+                    );
+                    return;
+                }
+                _ => {}
+            }
+        }
         let motion = match code {
             crossterm::event::KeyCode::Char('h') | crossterm::event::KeyCode::Left => {
                 Some(Motion::Left)
@@ -3149,31 +3192,7 @@ impl DevTuiState {
             }
             crossterm::event::KeyCode::Char('v') => self.editor_engine.enter_select(),
             crossterm::event::KeyCode::Char('W') => {
-                let object = if self.editor_engine.pending_operator.is_some() {
-                    TextObject::InnerWord
-                } else {
-                    TextObject::AroundWord
-                };
-                if let Some(selection) = textobject_selection(&content, cursor, object)
-                    .or_else(|| {
-                        textobject_selection(&content, cursor, TextObject::InnerPair('(', ')'))
-                    })
-                    .or_else(|| {
-                        textobject_selection(&content, cursor, TextObject::AroundPair('{', '}'))
-                    })
-                {
-                    let _ = self.set_editor_cursor(&path, selection.active, true);
-                    let _ = self.set_editor_cursor(&path, selection.anchor, true);
-                }
-            }
-            crossterm::event::KeyCode::Char('f')
-                if self.editor_engine.pending_operator.is_some() =>
-            {
-                if let Some(selection) =
-                    textobject_selection(&content, cursor, TextObject::Function)
-                {
-                    let _ = self.set_editor_cursor(&path, selection.active, true);
-                }
+                self.apply_textobject(&path, &content, cursor, TextObject::Word { around: true });
             }
             crossterm::event::KeyCode::Char('d') if self.editor_engine.pending_g => {
                 self.editor_engine.pending_g = false;
@@ -3296,6 +3315,35 @@ impl DevTuiState {
         let _ = self.set_editor_cursor(path, next, extend);
     }
 
+    fn apply_textobject(
+        &mut self,
+        path: &str,
+        content: &str,
+        cursor: crate::development::TextPosition,
+        object: TextObject,
+    ) {
+        let selection = self
+            .syntax
+            .textobject(path, content, cursor, object)
+            .or_else(|| textobject_selection(content, cursor, object));
+        let Some(selection) = selection else {
+            self.editor_engine.clear_pending();
+            self.status = "No textobject under cursor".into();
+            return;
+        };
+        if let Some(operator) = self.editor_engine.pending_operator.take() {
+            if let Err(error) = self.apply_operator_selection(path, content, operator, selection) {
+                self.status = format!("Operator failed: {error}");
+            }
+        } else {
+            self.editor_engine.enter_select();
+            let _ = self.set_editor_cursor(path, selection.anchor, false);
+            let _ = self.set_editor_cursor(path, selection.active, true);
+            self.status = format!("{} · textobject selected", self.editor_engine.mode.label());
+        }
+        self.refresh_editor_projection();
+    }
+
     fn apply_operator(
         &mut self,
         path: &str,
@@ -3305,10 +3353,24 @@ impl DevTuiState {
         motion: Motion,
     ) -> crate::development::DevelopmentResult<()> {
         let end = apply_motion(content, cursor, motion);
-        let selection = TextSelection {
-            anchor: cursor,
-            active: end,
-        };
+        self.apply_operator_selection(
+            path,
+            content,
+            operator,
+            TextSelection {
+                anchor: cursor,
+                active: end,
+            },
+        )
+    }
+
+    fn apply_operator_selection(
+        &mut self,
+        path: &str,
+        content: &str,
+        operator: Operator,
+        selection: TextSelection,
+    ) -> crate::development::DevelopmentResult<()> {
         self.auto_checkpoint("before-operator");
         match operator {
             Operator::Yank => {

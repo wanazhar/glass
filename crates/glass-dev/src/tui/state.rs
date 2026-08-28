@@ -281,6 +281,8 @@ pub struct DevTuiState {
     pub editor_engine: EditorEngine,
     pub syntax: IncrementalSyntax,
     pub last_verify: Option<String>,
+    pub last_proof_ok: Option<bool>,
+    pub pending_verify: Option<serde_json::Value>,
     pub factory_split: bool,
     pub lsp: String,
     pub processes: String,
@@ -509,6 +511,8 @@ impl DevTuiState {
             },
             syntax: IncrementalSyntax::new(),
             last_verify: None,
+            last_proof_ok: None,
+            pending_verify: None,
             factory_split: true,
             lsp: String::new(),
             processes: String::new(),
@@ -1801,8 +1805,10 @@ impl DevTuiState {
             "context": context,
         });
         if let Some(prove) = prove {
-            arguments["verify"] = prove.verify;
+            arguments["verify"] = prove.verify.clone();
             arguments["intent"] = serde_json::Value::String(prove.intent);
+            self.pending_verify = Some(prove.verify);
+            self.last_proof_ok = None;
             self.last_verify = Some(evidence_card(
                 arguments["context"]["browser"]["url"]
                     .as_str()
@@ -1811,7 +1817,7 @@ impl DevTuiState {
                     .as_u64()
                     .unwrap_or(0),
                 arguments["context"]["browser"]["selectedEntity"].as_str(),
-                "composer prove-it",
+                "composer prove-it queued",
                 false,
             ));
             self.auto_checkpoint("before-prove-it");
@@ -2003,6 +2009,31 @@ impl DevTuiState {
         }
     }
 
+    pub fn submit_pending_verify(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(predicate) = self.pending_verify.take() else {
+            return;
+        };
+        let arguments = serde_json::json!({ "predicate": predicate, "timeoutSeconds": 8 });
+        let (call, context) = match self.tool_request("glass.browser.verify", arguments, false) {
+            Ok(request) => request,
+            Err(error) => {
+                self.last_proof_ok = Some(false);
+                self.status = format!("Prove-it unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = "Prove-it running against the live page".into();
+            }
+            Err(error) => {
+                self.last_proof_ok = Some(false);
+                self.status = format!("Prove-it failed to start: {error}");
+            }
+        }
+    }
+
     pub fn submit_queued_tool(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some((call, context)) = self.queued_tool_request.take() else {
             return;
@@ -2082,7 +2113,33 @@ impl DevTuiState {
         self.running_tool_job = None;
         match result.result {
             Ok(value) => {
-                if result.tool.starts_with("glass.browser") {
+                if result.tool == "glass.browser.verify" {
+                    let ok = value.get("status").and_then(serde_json::Value::as_str)
+                        == Some("satisfied");
+                    self.last_proof_ok = Some(ok);
+                    self.last_verify = Some(evidence_card(
+                        value
+                            .pointer("/predicate/urlEquals")
+                            .and_then(serde_json::Value::as_str)
+                            .or_else(|| value.get("state").and_then(serde_json::Value::as_str))
+                            .unwrap_or("live page"),
+                        value
+                            .get("elapsedMs")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0),
+                        None,
+                        value
+                            .get("state")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("verify"),
+                        ok,
+                    ));
+                    self.status = if ok {
+                        "Prove-it passed · gutter ✓".into()
+                    } else {
+                        "Prove-it failed · inspect last verify".into()
+                    };
+                } else if result.tool.starts_with("glass.browser") {
                     self.apply_browser_result(&result.tool, &value);
                     self.browser_detail = super::projection::browser_result(&result.tool, &value);
                     if result.tool == "glass.browser.act" || result.tool == "glass.browser.navigate"
@@ -2192,6 +2249,10 @@ impl DevTuiState {
                 }
             }
             Err(error) => {
+                if result.tool == "glass.browser.verify" {
+                    self.last_proof_ok = Some(false);
+                    self.last_verify = Some(evidence_card("live page", 0, None, &error, false));
+                }
                 if result.tool.starts_with("glass.browser") {
                     self.note_browser_failure(&result.tool, &error);
                 }
@@ -2684,6 +2745,21 @@ impl DevTuiState {
             let path = self.focused_editor_path.clone();
             let content = self.focused_editor_content.clone();
             self.syntax.sync(&path, &content);
+            if let Some(proposal) = self.editor_proposals.iter().find(|item| {
+                item.path == path && item.state == crate::development::EditorProposalState::Pending
+            }) {
+                let line = native::line_hunks(&proposal.original, &proposal.proposed)
+                    .first()
+                    .map(|hunk| hunk.start_line)
+                    .unwrap_or(1);
+                self.editor_engine.agent_caret = Some(native::Jump {
+                    path: path.clone(),
+                    line,
+                    column: 1,
+                });
+            } else {
+                self.editor_engine.agent_caret = None;
+            }
         } else {
             self.focused_editor_path.clear();
             self.focused_editor_content.clear();
@@ -2900,6 +2976,11 @@ impl DevTuiState {
         }
         let viewport_height = usize::from(self.terminal_height.saturating_sub(8).max(1));
         if self.editor_soft_wrap {
+            let marks = self
+                .editor_gutter_marks()
+                .into_iter()
+                .map(|(line, mark)| (line, mark.glyph()))
+                .collect::<Vec<_>>();
             let wrapped = super::file_view::render_editable_source_wrapped(
                 &self.focused_editor_path,
                 &self.focused_editor_content,
@@ -2907,6 +2988,7 @@ impl DevTuiState {
                 self.focused_editor_column,
                 self.focused_editor_selection.as_ref(),
                 self.terminal_width.saturating_sub(4).max(1),
+                &marks,
             );
             let Some(cursor) = wrapped.cursor else {
                 return;
@@ -3099,6 +3181,63 @@ impl DevTuiState {
             return;
         }
         let count = self.editor_engine.count();
+        if self.editor_engine.pending_find.is_some() {
+            if let crossterm::event::KeyCode::Char(needle) = code {
+                let jumping_mark = self.editor_engine.pending_find == Some('\'');
+                self.editor_engine.pending_find = None;
+                if jumping_mark {
+                    if let Some(mark) = self.editor_engine.marks.get(&needle).cloned() {
+                        self.editor_engine
+                            .record_jump(&path, cursor.line, cursor.column);
+                        if mark.path == path {
+                            let _ = self.set_editor_cursor(
+                                &path,
+                                crate::development::TextPosition {
+                                    line: mark.line,
+                                    column: mark.column,
+                                },
+                                false,
+                            );
+                        } else {
+                            self.status = format!("Mark '{needle}' is {}", mark.path);
+                        }
+                    } else {
+                        self.status = format!("Mark '{needle}' is empty");
+                    }
+                } else {
+                    let motion = Motion::Find {
+                        needle,
+                        till: self.editor_engine.pending_find_till,
+                        reverse: self.editor_engine.pending_find_reverse,
+                    };
+                    if let Some(operator) = self.editor_engine.pending_operator.take() {
+                        let _ = self.apply_operator(&path, &content, cursor, operator, motion);
+                    } else {
+                        let next = apply_motion(&content, cursor, motion);
+                        let _ = self.set_editor_cursor(&path, next, false);
+                    }
+                }
+                self.refresh_editor_projection();
+            } else {
+                self.editor_engine.clear_pending();
+            }
+            return;
+        }
+        if self.editor_engine.pending_mark {
+            if let crossterm::event::KeyCode::Char(name) = code {
+                self.editor_engine.marks.insert(
+                    name,
+                    native::Jump {
+                        path: path.clone(),
+                        line: cursor.line,
+                        column: cursor.column,
+                    },
+                );
+                self.status = format!("Mark '{name}' set");
+            }
+            self.editor_engine.pending_mark = false;
+            return;
+        }
         if let crossterm::event::KeyCode::Char(character) = code
             && let Some(around) = self.editor_engine.pending_around
         {
@@ -3198,6 +3337,14 @@ impl DevTuiState {
                 self.editor_engine.pending_g = false;
                 self.editor_go_to_definition();
             }
+            crossterm::event::KeyCode::Char('r') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.editor_references();
+            }
+            crossterm::event::KeyCode::Char('p') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.jump_page_from_source();
+            }
             crossterm::event::KeyCode::Char('d') => {
                 self.editor_engine.pending_operator = Some(Operator::Delete);
             }
@@ -3221,6 +3368,14 @@ impl DevTuiState {
                 if !self.editor_engine.yank.is_empty() {
                     let _ = self.insert_editor_text(&path, &self.editor_engine.yank.clone());
                 }
+            }
+            crossterm::event::KeyCode::Char('m') => {
+                self.editor_engine.pending_mark = true;
+                self.status = "Mark · next character names the mark".into();
+            }
+            crossterm::event::KeyCode::Char('\'') => {
+                self.status = "Jump to mark · next character".into();
+                self.editor_engine.pending_find = Some('\'');
             }
             crossterm::event::KeyCode::Char('K') => self.editor_hover(),
             crossterm::event::KeyCode::Char(']') => {
@@ -3255,7 +3410,30 @@ impl DevTuiState {
             crossterm::event::KeyCode::Enter => self.accept_current_hunk(),
             crossterm::event::KeyCode::Char('n') => self.reject_current_hunk(),
             crossterm::event::KeyCode::Char('o') => self.open_symbol_picker(),
-            crossterm::event::KeyCode::Char('f') => self.jump_page_from_source(),
+            crossterm::event::KeyCode::Char('f') => {
+                self.editor_engine.pending_find = Some('f');
+                self.editor_engine.pending_find_till = false;
+                self.editor_engine.pending_find_reverse = false;
+                self.status = "find · next character".into();
+            }
+            crossterm::event::KeyCode::Char('t') => {
+                self.editor_engine.pending_find = Some('t');
+                self.editor_engine.pending_find_till = true;
+                self.editor_engine.pending_find_reverse = false;
+                self.status = "till · next character".into();
+            }
+            crossterm::event::KeyCode::Char('F') => {
+                self.editor_engine.pending_find = Some('F');
+                self.editor_engine.pending_find_till = false;
+                self.editor_engine.pending_find_reverse = true;
+                self.status = "find back · next character".into();
+            }
+            crossterm::event::KeyCode::Char('T') => {
+                self.editor_engine.pending_find = Some('T');
+                self.editor_engine.pending_find_till = true;
+                self.editor_engine.pending_find_reverse = true;
+                self.status = "till back · next character".into();
+            }
             _ => {}
         }
         self.refresh_editor_projection();
@@ -3403,6 +3581,25 @@ impl DevTuiState {
         Ok(())
     }
 
+    pub fn editor_gutter_marks(&self) -> Vec<(u32, native::GutterMark)> {
+        let mut marks = Vec::new();
+        let path = &self.focused_editor_path;
+        for hunk in &self.editor_engine.hunks {
+            marks.push((hunk.start_line, native::GutterMark::Git));
+        }
+        if let Some(caret) = &self.editor_engine.agent_caret
+            && caret.path == *path
+        {
+            marks.push((caret.line, native::GutterMark::Agent));
+        }
+        if self.last_proof_ok == Some(true) {
+            marks.push((self.focused_editor_line.max(1), native::GutterMark::Proof));
+        } else if self.last_proof_ok == Some(false) {
+            marks.push((self.focused_editor_line.max(1), native::GutterMark::Lsp));
+        }
+        marks
+    }
+
     fn refresh_editor_hunks(&mut self) {
         let path = self.focused_editor_path.clone();
         if path.is_empty() {
@@ -3447,6 +3644,32 @@ impl DevTuiState {
             }
             Some(Err(error)) => self.status = format!("Hover unavailable: {error}"),
             None => self.status = "Hover unavailable · workspace busy".into(),
+        }
+    }
+
+    fn editor_references(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line.saturating_sub(1);
+        let character = self.focused_editor_column.saturating_sub(1);
+        match self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .references(&server, "local", &path, line, character)
+        }) {
+            Some(Ok(response)) => {
+                self.editor_engine.overlay = Some(format_lsp_locations(&response.result));
+                self.status = "References · Esc closes".into();
+            }
+            Some(Err(error)) => self.status = format!("References unavailable: {error}"),
+            None => self.status = "References unavailable · workspace busy".into(),
         }
     }
 
@@ -3607,6 +3830,13 @@ impl DevTuiState {
     }
 
     pub fn request_ghost_from_line(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line.saturating_sub(1);
+        let character = self.focused_editor_column.saturating_sub(1);
+        if let Some(text) = self.lsp_ghost_insert(&path, line, character) {
+            self.editor_engine.ghost = Some(GhostText { text });
+            return;
+        }
         let line = self
             .focused_editor_content
             .lines()
@@ -3625,6 +3855,23 @@ impl DevTuiState {
             return;
         };
         self.editor_engine.ghost = Some(GhostText { text: ghost.into() });
+    }
+
+    fn lsp_ghost_insert(&mut self, path: &str, line: u32, character: u32) -> Option<String> {
+        let response = self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .completion(&server, "local", path, line, character)
+        })?;
+        parse_completion_insert(&response.ok()?.result)
     }
 
     fn move_editor_cursor(
@@ -4992,6 +5239,7 @@ impl DevTuiState {
                     actor: crate::development::Actor::local(),
                     allow_mutation: mutating,
                     confirmed: mutating,
+                    unrestricted: self.yolo_mode,
                 },
                 initiator: None,
                 expected_generation,
@@ -5285,6 +5533,41 @@ struct LspLocation {
     path: String,
     line: u32,
     column: u32,
+}
+
+fn parse_completion_insert(value: &serde_json::Value) -> Option<String> {
+    let items = value
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| value.as_array())?;
+    let item = items.first()?;
+    item.pointer("/textEdit/newText")
+        .or_else(|| item.pointer("/textEdit/insert/newText"))
+        .or_else(|| item.get("insertText"))
+        .or_else(|| item.get("label"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .filter(|text| !text.is_empty())
+}
+
+fn format_lsp_locations(value: &serde_json::Value) -> String {
+    let items = value
+        .as_array()
+        .map(|items| items.as_slice())
+        .unwrap_or_else(|| std::slice::from_ref(value));
+    let mut lines = vec!["REFERENCES".to_string()];
+    for item in items.iter().take(32) {
+        if let Some(location) = parse_lsp_location(item) {
+            lines.push(format!(
+                "  {}:{}:{}",
+                location.path, location.line, location.column
+            ));
+        }
+    }
+    if lines.len() == 1 {
+        lines.push("  none".into());
+    }
+    lines.join("\n")
 }
 
 fn parse_lsp_location(value: &serde_json::Value) -> Option<LspLocation> {

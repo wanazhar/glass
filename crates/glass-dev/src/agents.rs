@@ -342,6 +342,10 @@ impl AgentRegistry {
         self.default_unrestricted = unrestricted;
     }
 
+    pub fn default_unrestricted(&self) -> bool {
+        self.default_unrestricted
+    }
+
     /// Validate and enqueue an agent; dependencies must be known and successful.
     pub fn create(&mut self, mut spec: AgentSpec) -> DevelopmentResult<AgentId> {
         self.refresh()?;

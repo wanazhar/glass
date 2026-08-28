@@ -351,6 +351,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
 
     let editor_block = surface_block(" SOURCE ", ACCENT_BRIGHT);
     let editor_inner = editor_block.inner(rows[1]);
+    let marks = editor_mark_glyphs(state);
     let wrapped_cursor = if state.editor_soft_wrap {
         let wrapped = file_view::render_editable_source_wrapped(
             &state.focused_editor_path,
@@ -359,6 +360,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
             state.focused_editor_column,
             state.focused_editor_selection.as_ref(),
             editor_inner.width.max(1),
+            &marks,
         );
         let cursor = wrapped.cursor;
         frame.render_widget(
@@ -370,13 +372,23 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         );
         cursor
     } else {
-        let text = file_view::render_editable_source(
+        let mut text = file_view::render_editable_source(
             &state.focused_editor_path,
             content,
             state.focused_editor_line,
             state.focused_editor_column,
             state.focused_editor_selection.as_ref(),
+            &marks,
         );
+        if let Some(ghost) = &state.editor_engine.ghost {
+            let index = state.focused_editor_line.saturating_sub(1) as usize;
+            if let Some(line) = text.lines.get_mut(index) {
+                line.spans.push(Span::styled(
+                    ghost.text.clone(),
+                    Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+                ));
+            }
+        }
         frame.render_widget(
             Paragraph::new(text)
                 .style(Style::default().fg(TEXT).bg(PANEL_INSET))
@@ -949,6 +961,7 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .constraints([Constraint::Percentage(42), Constraint::Min(36)])
         .split(rows[1]);
     render_surface(frame, state, columns[0]);
+    let marks = editor_mark_glyphs(state);
     let source = file_view::render_editable_source(
         &state.focused_editor_path,
         if state.focused_editor_content.is_empty() {
@@ -959,6 +972,7 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         state.focused_editor_line,
         state.focused_editor_column,
         state.focused_editor_selection.as_ref(),
+        &marks,
     );
     frame.render_widget(
         Paragraph::new(source)
@@ -1146,6 +1160,14 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
         Paragraph::new(lines).style(Style::default().bg(PANEL_BACKGROUND)),
         area,
     );
+}
+
+fn editor_mark_glyphs(state: &DevTuiState) -> Vec<(u32, char)> {
+    state
+        .editor_gutter_marks()
+        .into_iter()
+        .map(|(line, mark)| (line, mark.glyph()))
+        .collect()
 }
 
 fn compact_path(path: &str, width: u16) -> String {

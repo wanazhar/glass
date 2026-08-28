@@ -13,7 +13,8 @@ use crate::tasks::{TaskId, TaskSpec};
 use crate::workspace::DevelopmentWorkspace;
 use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput, WorkspaceTrust};
 use glass_browser::browser::session::{
-    SemanticObservationLevel, WorkflowRecordingSession, record_semantic_events,
+    SemanticObservationLevel, VerificationPredicate, WorkflowRecordingSession,
+    record_semantic_events,
 };
 use glass_browser::workspace::{WorkspaceId, WorkspaceStore};
 use serde_json::Value;
@@ -465,6 +466,18 @@ impl DevelopmentToolRouter {
             "glass.browser.reconnect" => workspace.browser().reconnect(),
             "glass.browser.state" => workspace.browser().state(),
             "glass.browser.observe" => workspace.browser().observe(),
+            "glass.browser.verify" => {
+                let predicate: VerificationPredicate = serde_json::from_value(
+                    required_value(call, "predicate")?.clone(),
+                )
+                .map_err(|error| {
+                    DevelopmentError::InvalidInput(format!(
+                        "glass.browser.verify predicate is invalid: {error}"
+                    ))
+                })?;
+                let timeout = timeout(call, 30)?.unwrap_or(Duration::from_secs(8));
+                workspace.browser().verify_predicate(predicate, timeout)
+            }
             "glass.browser.snapshot" => workspace.browser().snapshot(),
             "glass.browser.semantic" => workspace.browser().semantic(match optional_string(call, "level").unwrap_or("structured") {
                 "summary" => SemanticObservationLevel::Summary,
@@ -1554,6 +1567,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.process.ports",
         "glass.browser.state",
         "glass.browser.observe",
+        "glass.browser.verify",
         "glass.browser.snapshot",
         "glass.browser.semantic",
         "glass.browser.web_ir",
@@ -1714,6 +1728,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.browser.stop"
             | "glass.browser.state"
             | "glass.browser.observe"
+            | "glass.browser.verify"
             | "glass.browser.snapshot"
             | "glass.browser.semantic"
             | "glass.browser.web_ir"
@@ -2420,6 +2435,7 @@ mod tests {
                 actor: Actor::embedded(),
                 allow_mutation: mutate,
                 confirmed: mutate,
+                unrestricted: mutate,
             },
             initiator: None,
             expected_generation: workspace.generation(),
@@ -2739,6 +2755,7 @@ mod tests {
             "glass.process.stop",
             "glass.process.restart",
             "glass.browser.observe",
+            "glass.browser.verify",
             "glass.browser.snapshot",
             "glass.browser.attach",
             "glass.browser.reconnect",

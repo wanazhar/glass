@@ -690,10 +690,20 @@ impl ProjectWorkspace {
     }
 
     fn current_editor_content(&self, path: &str) -> DevelopmentResult<String> {
+        self.buffer_or_file_content(path)
+    }
+
+    pub(crate) fn buffer_or_file_content(&self, path: &str) -> DevelopmentResult<String> {
         if let Some(buffer) = self.buffers.get(path) {
             return Ok(buffer.content.clone());
         }
-        self.read_file_snapshot(path)
+        match self.read_file_snapshot(path) {
+            Ok(content) => Ok(content),
+            Err(DevelopmentError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(String::new())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn find_comment(&self, id: &str) -> DevelopmentResult<(String, usize)> {

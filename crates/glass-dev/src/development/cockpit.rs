@@ -846,6 +846,7 @@ fn cockpit_command(
             actor: Actor::external("cockpit"),
             allow_mutation: request.allow_mutation && request.confirmed,
             confirmed: request.confirmed,
+            unrestricted: false,
         },
         initiator: None,
         expected_generation,

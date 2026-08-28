@@ -2592,6 +2592,7 @@ fn run_tool(
             actor: Actor::local(),
             allow_mutation: mutating,
             confirmed: mutating,
+            unrestricted: state.yolo_mode,
         },
         initiator: None,
         expected_generation,

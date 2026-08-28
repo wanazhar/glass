@@ -1134,6 +1134,7 @@ input_schema = {{ type = "object", required = ["text"] }}
                 actor: crate::development::Actor::external("customization-test"),
                 allow_mutation: true,
                 confirmed: true,
+                unrestricted: false,
             },
             initiator: None,
             expected_generation: workspace.generation(),

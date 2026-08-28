@@ -561,6 +561,7 @@ impl DevelopmentWorkspace {
                         actor: executor.clone(),
                         allow_mutation: authorization.allow_mutation && policy.mutation_authority,
                         confirmed: authorization.confirmed && policy.mutation_authority,
+                        unrestricted: policy.mutation_authority && authorization.confirmed,
                     },
                     initiator: Some(initiator.clone()),
                     expected_generation: generation,
@@ -699,11 +700,13 @@ impl SharedDevelopmentWorkspace {
                     "development workspace lock was poisoned".into(),
                 )
             })?;
+            let unrestricted = workspace.agents().default_unrestricted();
             let context = DevelopmentToolContext {
                 authorization: ToolAuthorization {
                     actor: Actor::embedded(),
                     allow_mutation,
                     confirmed,
+                    unrestricted,
                 },
                 initiator: None,
                 expected_generation: workspace.generation(),
@@ -903,6 +906,7 @@ command = '''{command}'''
                 actor: Actor::external("security-test"),
                 allow_mutation: true,
                 confirmed: true,
+                unrestricted: false,
             },
             initiator: None,
             expected_generation: workspace.generation(),

@@ -341,6 +341,7 @@ async fn dispatch_external_tool(
             actor: Actor::external("cli"),
             allow_mutation,
             confirmed,
+            unrestricted: allow_mutation && confirmed,
         },
         initiator: None,
         expected_generation: workspace.generation(),

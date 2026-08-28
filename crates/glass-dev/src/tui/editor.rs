@@ -44,6 +44,11 @@ pub enum Motion {
     FileStart,
     FileEnd,
     MatchPair,
+    Find {
+        needle: char,
+        till: bool,
+        reverse: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,8 +190,12 @@ pub struct EditorEngine {
     pub pending_count: u32,
     pub pending_g: bool,
     pub pending_find: Option<char>,
+    /// `f`/`t` wait for a character; `F`/`T` set reverse.
+    pub pending_find_till: bool,
+    pub pending_find_reverse: bool,
     /// `Some(false)` waits for an inner textobject, `Some(true)` for around.
     pub pending_around: Option<bool>,
+    pub pending_mark: bool,
     pub yank: String,
     pub jumps: Vec<Jump>,
     pub jump_index: usize,
@@ -197,6 +206,8 @@ pub struct EditorEngine {
     pub symbol_query: String,
     pub symbols: Vec<(String, u32)>,
     pub symbol_selection: usize,
+    pub marks: std::collections::HashMap<char, Jump>,
+    pub agent_caret: Option<Jump>,
 }
 
 impl EditorEngine {
@@ -220,7 +231,10 @@ impl EditorEngine {
         self.pending_count = 0;
         self.pending_g = false;
         self.pending_find = None;
+        self.pending_find_till = false;
+        self.pending_find_reverse = false;
         self.pending_around = None;
+        self.pending_mark = false;
     }
 
     pub fn count(&self) -> u32 {
@@ -326,6 +340,11 @@ pub fn apply_motion(content: &str, position: TextPosition, motion: Motion) -> Te
             }
         }
         Motion::MatchPair => match_pair(content, position).unwrap_or(position),
+        Motion::Find {
+            needle,
+            till,
+            reverse,
+        } => find_char(content, position, needle, till, reverse).unwrap_or(position),
     }
 }
 
@@ -403,40 +422,36 @@ pub fn compile_prove_it(text: &str) -> Option<ProveIt> {
     {
         return None;
     }
-    let mut predicate = serde_json::Map::new();
+    let mut clauses = Vec::new();
     if let Some(url) = text
         .split_whitespace()
         .find(|token| token.starts_with("http://") || token.starts_with("https://"))
     {
-        predicate.insert(
-            "urlEquals".into(),
-            serde_json::Value::String(url.to_string()),
-        );
+        clauses.push(serde_json::json!({"urlEquals": url}));
     }
     if let Some(rest) = capture_after(&lower, text, &["title ", "titled "]) {
-        predicate.insert(
-            "titleContains".into(),
-            serde_json::Value::String(rest.to_string()),
-        );
+        clauses.push(serde_json::json!({"titleContains": rest}));
     }
     if let Some(rest) = capture_after(&lower, text, &["text ", "contains "]) {
-        predicate.insert(
-            "textContains".into(),
-            serde_json::Value::String(rest.to_string()),
-        );
+        clauses.push(serde_json::json!({"textContains": rest}));
     }
     if lower.contains("popup") {
-        predicate.insert("popupOpened".into(), serde_json::Value::Bool(true));
+        clauses.push(serde_json::json!({"popupOpened": true}));
     }
     if lower.contains("download") {
-        predicate.insert("downloadStarted".into(), serde_json::Value::Bool(true));
+        clauses.push(serde_json::json!({"downloadStarted": true}));
     }
-    if predicate.is_empty() {
+    if clauses.is_empty() {
         return None;
     }
+    let verify = if clauses.len() == 1 {
+        clauses.pop().expect("one clause")
+    } else {
+        serde_json::json!({ "all": clauses })
+    };
     Some(ProveIt {
         intent: text.trim().to_string(),
-        verify: serde_json::Value::Object(predicate),
+        verify,
     })
 }
 
@@ -588,6 +603,49 @@ fn word_end(content: &str, position: TextPosition) -> TextPosition {
         offset += 1;
     }
     text_position_at_offset(content, offset.min(content.len())).unwrap_or(position)
+}
+
+fn find_char(
+    content: &str,
+    position: TextPosition,
+    needle: char,
+    till: bool,
+    reverse: bool,
+) -> Option<TextPosition> {
+    let line = content
+        .split('\n')
+        .nth(position.line.saturating_sub(1) as usize)?;
+    let chars = line.chars().collect::<Vec<_>>();
+    let column = position.column.saturating_sub(1) as usize;
+    if reverse {
+        let start = column.min(chars.len());
+        let found = chars[..start]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, character)| **character == needle)?;
+        let index = if till {
+            found.0.saturating_add(1)
+        } else {
+            found.0
+        };
+        Some(TextPosition {
+            line: position.line,
+            column: index as u32 + 1,
+        })
+    } else {
+        let start = column.saturating_add(1).min(chars.len());
+        let found = chars[start..]
+            .iter()
+            .enumerate()
+            .find(|(_, character)| **character == needle)?;
+        let index = start + found.0;
+        let index = if till { index.saturating_sub(1) } else { index };
+        Some(TextPosition {
+            line: position.line,
+            column: index as u32 + 1,
+        })
+    }
 }
 
 fn match_pair(content: &str, position: TextPosition) -> Option<TextPosition> {
@@ -768,6 +826,17 @@ mod tests {
             textobject_from_key('f', false),
             Some(TextObject::Function { around: false })
         );
+        let found = apply_motion(
+            source,
+            TextPosition { line: 2, column: 5 },
+            Motion::Find {
+                needle: 'w',
+                till: false,
+                reverse: false,
+            },
+        );
+        assert_eq!(found.line, 2);
+        assert!(found.column > 5);
         assert_eq!(GutterMark::Proof.glyph(), '✓');
     }
 
@@ -784,9 +853,15 @@ mod tests {
         let compiled =
             compile_prove_it("click save and prove title Dashboard and popup then download")
                 .expect("predicate");
-        assert_eq!(compiled.verify["titleContains"], "Dashboard");
-        assert_eq!(compiled.verify["popupOpened"], true);
-        assert_eq!(compiled.verify["downloadStarted"], true);
+        let all = compiled.verify["all"]
+            .as_array()
+            .expect("composed predicate");
+        assert!(
+            all.iter()
+                .any(|clause| clause["titleContains"] == "Dashboard")
+        );
+        assert!(all.iter().any(|clause| clause["popupOpened"] == true));
+        assert!(all.iter().any(|clause| clause["downloadStarted"] == true));
         assert!(compile_prove_it("just chat").is_none());
     }
 

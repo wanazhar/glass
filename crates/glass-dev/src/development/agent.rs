@@ -1,4 +1,6 @@
-use super::{Actor, DevelopmentError, DevelopmentEventKind, DevelopmentResult, ProjectWorkspace};
+use super::{
+    Actor, ActorKind, DevelopmentError, DevelopmentEventKind, DevelopmentResult, ProjectWorkspace,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -189,6 +191,9 @@ pub struct ToolAuthorization {
     pub actor: Actor,
     pub allow_mutation: bool,
     pub confirmed: bool,
+    /// When true, agent file tools write through to disk. The default agent
+    /// write path is a pending editor proposal.
+    pub unrestricted: bool,
 }
 
 impl ToolAuthorization {
@@ -197,7 +202,16 @@ impl ToolAuthorization {
             actor,
             allow_mutation: false,
             confirmed: false,
+            unrestricted: false,
         }
+    }
+
+    pub fn agent_writes_to_disk(&self) -> bool {
+        self.unrestricted
+            || matches!(
+                self.actor.kind,
+                ActorKind::Human | ActorKind::System | ActorKind::Observer
+            )
     }
 }
 
@@ -308,7 +322,7 @@ impl AgentToolGateway {
         } else {
             self.execute_attached(call).unwrap_or_else(|| {
                 self.registry
-                    .execute_unchecked(workspace, call, authorization.actor.clone())
+                    .execute_unchecked(workspace, call, authorization)
             })
         };
         let (ok, bytes) = match &result {
@@ -624,8 +638,9 @@ impl ToolRegistry {
         &self,
         workspace: &mut ProjectWorkspace,
         call: &ToolCall,
-        actor: Actor,
+        authorization: &ToolAuthorization,
     ) -> DevelopmentResult<Value> {
+        let actor = authorization.actor.clone();
         let string = |name: &str| {
             call.arguments
                 .get(name)
@@ -646,25 +661,54 @@ impl ToolRegistry {
             "glass.file.grep" => grep_tool_files(workspace, call, string("pattern")?),
             "glass.file.find" => find_tool_files(workspace, call, string("pattern")?),
             "glass.file.patch" => {
-                let count = workspace.replace_in_buffer(
-                    string("path")?,
-                    string("search")?,
-                    string("replace")?,
-                    actor,
-                )?;
+                let path = string("path")?.to_string();
+                let search = string("search")?.to_string();
+                let replace = string("replace")?.to_string();
+                if !authorization.agent_writes_to_disk() {
+                    let original = workspace.buffer_or_file_content(&path)?;
+                    let count = original.matches(&search).count();
+                    if count == 0 {
+                        return Err(DevelopmentError::Conflict(
+                            "patch search text was not found".into(),
+                        ));
+                    }
+                    let proposed = original.replace(&search, &replace);
+                    return propose_agent_file(
+                        workspace,
+                        &path,
+                        original,
+                        proposed,
+                        format!("patch {count} replacement(s) in {path}"),
+                        actor,
+                    );
+                }
+                let count = workspace.replace_in_buffer(&path, &search, &replace, actor)?;
                 if count == 0 {
                     return Err(DevelopmentError::Conflict(
                         "patch search text was not found".into(),
                     ));
                 }
-                let path = string("path")?.to_string();
                 let buffer = workspace.save_buffer(&path)?;
                 Ok(serde_json::json!({"path": path, "replacements": count, "dirty": buffer.dirty}))
             }
-            "glass.file.edit" => execute_atomic_edits(workspace, call, actor),
+            "glass.file.edit" => {
+                execute_atomic_edits(workspace, call, actor, authorization.agent_writes_to_disk())
+            }
             "glass.file.write" => {
                 let path = string("path")?.to_string();
-                workspace.write_file(&path, string("content")?, actor)?;
+                let content = string("content")?.to_string();
+                if !authorization.agent_writes_to_disk() {
+                    let original = workspace.buffer_or_file_content(&path).unwrap_or_default();
+                    return propose_agent_file(
+                        workspace,
+                        &path,
+                        original,
+                        content,
+                        format!("write {path}"),
+                        actor,
+                    );
+                }
+                workspace.write_file(&path, &content, actor)?;
                 Ok(serde_json::json!({"path":path,"written":true}))
             }
             "glass.file.mkdir" => {
@@ -1122,10 +1166,33 @@ fn wildcard_matches(pattern: &str, value: &str) -> bool {
     pattern_index == pattern.len()
 }
 
+fn propose_agent_file(
+    workspace: &mut ProjectWorkspace,
+    path: &str,
+    original: String,
+    proposed: String,
+    summary: String,
+    actor: Actor,
+) -> DevelopmentResult<Value> {
+    let _ = workspace.create_editor_checkpoint(format!("before-proposal:{path}"), actor.clone());
+    if workspace.buffer(path).is_none() && workspace.open_buffer(path, actor.clone()).is_err() {
+        workspace.edit_buffer(path, original.clone(), actor.clone())?;
+    }
+    let proposal = workspace.propose_editor_change(path, original, proposed, summary, actor)?;
+    Ok(serde_json::json!({
+        "path": path,
+        "written": false,
+        "proposed": true,
+        "proposalId": proposal.id,
+        "state": "pending",
+    }))
+}
+
 fn execute_atomic_edits(
     workspace: &mut ProjectWorkspace,
     call: &ToolCall,
     actor: Actor,
+    write_through: bool,
 ) -> DevelopmentResult<Value> {
     let path = call.arguments["path"]
         .as_str()
@@ -1166,9 +1233,19 @@ fn execute_atomic_edits(
             "glass.file.edit replacements overlap".into(),
         ));
     }
-    let mut content = original;
+    let mut content = original.clone();
     for (start, end, new_text) in replacements.iter().rev() {
         content.replace_range(*start..*end, new_text);
+    }
+    if !write_through {
+        return propose_agent_file(
+            workspace,
+            path,
+            original,
+            content,
+            format!("edit {} replacement(s) in {path}", replacements.len()),
+            actor,
+        );
     }
     workspace.edit_buffer(path, content, actor)?;
     let buffer = workspace.save_buffer(path)?;
@@ -2515,6 +2592,7 @@ mod tests {
                     actor: Actor::embedded(),
                     allow_mutation: true,
                     confirmed: true,
+                    unrestricted: true,
                 },
             )
             .unwrap();
@@ -2593,6 +2671,55 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_agent_file_write_creates_a_proposal_unless_unrestricted() {
+        let root =
+            std::env::temp_dir().join(format!("glass-proposal-write-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("note.txt"), "before\n").unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let gateway = AgentToolGateway::default();
+        let confirmed = ToolAuthorization {
+            actor: Actor::embedded(),
+            allow_mutation: true,
+            confirmed: true,
+            unrestricted: false,
+        };
+        let result = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "propose-1".into(),
+                    name: "glass.file.write".into(),
+                    arguments: serde_json::json!({
+                        "path":"note.txt",
+                        "content":"after\n"
+                    }),
+                },
+                &confirmed,
+            )
+            .unwrap();
+        assert_eq!(result["proposed"], true);
+        assert_eq!(result["written"], false);
+        assert_eq!(
+            fs::read_to_string(root.join("note.txt")).unwrap(),
+            "before\n"
+        );
+        let proposal = workspace
+            .editor_proposals()
+            .into_iter()
+            .find(|item| item.path == "note.txt")
+            .expect("proposal");
+        assert_eq!(proposal.original, "before\n");
+        assert_eq!(proposal.proposed, "after\n");
+        workspace
+            .accept_editor_proposal(&proposal.id, Actor::local())
+            .unwrap();
+        assert_eq!(workspace.buffer("note.txt").unwrap().content, "after\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn coding_gateway_writes_and_applies_atomic_multi_edits() {
         let root = std::env::temp_dir().join(format!("glass-coding-tools-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -2603,6 +2730,7 @@ mod tests {
             actor: Actor::external("pi"),
             allow_mutation: true,
             confirmed: true,
+            unrestricted: true,
         };
         gateway
             .execute(

@@ -891,7 +891,9 @@ pub fn run(
             let browser_start = result.tool == "glass.browser.start" && result.result.is_ok();
             let browser_observe = result.tool == "glass.browser.observe" && result.result.is_ok();
             state.apply_tool_job_result(result);
-            if browser_start {
+            if state.pending_verify.is_some() {
+                state.submit_pending_verify(&mut worker);
+            } else if browser_start {
                 state.continue_pending_browser_navigation(&mut worker);
             } else if browser_observe && state.pending_browser_navigation.is_some() {
                 state.submit_pending_browser_navigation(&mut worker);

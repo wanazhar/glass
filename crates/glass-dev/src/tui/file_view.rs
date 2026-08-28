@@ -245,6 +245,7 @@ pub(crate) fn render_editable_source(
     cursor_line: u32,
     cursor_column: u32,
     selection: Option<&crate::development::TextSelection>,
+    marks: &[(u32, char)],
 ) -> Text<'static> {
     let selection = selection.filter(|selection| !selection.is_empty());
     let kind = classify(path);
@@ -279,10 +280,16 @@ pub(crate) fn render_editable_source(
         } else {
             Style::default().fg(MUTED)
         };
+        let mark = marks
+            .iter()
+            .find(|(line, _)| *line == line_number)
+            .map(|(_, glyph)| *glyph)
+            .unwrap_or(' ');
         let mut rendered = vec![Span::styled(
             format!(
-                "{}{:>gutter_width$} │ ",
+                "{}{}{:>gutter_width$} │ ",
                 if active { "▶" } else { " " },
+                mark,
                 line_number,
                 gutter_width = gutter_width
             ),
@@ -327,8 +334,10 @@ pub(crate) fn render_editable_source_wrapped(
     cursor_column: u32,
     selection: Option<&crate::development::TextSelection>,
     width: u16,
+    marks: &[(u32, char)],
 ) -> WrappedEditorSource {
-    let source = render_editable_source(path, content, cursor_line, cursor_column, selection);
+    let source =
+        render_editable_source(path, content, cursor_line, cursor_column, selection, marks);
     let available_width = usize::from(width.max(1));
     let Text {
         alignment,
@@ -1734,8 +1743,8 @@ mod tests {
 
     #[test]
     fn editable_renderer_marks_line_numbers_active_line_and_cursor() {
-        let output = render_editable_source("src/main.rs", "fn main() {}\n", 1, 4, None);
-        assert_eq!(symbols(output.clone()), "▶  1 │ fn main() {}\n   2 │ ");
+        let output = render_editable_source("src/main.rs", "fn main() {}\n", 1, 4, None, &[]);
+        assert_eq!(symbols(output.clone()), "▶   1 │ fn main() {}\n    2 │ ");
         assert!(
             output.lines[0]
                 .spans
@@ -1743,12 +1752,12 @@ mod tests {
                 .any(|span| span.style.bg == Some(ACCENT_BRIGHT)),
             "cursor cell should be visibly highlighted"
         );
-        assert_eq!(output.lines[0].spans[0].content, "▶  1 │ ");
+        assert_eq!(output.lines[0].spans[0].content, "▶   1 │ ");
     }
 
     #[test]
     fn wrapped_editable_source_renders_cursor_on_empty_active_line() {
-        let wrapped = render_editable_source_wrapped("src/main.rs", "", 1, 1, None, 24);
+        let wrapped = render_editable_source_wrapped("src/main.rs", "", 1, 1, None, 24, &[]);
         let cursor = wrapped.cursor.expect("empty-line cursor");
         assert_eq!(cursor.row, 0);
         assert!(cursor.column > 0);
@@ -1758,7 +1767,7 @@ mod tests {
     #[test]
     fn wrapped_editable_source_keeps_cursor_inside_visual_rows() {
         let content = "one two three four five six seven eight nine ten eleven twelve";
-        let wrapped = render_editable_source_wrapped("src/main.rs", content, 1, 55, None, 24);
+        let wrapped = render_editable_source_wrapped("src/main.rs", content, 1, 55, None, 24, &[]);
         let cursor = wrapped.cursor.expect("wrapped source cursor");
         assert!(cursor.row > 0);
         assert!(cursor.column < 24);
@@ -1785,6 +1794,7 @@ mod tests {
             1,
             Some(&selection),
             24,
+            &[],
         );
         let selected_rows = wrapped
             .text

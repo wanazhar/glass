@@ -140,6 +140,14 @@ mod tests {
     }
 
     #[test]
+    fn policy_fetch_enable_intercepts_every_resource_type() {
+        let payload = policy_fetch_enable_params();
+        assert_eq!(payload["patterns"][0]["urlPattern"], "*");
+        assert_eq!(payload["patterns"][0]["requestStage"], "Request");
+        assert!(payload["patterns"][0].get("resourceType").is_none());
+    }
+
+    #[test]
     fn request_pattern_custom_resource_type() {
         let pattern = RequestPattern {
             url_pattern: "https://example.com/*".to_string(),

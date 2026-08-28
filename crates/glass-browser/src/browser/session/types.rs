@@ -2683,17 +2683,13 @@ impl PolicyInterception {
                 };
                 if event.method == "Target.attachedToTarget" {
                     if let Some(session_id) = event.params["sessionId"].as_str() {
-                        let session_id = session_id.to_string();
-                        if enable_fetch_for(&worker_cdp, &session_id).await.is_ok() {
-                            worker_sessions.lock().await.insert(session_id.clone());
-                            let _ = worker_cdp
-                                .send_to_session(
-                                    &session_id,
-                                    "Runtime.runIfWaitingForDebugger",
-                                    None,
-                                )
-                                .await;
-                        }
+                        arm_or_resume_policy_target(
+                            &worker_cdp,
+                            session_id,
+                            &worker_sessions,
+                            &worker_denial,
+                        )
+                        .await;
                     }
                     continue;
                 }
@@ -3287,20 +3283,49 @@ pub(crate) async fn disable_fetch_for(
     Ok(())
 }
 
+pub(crate) fn policy_fetch_enable_params() -> serde_json::Value {
+    serde_json::json!({
+        "patterns": [{
+            "urlPattern": "*",
+            "requestStage": "Request"
+        }]
+    })
+}
+
 pub(crate) async fn enable_fetch_for(cdp: &CdpClient, session_id: &str) -> BrowserResult<()> {
     cdp.send_to_session(
         session_id,
         "Fetch.enable",
-        Some(serde_json::json!({
-            "patterns": [{
-                "urlPattern": "*",
-                "resourceType": "Document",
-                "requestStage": "Request"
-            }]
-        })),
+        Some(policy_fetch_enable_params()),
     )
     .await?;
     Ok(())
+}
+
+pub(crate) async fn arm_or_resume_policy_target(
+    cdp: &CdpClient,
+    session_id: &str,
+    sessions: &Mutex<HashSet<String>>,
+    last_denial: &Mutex<Option<PolicyError>>,
+) {
+    let denial = enable_fetch_for(cdp, session_id)
+        .await
+        .err()
+        .map(|error| PolicyError::Denied {
+            operation: "navigation".to_string(),
+            reason: format!("policy Fetch interception could not be armed: {error}"),
+        });
+    let _ = cdp
+        .send_to_session(session_id, "Runtime.runIfWaitingForDebugger", None)
+        .await;
+    match denial {
+        None => {
+            sessions.lock().await.insert(session_id.to_string());
+        }
+        Some(error) => {
+            *last_denial.lock().await = Some(error);
+        }
+    }
 }
 
 pub(crate) fn visual_quad_rect(value: &Value) -> BrowserResult<VisualClip> {

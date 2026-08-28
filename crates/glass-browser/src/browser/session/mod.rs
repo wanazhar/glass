@@ -288,17 +288,13 @@ impl PolicyInterception {
                 };
                 if event.method == "Target.attachedToTarget" {
                     if let Some(session_id) = event.params["sessionId"].as_str() {
-                        let session_id = session_id.to_string();
-                        if enable_fetch_for(&worker_cdp, &session_id).await.is_ok() {
-                            worker_sessions.lock().await.insert(session_id.clone());
-                            let _ = worker_cdp
-                                .send_to_session(
-                                    &session_id,
-                                    "Runtime.runIfWaitingForDebugger",
-                                    None,
-                                )
-                                .await;
-                        }
+                        arm_or_resume_policy_target(
+                            &worker_cdp,
+                            session_id,
+                            &worker_sessions,
+                            &worker_denial,
+                        )
+                        .await;
                     }
                     continue;
                 }

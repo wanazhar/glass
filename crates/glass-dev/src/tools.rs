@@ -17,7 +17,7 @@ use glass_browser::browser::session::{
 };
 use glass_browser::workspace::{WorkspaceId, WorkspaceStore};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const RESULT_LIMIT: usize = 512 * 1024;
@@ -654,7 +654,7 @@ impl DevelopmentToolRouter {
             }
             "glass.git.worktree.list" => git_value(workspace.git(), |git| git.worktrees()),
             "glass.git.worktree.create" => {
-                let path = PathBuf::from(string("path")?);
+                let path = confined_worktree_path(workspace.root(), Path::new(string("path")?))?;
                 let branch = string("branch")?;
                 let create_branch = boolean(call, "createBranch", true);
                 git_mutation(workspace.git(), |git| {
@@ -663,7 +663,7 @@ impl DevelopmentToolRouter {
                 Ok(serde_json::json!({"path":path,"created":true}))
             }
             "glass.git.worktree.remove" => {
-                let path = PathBuf::from(string("path")?);
+                let path = confined_worktree_path(workspace.root(), Path::new(string("path")?))?;
                 git_mutation(workspace.git(), |git| {
                     git.remove_worktree(&path, boolean(call, "force", false))
                 })?;
@@ -1763,10 +1763,63 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.process.ports"
             | "glass.workspace.trust.status"
             | "glass.workspace.trust.inspect"
+            | "glass.runtime.inspect"
             | "glass.task.list"
             | "glass.task.get"
             | "glass.task.inspect"
     )
+}
+
+fn confined_worktree_path(workspace_root: &Path, path: &Path) -> DevelopmentResult<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(DevelopmentError::InvalidInput(
+            "worktree path must be a non-empty relative or workspace worktree path".into(),
+        ));
+    }
+    let base = workspace_root.join(".glass").join("worktrees");
+    std::fs::create_dir_all(&base)?;
+    let canonical_base = base.canonicalize()?;
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else if path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(DevelopmentError::PathOutsideWorkspace(path.to_path_buf()));
+    } else {
+        base.join(path)
+    };
+    let name = candidate.file_name().ok_or_else(|| {
+        DevelopmentError::InvalidInput("worktree path must name a directory".into())
+    })?;
+    if name == "." || name == ".." {
+        return Err(DevelopmentError::InvalidInput(
+            "worktree path must name a directory".into(),
+        ));
+    }
+    let parent = candidate.parent().ok_or_else(|| {
+        DevelopmentError::InvalidInput("worktree path must name a directory".into())
+    })?;
+    let mut existing_parent = parent;
+    while !existing_parent.exists() {
+        existing_parent = existing_parent
+            .parent()
+            .ok_or_else(|| DevelopmentError::PathOutsideWorkspace(candidate.clone()))?;
+    }
+    let canonical_existing = existing_parent.canonicalize()?;
+    if !canonical_existing.starts_with(&canonical_base) {
+        return Err(DevelopmentError::PathOutsideWorkspace(candidate));
+    }
+    std::fs::create_dir_all(parent)?;
+    let canonical_parent = parent.canonicalize()?;
+    if !canonical_parent.starts_with(&canonical_base) {
+        return Err(DevelopmentError::PathOutsideWorkspace(candidate));
+    }
+    Ok(canonical_parent.join(name))
 }
 
 fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
@@ -2392,6 +2445,7 @@ mod tests {
     use super::*;
     use crate::development::Actor;
     use serde_json::json;
+    use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -2426,6 +2480,43 @@ mod tests {
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         }
+    }
+
+    #[test]
+    fn worktree_paths_are_confined_to_glass_worktrees() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-worktree-confine-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+
+        let relative = confined_worktree_path(&root, Path::new("feature")).unwrap();
+        assert!(relative.starts_with(root.join(".glass").join("worktrees")));
+        assert_eq!(relative.file_name().unwrap(), "feature");
+
+        let nested = confined_worktree_path(&root, Path::new("nested/leaf")).unwrap();
+        assert_eq!(nested.file_name().unwrap(), "leaf");
+        assert!(nested.starts_with(root.join(".glass").join("worktrees").join("nested")));
+
+        let allowed_abs = root.join(".glass").join("worktrees").join("abs");
+        let confined_abs = confined_worktree_path(&root, &allowed_abs).unwrap();
+        assert_eq!(confined_abs.file_name().unwrap(), "abs");
+
+        assert!(confined_worktree_path(&root, Path::new("../escape")).is_err());
+        assert!(confined_worktree_path(&root, Path::new("")).is_err());
+
+        let outside = std::env::temp_dir().join(format!(
+            "glass-worktree-outside-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let outside_child = outside.join("leaf");
+        assert!(confined_worktree_path(&root, &outside_child).is_err());
+        assert!(!outside.exists());
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

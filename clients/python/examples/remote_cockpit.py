@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import signal
+import time
 
 from glass_client import GlassClient
 
@@ -17,13 +18,21 @@ def stop(*_: object) -> None:
 signal.signal(signal.SIGINT, stop)
 glass = GlassClient(command=os.environ.get("GLASS_BINARY", "glass"))
 try:
-    project = glass.project_inspect()
-    print(glass.project_session_status(project["root"]))
-    glass.project_capsule_save(project["root"], {"mobileView": "home"})
-    glass.on_attention_required(
-        lambda item: print(f"needs you: {item['title']} — {item['detail']}"),
-        project["root"],
-        stop=lambda: stopped,
+    trust = glass.call("glass.workspace.trust.status")
+    runtime = glass.call("glass.runtime.inspect")
+    browser = glass.call("glass.browser.state")
+    project = runtime.get("project") if isinstance(runtime, dict) else {}
+    print(
+        {
+            "trust": trust.get("trust") if isinstance(trust, dict) else trust,
+            "root": project.get("root") if isinstance(project, dict) else None,
+            "browserConnected": browser.get("connected") if isinstance(browser, dict) else None,
+        }
     )
+    while not stopped:
+        print(glass.call("glass.workspace.trust.inspect"))
+        time.sleep(2)
+except KeyboardInterrupt:
+    pass
 finally:
     glass.close()

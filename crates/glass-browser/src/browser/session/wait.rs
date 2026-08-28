@@ -4,11 +4,17 @@
 //! appearance, navigation completion, or configurable timeouts.
 
 use super::*;
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
 type VerificationCheckFuture<'a> =
     Pin<Box<dyn Future<Output = BrowserResult<(bool, String)>> + 'a>>;
+
+struct VerificationBaseline {
+    target_count: usize,
+    download_sequence: u64,
+}
 
 pub(crate) fn is_ignored_network_resource_type(resource_type: Option<&str>) -> bool {
     matches!(
@@ -23,7 +29,7 @@ impl BrowserSession {
         predicate: &VerificationPredicate,
     ) -> BrowserResult<(bool, String)> {
         predicate.validate(0)?;
-        self.check_verification_predicate(predicate).await
+        self.check_verification_predicate(predicate, None).await
     }
 
     /// Evaluate a bounded, composable postcondition until it becomes true.
@@ -36,8 +42,11 @@ impl BrowserSession {
         predicate.validate(0)?;
         let started = tokio::time::Instant::now();
         let expires = started + deadline;
+        let baseline = self.verification_baseline().await;
         loop {
-            let (matched, observed) = self.check_verification_predicate(&predicate).await?;
+            let (matched, observed) = self
+                .check_verification_predicate(&predicate, Some(&baseline))
+                .await?;
             let state = bounded_diagnostic_text(&observed);
             if matched {
                 return Ok(VerificationOutcome {
@@ -64,9 +73,18 @@ impl BrowserSession {
         }
     }
 
+    async fn verification_baseline(&self) -> VerificationBaseline {
+        let topology = self.topology.lock().await;
+        VerificationBaseline {
+            target_count: topology.targets.len(),
+            download_sequence: self.download_sequence.load(Ordering::Relaxed),
+        }
+    }
+
     fn check_verification_predicate<'a>(
         &'a self,
         predicate: &'a VerificationPredicate,
+        baseline: Option<&'a VerificationBaseline>,
     ) -> VerificationCheckFuture<'a> {
         Box::pin(async move {
             match predicate {
@@ -92,7 +110,7 @@ impl BrowserSession {
                 }
                 VerificationPredicate::PopupOpened { value } => {
                     let topology = self.topology.lock().await;
-                    let opened = topology.targets.len() > 1;
+                    let opened = causal_popup_opened(topology.targets.len(), baseline);
                     Ok((opened == *value, format!("popupOpened={opened}")))
                 }
                 VerificationPredicate::DialogOpen { value } => {
@@ -101,7 +119,8 @@ impl BrowserSession {
                     Ok((open == *value, format!("dialogOpen={open}")))
                 }
                 VerificationPredicate::DownloadStarted { value } => {
-                    let started = self.download_sequence.load(Ordering::Relaxed) > 0;
+                    let sequence = self.download_sequence.load(Ordering::Relaxed);
+                    let started = causal_download_started(sequence, baseline);
                     Ok((started == *value, format!("downloadStarted={started}")))
                 }
                 VerificationPredicate::RevisionEquals { value } => {
@@ -113,7 +132,7 @@ impl BrowserSession {
                     let mut matched = true;
                     for child in all {
                         let (child_matched, state) =
-                            self.check_verification_predicate(child).await?;
+                            self.check_verification_predicate(child, baseline).await?;
                         matched &= child_matched;
                         states.push(state);
                     }
@@ -124,14 +143,14 @@ impl BrowserSession {
                     let mut matched = false;
                     for child in any {
                         let (child_matched, state) =
-                            self.check_verification_predicate(child).await?;
+                            self.check_verification_predicate(child, baseline).await?;
                         matched |= child_matched;
                         states.push(state);
                     }
                     Ok((matched, format!("any=[{}]", states.join(","))))
                 }
                 VerificationPredicate::Not { not } => {
-                    let (matched, state) = self.check_verification_predicate(not).await?;
+                    let (matched, state) = self.check_verification_predicate(not, baseline).await?;
                     Ok((!matched, format!("not({state})")))
                 }
             }
@@ -415,5 +434,48 @@ impl BrowserSession {
                 }
             }
         }
+    }
+}
+
+fn causal_popup_opened(target_count: usize, baseline: Option<&VerificationBaseline>) -> bool {
+    match baseline {
+        Some(baseline) => target_count > baseline.target_count,
+        None => target_count > 1,
+    }
+}
+
+fn causal_download_started(sequence: u64, baseline: Option<&VerificationBaseline>) -> bool {
+    match baseline {
+        Some(baseline) => sequence > baseline.download_sequence,
+        None => sequence > 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn popup_opened_is_causal_when_a_baseline_is_present() {
+        let baseline = VerificationBaseline {
+            target_count: 2,
+            download_sequence: 4,
+        };
+        assert!(!causal_popup_opened(2, Some(&baseline)));
+        assert!(causal_popup_opened(3, Some(&baseline)));
+        assert!(causal_popup_opened(2, None));
+        assert!(!causal_popup_opened(1, None));
+    }
+
+    #[test]
+    fn download_started_is_causal_when_a_baseline_is_present() {
+        let baseline = VerificationBaseline {
+            target_count: 1,
+            download_sequence: 3,
+        };
+        assert!(!causal_download_started(3, Some(&baseline)));
+        assert!(causal_download_started(4, Some(&baseline)));
+        assert!(causal_download_started(1, None));
+        assert!(!causal_download_started(0, None));
     }
 }

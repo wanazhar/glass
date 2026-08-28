@@ -4,14 +4,11 @@
 //! isolated MCP child session, so a daemon restart or client disconnect cannot
 //! silently transfer a browser session or workflow lease to another client.
 
-#[cfg(unix)]
 use crate::cli::args::Cli;
 #[cfg(unix)]
 use crate::results::ProvenanceSource;
 use crate::results::{ExperienceProvenance, RESULT_SCHEMA_VERSION};
 use crate::workspace::ResourceReference;
-#[cfg(unix)]
-use clap::Parser;
 #[cfg(unix)]
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -479,10 +476,11 @@ fn read_recovery(status_path: &Path) -> Result<Option<DaemonRecovery>, Box<dyn s
 pub async fn start(
     socket: Option<&Path>,
     status_path: Option<&Path>,
+    session_flags: &[String],
 ) -> Result<DaemonStatus, Box<dyn std::error::Error>> {
     #[cfg(not(unix))]
     {
-        let _ = (socket, status_path);
+        let _ = (socket, status_path, session_flags);
         return Err("the local daemon supports Linux and macOS only".into());
     }
     #[cfg(unix)]
@@ -526,6 +524,7 @@ pub async fn start(
         let executable = std::env::current_exe()?;
         std::process::Command::new(executable)
             .args(["daemon", "serve"])
+            .args(session_flags)
             .arg("--socket")
             .arg(socket)
             .arg("--status")
@@ -725,21 +724,29 @@ pub fn logs(status_path: Option<&Path>) -> Result<serde_json::Value, Box<dyn std
 }
 
 /// Run the foreground Unix-socket server used by `daemon start`.
-pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn serve(
+    socket: &Path,
+    status_path: &Path,
+    cli: &Cli,
+) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(unix))]
     {
-        let _ = (socket, status_path);
+        let _ = (socket, status_path, cli);
         return Err("the local daemon supports Linux and macOS only".into());
     }
     #[cfg(unix)]
     {
         let local = tokio::task::LocalSet::new();
-        local.run_until(serve_local(socket, status_path)).await
+        local.run_until(serve_local(socket, status_path, cli)).await
     }
 }
 
 #[cfg(unix)]
-async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve_local(
+    socket: &Path,
+    status_path: &Path,
+    cli: &Cli,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
     use tokio::signal::unix::{SignalKind, signal};
@@ -801,7 +808,7 @@ async fn serve_local(socket: &Path, status_path: &Path) -> Result<(), Box<dyn st
         let active = client_sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         status_state.update_client_sessions(active).await?;
         let status_state = Arc::clone(&status_state);
-        let cli = Cli::parse_from(["glass", "--mcp"]);
+        let cli = cli.mcp_cli();
         let client_number = next_owner_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let owner_id = format!("daemon-client-{client_number}");
         let lease_context = Arc::new(DaemonLeaseContext {
@@ -1185,7 +1192,7 @@ mod tests {
         };
         std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
 
-        let result = start(Some(&socket), Some(&status_path)).await;
+        let result = start(Some(&socket), Some(&status_path), &[]).await;
 
         assert!(result.is_err());
         assert!(socket.is_file());

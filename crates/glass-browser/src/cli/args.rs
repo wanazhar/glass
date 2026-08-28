@@ -169,6 +169,75 @@ pub struct Cli {
     pub command: Option<Commands>,
 }
 
+impl Cli {
+    pub(crate) fn session_cli_flags(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        push_enum_flag(&mut args, "--policy", self.policy);
+        args.push("--profile".into());
+        args.push(self.profile.clone());
+        args.push("--port".into());
+        args.push(self.port.to_string());
+        push_enum_flag(&mut args, "--interaction", self.interaction);
+        if self.yolo {
+            args.push("--yolo".into());
+        }
+        if self.incognito {
+            args.push("--incognito".into());
+        }
+        if self.headed {
+            args.push("--headed".into());
+        }
+        if self.audit {
+            args.push("--audit".into());
+        }
+        if self.experimental_extensions {
+            args.push("--experimental-extensions".into());
+        }
+        if self.trace_on_error {
+            args.push("--trace-on-error".into());
+        }
+        if let Some(path) = &self.chrome_path {
+            args.push("--chrome-path".into());
+            args.push(path.display().to_string());
+        }
+        if let Some(viewport) = &self.viewport {
+            args.push("--viewport".into());
+            args.push(viewport.clone());
+        }
+        for capability in &self.policy_allow {
+            push_enum_flag(&mut args, "--policy-allow", *capability);
+        }
+        for capability in &self.policy_confirm {
+            push_enum_flag(&mut args, "--policy-confirm", *capability);
+        }
+        for capability in &self.policy_confirm_once {
+            push_enum_flag(&mut args, "--policy-confirm-once", *capability);
+        }
+        for host in &self.policy_allow_host {
+            args.push("--policy-allow-host".into());
+            args.push(host.clone());
+        }
+        for host in &self.policy_deny_host {
+            args.push("--policy-deny-host".into());
+            args.push(host.clone());
+        }
+        args
+    }
+
+    pub(crate) fn mcp_cli(&self) -> Self {
+        let mut argv = vec!["glass".into(), "--mcp".into()];
+        argv.extend(self.session_cli_flags());
+        Self::parse_from(argv)
+    }
+}
+
+fn push_enum_flag(args: &mut Vec<String>, flag: &str, value: impl ValueEnum) {
+    if let Some(value) = value.to_possible_value() {
+        args.push(flag.into());
+        args.push(value.get_name().into());
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum McpClient {
     Generic,
@@ -1577,12 +1646,55 @@ pub enum CheckpointCommand {
 mod tests {
     use super::*;
 
+    fn flag_pair(flags: &[String], flag: &str, value: &str) -> bool {
+        flags
+            .windows(2)
+            .any(|pair| pair[0] == flag && pair[1] == value)
+    }
+
     #[test]
     fn default_invocation_is_promptless_and_commandless() {
         let cli = Cli::try_parse_from(["glass"]).unwrap();
 
         assert!(cli.prompt.is_none());
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn session_cli_flags_forward_policy_profile_and_port() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--policy",
+            "hardened",
+            "--profile",
+            "work",
+            "--port",
+            "9333",
+            "--yolo",
+            "--incognito",
+            "--policy-allow-host",
+            "example.test",
+            "daemon",
+            "start",
+        ])
+        .unwrap();
+
+        let flags = cli.session_cli_flags();
+        assert!(flag_pair(&flags, "--policy", "hardened"));
+        assert!(flag_pair(&flags, "--profile", "work"));
+        assert!(flag_pair(&flags, "--port", "9333"));
+        assert!(flags.iter().any(|flag| flag == "--yolo"));
+        assert!(flags.iter().any(|flag| flag == "--incognito"));
+        assert!(flag_pair(&flags, "--policy-allow-host", "example.test"));
+
+        let mcp = cli.mcp_cli();
+        assert!(mcp.mcp);
+        assert_eq!(mcp.policy, PolicyPreset::Hardened);
+        assert_eq!(mcp.profile, "work");
+        assert_eq!(mcp.port, 9333);
+        assert!(mcp.yolo);
+        assert!(mcp.incognito);
+        assert_eq!(mcp.policy_allow_host, vec!["example.test"]);
     }
 
     #[test]

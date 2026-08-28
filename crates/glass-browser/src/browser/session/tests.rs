@@ -2041,6 +2041,13 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
             _ => panic!("expected Fetch.enable"),
         };
         assert_eq!(enable["method"], "Fetch.enable");
+        assert_eq!(enable["params"]["patterns"][0]["urlPattern"], "*");
+        assert_eq!(enable["params"]["patterns"][0]["requestStage"], "Request");
+        assert!(
+            enable["params"]["patterns"][0]
+                .get("resourceType")
+                .is_none()
+        );
         websocket
             .send(Message::Text(
                 serde_json::json!({"id": enable["id"], "result": {}})

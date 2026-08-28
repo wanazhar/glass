@@ -135,7 +135,7 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             return Ok(());
         }
         Some(Commands::Daemon { action }) => {
-            dispatch_daemon(action).await?;
+            dispatch_daemon(&cli, action).await?;
             return Ok(());
         }
         Some(Commands::Doctor { json }) => {
@@ -317,10 +317,17 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
     close_result
 }
 
-async fn dispatch_daemon(action: &DaemonCommand) -> BrowserResult<()> {
+async fn dispatch_daemon(cli: &Cli, action: &DaemonCommand) -> BrowserResult<()> {
     match action {
         DaemonCommand::Start { socket, status } => {
-            print_json(&crate::daemon::start(socket.as_deref(), status.as_deref()).await?)?;
+            print_json(
+                &crate::daemon::start(
+                    socket.as_deref(),
+                    status.as_deref(),
+                    &cli.session_cli_flags(),
+                )
+                .await?,
+            )?;
         }
         DaemonCommand::Status { socket, status } => {
             print_json(&crate::daemon::status(
@@ -351,7 +358,7 @@ async fn dispatch_daemon(action: &DaemonCommand) -> BrowserResult<()> {
             )?)?;
         }
         DaemonCommand::Serve { socket, status } => {
-            crate::daemon::serve(socket, status).await?;
+            crate::daemon::serve(socket, status, cli).await?;
         }
     }
     Ok(())

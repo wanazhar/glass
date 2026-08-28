@@ -80,6 +80,8 @@ pub struct DisplaySnapshot {
     pub processes: String,
     pub git: String,
     pub git_entries: Vec<crate::git::GitStatusEntry>,
+    pub git_branch: String,
+    pub git_dirty: bool,
     pub github: crate::github::GitHubStatus,
     pub github_review: String,
     pub tests: String,
@@ -774,9 +776,11 @@ fn compute_snapshot(
             }
         })
         .unwrap_or_else(|error| format!("Browser state failed: {error}"));
-    let (git, git_entries) = git_projection(&mut locked);
+    let (git, git_entries, git_branch, git_dirty) = git_projection(&mut locked);
     snapshot.git = git;
     snapshot.git_entries = git_entries;
+    snapshot.git_branch = git_branch;
+    snapshot.git_dirty = git_dirty;
     snapshot.workspace_status = workspace_status_projection(&mut locked);
     snapshot.trust_label = locked.trust().label().into();
     snapshot.trust_inspection = locked.trust_inspection();
@@ -794,7 +798,7 @@ fn compute_snapshot(
 
 fn git_projection(
     workspace: &mut crate::DevelopmentWorkspace,
-) -> (String, Vec<crate::git::GitStatusEntry>) {
+) -> (String, Vec<crate::git::GitStatusEntry>, String, bool) {
     workspace
         .git()
         .map(|git| match git.status() {
@@ -829,11 +833,35 @@ fn git_projection(
                 } else {
                     format!("{header}\n{}", lines.join("\n"))
                 };
-                (text, entries)
+                (
+                    text,
+                    entries,
+                    status.branch.unwrap_or_else(|| "detached".into()),
+                    !status.conflicts.is_empty()
+                        || status.ahead > 0
+                        || status.behind > 0
+                        || status.entries.iter().any(|entry| {
+                            entry.untracked
+                                || entry.index_status != ' '
+                                || entry.worktree_status != ' '
+                        }),
+                )
             }
-            Err(error) => (format!("Git state failed: {error}"), Vec::new()),
+            Err(error) => (
+                format!("Git state failed: {error}"),
+                Vec::new(),
+                String::new(),
+                false,
+            ),
         })
-        .unwrap_or_else(|| ("Not a Git repository".into(), Vec::new()))
+        .unwrap_or_else(|| {
+            (
+                "Not a Git repository".into(),
+                Vec::new(),
+                String::new(),
+                false,
+            )
+        })
 }
 
 fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> String {

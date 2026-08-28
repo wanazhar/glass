@@ -609,6 +609,23 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         return Ok("Command palette closed".into());
     };
     match command {
+        "search" => {
+            let mut args = vec!["search"];
+            args.extend(parts);
+            execute_project(state, args)
+        }
+        "open" => match parts.next() {
+            Some(path) => state.open_path(path),
+            None => {
+                state.open_file_picker();
+                Ok("File picker opened · type to filter · Enter open".into())
+            }
+        },
+        "doctor" => execute_agent(state, {
+            let mut args = vec!["doctor"];
+            args.extend(parts);
+            args
+        }),
         "help" | "?" => {
             let project_commands = state
                 .ws()?
@@ -2727,6 +2744,27 @@ mod tests {
             .expect("fresh browser observation");
         assert_eq!(call.name, "glass.browser.observe");
         assert!(state.pending_confirmation.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_open_and_doctor_are_first_class_palette_routes() {
+        let (mut state, root) = test_state("cli-parity");
+        state.files = vec!["src/lib.rs".into()];
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn lib() {}\n").unwrap();
+
+        execute(&mut state, "open").expect("open without path opens picker");
+        assert!(state.file_picker_open);
+        state.close_file_picker();
+
+        execute(&mut state, "open src/lib.rs").expect("open PATH");
+        assert_eq!(state.focused_editor_path, "src/lib.rs");
+
+        let error = execute(&mut state, "search").expect_err("search needs a query");
+        assert!(error.contains("project search requires QUERY"));
+
+        execute(&mut state, "doctor").expect("doctor aliases agent doctor");
         let _ = fs::remove_dir_all(root);
     }
 

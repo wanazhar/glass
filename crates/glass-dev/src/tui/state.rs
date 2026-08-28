@@ -204,6 +204,15 @@ pub struct DevTuiState {
     pub composer_input: String,
     pub composer_cursor: usize,
     pub composer_steer: bool,
+    pub composer_history: Vec<String>,
+    pub composer_history_index: Option<usize>,
+    pub composer_history_draft: String,
+    pub file_picker_open: bool,
+    pub file_picker_query: String,
+    pub file_picker_cursor: usize,
+    pub file_picker_selection: usize,
+    pub git_branch: String,
+    pub git_dirty: bool,
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
@@ -396,7 +405,7 @@ impl DevTuiState {
         let initial_status = if trust_prompt {
             "Trust required · I inspect · O untrusted · 1 once · T project".to_string()
         } else if agent_readiness.starts_with("✓ Ready") {
-            "Ready · describe a coding task".to_string()
+            "Ready · Enter chat · Ctrl-P files · : commands · ? help".to_string()
         } else {
             "Pi setup required · press :actions or Enter to continue".to_string()
         };
@@ -427,6 +436,15 @@ impl DevTuiState {
             composer_input: String::new(),
             composer_cursor: 0,
             composer_steer: false,
+            composer_history: Vec::new(),
+            composer_history_index: None,
+            composer_history_draft: String::new(),
+            file_picker_open: false,
+            file_picker_query: String::new(),
+            file_picker_cursor: 0,
+            file_picker_selection: 0,
+            git_branch: String::new(),
+            git_dirty: false,
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
             selected_agent: None,
@@ -704,6 +722,7 @@ impl DevTuiState {
     }
 
     pub fn open_palette(&mut self) {
+        self.close_file_picker();
         self.command_mode = true;
         self.command_input.clear();
         self.command_cursor = 0;
@@ -712,7 +731,7 @@ impl DevTuiState {
         self.palette_scroll = 0;
         self.palette_selection = 0;
         self.status = format!(
-            "Command search · {} actions · ↑↓ select · Enter run",
+            "Command search · {} actions · ↑↓ select · Enter run · Ctrl-P files",
             self.surface.label()
         );
     }
@@ -765,8 +784,9 @@ impl DevTuiState {
 
     pub fn submit_palette(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let typed = self.command_input.trim().to_string();
-        let command = match (typed.as_str(), self.selected_palette_action()) {
-            ("a" | "actions" | "help" | "?" | "q" | "quit", _) => {
+        let typed_root = typed.split_whitespace().next().unwrap_or("");
+        let command = match (typed_root, self.selected_palette_action()) {
+            ("a" | "actions" | "help" | "?" | "q" | "quit" | "open" | "search" | "doctor", _) => {
                 self.command_mode = false;
                 self.command_input.clear();
                 self.command_cursor = 0;
@@ -1336,9 +1356,11 @@ impl DevTuiState {
     }
 
     pub fn open_composer(&mut self) {
+        self.close_file_picker();
         self.composer_mode = true;
         self.composer_cursor = self.composer_input.len();
-        self.status = "Agent composer · Enter sends · draft stays open · Esc cancels".into();
+        self.status =
+            "Agent composer · Enter sends · Shift-Enter newline · ↑ history · Esc cancel".into();
     }
     /// Move from the native editor into the shared agent conversation with
     /// the focused buffer attached as unsaved, bounded context.
@@ -1517,6 +1539,187 @@ impl DevTuiState {
         }
     }
 
+    pub fn insert_composer_newline(&mut self) {
+        self.insert_composer_text("\n");
+        self.status = "Shift-Enter newline · Enter send · ↑ history".into();
+    }
+
+    pub fn navigate_composer_history(&mut self, previous: bool) {
+        if previous && !self.composer_on_first_line() {
+            self.move_composer_line(-1);
+            return;
+        }
+        if !previous && !self.composer_on_last_line() {
+            self.move_composer_line(1);
+            return;
+        }
+        if self.composer_history.is_empty() {
+            return;
+        }
+        if previous {
+            let index = match self.composer_history_index {
+                None => {
+                    self.composer_history_draft = self.composer_input.clone();
+                    self.composer_history.len().saturating_sub(1)
+                }
+                Some(0) => 0,
+                Some(index) => index - 1,
+            };
+            self.composer_history_index = Some(index);
+            self.composer_input = self.composer_history[index].clone();
+            self.composer_cursor = self.composer_input.len();
+            return;
+        }
+        match self.composer_history_index {
+            None => {}
+            Some(index) if index + 1 < self.composer_history.len() => {
+                self.composer_history_index = Some(index + 1);
+                self.composer_input = self.composer_history[index + 1].clone();
+                self.composer_cursor = self.composer_input.len();
+            }
+            Some(_) => {
+                self.composer_history_index = None;
+                self.composer_input = std::mem::take(&mut self.composer_history_draft);
+                self.composer_cursor = self.composer_input.len();
+            }
+        }
+    }
+
+    fn composer_on_first_line(&self) -> bool {
+        !self.composer_input[..self.composer_cursor.min(self.composer_input.len())].contains('\n')
+    }
+
+    fn composer_on_last_line(&self) -> bool {
+        !self.composer_input[self.composer_cursor.min(self.composer_input.len())..].contains('\n')
+    }
+
+    fn move_composer_line(&mut self, delta: i32) {
+        let cursor = self.composer_cursor.min(self.composer_input.len());
+        if delta < 0 {
+            if let Some(offset) = self.composer_input[..cursor].rfind('\n') {
+                self.composer_cursor = offset;
+            }
+            return;
+        }
+        if let Some(relative) = self.composer_input[cursor..].find('\n') {
+            self.composer_cursor = (cursor + relative + 1).min(self.composer_input.len());
+        }
+    }
+
+    pub fn remember_composer_history(&mut self, text: &str) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if self.composer_history.last().map(String::as_str) != Some(trimmed) {
+            self.composer_history.push(text.to_string());
+            if self.composer_history.len() > 64 {
+                self.composer_history.remove(0);
+            }
+        }
+        self.composer_history_index = None;
+        self.composer_history_draft.clear();
+    }
+
+    pub fn open_file_picker(&mut self) {
+        self.command_mode = false;
+        self.file_picker_open = true;
+        self.file_picker_query.clear();
+        self.file_picker_cursor = 0;
+        self.file_picker_selection = 0;
+        self.status = if self.files.is_empty() {
+            "Open file · no files yet · wait for refresh or Esc close".into()
+        } else {
+            format!(
+                "Open file · {} paths · type to filter · Enter open · Esc close",
+                self.files.len()
+            )
+        };
+    }
+
+    pub fn close_file_picker(&mut self) {
+        if !self.file_picker_open {
+            return;
+        }
+        self.file_picker_open = false;
+        self.file_picker_query.clear();
+        self.file_picker_cursor = 0;
+        self.file_picker_selection = 0;
+        self.status = "File picker closed · Ctrl-P to reopen".into();
+    }
+
+    pub fn file_picker_matches(&self) -> Vec<usize> {
+        self.files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, path)| {
+                fuzzy_contains(path, self.file_picker_query.trim()).then_some(index)
+            })
+            .collect()
+    }
+
+    pub fn insert_file_picker_char(&mut self, character: char) {
+        if character.is_control() {
+            return;
+        }
+        self.file_picker_query
+            .insert(self.file_picker_cursor, character);
+        self.file_picker_cursor += character.len_utf8();
+        self.file_picker_selection = 0;
+    }
+
+    pub fn file_picker_backspace(&mut self) {
+        if self.file_picker_cursor == 0 {
+            return;
+        }
+        let previous = self.file_picker_query[..self.file_picker_cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        self.file_picker_query
+            .drain(previous..self.file_picker_cursor);
+        self.file_picker_cursor = previous;
+        self.file_picker_selection = 0;
+    }
+
+    pub fn move_file_picker_selection(&mut self, delta: i32) {
+        let count = self.file_picker_matches().len();
+        if count == 0 {
+            self.file_picker_selection = 0;
+            return;
+        }
+        self.file_picker_selection =
+            (self.file_picker_selection as i32 + delta).rem_euclid(count as i32) as usize;
+    }
+
+    pub fn submit_file_picker(&mut self) {
+        let matches = self.file_picker_matches();
+        let Some(&index) = matches.get(self.file_picker_selection) else {
+            self.status = "No matching file".into();
+            return;
+        };
+        self.selected_file = index;
+        self.close_file_picker();
+        self.open_selected_file_for_edit();
+    }
+
+    pub fn open_path(&mut self, path: &str) -> Result<String, String> {
+        if path.trim().is_empty() {
+            return Err("open requires PATH".into());
+        }
+        if let Some(index) = self.files.iter().position(|item| {
+            item == path || item.ends_with(path) || item.rsplit('/').next() == Some(path)
+        }) {
+            self.selected_file = index;
+        } else {
+            self.files.insert(0, path.to_string());
+            self.selected_file = 0;
+        }
+        self.open_selected_file_for_edit();
+        Ok(format!("Opened {path}"))
+    }
+
     pub fn insert_composer_text(&mut self, text: &str) {
         for character in text.chars().take(16_384) {
             self.composer_input.insert(self.composer_cursor, character);
@@ -1562,6 +1765,7 @@ impl DevTuiState {
         }
         let display_text = self.composer_input.clone();
         let text = std::mem::take(&mut self.composer_input);
+        self.remember_composer_history(&text);
         let steer = self.composer_steer;
         self.composer_cursor = 0;
         self.composer_steer = false;
@@ -2995,6 +3199,8 @@ impl DevTuiState {
         self.processes = snapshot.processes.clone();
         self.git = snapshot.git.clone();
         self.git_entries = snapshot.git_entries.clone();
+        self.git_branch = snapshot.git_branch.clone();
+        self.git_dirty = snapshot.git_dirty;
         self.github = snapshot.github.clone();
         self.github_review = snapshot.github_review.clone();
         if self.git_entries.is_empty() {
@@ -3267,6 +3473,13 @@ impl DevTuiState {
         self.git = match git_status {
             Some(Ok(status)) => {
                 self.git_entries = status.entries.clone();
+                self.git_branch = status.branch.clone().unwrap_or_else(|| "detached".into());
+                self.git_dirty = !status.conflicts.is_empty()
+                    || status.ahead > 0
+                    || status.behind > 0
+                    || status.entries.iter().any(|entry| {
+                        entry.untracked || entry.index_status != ' ' || entry.worktree_status != ' '
+                    });
                 let header = format!(
                     "branch {} · ↑{} ↓{} · upstream {}",
                     status.branch.as_deref().unwrap_or("detached"),
@@ -3299,10 +3512,14 @@ impl DevTuiState {
             }
             Some(Err(error)) => {
                 self.git_entries.clear();
+                self.git_branch.clear();
+                self.git_dirty = false;
                 format!("Git state failed: {error}")
             }
             None => {
                 self.git_entries.clear();
+                self.git_branch.clear();
+                self.git_dirty = false;
                 "Not a Git repository".into()
             }
         };
@@ -4640,6 +4857,26 @@ mod tests {
     }
 
     #[test]
+    fn typed_open_in_palette_runs_instead_of_fuzzy_action() {
+        let root = std::env::temp_dir().join(format!("glass-typed-open-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec!["src/lib.rs".into(), "Cargo.toml".into()];
+        state.open_palette();
+        state.command_input = "open".into();
+        state.command_cursor = 4;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_palette(&mut worker);
+        drop(worker);
+        assert!(
+            state.file_picker_open,
+            "typed :open must open the file picker, not a fuzzy action"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn colon_opens_palette_from_every_surface() {
         for surface in DevSurface::ALL {
             let root = std::env::temp_dir().join(format!(
@@ -4662,6 +4899,62 @@ mod tests {
             std::fs::remove_dir_all(root).expect("remove temporary workspace");
         }
     }
+
+    #[test]
+    fn file_picker_filters_and_opens_a_matching_path() {
+        let root = std::env::temp_dir().join(format!("glass-file-picker-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create temporary workspace");
+        std::fs::write(root.join("src/lib.rs"), "fn lib() {}\n").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec![
+            "src/lib.rs".into(),
+            "src/main.rs".into(),
+            "README.md".into(),
+        ];
+        state.open_file_picker();
+        assert!(state.file_picker_open);
+        for character in "main".chars() {
+            state.insert_file_picker_char(character);
+        }
+        let matches = state.file_picker_matches();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(state.files[matches[0]], "src/main.rs");
+        state.submit_file_picker();
+        assert!(!state.file_picker_open);
+        assert_eq!(state.focused_editor_path, "src/main.rs");
+        assert!(state.code_edit_mode);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_shift_enter_and_history_are_local_edits() {
+        let root =
+            std::env::temp_dir().join(format!("glass-composer-history-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.open_composer();
+        state.insert_composer_text("first");
+        state.remember_composer_history("first");
+        state.composer_input.clear();
+        state.composer_cursor = 0;
+        state.insert_composer_text("second");
+        state.navigate_composer_history(true);
+        assert_eq!(state.composer_input, "first");
+        state.navigate_composer_history(false);
+        assert_eq!(state.composer_input, "second");
+        state.insert_composer_newline();
+        assert_eq!(state.composer_input, "second\n");
+        state.navigate_composer_history(true);
+        assert!(
+            state.composer_cursor < state.composer_input.len(),
+            "Up on a wrapped draft should move to the previous line before history"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
     #[test]
     fn external_delegate_result_is_visible_in_tui_status() {
         let root =

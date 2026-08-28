@@ -486,11 +486,54 @@ pub fn run(
                             KeyCode::Esc => state.request_editor_exit(),
                             _ => state.edit_code_key(key.code, key.modifiers),
                         }
+                    } else if state.file_picker_open {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => state.close_file_picker(),
+                            (KeyCode::Char('p'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.close_file_picker();
+                            }
+                            (KeyCode::Enter, _) => state.submit_file_picker(),
+                            (KeyCode::Backspace, _) => state.file_picker_backspace(),
+                            (KeyCode::Char('u'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.file_picker_query.clear();
+                                state.file_picker_cursor = 0;
+                                state.file_picker_selection = 0;
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                                state.move_file_picker_selection(-1)
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                                state.move_file_picker_selection(1)
+                            }
+                            (KeyCode::Char(character), _) => {
+                                state.insert_file_picker_char(character)
+                            }
+                            _ => {}
+                        }
                     } else if state.composer_mode {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_composer(),
+                            (KeyCode::Enter, value) if value.contains(KeyModifiers::SHIFT) => {
+                                state.insert_composer_newline();
+                            }
                             (KeyCode::Enter, _) => state.submit_composer(&mut worker),
                             (KeyCode::Backspace, _) => state.composer_backspace(),
+                            (KeyCode::Up, _) => state.navigate_composer_history(true),
+                            (KeyCode::Down, _) => state.navigate_composer_history(false),
+                            (KeyCode::Char('p'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.navigate_composer_history(true);
+                            }
+                            (KeyCode::Char('n'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.navigate_composer_history(false);
+                            }
                             (KeyCode::Char('u'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
@@ -595,6 +638,22 @@ pub fn run(
                         }
                     } else {
                         match (key.code, key.modifiers) {
+                            (KeyCode::Char('p'), value)
+                                if value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.open_palette();
+                            }
+                            (KeyCode::Char('p'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.open_file_picker();
+                            }
+                            (KeyCode::Char('k'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.open_palette();
+                            }
                             (KeyCode::Esc, _) if state.running_tool_job.is_some() => {
                                 state.status =
                                     "Background operation is bounded · Ctrl-C opens quit confirmation"

@@ -104,6 +104,40 @@ fn status_glyph(state: &DevTuiState) -> (&'static str, Color) {
     }
 }
 
+fn header_height() -> u16 {
+    2
+}
+
+fn composer_visible_lines(state: &DevTuiState) -> u16 {
+    if !state.composer_mode {
+        return 0;
+    }
+    let lines = state.composer_input.split('\n').count().max(1);
+    (lines as u16).clamp(1, 6)
+}
+
+fn footer_height(state: &DevTuiState) -> u16 {
+    if state.composer_mode {
+        // Top border + draft lines + status.
+        composer_visible_lines(state).saturating_add(2)
+    } else if state.command_mode || state.file_picker_open {
+        3
+    } else {
+        2
+    }
+}
+
+fn git_header_label(state: &DevTuiState) -> Option<String> {
+    if state.git_branch.is_empty() {
+        return None;
+    }
+    Some(if state.git_dirty {
+        format!("{}*", state.git_branch)
+    } else {
+        state.git_branch.clone()
+    })
+}
+
 fn status_line(state: &DevTuiState, width: u16) -> Line<'static> {
     let (glyph, color) = status_glyph(state);
     Line::from(vec![
@@ -140,9 +174,9 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+                    Constraint::Length(header_height()),
                     Constraint::Min(8),
-                    Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+                    Constraint::Length(footer_height(state)),
                 ])
                 .split(area);
             Layout::default()
@@ -158,9 +192,9 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+                    Constraint::Length(header_height()),
                     Constraint::Min(8),
-                    Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+                    Constraint::Length(footer_height(state)),
                 ])
                 .split(area);
             Layout::default()
@@ -168,21 +202,14 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
                 .constraints([Constraint::Length(22), Constraint::Min(36)])
                 .split(rows[1])[1]
         }
-        ResponsiveClass::Phone => {
-            let footer_height = if state.composer_mode || state.command_mode {
-                3
-            } else {
-                2
-            };
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(2),
-                    Constraint::Min(5),
-                    Constraint::Length(footer_height),
-                ])
-                .split(area)[1]
-        }
+        ResponsiveClass::Phone => Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(header_height()),
+                Constraint::Min(5),
+                Constraint::Length(footer_height(state)),
+            ])
+            .split(area)[1],
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -230,6 +257,9 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     }
     if state.command_mode {
         render_command_palette(frame, state, area);
+    }
+    if state.file_picker_open {
+        render_file_picker(frame, state, area);
     }
 }
 fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -479,6 +509,83 @@ fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
+fn render_file_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4).min(104);
+    let height = area.height.saturating_sub(6).max(5).min(area.height);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + 1,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(" OPEN FILE · Ctrl-P · type to filter · Enter open · Esc close ")
+        .title_style(
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(modal);
+    let matches = state.file_picker_matches();
+    let mut lines = vec![palette_fixed_line(
+        if state.file_picker_query.is_empty() {
+            format!("FILTER · {} files", state.files.len())
+        } else {
+            format!(
+                "FILTER · {}/{}  {}",
+                matches.len(),
+                state.files.len(),
+                state.file_picker_query
+            )
+        },
+        inner.width,
+        Style::default()
+            .fg(ACCENT_BRIGHT)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if matches.is_empty() {
+        lines.push(palette_fixed_line(
+            "No matching files",
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    } else {
+        let visible = inner.height.saturating_sub(1) as usize;
+        let start = state
+            .file_picker_selection
+            .saturating_sub(visible.saturating_sub(1));
+        for (offset, index) in matches.into_iter().enumerate().skip(start).take(visible) {
+            let selected = offset == state.file_picker_selection;
+            let path = state.files.get(index).map(String::as_str).unwrap_or("");
+            let marker = if selected { "▸ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .bg(ACTIVE_BACKGROUND)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT).bg(PANEL_BACKGROUND)
+            };
+            lines.push(Line::from(Span::styled(
+                palette_row_text(&format!("{marker}{path}"), inner.width),
+                style,
+            )));
+        }
+    }
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+            .block(block),
+        modal,
+    );
+}
+
 fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let width = area.width.saturating_sub(4).min(104);
     let height = area.height.saturating_sub(6).max(5).min(area.height);
@@ -719,10 +826,43 @@ fn palette_action_hint(command: &str) -> String {
     hint
 }
 
+fn help_content(surface: DevSurface) -> String {
+    let global = "KEYS\n  Ctrl-P   open file\n  Ctrl-K   command palette\n  :        command palette\n  Ctrl-Shift-P  command palette\n  Tab      next surface\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Esc      back\n  ?        help\n  Ctrl-C   quit confirmation";
+    let current = match surface {
+        DevSurface::Agent | DevSurface::Trust => {
+            "AGENT\n  Enter    start or continue a conversation\n  Shift-Enter  newline in composer\n  ↑        previous prompt\n  Ctrl-D   steer the active turn\n  Ctrl-X   abort the selected agent\n  :agent setup / doctor / new\n  :review  review current changes\n  :harness list / start NAME"
+        }
+        DevSurface::Code => {
+            "CODE\n  Ctrl-P   fuzzy-open a file\n  ↑/↓      select a file\n  Enter    open full-screen editor\n  i        edit the focused buffer\n  [ / ]    cycle buffers\n  Ctrl-S   save · Ctrl-Z/Y undo/redo\n  Alt-A    ask Pi with this buffer\n  :open PATH · :project search QUERY"
+        }
+        DevSurface::App => {
+            "APP\n  :browser start / navigate URL / observe\n  T        target picker\n  Enter    activate selected entity\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n  :browser view  toggle live view"
+        }
+        DevSurface::Terminal => {
+            "TERMINAL\n  s        start the detected suite\n  a        surface actions\n  :process start NAME COMMAND\n  :process logs / stop / ports"
+        }
+        DevSurface::Git => {
+            "GIT\n  ↑/↓      changed file\n  Enter/d  diff\n  :git status / stage / commit\n  :github review / ship"
+        }
+        DevSurface::Tasks => {
+            "TASKS\n  a        surface actions\n  :task list / create TITLE PROMPT\n  :test discover / run"
+        }
+        DevSurface::Debug => {
+            "DEBUG\n  :debug processes / threads\n  :test results\n  a        surface actions"
+        }
+        DevSurface::More => {
+            "MORE\n  :workspace status · :doctor\n  :replay list · :memory status\n  :cockpit start · :experiment list"
+        }
+    };
+    format!(
+        "{global}\n\n{current}\n\nEVERY SURFACE\n  :actions  guided launchers for this surface\n  :help     command groups\n  :open     file picker or PATH\n\nOTHER\n  AGENT · CODE · APP · TERMINAL · TASKS · GIT · DEBUG · MORE"
+    )
+}
+
 fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let content = "KEYS\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Tab      next surface\n  Esc      back\n  ?        help\n  :        command palette\n  Ctrl-C   quit confirmation\n\nWORKSPACE\n  Enter    describe a task\n  :actions workspace actions\n  :agent setup\n           install the managed Pi runtime\n  :agent setup login\n           authenticate a Pi provider\n\nAGENT\n  Enter    start or continue a conversation\n  :agent new\n           start a separate conversation\n  :review  review current changes\n  :harness list\n           list installed harnesses\n  :harness start NAME\n           launch a harness in this terminal\n\nAPP (OPTIONAL)\n  :browser start\n  :browser navigate URL\n  :browser type TARGET TEXT\n  :browser targets\n           inspect and select browser pages\n  :browser human / release\n           take or return browser control\n  :browser view\n           toggle live view\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n\nEDITOR\n  ↑/↓      select a file\n  Enter    open selected file full-screen\n  i        edit the focused buffer\n  Esc      exit editor · prompts before leaving\n  Shift+arrows select text\n  Ctrl-S   save\n  Ctrl-Z/Y undo / redo\n  Alt-A    ask Pi with the focused buffer\n  Unsaved: S save · D discard · Q discard and quit\n\nGIT\n  ↑/↓      changed file\n  Enter    diff\n  Esc      close\n\nCOMMAND PALETTE\n  :        open the full command and shortcut list\n  ↑/↓      browse the list\n  Ctrl-P/N previous / next command history\n  Ctrl-U   clear the command\n  Tab      complete the first matching route\n  Enter    run the command";
+    let content = help_content(state.surface);
     frame.render_widget(
-        Paragraph::new(panel_text(content))
+        Paragraph::new(panel_text(&content))
             .style(Style::default().fg(TEXT))
             .scroll((state.help_scroll, 0))
             .block(
@@ -747,9 +887,9 @@ fn render_desktop(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+            Constraint::Length(header_height()),
             Constraint::Min(8),
-            Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+            Constraint::Length(footer_height(state)),
         ])
         .split(area);
     render_header(frame, state, rows[0], "desktop");
@@ -771,9 +911,9 @@ fn render_compact(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+            Constraint::Length(header_height()),
             Constraint::Min(8),
-            Constraint::Length(if state.composer_mode { 3 } else { 2 }),
+            Constraint::Length(footer_height(state)),
         ])
         .split(area);
     render_header(frame, state, rows[0], "compact");
@@ -786,31 +926,30 @@ fn render_compact(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     render_status(frame, state, rows[2]);
 }
 fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let footer_height = if state.composer_mode || state.command_mode {
-        3
-    } else {
-        2
-    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(header_height()),
             Constraint::Min(5),
-            Constraint::Length(footer_height),
+            Constraint::Length(footer_height(state)),
         ])
         .split(area);
     render_header(frame, state, rows[0], "phone cockpit");
     render_surface(frame, state, rows[1]);
     let footer_lines = if state.composer_mode {
+        let mut lines = composer_input_lines(state, rows[2].width.saturating_sub(6));
+        lines.push(status_line(state, rows[2].width.saturating_sub(2)));
+        lines
+    } else if state.file_picker_open {
         vec![
             Line::from(input_spans(
-                " > ",
+                " file: ",
                 Style::default()
                     .fg(ACCENT_BRIGHT)
                     .add_modifier(Modifier::BOLD),
-                &state.composer_input,
-                state.composer_cursor,
-                rows[2].width.saturating_sub(6),
+                &state.file_picker_query,
+                state.file_picker_cursor,
+                rows[2].width.saturating_sub(8),
             )),
             status_line(state, rows[2].width.saturating_sub(2)),
         ]
@@ -872,6 +1011,7 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
     } else {
         "guarded"
     };
+    let git = git_header_label(state);
     let trust = Span::styled(
         format!("{} · {mode_label} ", state.snapshot_trust_label),
         Style::default().fg(
@@ -883,28 +1023,34 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
         ),
     );
     let path = Span::styled(
-        compact_path(&state.snapshot_root, area.width.saturating_sub(24)),
+        compact_path(&state.snapshot_root, area.width.saturating_sub(32)),
         Style::default().fg(MUTED),
     );
+    let git_span = git.map(|branch| {
+        Span::styled(
+            format!("{branch} · "),
+            Style::default().fg(if state.git_dirty { WARNING } else { SUCCESS }),
+        )
+    });
+    let mut meta = vec![Span::raw(" ")];
+    if let Some(git_span) = git_span.clone() {
+        meta.push(git_span);
+    }
+    meta.push(path.clone());
+    meta.push(Span::styled(" · ", Style::default().fg(PANEL_BORDER)));
+    meta.push(trust.clone());
     let lines = if area.width < 104 {
-        vec![
-            Line::from(vec![brand.clone(), surface]),
-            Line::from(vec![
-                Span::raw(" "),
-                path,
-                Span::styled(" · ", Style::default().fg(PANEL_BORDER)),
-                trust,
-            ]),
-        ]
+        vec![Line::from(vec![brand.clone(), surface]), Line::from(meta)]
     } else {
-        vec![Line::from(vec![
-            brand,
-            Span::raw("  "),
-            surface,
-            path,
-            Span::styled(" · ", Style::default().fg(PANEL_BORDER)),
-            trust,
-        ])]
+        let mut line = vec![brand, Span::raw("  "), surface];
+        if let Some(git_span) = git_span {
+            line.push(Span::raw(" "));
+            line.push(git_span);
+        }
+        line.push(path);
+        line.push(Span::styled(" · ", Style::default().fg(PANEL_BORDER)));
+        line.push(trust);
+        vec![Line::from(line)]
     };
 
     frame.render_widget(
@@ -2789,28 +2935,81 @@ fn status_style(state: &DevTuiState) -> Style {
     }
 }
 
+fn composer_input_lines(state: &DevTuiState, width: u16) -> Vec<Line<'static>> {
+    let prefix_style = Style::default()
+        .fg(ACCENT_BRIGHT)
+        .add_modifier(Modifier::BOLD);
+    let input = &state.composer_input;
+    let cursor = state.composer_cursor.min(input.len());
+    let mut start = 0;
+    let mut lines = Vec::new();
+    let mut cursor_line = 0;
+    let mut cursor_column = cursor;
+    for (index, part) in input.split('\n').enumerate() {
+        let end = start + part.len();
+        if cursor >= start && cursor <= end {
+            cursor_line = index;
+            cursor_column = cursor - start;
+        }
+        start = end + 1;
+        lines.push(part);
+    }
+    if lines.is_empty() {
+        lines.push("");
+    }
+    let visible = composer_visible_lines(state) as usize;
+    let window_start = cursor_line.saturating_sub(visible.saturating_sub(1));
+    lines
+        .into_iter()
+        .enumerate()
+        .skip(window_start)
+        .take(visible)
+        .map(|(index, part)| {
+            let prefix = if index == window_start { "> " } else { "  " };
+            if index == cursor_line {
+                Line::from(input_spans(
+                    prefix,
+                    prefix_style,
+                    part,
+                    cursor_column,
+                    width,
+                ))
+            } else {
+                Line::from(vec![
+                    Span::styled(prefix.to_string(), prefix_style),
+                    Span::styled(part.to_string(), Style::default().fg(TEXT)),
+                ])
+            }
+        })
+        .collect()
+}
+
 fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let (glyph, glyph_color) = status_glyph(state);
     let lines = if state.composer_mode {
+        let mut lines = composer_input_lines(state, area.width.saturating_sub(5));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {glyph} "),
+                Style::default()
+                    .fg(glyph_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(state.status.clone(), status_style(state)),
+        ]));
+        lines
+    } else if state.file_picker_open {
         vec![
             Line::from(input_spans(
-                "> ",
+                " file: ",
                 Style::default()
                     .fg(ACCENT_BRIGHT)
                     .add_modifier(Modifier::BOLD),
-                &state.composer_input,
-                state.composer_cursor,
-                area.width.saturating_sub(5),
+                &state.file_picker_query,
+                state.file_picker_cursor,
+                area.width.saturating_sub(8),
             )),
-            Line::from(vec![
-                Span::styled(
-                    format!(" {glyph} "),
-                    Style::default()
-                        .fg(glyph_color)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(state.status.clone(), status_style(state)),
-            ]),
+            status_line(state, area.width.saturating_sub(2)),
         ]
     } else if state.command_mode {
         let (prefix, input, cursor, hint) = match navigation_value(state) {
@@ -3020,6 +3219,38 @@ mod tests {
         assert!(output.contains("SETUP"));
         assert!(output.contains("Press :actions"));
         assert!(output.contains("Enter to install"));
+    }
+
+    #[test]
+    fn header_shows_dirty_git_branch_and_help_is_surface_local() {
+        let mut state = state(TuiLayout::Desktop);
+        state.git_branch = "main".into();
+        state.git_dirty = true;
+        let output = rendered(&state, 120, 32);
+        assert!(output.contains("main*"));
+        assert!(output.contains("GLASS DEV"));
+
+        state.help_open = true;
+        state.surface = DevSurface::Code;
+        let help = rendered(&state, 100, 28);
+        assert!(help.contains("Ctrl-P"));
+        assert!(help.contains("CODE"));
+        assert!(help.contains("fuzzy-open a file"));
+        assert!(!help.contains("Alt-←/→"));
+    }
+
+    #[test]
+    fn file_picker_overlay_lists_filtered_paths() {
+        let mut state = state(TuiLayout::Desktop);
+        state.files = vec!["src/lib.rs".into(), "src/main.rs".into()];
+        state.open_file_picker();
+        state.insert_file_picker_char('l');
+        state.insert_file_picker_char('i');
+        state.insert_file_picker_char('b');
+        let output = rendered(&state, 100, 28);
+        assert!(output.contains("OPEN FILE"));
+        assert!(output.contains("src/lib.rs"));
+        assert!(!output.contains("src/main.rs"));
     }
 
     #[test]

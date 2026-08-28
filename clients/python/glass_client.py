@@ -524,6 +524,26 @@ class GlassClient:
         if self._lease_token is not None:
             call_arguments.setdefault("leaseToken", self._lease_token)
         result = self._request("tools/call", {"name": name, "arguments": call_arguments})
+        if isinstance(result, dict) and result.get("isError") is True:
+            text = next(
+                (
+                    part.get("text")
+                    for part in result.get("content", [])
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                ),
+                "Glass tool failed",
+            )
+            raise GlassError.from_error(
+                {
+                    "code": "tool.error",
+                    "message": text,
+                    "data": {
+                        "code": "tool.error",
+                        "message": text,
+                        "details": result,
+                    },
+                }
+            )
         for part in result.get("content", []) if isinstance(result, dict) else []:
             text = part.get("text") if isinstance(part, dict) else None
             if isinstance(text, str):
@@ -1084,7 +1104,7 @@ class GlassClient:
         return self.call("exportCheckpoint")
 
     def import_checkpoint(self, checkpoint: dict[str, Any]) -> Any:
-        return self.call("importCheckpoint", checkpoint)
+        return self.call("importCheckpoint", {"checkpoint": checkpoint})
 
     def evaluate(self, expression: str) -> Any:
         return self.call("evaluate", {"expression": expression})
@@ -1160,7 +1180,11 @@ class GlassClient:
         if self._process is not None:
             if self._process.poll() is None:
                 self._process.terminate()
-                self._process.wait(timeout=5)
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait(timeout=5)
         else:
             self._stdin.close()
             self._stdout.close()
@@ -1191,13 +1215,30 @@ class GlassClient:
         if len(first) > self._max_frame_bytes:
             raise GlassError("MCP frame exceeds client limit")
         if first.lower().startswith(b"content-length:"):
-            headers = first + self._stdout.readline(8192)
+            headers = first
             while not headers.endswith(b"\r\n\r\n"):
-                headers += self._stdout.readline(8192)
-            length = next((int(line.split(b":", 1)[1]) for line in headers.splitlines() if line.lower().startswith(b"content-length:")), -1)
+                line = self._stdout.readline(8192)
+                if not line:
+                    raise GlassError("Glass exited before completing an MCP header")
+                if len(headers) + len(line) > self._max_frame_bytes:
+                    raise GlassError("MCP frame exceeds client limit")
+                headers += line
+            try:
+                length = next(
+                    (
+                        int(line.split(b":", 1)[1])
+                        for line in headers.splitlines()
+                        if line.lower().startswith(b"content-length:")
+                    ),
+                    -1,
+                )
+            except (ValueError, IndexError) as error:
+                raise GlassError("invalid MCP Content-Length") from error
             if length < 0 or length > self._max_frame_bytes:
                 raise GlassError("invalid MCP Content-Length")
             body = self._stdout.read(length)
+            if len(body) != length:
+                raise GlassError("Glass exited before completing an MCP body")
         else:
             body = first.strip()
         try:

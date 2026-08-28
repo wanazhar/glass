@@ -203,8 +203,18 @@ impl BrowserSession {
     /// Resolves the target, moves the pointer to the element's center using the
     /// configured interaction mode, then returns an [`ActionOutcome`].
     pub async fn hover(&self, target: &str) -> BrowserResult<ActionOutcome> {
+        self.hover_with_revision(target, None).await
+    }
+
+    /// Hover while enforcing an optional observation revision.
+    pub async fn hover_with_revision(
+        &self,
+        target: &str,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
         self.cdp
             .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
                 let element = self.resolve_element(target).await?;
                 let object_id = self
                     .cdp

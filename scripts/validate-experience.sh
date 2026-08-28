@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Browser-free command discoverability and contract smoke checks. This script
 # intentionally makes no real-browser performance or parity claim.
-bin="${GLASS_BIN:-cargo run --quiet --}"
+bin="${GLASS_BIN:-cargo run -p glass-dev --quiet --}"
 read -r -a cmd <<< "$bin"
 "${cmd[@]}" --help >/dev/null
 "${cmd[@]}" workspace --help >/dev/null

@@ -3,7 +3,7 @@ use super::{
     ProcessManager, Timeline,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{collections::BTreeMap, path::Path};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -30,9 +30,14 @@ pub fn build_diff(
     graph: &DevelopmentGraph,
     processes: &mut ProcessManager,
 ) -> DevelopmentResult<ProjectDiff> {
-    let output = Command::new("git")
-        .args(["status", "--short", "--untracked-files=all"])
-        .current_dir(root)
+    let output = crate::git::git_command(root)
+        .args([
+            "-c",
+            "alias.status=",
+            "status",
+            "--short",
+            "--untracked-files=all",
+        ])
         .output()
         .map_err(DevelopmentError::Io)?;
     let mut files = Vec::new();

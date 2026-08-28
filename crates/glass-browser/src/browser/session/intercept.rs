@@ -51,16 +51,11 @@ impl InterceptGuard {
         let session_id = cdp
             .current_session_id()
             .ok_or("intercept requires an active page session")?;
-        let resource_type = pattern.resource_type.as_deref().unwrap_or("*");
         cdp.send_to_session(
             &session_id,
             "Fetch.enable",
             Some(serde_json::json!({
-                "patterns": [{
-                    "urlPattern": pattern.url_pattern,
-                    "resourceType": resource_type,
-                    "requestStage": pattern.request_stage
-                }]
+                "patterns": [fetch_request_pattern(pattern)]
             })),
         )
         .await?;
@@ -90,6 +85,17 @@ impl Drop for InterceptGuard {
     }
 }
 
+fn fetch_request_pattern(pattern: &RequestPattern) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "urlPattern": pattern.url_pattern,
+        "requestStage": pattern.request_stage
+    });
+    if let Some(resource_type) = &pattern.resource_type {
+        value["resourceType"] = serde_json::Value::String(resource_type.clone());
+    }
+    value
+}
+
 impl BrowserSession {
     /// Enable CDP Fetch domain interception for the active page session.
     ///
@@ -116,6 +122,21 @@ mod tests {
         assert_eq!(pattern.url_pattern, "*");
         assert_eq!(pattern.request_stage, "Request");
         assert!(pattern.resource_type.is_none());
+        let payload = fetch_request_pattern(&pattern);
+        assert_eq!(payload["urlPattern"], "*");
+        assert_eq!(payload["requestStage"], "Request");
+        assert!(payload.get("resourceType").is_none());
+    }
+
+    #[test]
+    fn fetch_pattern_includes_explicit_resource_type() {
+        let payload = fetch_request_pattern(&RequestPattern {
+            url_pattern: "https://example.test/*".into(),
+            resource_type: Some("XHR".into()),
+            request_stage: "Response".into(),
+        });
+        assert_eq!(payload["resourceType"], "XHR");
+        assert_eq!(payload["requestStage"], "Response");
     }
 
     #[test]

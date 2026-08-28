@@ -949,6 +949,9 @@ fn locators_parse_explicit_strategies_without_role_only_fallbacks() {
     assert!(Locator::parse("role=button").is_err());
     assert!(Locator::parse("ordinal=0").is_err());
     assert!(Locator::parse("css=").is_err());
+    assert!(Locator::parse("").is_err());
+    assert!(Locator::parse("   ").is_err());
+    assert!(Locator::parse("\"\"").is_err());
 }
 
 #[test]
@@ -998,6 +1001,10 @@ fn wait_conditions_parse_typed_forms_and_reject_unbounded_values() {
     assert_eq!(
         WaitCondition::parse("network-quiet=250").unwrap(),
         WaitCondition::NetworkQuiet(Duration::from_millis(250))
+    );
+    assert_eq!(
+        WaitCondition::parse("js=document.readyState==='complete'").unwrap(),
+        WaitCondition::JavaScript("document.readyState==='complete'".to_string())
     );
     assert!(WaitCondition::parse("network-quiet=0").is_err());
     assert!(WaitCondition::parse(&format!("text={}", "x".repeat(4096))).is_err());

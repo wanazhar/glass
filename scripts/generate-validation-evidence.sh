@@ -32,10 +32,14 @@ if ! cargo build --package glass-dev --release --locked >/dev/null; then build_s
 package_status=passed
 if ! cargo package --package glass-browser --locked --allow-dirty --no-verify >/dev/null || \
    ! cargo package --package glass-dev --locked --allow-dirty --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"' >/dev/null; then package_status=failed; fi
-deny_status=failed
-if command -v cargo-deny >/dev/null 2>&1 && cargo deny check >/dev/null; then deny_status=passed; fi
-audit_status=failed
-if command -v cargo-audit >/dev/null 2>&1 && cargo audit >/dev/null; then audit_status=passed; fi
+deny_status=skipped
+if command -v cargo-deny >/dev/null 2>&1; then
+  if cargo deny check >/dev/null; then deny_status=passed; else deny_status=failed; fi
+fi
+audit_status=skipped
+if command -v cargo-audit >/dev/null 2>&1; then
+  if cargo audit >/dev/null; then audit_status=passed; else audit_status=failed; fi
+fi
 fuzz_status=passed
 if ! cargo fetch --manifest-path fuzz/Cargo.toml --locked >/dev/null || \
    ! cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets >/dev/null; then
@@ -73,7 +77,22 @@ release_statuses = {
     "audit": audit,
     "fuzz-check": fuzz,
 }
-release_passed = all(status == "passed" for status in release_statuses.values())
+required_ids = (
+    "fmt",
+    "test",
+    "clippy",
+    "docs",
+    "documentation-coverage",
+    "documentation-depth",
+    "build",
+    "package",
+    "fuzz-check",
+)
+release_passed = all(
+    release_statuses[check_id] == "passed" for check_id in required_ids
+) and all(
+    release_statuses[check_id] != "failed" for check_id in ("deny", "audit")
+)
 local_passed = tests == fmt == clippy == "passed"
 producer = {
     "name": "glass-local-validation",
@@ -99,10 +118,9 @@ check_commands = {
     "audit": "cargo audit",
     "fuzz-check": "cargo fetch --manifest-path fuzz/Cargo.toml --locked && cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets",
 }
-passed_checks = [
-    {"id": check_id, "status": "passed", "raw_report": check_commands[check_id]}
+checks = [
+    {"id": check_id, "status": status, "raw_report": check_commands[check_id]}
     for check_id, status in release_statuses.items()
-    if status == "passed"
 ]
 metrics = json.loads(os.environ.get("GLASS_RATIFIED_METRICS", "{}"))
 raw_reports = json.loads(os.environ.get("GLASS_RATIFIED_RAW_REPORTS", "{}"))
@@ -146,7 +164,8 @@ reports = {
     "release-validation.json": {
         **base,
         "type": "release_validation",
-        "checks": passed_checks,
+        "passed": release_passed,
+        "checks": checks,
     },
     "platform-matrix.json": {
         **base,
@@ -157,4 +176,6 @@ reports = {
 for name, report in reports.items():
     pathlib.Path(out, name).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 print(json.dumps({"output": out, "revision": revision, "release_checks_passed": release_passed}, indent=2))
+if not release_passed:
+    sys.exit(1)
 PY

@@ -595,7 +595,15 @@ export class GlassClient {
   async call<T = ToolCallResult>(name: string, args: Record<string, unknown> = {}): Promise<T> {
     await this.initialize();
     const callArgs = { ...args, ...(this.leaseToken === undefined ? {} : { leaseToken: this.leaseToken }) };
-    const response = await this.request("tools/call", { name, arguments: callArgs }) as { content?: Array<{ text?: string }> };
+    const response = await this.request("tools/call", { name, arguments: callArgs }) as ToolCallResult;
+    if (response.isError) {
+      const text = response.content?.find((part) => typeof part.text === "string")?.text ?? "Glass tool failed";
+      throw GlassStructuredError.fromMcp({
+        code: -32000,
+        message: text,
+        data: { message: text, details: response },
+      });
+    }
     const text = response.content?.find((part) => typeof part.text === "string")?.text;
     if (text) {
       try { return JSON.parse(text) as T; } catch { /* plain text is still a valid MCP result */ }
@@ -1009,7 +1017,7 @@ export class GlassClient {
     return this.call<T>("exportCheckpoint");
   }
   importCheckpoint<T = Record<string, unknown>>(checkpoint: Record<string, unknown>): Promise<T> {
-    return this.call<T>("importCheckpoint", checkpoint);
+    return this.call<T>("importCheckpoint", { checkpoint });
   }
   evaluate<T = unknown>(expression: string): Promise<T> {
     return this.call<T>("evaluate", { expression });
@@ -1101,7 +1109,12 @@ export class GlassClient {
 
   private consume(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
-    if (this.buffer.length > this.maxFrameBytes) { this.rejectAll(new Error("MCP frame exceeds client limit")); return; }
+    if (this.buffer.length > this.maxFrameBytes) {
+      this.buffer = Buffer.alloc(0);
+      this.rejectAll(new Error("MCP frame exceeds client limit"));
+      this.close();
+      return;
+    }
     while (this.buffer.length) {
       let body: Buffer | undefined;
       if (this.buffer.subarray(0, 15).toString("ascii").toLowerCase().startsWith("content-length:")) {

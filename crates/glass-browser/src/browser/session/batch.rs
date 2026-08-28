@@ -141,6 +141,16 @@ async fn check_batch_step_policy(
         BatchStep::Screenshot => session
             .policy
             .require_for_batch(PolicyCapability::Screenshot),
+        BatchStep::Wait { condition, .. } => {
+            if matches!(
+                WaitCondition::parse(condition),
+                Ok(WaitCondition::JavaScript(_))
+            ) {
+                session.policy.require_for_batch(PolicyCapability::Evaluate)
+            } else {
+                Ok(())
+            }
+        }
         _ => Ok(()),
     }
 }

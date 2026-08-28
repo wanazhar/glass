@@ -125,9 +125,12 @@ impl GitService {
             DEFAULT_GIT_TIMEOUT,
             "discover repository",
         )?;
-        let root = PathBuf::from(probe.stdout.trim()).canonicalize()?;
+        let toplevel = PathBuf::from(probe.stdout.trim());
+        if toplevel.as_os_str().is_empty() || toplevel.canonicalize().is_err() {
+            return Err(GitError::NotRepository(path));
+        }
         Ok(Self {
-            root,
+            root: path,
             timeout: DEFAULT_GIT_TIMEOUT,
         })
     }
@@ -152,7 +155,7 @@ impl GitService {
     }
 
     pub fn diff(&self, staged: bool, path: Option<&str>) -> GitResult<String> {
-        let mut arguments = vec!["diff", "--no-ext-diff", "--binary"];
+        let mut arguments = vec!["diff", "--no-ext-diff", "--no-textconv", "--binary"];
         if staged {
             arguments.push("--cached");
         }
@@ -408,17 +411,58 @@ impl GitService {
     }
 }
 
+pub(crate) fn git_command(root: &Path) -> Command {
+    let mut command = Command::new("git");
+    apply_untrusted_git_isolation(&mut command);
+    command.current_dir(root);
+    command
+}
+
+fn apply_untrusted_git_isolation(command: &mut Command) {
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", git_null_device());
+}
+
+fn git_null_device() -> &'static str {
+    if cfg!(windows) { "NUL" } else { "/dev/null" }
+}
+
+fn git_safety_overrides(verb: &str) -> Vec<String> {
+    vec![
+        "-c".into(),
+        format!("alias.{verb}="),
+        "-c".into(),
+        format!("core.hooksPath={}", git_null_device()),
+        "-c".into(),
+        "core.fsmonitor=".into(),
+        "-c".into(),
+        "core.fsmonitorHookVersion=".into(),
+        "-c".into(),
+        "diff.external=".into(),
+        "-c".into(),
+        "filter.lfs.smudge=".into(),
+        "-c".into(),
+        "filter.lfs.process=".into(),
+        "-c".into(),
+        "filter.lfs.required=false".into(),
+    ]
+}
+
 fn run_git_at(
     root: &Path,
     arguments: &[&str],
     timeout: Duration,
     operation: &str,
 ) -> GitResult<GitCommandResult> {
-    let mut child = Command::new("git")
+    let mut command = git_command(root);
+    if let Some(verb) = arguments.first() {
+        command.args(git_safety_overrides(verb));
+    }
+    let mut child = command
         .args(arguments)
-        .current_dir(root)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_PAGER", "cat")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -534,7 +578,7 @@ fn parse_status(output: &str) -> GitResult<GitStatus> {
                 worktree_status: '?',
                 untracked: true,
             });
-        } else if record.starts_with("1 ") || record.starts_with("u ") {
+        } else if record.starts_with("1 ") {
             let fields = record.splitn(9, ' ').collect::<Vec<_>>();
             if fields.len() < 9 {
                 return Err(GitError::Command {
@@ -543,17 +587,31 @@ fn parse_status(output: &str) -> GitResult<GitStatus> {
                 });
             }
             let xy = fields[1].as_bytes();
-            let entry = GitStatusEntry {
+            status.entries.push(GitStatusEntry {
                 path: fields[8].to_string(),
                 original_path: None,
                 index_status: xy.first().copied().unwrap_or(b'.') as char,
                 worktree_status: xy.get(1).copied().unwrap_or(b'.') as char,
                 untracked: false,
-            };
-            if record.starts_with("u ") {
-                status.conflicts.push(entry.path.clone());
+            });
+        } else if record.starts_with("u ") {
+            let fields = record.splitn(11, ' ').collect::<Vec<_>>();
+            if fields.len() < 11 {
+                return Err(GitError::Command {
+                    operation: "parse status".into(),
+                    detail: "Git returned a malformed unmerged status record".into(),
+                });
             }
-            status.entries.push(entry);
+            let xy = fields[1].as_bytes();
+            let path = fields[10].to_string();
+            status.conflicts.push(path.clone());
+            status.entries.push(GitStatusEntry {
+                path,
+                original_path: None,
+                index_status: xy.first().copied().unwrap_or(b'.') as char,
+                worktree_status: xy.get(1).copied().unwrap_or(b'.') as char,
+                untracked: false,
+            });
         } else if record.starts_with("2 ") {
             let fields = record.splitn(10, ' ').collect::<Vec<_>>();
             if fields.len() < 10 || index >= records.len() {
@@ -816,5 +874,59 @@ mod tests {
         assert_eq!((parsed.ahead, parsed.behind), (2, 1));
         assert_eq!(parsed.entries.len(), 2);
         assert_eq!(parsed.entries[1].original_path.as_deref(), Some("old.txt"));
+    }
+
+    #[test]
+    fn status_parser_keeps_unmerged_conflict_paths() {
+        let parsed = parse_status(concat!(
+            "# branch.head main\0",
+            "u UU N... 100644 100644 100644 100644 a b c conflicted.txt\0",
+        ))
+        .unwrap();
+        assert_eq!(parsed.conflicts, vec!["conflicted.txt"]);
+        assert_eq!(parsed.entries[0].path, "conflicted.txt");
+        assert_eq!(parsed.entries[0].index_status, 'U');
+        assert_eq!(parsed.entries[0].worktree_status, 'U');
+    }
+
+    #[test]
+    fn git_service_stays_in_the_opened_workspace_directory() {
+        let root = repository();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("root.rs"), "fn root() {}\n").unwrap();
+        std::fs::write(root.join("nested/lib.rs"), "fn nested() {}\n").unwrap();
+        let service = GitService::open(root.join("nested")).unwrap();
+        assert_eq!(service.root(), root.join("nested").canonicalize().unwrap());
+        service.stage(&["lib.rs".into()]).unwrap();
+        let status = service.status().unwrap();
+        assert!(
+            status.entries.iter().any(|entry| {
+                entry.path.contains("lib.rs") && entry.index_status != '?' && !entry.untracked
+            }),
+            "Git mutations must apply inside the opened workspace, got {status:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_status_does_not_execute_repository_aliases() {
+        let root = repository();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["config", "alias.status", "!touch pwned"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let service = GitService::open(&root).unwrap();
+        service.status().unwrap();
+        assert!(
+            !root.join("pwned").exists(),
+            "repository Git aliases must not run"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

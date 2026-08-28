@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { GlassClient } from "./dist/index.js";
+import { GlassClient, GlassStructuredError } from "./dist/index.js";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -39,9 +39,11 @@ try {
   if (!Array.isArray(await client.call("glass.task.list"))) throw new Error("task list was not an array");
   if (!Array.isArray(await client.call("glass.replay.list"))) throw new Error("replay list was not an array");
   if (trust.trust === "untrusted") {
-    const denied = await client.call("glass.test.discover");
-    if (!denied || typeof denied !== "object" || denied.isError !== true) {
+    try {
+      await client.call("glass.test.discover");
       throw new Error("untrusted executable project discovery was not denied");
+    } catch (error) {
+      if (!(error instanceof GlassStructuredError)) throw error;
     }
   }
 } finally {

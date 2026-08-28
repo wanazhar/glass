@@ -22,7 +22,7 @@ pub struct Cookie {
     #[serde(default)]
     pub expires: f64,
     /// Whether the cookie is HTTP-only (inaccessible to JavaScript).
-    #[serde(default)]
+    #[serde(default, rename = "httpOnly")]
     pub http_only: bool,
     /// Whether the cookie is only sent over HTTPS.
     #[serde(default)]
@@ -150,9 +150,9 @@ impl BrowserSession {
     async fn read_dom_storage(&self, storage_type: &str) -> BrowserResult<StorageItems> {
         self.policy.require(PolicyCapability::PersistentProfile)?;
         let expression = format!(
-            r#"JSON.stringify((function() {{
+            r#"JSON.stringify((() => {{
             const store = window.{storage_type};
-            if (!store) return JSON.stringify({{items:[], count:0}});
+            if (!store) return {{items:[], truncated:false, count:0}};
             const keys = Object.keys(store).slice(0, {STORAGE_MAX_ENTRIES});
             const items = keys.map(k => {{
                 let v = store.getItem(k) || '';
@@ -161,11 +161,11 @@ impl BrowserSession {
                 }}
                 return {{key: k, value: v}};
             }});
-            return JSON.stringify({{
-                items: items,
+            return {{
+                items,
                 truncated: Object.keys(store).length > {STORAGE_MAX_ENTRIES},
                 count: Object.keys(store).length
-            }});
+            }};
         }})())"#
         );
         self.cdp
@@ -193,7 +193,7 @@ mod tests {
             "domain": ".example.com",
             "path": "/",
             "expires": 1735689600.0,
-            "http_only": true,
+            "httpOnly": true,
             "secure": true,
             "sameSite": "Lax",
             "session": false,
@@ -339,6 +339,8 @@ mod tests {
         assert_eq!(parsed.same_site, Some("Strict".to_string()));
         assert!(parsed.http_only);
         assert_eq!(parsed.priority, Some("High".to_string()));
+        assert!(json.contains("\"httpOnly\":true"));
+        assert!(!json.contains("http_only"));
     }
 
     #[test]

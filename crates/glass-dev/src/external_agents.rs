@@ -279,6 +279,7 @@ pub(crate) fn build_invocation(
                 sandbox.id().into(),
                 "--cd".into(),
                 root,
+                "--".into(),
                 prompt,
             ],
             "codex-jsonl",
@@ -294,9 +295,10 @@ pub(crate) fn build_invocation(
                     ExternalSandbox::ReadOnly => "plan".into(),
                     ExternalSandbox::WorkspaceWrite => "acceptEdits".into(),
                 },
-                prompt,
                 "--add-dir".into(),
                 root,
+                "--".into(),
+                prompt,
             ],
             "claude-stream-json",
         ),
@@ -310,7 +312,7 @@ pub(crate) fn build_invocation(
             if sandbox == ExternalSandbox::ReadOnly {
                 args.extend(["--agent".into(), "plan".into()]);
             }
-            args.extend(["--dir".into(), root, prompt]);
+            args.extend(["--dir".into(), root, "--".into(), prompt]);
             (args, "opencode-json")
         }
     };
@@ -438,26 +440,38 @@ mod tests {
             invocation.args.last(),
             Some(&OsString::from("inspect && do not mutate"))
         );
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "--" && pair[1] == "inspect && do not mutate")
+        );
     }
 
     #[test]
-    fn claude_prompt_precedes_greedy_add_dir_arguments() {
+    fn claude_prompt_is_positional_after_end_of_options() {
         let invocation = build_invocation(
             ExternalHarness::Claude,
             PathBuf::from("/bin/claude"),
             Path::new("/tmp/project with spaces"),
-            "inspect && do not mutate",
+            "--dangerously-skip-permissions",
             ExternalSandbox::ReadOnly,
         );
         assert!(
             invocation
                 .args
                 .windows(2)
-                .any(|pair| pair[0] == "inspect && do not mutate" && pair[1] == "--add-dir")
+                .any(|pair| pair[0] == "--add-dir" && pair[1] == "/tmp/project with spaces")
+        );
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "--" && pair[1] == "--dangerously-skip-permissions")
         );
         assert_eq!(
             invocation.args.last(),
-            Some(&OsString::from("/tmp/project with spaces"))
+            Some(&OsString::from("--dangerously-skip-permissions"))
         );
     }
 

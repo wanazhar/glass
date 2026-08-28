@@ -205,6 +205,7 @@ enum ToolInvocation<'a> {
     },
     Hover {
         target: Cow<'a, str>,
+        expected_revision: Option<u64>,
     },
     Drag {
         source: Cow<'a, str>,
@@ -883,7 +884,19 @@ where
             if let Some(key) = cancellation_key.as_ref() {
                 task_cancellations_remove(&cancellations, key);
             }
-            return Err(error);
+            if !request.id.is_notification() {
+                send_response(
+                    &outbound_tx,
+                    error_response(
+                        request.id.response_value(),
+                        workflow_status_error_code(&error.to_string()),
+                        error.to_string(),
+                    ),
+                    format,
+                )
+                .await?;
+            }
+            continue;
         }
         let task_session = Arc::clone(&session);
         let task_options = options.clone();
@@ -1152,6 +1165,10 @@ async fn mutation_lease_error(
         if !execute_task_requires_mutation_lease(request) {
             return None;
         }
+    } else if tool_name == "sessionSnapshot" {
+        if !session_snapshot_requires_mutation_lease(request) {
+            return None;
+        }
     } else if !tool_requires_mutation_lease(tool_name) {
         return None;
     }
@@ -1196,6 +1213,29 @@ fn execute_task_requires_mutation_lease(request: &JsonRpcRequest) -> bool {
             | crate::task_protocol::TaskKind::RegionExtract
             | crate::task_protocol::TaskKind::DialogInspect
     )
+}
+
+fn session_snapshot_requires_mutation_lease(request: &JsonRpcRequest) -> bool {
+    matches!(
+        request
+            .params
+            .get("arguments")
+            .and_then(|arguments| arguments.get("operation"))
+            .and_then(Value::as_str),
+        Some("create" | "purge")
+    )
+}
+
+fn workflow_status_error_code(message: &str) -> i32 {
+    if message.contains("already active") {
+        -32600
+    } else if message.contains("limit reached") {
+        -32000
+    } else if message.contains("bounded") {
+        -32602
+    } else {
+        -32603
+    }
 }
 
 fn tool_requires_mutation_lease(tool_name: &str) -> bool {
@@ -1859,6 +1899,10 @@ async fn call_tool(
             | ToolInvocation::KnowledgeStats
             | ToolInvocation::KnowledgeInvalidate { .. }
             | ToolInvocation::KnowledgePurge { .. }
+            | ToolInvocation::KnowledgeForget { .. }
+            | ToolInvocation::KnowledgeExport
+            | ToolInvocation::KnowledgePrune
+            | ToolInvocation::KnowledgeReindex
     ) {
         policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)?;
         return call_knowledge_tool(invocation, options, knowledge_store_path);
@@ -1866,6 +1910,10 @@ async fn call_tool(
     if matches!(
         &invocation,
         ToolInvocation::ResolveIntentWithKnowledge { .. }
+            | ToolInvocation::ObserveKnowledge {
+                fresh_only: false,
+                ..
+            }
     ) {
         policy.require(crate::browser::policy::PolicyCapability::PersistentProfile)?;
     }
@@ -1960,7 +2008,14 @@ async fn call_tool(
                 .double_click_with_revision(target.as_ref(), expected_revision)
                 .await?,
         ),
-        ToolInvocation::Hover { target } => action_result(session.hover(target.as_ref()).await?),
+        ToolInvocation::Hover {
+            target,
+            expected_revision,
+        } => action_result(
+            session
+                .hover_with_revision(target.as_ref(), expected_revision)
+                .await?,
+        ),
         ToolInvocation::Drag {
             source,
             destination,
@@ -2466,8 +2521,8 @@ async fn call_tool(
         ToolInvocation::LocalStorage => serialized_result(&session.local_storage().await?),
         ToolInvocation::SessionStorage => serialized_result(&session.session_storage().await?),
         ToolInvocation::PrintToPdf { options } => {
-            let opts: crate::browser::session::PdfOptions =
-                serde_json::from_value(options).unwrap_or_default();
+            let opts: crate::browser::session::PdfOptions = serde_json::from_value(options)
+                .map_err(|error| format!("invalid PDF options: {error}"))?;
             serialized_result(&session.print_to_pdf(&opts).await?)
         }
         ToolInvocation::FillForm {
@@ -2798,6 +2853,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "hover" => Ok(ToolInvocation::Hover {
             target: required_target(arguments)?,
+            expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "drag" => Ok(ToolInvocation::Drag {
             source: Cow::Borrowed(required_string(arguments, "source")?),
@@ -3178,9 +3234,16 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "clearUserAgent" => Ok(ToolInvocation::ClearUserAgent),
         "exportCheckpoint" => Ok(ToolInvocation::ExportCheckpoint),
-        "importCheckpoint" => Ok(ToolInvocation::ImportCheckpoint {
-            checkpoint: arguments.clone(),
-        }),
+        "importCheckpoint" => {
+            let checkpoint = arguments
+                .get("checkpoint")
+                .cloned()
+                .ok_or("importCheckpoint requires a checkpoint object")?;
+            if !checkpoint.is_object() {
+                return Err("importCheckpoint checkpoint must be an object".into());
+            }
+            Ok(ToolInvocation::ImportCheckpoint { checkpoint })
+        }
         "scroll" => Ok(ToolInvocation::Scroll {
             dx: optional_number(arguments, "dx", 0.0)?,
             dy: optional_number(arguments, "dy", 600.0)?,
@@ -3414,7 +3477,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "hover",
             description: "Move the pointer over one actionable target.",
-            input_schema: target_schema(),
+            input_schema: guarded_target_schema(),
         },
         Tool {
             name: "drag",
@@ -4169,10 +4232,6 @@ fn tools() -> Vec<Tool> {
         .into_iter()
         .filter(|tool| !tool.name.starts_with("project.") && !tool.name.starts_with("agent."))
         .collect()
-}
-
-fn target_schema() -> Value {
-    json!({"type":"object","properties":{"target":{"type":"string"},"includeTrace":{"type":"boolean","default":false}},"required":["target"]})
 }
 
 fn guarded_target_schema() -> Value {
@@ -5179,6 +5238,7 @@ mod tests {
         for tool_name in [
             "clickExpectPopup",
             "doubleClick",
+            "hover",
             "drag",
             "key",
             "keyDown",
@@ -6400,6 +6460,90 @@ mod tests {
         assert!(response.result.as_ref().unwrap()["content"].is_array());
         assert!(session.is_none());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn memory_export_is_browser_free() {
+        let path = std::env::temp_dir().join(format!(
+            "glass-mcp-memory-export-{}.json",
+            std::process::id()
+        ));
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {"name": "memoryExport", "arguments": {}}
+        }))
+        .unwrap();
+        let mut session = None;
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+
+        let response = handle_request(
+            &request,
+            &mut session,
+            &SessionOptions::default(),
+            &policy,
+            Some(&path),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.error.is_none());
+        assert_ne!(response.result.as_ref().unwrap()["isError"], true);
+        assert!(session.is_none());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn import_checkpoint_reads_the_advertised_checkpoint_object() {
+        let params = json!({
+            "name": "importCheckpoint",
+            "arguments": {
+                "checkpoint": {"schemaVersion": 1, "url": "https://example.test/"}
+            }
+        });
+        let ToolInvocation::ImportCheckpoint { checkpoint } =
+            parse_tool_invocation(&params).unwrap()
+        else {
+            panic!("expected importCheckpoint invocation");
+        };
+        assert_eq!(checkpoint["schemaVersion"], 1);
+        assert_eq!(checkpoint["url"], "https://example.test/");
+        assert!(
+            parse_tool_invocation(&json!({
+                "name": "importCheckpoint",
+                "arguments": {"schemaVersion": 1}
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn session_snapshot_mutations_require_a_lease() {
+        let inspect: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "sessionSnapshot", "arguments": {"operation": "list"}}
+        }))
+        .unwrap();
+        let purge: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "sessionSnapshot", "arguments": {"operation": "purge"}}
+        }))
+        .unwrap();
+        assert!(!session_snapshot_requires_mutation_lease(&inspect));
+        assert!(session_snapshot_requires_mutation_lease(&purge));
+        assert_eq!(
+            workflow_status_error_code("daemon workflow request id is already active"),
+            -32600
+        );
+        assert_eq!(
+            workflow_status_error_code("daemon active workflow limit reached"),
+            -32000
+        );
     }
 
     #[tokio::test]

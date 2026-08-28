@@ -156,19 +156,7 @@ impl WorkspaceTrustStore {
                     .into(),
             ));
         }
-        let parent = self.path.parent().ok_or_else(|| {
-            DevelopmentError::Config("trust-store path has no parent directory".into())
-        })?;
-        std::fs::create_dir_all(parent)?;
-        let lock_path = self.path.with_extension("lock");
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(lock_path)?;
-        fs2::FileExt::lock_exclusive(&lock)?;
-        let result = (|| {
+        self.with_exclusive_lock(|| {
             let mut document = self.load()?;
             document
                 .records
@@ -187,17 +175,38 @@ impl WorkspaceTrustStore {
                 document.records.drain(..document.records.len() - 1024);
             }
             self.save(&document)
-        })();
-        let _ = fs2::FileExt::unlock(&lock);
-        result
+        })
     }
 
     pub fn forget(&self, identity: &WorkspaceIdentity) -> DevelopmentResult<()> {
-        let mut document = self.load()?;
-        document
-            .records
-            .retain(|record| record.identity != *identity);
-        self.save(&document)
+        self.with_exclusive_lock(|| {
+            let mut document = self.load()?;
+            document
+                .records
+                .retain(|record| record.identity != *identity);
+            self.save(&document)
+        })
+    }
+
+    fn with_exclusive_lock<T>(
+        &self,
+        operation: impl FnOnce() -> DevelopmentResult<T>,
+    ) -> DevelopmentResult<T> {
+        let parent = self.path.parent().ok_or_else(|| {
+            DevelopmentError::Config("trust-store path has no parent directory".into())
+        })?;
+        std::fs::create_dir_all(parent)?;
+        let lock_path = self.path.with_extension("lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        let result = operation();
+        let _ = fs2::FileExt::unlock(&lock);
+        result
     }
 
     fn load(&self) -> DevelopmentResult<TrustStoreDocument> {
@@ -253,10 +262,14 @@ impl WorkspaceTrustStore {
 }
 
 fn read_git_remote(root: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["config", "--get", "remote.origin.url"])
+    let output = crate::git::git_command(root)
+        .args([
+            "-c",
+            "alias.config=",
+            "config",
+            "--get",
+            "remote.origin.url",
+        ])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()

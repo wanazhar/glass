@@ -214,7 +214,7 @@ impl BrowserSession {
                 });
             }
             let now = tokio::time::Instant::now();
-            let remaining = expires - now;
+            let remaining = expires.saturating_duration_since(now);
             tokio::select! {
                 _ = tokio::time::sleep(WAIT_POLL_INTERVAL.min(remaining)) => {}
                 event = events.recv() => match event {
@@ -264,6 +264,7 @@ impl BrowserSession {
                 Ok((matched, format!("region={region_id};ready={matched}"), None))
             }
             WaitCondition::JavaScript(expression) => {
+                self.policy.require(PolicyCapability::Evaluate)?;
                 let value = self.evaluate_value(expression).await?;
                 let matched = value
                     .as_bool()
@@ -377,7 +378,7 @@ impl BrowserSession {
                 .into());
             }
             tokio::select! {
-                _ = tokio::time::sleep((expires - now).min(WAIT_POLL_INTERVAL)) => {}
+                _ = tokio::time::sleep(expires.saturating_duration_since(now).min(WAIT_POLL_INTERVAL)) => {}
                 event = events.recv() => match event {
                     Ok(event) => {
                         let request_id = event.params["requestId"].as_str();

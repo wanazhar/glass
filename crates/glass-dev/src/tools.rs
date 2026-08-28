@@ -1511,7 +1511,6 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.workspace.trust.inspect",
         "glass.lsp.list",
         "glass.lsp.events",
-        "glass.lsp.raw",
         "glass.lsp.hover",
         "glass.lsp.completion",
         "glass.lsp.definition",
@@ -1578,6 +1577,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.project.attach",
         "glass.github.ship",
         "glass.git.stage",
+        "glass.git.unstage",
         "glass.git.discard",
         "glass.git.push",
         "glass.git.commit",
@@ -1600,6 +1600,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.start",
         "glass.lsp.start",
         "glass.lsp.stop",
+        "glass.lsp.raw",
         "glass.debug.launch",
         "glass.debug.attach",
         "glass.debug.configuration_done",
@@ -2425,6 +2426,18 @@ mod tests {
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         }
+    }
+
+    #[test]
+    fn git_unstage_is_registered_as_a_mutating_tool() {
+        let unstage = service_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == "glass.git.unstage")
+            .expect("glass.git.unstage must be advertised");
+        assert!(unstage.mutating);
+        assert!(unstage.available);
+        assert!(tool_requires_mutation("glass.git.unstage"));
+        assert!(tool_requires_mutation("glass.lsp.raw"));
     }
 
     #[test]

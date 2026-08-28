@@ -189,9 +189,14 @@ enum RemoteProbe {
 }
 
 fn read_origin(root: &Path) -> RemoteProbe {
-    let mut child = match Command::new("git")
-        .args(["config", "--get", "remote.origin.url"])
-        .current_dir(root)
+    let mut child = match crate::git::git_command(root)
+        .args([
+            "-c",
+            "alias.config=",
+            "config",
+            "--get",
+            "remote.origin.url",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -582,9 +587,8 @@ pub fn ship(root: &Path, request: &GitHubShipRequest) -> DevelopmentResult<GitHu
 }
 
 fn current_branch(root: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(root)
+    let output = crate::git::git_command(root)
+        .args(["-c", "alias.branch=", "branch", "--show-current"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -622,21 +626,65 @@ fn run_gh_capture(
                 DevelopmentError::Process(format!("failed to start gh: {error}"))
             }
         })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| DevelopmentError::Process("gh stdout was unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| DevelopmentError::Process("gh stderr was unavailable".into()))?;
+    let stdout_reader = thread::spawn(move || read_gh_output(stdout, limit));
+    let stderr_reader = thread::spawn(move || read_gh_output(stderr, limit));
     let Some(status) = wait_for_exit(&mut child, timeout) else {
         let _ = child.kill();
         let _ = child.wait();
+        let _ = stdout_reader.join();
+        let _ = stderr_reader.join();
         return Err(DevelopmentError::Process(format!(
             "gh command timed out after {} seconds",
             timeout.as_secs()
         )));
     };
-    let output = child.wait_with_output()?;
-    if output.stdout.len() > limit || output.stderr.len() > limit {
+    let stdout = join_gh_output(stdout_reader)?;
+    let stderr = join_gh_output(stderr_reader)?;
+    if stdout.len() > limit || stderr.len() > limit {
         return Err(DevelopmentError::InvalidInput(
             "gh output exceeded the bounded GitHub response limit".into(),
         ));
     }
-    Ok((status, output.stdout, output.stderr))
+    Ok((status, stdout, stderr))
+}
+
+fn read_gh_output(
+    mut stream: impl std::io::Read + Send + 'static,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut retained = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_add(1).saturating_sub(retained.len());
+        retained.extend_from_slice(&chunk[..read.min(remaining)]);
+        if retained.len() > limit {
+            let mut discard = [0_u8; 8192];
+            while stream.read(&mut discard)? > 0 {}
+            break;
+        }
+    }
+    Ok(retained)
+}
+
+fn join_gh_output(
+    reader: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+) -> DevelopmentResult<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| DevelopmentError::Process("gh output reader panicked".into()))?
+        .map_err(Into::into)
 }
 
 fn compact_process_output(primary: &[u8], secondary: &[u8]) -> String {

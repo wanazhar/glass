@@ -348,7 +348,7 @@ impl DaemonStatusState {
         if status
             .active_runs
             .iter()
-            .any(|run| run.request_id == request_id)
+            .any(|run| run.request_id == request_id && run.owner_id == owner_id)
         {
             return Err("daemon workflow request id is already active".into());
         }
@@ -357,7 +357,11 @@ impl DaemonStatusState {
             owner_id: owner_id.into(),
             started_at: chrono::Utc::now().to_rfc3339(),
         });
-        write_status(&self.path, &status)
+        if let Err(error) = write_status(&self.path, &status) {
+            status.active_runs.pop();
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub async fn finish_workflow(
@@ -1119,13 +1123,23 @@ mod tests {
         let active: DaemonStatus =
             serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
         assert_eq!(active.active_runs[0].request_id, "workflow 1");
+        state
+            .begin_workflow("1", "daemon-client-2")
+            .await
+            .expect("independent daemon clients may reuse JSON-RPC ids");
+        assert!(
+            state
+                .begin_workflow("workflow 1", "daemon-client-1")
+                .await
+                .is_err()
+        );
         assert!(
             state
                 .begin_workflow("workflow\n2", "daemon-client-1")
                 .await
                 .is_err()
         );
-        assert_eq!(state.record_interrupted_workflows().await.unwrap(), 1);
+        assert_eq!(state.record_interrupted_workflows().await.unwrap(), 2);
         let recovery_log = std::fs::read_to_string(log_path_for(&status_path)).unwrap();
         assert!(recovery_log.contains("workflow 1"));
 
@@ -1133,6 +1147,7 @@ mod tests {
             .finish_workflow("workflow 1", "daemon-client-1")
             .await
             .unwrap();
+        state.finish_workflow("1", "daemon-client-2").await.unwrap();
         let finished: DaemonStatus =
             serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
         assert!(finished.active_runs.is_empty());

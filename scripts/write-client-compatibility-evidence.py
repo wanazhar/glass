@@ -27,7 +27,24 @@ def main() -> None:
     parser.add_argument("--target", required=True)
     parser.add_argument("--artifact", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
+    parser.add_argument(
+        "--typescript-status",
+        default=os.environ.get("GLASS_CLIENT_TS_STATUS"),
+        choices=("passed", "failed"),
+    )
+    parser.add_argument(
+        "--python-status",
+        default=os.environ.get("GLASS_CLIENT_PY_STATUS"),
+        choices=("passed", "failed"),
+    )
+    parser.add_argument(
+        "--npm-launcher-status",
+        default=os.environ.get("GLASS_CLIENT_NPM_STATUS"),
+        choices=("passed", "failed"),
+    )
     args = parser.parse_args()
+    if args.typescript_status != "passed" or args.python_status != "passed" or args.npm_launcher_status != "passed":
+        fail("client surfaces were not observed passing against this artifact")
     if args.target not in TARGETS:
         fail(f"unsupported target: {args.target}")
     if not args.artifact.is_file() or not args.artifact.stat().st_size:
@@ -54,15 +71,15 @@ def main() -> None:
         },
         "clients": {
             "typescript": {
-                "status": "passed",
+                "status": args.typescript_status,
                 "commands": ["npm run build", "npm run typecheck", "node smoke.mjs", "npm pack --dry-run"],
             },
             "python": {
-                "status": "passed",
+                "status": args.python_status,
                 "commands": ["python3 -m pip wheel --no-deps .", "python3 smoke.py"],
             },
             "npm_launcher": {
-                "status": "passed",
+                "status": args.npm_launcher_status,
                 "commands": ["npm pack", "npm install", "glass --version", "glass capabilities"],
             },
         },

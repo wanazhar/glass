@@ -4110,7 +4110,7 @@ impl Locator {
                 name: nonempty_locator(name, "accessible name")?,
             });
         }
-        Ok(Self::AccessibleName(value.to_string()))
+        nonempty_locator(value, "accessible name").map(Self::AccessibleName)
     }
 }
 

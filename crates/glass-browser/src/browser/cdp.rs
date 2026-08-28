@@ -360,7 +360,10 @@ impl CdpClient {
         timeout: Duration,
     ) -> Result<Self, Box<dyn Error>> {
         info!(%ws_url, "connecting to CDP");
-        let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url).await?;
+        let (ws_stream, _) =
+            tokio::time::timeout(timeout, tokio_tungstenite::connect_async(ws_url))
+                .await
+                .map_err(|_| "CDP websocket connect timed out")??;
         let (mut write, mut read) = ws_stream.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
         let (event_tx, _) = broadcast::channel::<CdpEvent>(128);

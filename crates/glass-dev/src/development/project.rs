@@ -1812,9 +1812,14 @@ fn hash(content: &str) -> String {
 }
 
 fn git_branch(root: &Path) -> Option<String> {
-    Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(root)
+    crate::git::git_command(root)
+        .args([
+            "-c",
+            "alias.rev-parse=",
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
         .output()
         .ok()
         .filter(|output| output.status.success())
@@ -1824,9 +1829,15 @@ fn git_branch(root: &Path) -> Option<String> {
 }
 
 fn git_statuses(root: &Path) -> BTreeMap<String, String> {
-    let Some(output) = Command::new("git")
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .current_dir(root)
+    let Some(output) = crate::git::git_command(root)
+        .args([
+            "-c",
+            "alias.status=",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        ])
         .output()
         .ok()
         .filter(|output| output.status.success())

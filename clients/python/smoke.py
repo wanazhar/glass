@@ -4,7 +4,7 @@ import os
 import json
 from pathlib import Path
 
-from glass_client import GlassClient
+from glass_client import GlassClient, GlassError
 
 
 binary = os.environ.get(
@@ -54,9 +54,11 @@ try:
     assert isinstance(client.call("glass.task.list"), list)
     assert isinstance(client.call("glass.replay.list"), list)
     if trust["trust"] == "untrusted":
-        denied = client.call("glass.test.discover")
-        assert (
-            isinstance(denied, str) and "blocked until the workspace is trusted" in denied
-        ) or (isinstance(denied, dict) and denied.get("isError") is True)
+        try:
+            client.call("glass.test.discover")
+        except GlassError as error:
+            assert "trusted" in str(error).lower() or "blocked" in str(error).lower()
+        else:
+            raise AssertionError("untrusted executable project discovery was not denied")
 finally:
     client.close()

@@ -11,6 +11,7 @@ use super::*;
 /// All fields are optional; omitted fields use the browser default.
 /// Use [`PdfOptions::letter`] for a US Letter preset with background printing.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PdfOptions {
     /// Paper width in inches.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -392,12 +393,12 @@ mod tests {
     fn pdf_options_letter_serializes_correctly() {
         let opts = PdfOptions::letter();
         let json = serde_json::to_value(&opts).unwrap();
-        assert_eq!(json["paper_width"], 8.5);
-        assert_eq!(json["paper_height"], 11.0);
-        assert_eq!(json["print_background"], true);
+        assert_eq!(json["paperWidth"], 8.5);
+        assert_eq!(json["paperHeight"], 11.0);
+        assert_eq!(json["printBackground"], true);
         // Omitted fields should be absent, not null
         assert!(json.get("scale").is_none());
-        assert!(json.get("margin_top").is_none());
+        assert!(json.get("marginTop").is_none());
     }
 
     #[test]
@@ -406,5 +407,22 @@ mod tests {
         let json = serde_json::to_value(&opts).unwrap();
         // All fields are None, so serialization should skip them all
         assert!(json.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pdf_options_accept_schema_camel_case_and_reject_type_errors() {
+        let parsed: PdfOptions = serde_json::from_value(serde_json::json!({
+            "paperWidth": 8.5,
+            "paperHeight": 11.0,
+            "printBackground": true
+        }))
+        .unwrap();
+        assert_eq!(parsed.paper_width, Some(8.5));
+        assert_eq!(parsed.paper_height, Some(11.0));
+        assert_eq!(parsed.print_background, Some(true));
+        assert!(
+            serde_json::from_value::<PdfOptions>(serde_json::json!({"paperWidth": "letter"}))
+                .is_err()
+        );
     }
 }

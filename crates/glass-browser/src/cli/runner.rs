@@ -209,7 +209,7 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
         }
         Some(Commands::Workflow {
             action: Some(action),
-            input: None,
+            ..
         }) => {
             dispatch_workflow_authoring(action)?;
             return Ok(());
@@ -1850,6 +1850,22 @@ async fn run_command(
                 .await?;
             print_json_mode(&result, response_mode)?;
         }
+        Commands::Snapshot {
+            action: SnapshotCommand::Create,
+        } => {
+            let observation = session
+                .semantic_observe(SemanticObservationLevel::Structured)
+                .await?;
+            let snapshot = crate::browser::session::SessionSnapshot::from_observation(
+                session.profile.clone(),
+                observation,
+            );
+            let store = SessionSnapshotStore::new(
+                crate::browser::session::default_session_snapshot_path(&session.profile),
+            );
+            store.save(&snapshot)?;
+            print_json(&snapshot)?;
+        }
         Commands::Update { .. }
         | Commands::Capabilities
         | Commands::Daemon { .. }
@@ -2228,14 +2244,16 @@ async fn run_command(
         }
         Commands::Cookies => print_json(&session.cookies().await?)?,
         Commands::ExportCookies { output } => {
+            let output = session.policy().require_output_path(output)?;
             let cookies = session.cookies().await?;
             let bytes = serde_json::to_vec_pretty(&cookies)?;
-            tokio::fs::write(output, bytes).await?;
+            tokio::fs::write(&output, bytes).await?;
             println!("cookies exported to {}", output.display());
         }
         Commands::ImportCookies { input } => {
             const MAX_COOKIE_FILE_BYTES: u64 = 512 * 1024;
-            let metadata = tokio::fs::metadata(input).await?;
+            let input = session.policy().require_existing_path(input)?;
+            let metadata = tokio::fs::metadata(&input).await?;
             if metadata.len() > MAX_COOKIE_FILE_BYTES {
                 return Err(format!(
                     "cookie file exceeds the {}-byte limit",
@@ -2243,12 +2261,15 @@ async fn run_command(
                 )
                 .into());
             }
-            let bytes = tokio::fs::read(input).await?;
+            let bytes = tokio::fs::read(&input).await?;
             let cookies: Vec<Cookie> = serde_json::from_slice(&bytes)?;
             session.set_cookies(&cookies).await?;
             println!("{} cookies imported", cookies.len());
         }
         Commands::Pdf { output, background } => {
+            let output = session
+                .policy()
+                .require_output_path(std::path::Path::new(output))?;
             let mut opts = PdfOptions::letter();
             if *background {
                 opts.print_background = Some(true);
@@ -2256,7 +2277,7 @@ async fn run_command(
             let data = session.print_to_pdf(&opts).await?;
             let bytes = base64::engine::general_purpose::STANDARD.decode(&data)?;
             tokio::fs::write(&output, &bytes).await?;
-            println!("PDF saved to {output} ({} bytes)", bytes.len());
+            println!("PDF saved to {} ({} bytes)", output.display(), bytes.len());
         }
         Commands::FillForm {
             fields,

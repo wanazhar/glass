@@ -1,4 +1,9 @@
 use super::command;
+use super::editor::{
+    self as native, EditorEngine, EditorMode, GhostText, Motion, Operator, apply_motion,
+    compile_prove_it, evidence_card, line_hunks, textobject_selection, TextObject,
+};
+use crate::development::TextSelection;
 use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
 use glass_browser::browser::policy::PolicyPreset;
 use glass_browser::browser_workspace::{
@@ -271,6 +276,9 @@ pub struct DevTuiState {
     pub editor_soft_wrap: bool,
     pub editor_scroll_line: usize,
     pub editor_scroll_column: usize,
+    pub editor_engine: EditorEngine,
+    pub last_verify: Option<String>,
+    pub factory_split: bool,
     pub lsp: String,
     pub processes: String,
     pub git: String,
@@ -492,6 +500,12 @@ impl DevTuiState {
             editor_soft_wrap: false,
             editor_scroll_line: 0,
             editor_scroll_column: 0,
+            editor_engine: EditorEngine {
+                mode: EditorMode::Insert,
+                ..EditorEngine::default()
+            },
+            last_verify: None,
+            factory_split: true,
             lsp: String::new(),
             processes: String::new(),
             git: String::new(),
@@ -1766,6 +1780,7 @@ impl DevTuiState {
         let display_text = self.composer_input.clone();
         let text = std::mem::take(&mut self.composer_input);
         self.remember_composer_history(&text);
+        let prove = compile_prove_it(&text);
         let steer = self.composer_steer;
         self.composer_cursor = 0;
         self.composer_steer = false;
@@ -1781,6 +1796,22 @@ impl DevTuiState {
             "mode": if steer { "steer" } else { "follow-up" },
             "context": context,
         });
+        if let Some(prove) = prove {
+            arguments["verify"] = prove.verify;
+            arguments["intent"] = serde_json::Value::String(prove.intent);
+            self.last_verify = Some(evidence_card(
+                arguments["context"]["browser"]["url"]
+                    .as_str()
+                    .unwrap_or("about:blank"),
+                arguments["context"]["browser"]["revision"]
+                    .as_u64()
+                    .unwrap_or(0),
+                arguments["context"]["browser"]["selectedEntity"].as_str(),
+                "composer prove-it",
+                false,
+            ));
+            self.auto_checkpoint("before-prove-it");
+        }
         if let Some(agent) = self.selected_agent.as_ref() {
             arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
         }
@@ -2716,9 +2747,32 @@ impl DevTuiState {
             self.code_edit_mode = true;
             self.editor_exit_prompt = None;
             self.ensure_editor_cursor_visible();
+            self.editor_engine.enter_insert();
+            self.refresh_editor_hunks();
             self.status =
-                "EDITING · arrows move · Shift+arrows select · Ctrl-S save · Alt-A ask Pi · Esc exit"
+                "INSERT · Esc normal · i insert · gd definition · ]c hunk · Ctrl-S save · Alt-A ask"
                     .into();
+        }
+    }
+
+    pub fn handle_editor_escape(&mut self) {
+        if self.editor_engine.overlay.take().is_some()
+            || !self.editor_engine.symbols.is_empty()
+            || self.editor_engine.ghost.take().is_some()
+        {
+            self.editor_engine.symbols.clear();
+            self.editor_engine.clear_pending();
+            self.status = format!("{} · overlay closed", self.editor_engine.mode.label());
+            return;
+        }
+        match self.editor_engine.mode {
+            EditorMode::Insert | EditorMode::Select | EditorMode::Agent => {
+                self.editor_engine.enter_normal();
+                self.status =
+                    "NORMAL · hjkl move · w/b word · d/c ops · v select · i insert · Esc exit"
+                        .into();
+            }
+            EditorMode::Normal => self.request_editor_exit(),
         }
     }
 
@@ -2903,11 +2957,34 @@ impl DevTuiState {
             self.toggle_editor_soft_wrap();
             return;
         }
+        if self.editor_engine.mode == EditorMode::Insert
+            || modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+            || modifiers.contains(crossterm::event::KeyModifiers::ALT)
+        {
+            self.edit_insert_or_chords(code, modifiers);
+            return;
+        }
+        self.edit_normal_key(code, modifiers);
+    }
+
+    fn edit_insert_or_chords(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
         let Some(buffer) = self.focused_buffer() else {
             self.status = "No open buffer".into();
             return;
         };
         let path = buffer.path.clone();
+        if code == crossterm::event::KeyCode::Tab
+            && let Some(ghost) = self.editor_engine.ghost.take()
+        {
+            let _ = self.insert_editor_text(&path, &ghost.text);
+            self.refresh_editor_projection();
+            self.status = "Ghost accepted · next-edit ready".into();
+            return;
+        }
         let result = match (code, modifiers) {
             (crossterm::event::KeyCode::Char('a'), value)
                 if value.contains(crossterm::event::KeyModifiers::ALT) =>
@@ -2945,6 +3022,12 @@ impl DevTuiState {
                         ))
                     })
             }
+            (crossterm::event::KeyCode::Char('o'), value)
+                if value.contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.open_symbol_picker();
+                Ok(())
+            }
             (crossterm::event::KeyCode::Left, value) => self.move_editor_cursor(
                 &path,
                 0,
@@ -2971,8 +3054,12 @@ impl DevTuiState {
             ),
             (crossterm::event::KeyCode::Enter, _) => self.insert_editor_text(&path, "\n"),
             (crossterm::event::KeyCode::Backspace, _) => self.backspace_editor(&path),
-            (crossterm::event::KeyCode::Char(character), _) => {
-                self.insert_editor_text(&path, &character.to_string())
+            (crossterm::event::KeyCode::Char(character), _)
+                if self.editor_engine.mode == EditorMode::Insert =>
+            {
+                let result = self.insert_editor_text(&path, &character.to_string());
+                self.request_ghost_from_line();
+                result
             }
             _ => Ok(()),
         };
@@ -2980,6 +3067,502 @@ impl DevTuiState {
             self.status = format!("Editor action failed: {error}");
         }
         self.refresh_editor_projection();
+    }
+
+    fn edit_normal_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
+        let Some(buffer) = self.focused_buffer() else {
+            self.status = "No open buffer".into();
+            return;
+        };
+        let path = buffer.path.clone();
+        let content = buffer.content.clone();
+        let cursor = crate::development::TextPosition {
+            line: buffer.cursor_line,
+            column: buffer.cursor_column,
+        };
+        if let crossterm::event::KeyCode::Char(digit) = code
+            && digit.is_ascii_digit()
+            && !(digit == '0' && self.editor_engine.pending_count == 0)
+        {
+            self.editor_engine
+                .push_digit(digit.to_digit(10).unwrap_or(0));
+            return;
+        }
+        let count = self.editor_engine.count();
+        let motion = match code {
+            crossterm::event::KeyCode::Char('h') | crossterm::event::KeyCode::Left => {
+                Some(Motion::Left)
+            }
+            crossterm::event::KeyCode::Char('l') | crossterm::event::KeyCode::Right => {
+                Some(Motion::Right)
+            }
+            crossterm::event::KeyCode::Char('j') | crossterm::event::KeyCode::Down => {
+                Some(Motion::Down)
+            }
+            crossterm::event::KeyCode::Char('k') | crossterm::event::KeyCode::Up => {
+                Some(Motion::Up)
+            }
+            crossterm::event::KeyCode::Char('w') => Some(Motion::WordForward),
+            crossterm::event::KeyCode::Char('b') => Some(Motion::WordBackward),
+            crossterm::event::KeyCode::Char('e') => Some(Motion::WordEnd),
+            crossterm::event::KeyCode::Char('0') => Some(Motion::LineStart),
+            crossterm::event::KeyCode::Char('$') => Some(Motion::LineEnd),
+            crossterm::event::KeyCode::Char('%') => Some(Motion::MatchPair),
+            crossterm::event::KeyCode::Char('G') => Some(Motion::FileEnd),
+            _ => None,
+        };
+        if code == crossterm::event::KeyCode::Char('g') {
+            if self.editor_engine.pending_g {
+                self.editor_engine.pending_g = false;
+                self.apply_editor_motion(&path, &content, cursor, Motion::FileStart, false);
+            } else {
+                self.editor_engine.pending_g = true;
+            }
+            return;
+        }
+        if let Some(motion) = motion {
+            if let Some(operator) = self.editor_engine.pending_operator.take() {
+                let _ = self.apply_operator(&path, &content, cursor, operator, motion);
+            } else {
+                let mut position = cursor;
+                for _ in 0..count {
+                    position = apply_motion(&content, position, motion);
+                }
+                self.editor_engine.clear_pending();
+                let extend = self.editor_engine.mode == EditorMode::Select
+                    || modifiers.contains(crossterm::event::KeyModifiers::SHIFT);
+                let _ = self.set_editor_cursor(&path, position, extend);
+            }
+            self.refresh_editor_projection();
+            return;
+        }
+        match code {
+            crossterm::event::KeyCode::Char('i') => self.editor_engine.enter_insert(),
+            crossterm::event::KeyCode::Char('a') => {
+                let next = apply_motion(&content, cursor, Motion::Right);
+                let _ = self.set_editor_cursor(&path, next, false);
+                self.editor_engine.enter_insert();
+            }
+            crossterm::event::KeyCode::Char('v') => self.editor_engine.enter_select(),
+            crossterm::event::KeyCode::Char('W') => {
+                let object = if self.editor_engine.pending_operator.is_some() {
+                    TextObject::InnerWord
+                } else {
+                    TextObject::AroundWord
+                };
+                if let Some(selection) = textobject_selection(&content, cursor, object)
+                    .or_else(|| {
+                        textobject_selection(&content, cursor, TextObject::InnerPair('(', ')'))
+                    })
+                    .or_else(|| {
+                        textobject_selection(&content, cursor, TextObject::AroundPair('{', '}'))
+                    })
+                {
+                    let _ = self.set_editor_cursor(&path, selection.active, true);
+                    let _ = self.set_editor_cursor(&path, selection.anchor, true);
+                }
+            }
+            crossterm::event::KeyCode::Char('f')
+                if self.editor_engine.pending_operator.is_some() =>
+            {
+                if let Some(selection) =
+                    textobject_selection(&content, cursor, TextObject::Function)
+                {
+                    let _ = self.set_editor_cursor(&path, selection.active, true);
+                }
+            }
+            crossterm::event::KeyCode::Char('d') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.editor_go_to_definition();
+            }
+            crossterm::event::KeyCode::Char('d') => {
+                self.editor_engine.pending_operator = Some(Operator::Delete);
+            }
+            crossterm::event::KeyCode::Char('c') => {
+                self.editor_engine.pending_operator = Some(Operator::Change);
+            }
+            crossterm::event::KeyCode::Char('y')
+                if !modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.editor_engine.pending_operator = Some(Operator::Yank);
+            }
+            crossterm::event::KeyCode::Char('x') => {
+                let _ =
+                    self.apply_operator(&path, &content, cursor, Operator::Delete, Motion::Right);
+            }
+            crossterm::event::KeyCode::Char('u') => {
+                let _ =
+                    self.locked(|workspace| workspace.project_mut().undo_buffer(&path).map(|_| ()));
+            }
+            crossterm::event::KeyCode::Char('p') => {
+                if !self.editor_engine.yank.is_empty() {
+                    let _ = self.insert_editor_text(&path, &self.editor_engine.yank.clone());
+                }
+            }
+            crossterm::event::KeyCode::Char('K') => self.editor_hover(),
+            crossterm::event::KeyCode::Char(']') => {
+                if let Some(hunk) = self.editor_engine.step_hunk(1).cloned() {
+                    let _ = self.set_editor_cursor(
+                        &path,
+                        crate::development::TextPosition {
+                            line: hunk.start_line,
+                            column: 1,
+                        },
+                        false,
+                    );
+                    self.status = format!(
+                        "Hunk {}/{}",
+                        self.editor_engine.hunk_index + 1,
+                        self.editor_engine.hunks.len()
+                    );
+                }
+            }
+            crossterm::event::KeyCode::Char('[') => {
+                if let Some(hunk) = self.editor_engine.step_hunk(-1).cloned() {
+                    let _ = self.set_editor_cursor(
+                        &path,
+                        crate::development::TextPosition {
+                            line: hunk.start_line,
+                            column: 1,
+                        },
+                        false,
+                    );
+                }
+            }
+            crossterm::event::KeyCode::Enter => self.accept_current_hunk(),
+            crossterm::event::KeyCode::Char('n') => self.reject_current_hunk(),
+            crossterm::event::KeyCode::Char('o') => self.open_symbol_picker(),
+            crossterm::event::KeyCode::Char('f') => self.jump_page_from_source(),
+            _ => {}
+        }
+        self.refresh_editor_projection();
+    }
+
+    fn set_editor_cursor(
+        &mut self,
+        path: &str,
+        position: crate::development::TextPosition,
+        extend: bool,
+    ) -> crate::development::DevelopmentResult<()> {
+        let buffer = self
+            .workspace
+            .try_lock()?
+            .project()
+            .buffer(path)
+            .cloned()
+            .ok_or_else(|| {
+                crate::development::DevelopmentError::NotFound(format!("buffer {path}"))
+            })?;
+        let position = native::clamp_position(&buffer.content, position);
+        let anchor = if extend {
+            buffer
+                .selection
+                .map(|selection| selection.anchor)
+                .unwrap_or(crate::development::TextPosition {
+                    line: buffer.cursor_line,
+                    column: buffer.cursor_column,
+                })
+        } else {
+            position
+        };
+        let mut workspace = self.workspace.try_lock()?;
+        workspace
+            .project_mut()
+            .set_buffer_cursor(path, position.line, position.column)?;
+        workspace.project_mut().set_buffer_selection(
+            path,
+            extend.then_some(crate::development::TextSelection {
+                anchor,
+                active: position,
+            }),
+            crate::development::Actor::local(),
+        )?;
+        Ok(())
+    }
+
+    fn apply_editor_motion(
+        &mut self,
+        path: &str,
+        content: &str,
+        cursor: crate::development::TextPosition,
+        motion: Motion,
+        extend: bool,
+    ) {
+        let next = apply_motion(content, cursor, motion);
+        let _ = self.set_editor_cursor(path, next, extend);
+    }
+
+    fn apply_operator(
+        &mut self,
+        path: &str,
+        content: &str,
+        cursor: crate::development::TextPosition,
+        operator: Operator,
+        motion: Motion,
+    ) -> crate::development::DevelopmentResult<()> {
+        let end = apply_motion(content, cursor, motion);
+        let selection = TextSelection {
+            anchor: cursor,
+            active: end,
+        };
+        self.auto_checkpoint("before-operator");
+        match operator {
+            Operator::Yank => {
+                if let Some((start, stop)) =
+                    crate::development::editor::selection_offsets(content, &selection)
+                {
+                    self.editor_engine.yank = content[start..stop].to_string();
+                    self.status = format!("Yanked {} bytes", self.editor_engine.yank.len());
+                }
+            }
+            Operator::Delete | Operator::Change => {
+                let mut workspace = self.workspace.try_lock()?;
+                workspace.project_mut().set_buffer_selection(
+                    path,
+                    Some(selection),
+                    crate::development::Actor::local(),
+                )?;
+                workspace.project_mut().replace_buffer_selection(
+                    path,
+                    String::new(),
+                    crate::development::Actor::local(),
+                )?;
+                drop(workspace);
+                if operator == Operator::Change {
+                    self.editor_engine.enter_insert();
+                }
+            }
+        }
+        self.editor_engine.clear_pending();
+        Ok(())
+    }
+
+    fn refresh_editor_hunks(&mut self) {
+        let path = self.focused_editor_path.clone();
+        if path.is_empty() {
+            return;
+        }
+        let proposal = self.editor_proposals.iter().find(|item| item.path == path);
+        if let Some(proposal) = proposal {
+            self.editor_engine
+                .set_hunks(line_hunks(&proposal.original, &proposal.proposed));
+        }
+    }
+
+    fn auto_checkpoint(&mut self, name: &str) {
+        let _ = self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .create_editor_checkpoint(name.to_string(), crate::development::Actor::local())
+                .map(|_| ())
+        });
+    }
+
+    fn editor_hover(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line.saturating_sub(1);
+        let character = self.focused_editor_column.saturating_sub(1);
+        match self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .hover(&server, "local", &path, line, character)
+        }) {
+            Some(Ok(response)) => {
+                self.editor_engine.overlay = Some(response.result.to_string());
+                self.status = "Hover · Esc closes".into();
+            }
+            Some(Err(error)) => self.status = format!("Hover unavailable: {error}"),
+            None => self.status = "Hover unavailable · workspace busy".into(),
+        }
+    }
+
+    fn editor_go_to_definition(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line.saturating_sub(1);
+        let character = self.focused_editor_column.saturating_sub(1);
+        self.editor_engine
+            .record_jump(&path, self.focused_editor_line, self.focused_editor_column);
+        match self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .definition(&server, "local", &path, line, character)
+        }) {
+            Some(Ok(response)) => {
+                self.editor_engine.overlay = Some(format!("definition {}", response.result));
+                if let Some(target) = parse_lsp_location(&response.result) {
+                    let _ = self.open_path(&target.path);
+                    let _ = self.set_editor_cursor(
+                        &self.focused_editor_path.clone(),
+                        crate::development::TextPosition {
+                            line: target.line.max(1),
+                            column: target.column.max(1),
+                        },
+                        false,
+                    );
+                }
+                self.status = "Definition · Ctrl-O back".into();
+            }
+            Some(Err(error)) => self.status = format!("Definition unavailable: {error}"),
+            None => self.status = "Definition unavailable · workspace busy".into(),
+        }
+    }
+
+    fn open_symbol_picker(&mut self) {
+        let path = self.focused_editor_path.clone();
+        match self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .document_symbols(&server, "local", &path)
+        }) {
+            Some(Ok(response)) => {
+                self.editor_engine.symbols = parse_lsp_symbols(&response.result);
+                self.editor_engine.symbol_selection = 0;
+                self.status = format!(
+                    "Symbols · {} · Enter jumps",
+                    self.editor_engine.symbols.len()
+                );
+            }
+            _ => {
+                self.editor_engine.symbols = self
+                    .focused_editor_content
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, line)| {
+                        let trimmed = line.trim_start();
+                        trimmed.starts_with("fn ")
+                            || trimmed.starts_with("struct ")
+                            || trimmed.starts_with("impl ")
+                            || trimmed.starts_with("pub ")
+                    })
+                    .map(|(index, line)| (line.trim().to_string(), index as u32 + 1))
+                    .collect();
+                self.status = format!("Symbols (lexical) · {}", self.editor_engine.symbols.len());
+            }
+        }
+    }
+
+    fn accept_current_hunk(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let Some(proposal) = self
+            .editor_proposals
+            .iter()
+            .find(|item| item.path == path)
+            .cloned()
+        else {
+            self.status = "No proposal hunk on this buffer".into();
+            return;
+        };
+        self.auto_checkpoint("before-hunk-accept");
+        match self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .accept_editor_proposal(&proposal.id, crate::development::Actor::local())
+                .map(|_| ())
+        }) {
+            Some(Ok(())) => {
+                self.status = format!("Accepted proposal {}", proposal.id);
+                self.refresh_editor_hunks();
+            }
+            Some(Err(error)) => self.status = format!("Accept failed: {error}"),
+            None => self.status = "Accept failed · workspace busy".into(),
+        }
+    }
+
+    fn reject_current_hunk(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let Some(proposal) = self
+            .editor_proposals
+            .iter()
+            .find(|item| item.path == path)
+            .cloned()
+        else {
+            return;
+        };
+        let _ = self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .reject_editor_proposal(&proposal.id, crate::development::Actor::local())
+                .map(|_| ())
+        });
+        self.status = format!("Rejected proposal {}", proposal.id);
+        self.refresh_editor_hunks();
+    }
+
+    fn jump_page_from_source(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line;
+        let entity = self
+            .locked(|workspace| {
+                workspace
+                    .project()
+                    .graph()
+                    .links
+                    .values()
+                    .flatten()
+                    .find(|link| {
+                        link.source.path == path
+                            && line >= link.source.start_line
+                            && line <= link.source.end_line
+                    })
+                    .map(|link| link.entity_id.clone())
+            })
+            .flatten();
+        if let Some(entity) = entity {
+            self.surface = DevSurface::App;
+            self.code_edit_mode = false;
+            self.status = format!("Page bound · entity {entity} · App selected");
+        } else {
+            self.status = "No source/runtime link on this line · :project graph".into();
+        }
+    }
+
+    pub fn request_ghost_from_line(&mut self) {
+        let line = self
+            .focused_editor_content
+            .lines()
+            .nth(self.focused_editor_line.saturating_sub(1) as usize)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if line.is_empty() {
+            return;
+        }
+        let ghost = if line.ends_with('{') {
+            "\n    \n}"
+        } else if line.contains("todo") || line.contains("TODO") {
+            " // implemented"
+        } else {
+            return;
+        };
+        self.editor_engine.ghost = Some(GhostText { text: ghost.into() });
     }
 
     fn move_editor_cursor(
@@ -4634,6 +5217,76 @@ fn free_local_port() -> Option<u16> {
         .ok()
         .and_then(|listener| listener.local_addr().ok())
         .map(|address| address.port())
+}
+
+struct LspLocation {
+    path: String,
+    line: u32,
+    column: u32,
+}
+
+fn parse_lsp_location(value: &serde_json::Value) -> Option<LspLocation> {
+    let target = value
+        .as_array()
+        .and_then(|items| items.first())
+        .unwrap_or(value);
+    let uri = target
+        .get("uri")
+        .or_else(|| target.get("targetUri"))
+        .and_then(serde_json::Value::as_str)?;
+    let range = target
+        .get("range")
+        .or_else(|| target.get("targetRange"))
+        .or_else(|| target.get("targetSelectionRange"))?;
+    let line = range
+        .pointer("/start/line")
+        .and_then(serde_json::Value::as_u64)? as u32
+        + 1;
+    let column = range
+        .pointer("/start/character")
+        .and_then(serde_json::Value::as_u64)? as u32
+        + 1;
+    let path = uri
+        .rsplit("://")
+        .next()
+        .unwrap_or(uri)
+        .rsplit('/')
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("/");
+    Some(LspLocation {
+        path: path.trim_start_matches('/').to_string(),
+        line,
+        column,
+    })
+}
+
+fn parse_lsp_symbols(value: &serde_json::Value) -> Vec<(String, u32)> {
+    let mut symbols = Vec::new();
+    let items = value
+        .get("result")
+        .or(Some(value))
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for item in items {
+        let name = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("symbol")
+            .to_string();
+        let line = item
+            .pointer("/range/start/line")
+            .or_else(|| item.pointer("/location/range/start/line"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32
+            + 1;
+        symbols.push((name, line));
+    }
+    symbols
 }
 
 fn editor_offset(content: &str, line: u32, column: u32) -> usize {

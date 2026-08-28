@@ -250,6 +250,17 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
         render_fullscreen_editor(frame, state, area);
         return;
     }
+    if state.factory_split
+        && state.composer_mode
+        && !state.focused_editor_path.is_empty()
+        && !matches!(
+            state.responsive_class(area.width, area.height),
+            ResponsiveClass::Phone
+        )
+    {
+        render_factory_home(frame, state, area);
+        return;
+    }
     match state.responsive_class(area.width, area.height) {
         ResponsiveClass::Desktop => render_desktop(frame, state, area),
         ResponsiveClass::Compact => render_compact(frame, state, area),
@@ -292,16 +303,41 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             ),
             Span::styled(dirty.0, Style::default().fg(dirty.1)),
+            Span::raw("  "),
+            Span::styled(
+                format!(" {} ", state.editor_engine.mode.label()),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(
+                        if matches!(state.editor_engine.mode, super::editor::EditorMode::Insert) {
+                            SUCCESS
+                        } else {
+                            ACCENT
+                        },
+                    )
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(Span::styled(
             compact_line(
                 &format!(
-                    "Ln {} · Col {} · line {} of {} · syntax {}",
+                    "Ln {} · Col {} · {}/{} · {} · hunks {} · {}",
                     state.focused_editor_line,
                     state.focused_editor_column,
                     state.focused_editor_line,
                     line_count,
                     file_view::classify(&state.focused_editor_path).label(),
+                    state.editor_engine.hunks.len(),
+                    [
+                        super::editor::GutterMark::Lsp,
+                        super::editor::GutterMark::Git,
+                        super::editor::GutterMark::Agent,
+                        super::editor::GutterMark::Page,
+                        super::editor::GutterMark::Proof,
+                    ]
+                    .into_iter()
+                    .map(super::editor::GutterMark::glyph)
+                    .collect::<String>(),
                 ),
                 area.width.saturating_sub(2),
             ),
@@ -363,7 +399,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         )
     } else {
         (
-            "↑↓←→ move · Shift select · Alt-W wrap · Ctrl-S save · Ctrl-Z/Y undo · Alt-A ask Pi",
+            "Esc normal · hjkl w/b % gd ]c hunks · i insert · Ctrl-S save · Alt-A ask",
             "Esc exit editor · exit prompt protects unsaved work",
         )
     };
@@ -430,6 +466,21 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         {
             frame.set_cursor_position((x, y));
         }
+    }
+    if let Some(overlay) = &state.editor_engine.overlay {
+        let modal = Rect {
+            x: area.x + 2,
+            y: area.y + area.height.saturating_sub(10).max(3),
+            width: area.width.saturating_sub(4).min(80),
+            height: 8,
+        };
+        frame.render_widget(Clear, modal);
+        frame.render_widget(
+            Paragraph::new(compact_multiline(overlay, modal.width.saturating_sub(2)))
+                .wrap(Wrap { trim: false })
+                .block(surface_block(" HOVER / DEFINITION ", ACCENT)),
+            modal,
+        );
     }
 }
 
@@ -883,6 +934,44 @@ fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         area,
     );
 }
+fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(header_height()),
+            Constraint::Min(8),
+            Constraint::Length(footer_height(state)),
+        ])
+        .split(area);
+    render_header(frame, state, rows[0], "factory");
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Min(36)])
+        .split(rows[1]);
+    render_surface(frame, state, columns[0]);
+    let source = file_view::render_editable_source(
+        &state.focused_editor_path,
+        if state.focused_editor_content.is_empty() {
+            "No buffer · Ctrl-P open file"
+        } else {
+            &state.focused_editor_content
+        },
+        state.focused_editor_line,
+        state.focused_editor_column,
+        state.focused_editor_selection.as_ref(),
+    );
+    frame.render_widget(
+        Paragraph::new(source)
+            .style(Style::default().fg(TEXT).bg(PANEL_INSET))
+            .block(surface_block(
+                format!(" SOURCE · {} ", state.editor_engine.mode.label()),
+                ACCENT_BRIGHT,
+            )),
+        columns[1],
+    );
+    render_status(frame, state, rows[2]);
+}
+
 fn render_desktop(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)

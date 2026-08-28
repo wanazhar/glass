@@ -1,6 +1,7 @@
 //! Decomposed full Glass Dev terminal application.
 
 mod command;
+mod editor;
 mod file_view;
 mod projection;
 /// Rendering primitives and frame composition for the development TUI.
@@ -483,7 +484,7 @@ pub fn run(
                         }
                     } else if state.code_edit_mode {
                         match key.code {
-                            KeyCode::Esc => state.request_editor_exit(),
+                            KeyCode::Esc => state.handle_editor_escape(),
                             _ => state.edit_code_key(key.code, key.modifiers),
                         }
                     } else if state.file_picker_open {

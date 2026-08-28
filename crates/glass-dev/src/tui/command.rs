@@ -672,7 +672,27 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         "browser" | "workflow" => execute_browser(state, command, parts.collect()),
         "github" | "gh" => execute_github(state, parts.collect()),
         "harness" => execute_harness(state, parts.collect()),
-        "review" => execute_review(state, parts.collect()),
+        "review" => {
+            let proposals = state
+                .editor_proposals
+                .iter()
+                .map(|item| {
+                    (
+                        item.id.clone(),
+                        item.path.clone(),
+                        format!("{:?}", item.state),
+                    )
+                })
+                .collect::<Vec<_>>();
+            state.editor = super::editor::review_object(
+                &state.github.summary(),
+                &state.github_review,
+                &proposals,
+                state.last_verify.as_deref(),
+            );
+            state.surface = DevSurface::Git;
+            execute_review(state, parts.collect())
+        }
         "debug" => execute_debug(state, parts.collect()),
         "kernel" => execute_kernel(state, parts.collect()),
         "git" => execute_git(state, parts.collect()),

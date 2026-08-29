@@ -4,7 +4,7 @@ This guide takes you from installation to one verified Glass workflow. Choose
 the path that matches your goal. All paths use local processes and local state;
 Glass does not provide a hosted browser, code service, or autonomous planner.
 
-**Status: Current 0.3.13 source behavior.** This guide follows the checked-in
+**Status: Current 0.3.14 source behavior.** This guide follows the checked-in
 source checkout; checkout-only TUI behavior is labeled as current source, not
 as an immutable published-release guarantee.
 

@@ -1,7 +1,11 @@
 # Development Runtime
 
-**Status: Current 0.3.13 source behavior.** Features added after the `0.3.13`
-source baseline are marked **Unreleased**. This guide describes the `glass-dev` development workspace, not the browser-only crate. It owns one canonical project root, bounded files and editor buffers, PTY processes, language services, graph and timeline evidence, resident agents, tasks, and optional browser context. The TUI, MCP, daemon, and Rust clients use these Rust-owned services; they do not maintain separate project state.
+**Status: Current 0.3.14 source behavior.** This guide describes the
+`glass-dev` development workspace, not the browser-only crate. It owns one
+canonical project root, bounded files and editor buffers, PTY processes,
+language services, graph and timeline evidence, resident agents, tasks, and
+optional browser context. The TUI, MCP, daemon, and Rust clients use these
+Rust-owned services; they do not maintain separate project state.
 
 See [Architecture overview](architecture/README.md) for module ownership. See [CLI reference](cli.md) for installed syntax and [Native Pi SDK runtime](pi-sdk-runtime.md) for agent lifecycle.
 

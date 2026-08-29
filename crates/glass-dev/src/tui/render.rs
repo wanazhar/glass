@@ -3918,6 +3918,8 @@ mod tests {
         assert!(help.contains("Tab surfaces"));
         assert!(help.contains("/todo"));
         assert!(help.contains("Agent · Code"));
+        assert!(help.contains("Ctrl-O symbols"));
+        assert!(!help.contains("Ctrl-O back"));
         assert!(!help.contains("▎   AGENT"));
         assert!(!help.contains("Alt-←/→"));
     }

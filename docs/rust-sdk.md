@@ -1,6 +1,6 @@
 # Rust SDK
 
-Status: Current 0.3.13 source behavior (including current-source work in this checkout)
+Status: Current 0.3.14 source behavior (including current-source work in this checkout)
 
 The workspace publishes two Rust packages with different boundaries:
 
@@ -24,7 +24,7 @@ runtime API is documented at
 [`docs.rs/glass-dev`](https://docs.rs/glass-dev).
 
 docs.rs renders published Rust API artifacts. This guide follows the checked-in
-source, which is version `0.3.13` with current-source work. Published docs.rs
+source, which is version `0.3.14` with current-source work. Published docs.rs
 pages match the crate version they were built from (`0.3.13` at last
 publication). Verify newer source-level surfaces, including `todos` and
 `AgentTurnMode`, against this checkout rather than assuming they were part of

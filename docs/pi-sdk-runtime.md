@@ -1,6 +1,6 @@
 # Native Pi SDK runtime
 
-**Status: Current 0.3.13 source behavior.** The resident Glass agent uses Pi's native `AgentSession` SDK. Glass does not start the Pi CLI or use the Pi compatibility protocol for this resident path. A Glass-owned Node child loads the SDK and exchanges private 4-byte big-endian length-prefixed JSON frames with Rust.
+**Status: Current 0.3.14 source behavior.** The resident Glass agent uses Pi's native `AgentSession` SDK. Glass does not start the Pi CLI or use the Pi compatibility protocol for this resident path. A Glass-owned Node child loads the SDK and exchanges private 4-byte big-endian length-prefixed JSON frames with Rust.
 
 ```text
 AgentRegistry
@@ -39,9 +39,9 @@ There are two checked-in version facts:
 | Evidence | Version and status |
 |---|---|
 | Published `0.3.12` release evidence | Pi SDK `0.84.2`; see [release notes](releases/0.3.12.md) |
-| Current `0.3.13` source and package metadata | `PINNED_PI_SDK_VERSION`, managed setup, and the checked-in `packages/pi-runtime` package/lockfile use `0.84.3` |
+| Current `0.3.14` source and package metadata | `PINNED_PI_SDK_VERSION`, managed setup, and the checked-in `packages/pi-runtime` package/lockfile use `0.84.3` |
 
-The current `0.3.13` source and package metadata are aligned on `0.84.3`.
+The current `0.3.14` source and package metadata are aligned on `0.84.3`.
 Do not describe `0.84.3` as part of the immutable `0.3.12` release; keep the
 published `0.3.12` SDK fact scoped to its historical release record. The
 published `0.3.13` crate and docs.rs pages use `0.84.3`. Checkout-only TUI

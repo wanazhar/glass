@@ -7,7 +7,7 @@ diagnostics, and Git diff live together in one revision-aware workspace. Browser
 intelligence is an integrated optional app surface for UI work and verification.
 
 
-**Status: Current 0.3.13 source behavior.** The TUI, editor, Pi integration,
+**Status: Current 0.3.14 source behavior.** The TUI, editor, Pi integration,
 collaboration affordances, and terminal presentation notes below describe this
 checkout; current-source changes are not claimed as published-release behavior.
 
@@ -47,7 +47,7 @@ and revision checks.
 The packages intentionally share the `glass-browser` executable name and
 cannot own it in the same Cargo installation root. Follow the tested
 [installation and ownership-transition guide](docs/installation.md).
-The command and feature notes below describe the current `0.3.13` source
+The command and feature notes below describe the current `0.3.14` source
 checkout. Published docs.rs pages match the crate version they were built from
 (`0.3.13` at last publication). They are not a substitute for checking this
 checkout's TUI and CLI behavior.
@@ -220,12 +220,23 @@ Phone:   [header]
 | `7` | Debug | - |
 | `8` | More | - |
 
-`Tab`/`Shift-Tab` move between available surfaces. `?` opens scrollable help,
-`:` opens surface-filtered command discovery, `a` opens the surface action
-menu, and `Ctrl-L` opens the chat dock. `Enter` activates the selected
-file/browser entity or starts Agent interaction. Mouse is optional: click the
-dock to chat, double-click to open, and right-click or long-press for actions.
-Printable navigation works over SSH/Mosh.
+The numeric keys are the stable route to each surface. On Desktop/Compact,
+`c`, `v`, `w`, `g`, `d`, and `m` are mnemonic aliases for Code, App, Tasks, Git,
+Debug, and More when the current surface has not claimed that key; for example,
+`g` jumps to source on App and `c` commits on Git. Agent treats printable input
+as composer text. Phone keeps the five numeric destinations above plus
+`Tab`/`Shift-Tab`.
+
+`Tab`/`Shift-Tab` move between available surfaces, as do Left/Right in the
+normal surface view. `?` opens scrollable help, `:` opens surface-filtered
+command discovery, `a` opens the current surface action menu outside Agent,
+and `Ctrl-L` opens the chat dock. `Ctrl-P` opens files, `Ctrl-K` or
+`Ctrl-Shift-P` opens the command palette, and `Ctrl-G` jumps to App while
+keeping the dock open. On App, `Alt-Left`/`Alt-Right` navigate browser history
+and `Ctrl-R` reloads. `Enter` activates the selected file/browser entity or
+starts Agent interaction. Mouse is optional: click the dock to chat,
+double-click to open, and right-click or long-press for actions. Printable
+navigation works over SSH/Mosh.
 
 On Code, the file list and editor preview are read-only until full-screen edit:
 long preview lines wrap to the pane width on narrow terminals while retaining
@@ -562,7 +573,7 @@ the Glass MCP control plane. They expose typed browser and Development Runtime
 helpers, cursor-based event subscriptions, deadline-aware waits, process
 health, mutation-lease scopes, and edit-and-verify flows.
 
-They are repository clients for the 0.3.13 source line, not published npm or
+They are repository clients for the 0.3.14 source line, not published npm or
 PyPI packages and not browser runtimes:
 
 - [TypeScript client](clients/typescript/README.md)
@@ -592,16 +603,16 @@ workflows.
 
 ## Support and evidence
 
-| Item | 0.3.13 source status |
+| Item | 0.3.14 source status |
 |---|---|
-| Linux ARM64 | Native Chromium evidence for exact `0.3.13` source pending; tracked in [release evidence](docs/release-evidence.md) |
-| Linux x86-64 | Native Pi, experiment, and Chromium evidence for exact `0.3.13` source pending; tracked in [release evidence](docs/release-evidence.md) |
-| macOS x86-64 / ARM64 | Browser-free CI contract; exact `0.3.13` native runtime certification pending and tracked in [release evidence](docs/release-evidence.md) |
-| Windows | Browser-free CI plus native named-pipe daemon lifecycle capability; exact `0.3.13` native PTY/browser certification pending and tracked in [release evidence](docs/release-evidence.md) |
+| Linux ARM64 | Native Chromium evidence for exact `0.3.14` source pending; tracked in [release evidence](docs/release-evidence.md) |
+| Linux x86-64 | Native Pi, experiment, and Chromium evidence for exact `0.3.14` source pending; tracked in [release evidence](docs/release-evidence.md) |
+| macOS x86-64 / ARM64 | Browser-free CI contract; exact `0.3.14` native runtime certification pending and tracked in [release evidence](docs/release-evidence.md) |
+| Windows | Browser-free CI plus native named-pipe daemon lifecycle capability; exact `0.3.14` native PTY/browser certification pending and tracked in [release evidence](docs/release-evidence.md) |
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox / WebKit / Safari automation | Unsupported; iPhone Safari is a forwarded viewing client, not a Glass backend |
-| `glass-browser 0.3.13`, `glass-dev 0.3.13` | Current release source; public registry state is recorded in release evidence |
-| `0.3.12` | Previous published stable release |
+| `glass-browser 0.3.14`, `glass-dev 0.3.14` | Current release source; public registry state is recorded in release evidence |
+| `0.3.13` | Previous published stable release |
 
 A source build, cross-compilation, or browser-free CI run is not native browser
 certification. Read the [feature-parity matrix](docs/feature-parity.md),

@@ -2,7 +2,7 @@
 
 Status: Implementation complete locally on 2026-08-11. Native three-family CI
 evidence awaits an authorized remote run.
-Status: Historical checkpoint; superseded by the current 0.3.13 source/release evidence.
+Status: Historical checkpoint; superseded by the current 0.3.14 source/release evidence.
 
 Glass now dispatches DAP reverse requests while waiting for ordinary responses.
 `runInTerminal` uses an exact-argv, workspace-confined Glass PTY whose output,
@@ -19,4 +19,3 @@ Local protocol tests cover malformed/oversized frames, crash, timeout,
 unsupported and supported reverse requests, loopback TCP, disconnect, and
 orphan cleanup. CI installs pinned debugpy and Delve plus LLDB and executes real
 breakpoint-to-stack-to-continue lifecycles for all three adapter families.
-

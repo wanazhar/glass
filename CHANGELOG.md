@@ -5,6 +5,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-08-29
+
 ### Added
 
 - Shared composer dock on every surface (`Ctrl-L`, `Alt-A` from the editor)

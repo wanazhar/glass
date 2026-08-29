@@ -5,7 +5,7 @@ library. It drives local Chrome or Chromium through a transport-neutral
 contract with CDP as the production backend. It does not bundle a browser,
 host a remote browser service, or infer an autonomous action plan.
 
-**Status: Current 0.3.13 source behavior.** This is the browser-only package;
+**Status: Current 0.3.14 source behavior.** This is the browser-only package;
 the complete development TUI, project runtime, Pi Agent, editor, PTYs, and
 Remote View belong to `glass-dev` and are not exported here.
 

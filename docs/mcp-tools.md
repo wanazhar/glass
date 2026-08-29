@@ -1,6 +1,6 @@
 # Complete MCP tool catalog
 
-This catalog names all 100 browser tools in the current `0.3.13` client-conformance inventory.
+This catalog names all 100 browser tools in the current `0.3.14` client-conformance inventory.
 The full `glass` command also merges its live `glass.*` Development Workspace
 catalog at runtime; these tools are governed by actor, authority, confirmation,
 workspace-generation, and project-revision metadata.
@@ -50,7 +50,7 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 | `glass.workflow` | `glass.workflow.cancel`, `glass.workflow.list`, `glass.workflow.pause`, `glass.workflow.record`, `glass.workflow.resume`, `glass.workflow.run`, `glass.workflow.verify` | Durable workflow lifecycle, verification, and recording. |
 | `glass.workspace` | `glass.workspace.delete`, `glass.workspace.inspect`, `glass.workspace.list`, `glass.workspace.resume`, `glass.workspace.suspend`, `glass.workspace.trust.inspect`, `glass.workspace.trust.status` | Workspace lifecycle, identity-bound trust status, and exact executable configuration inspection. |
 
-The checked-in development conformance fixture pins the full 343-tool
+The checked-in development conformance fixture pins the full 344-tool
 inventory, including `glass.agent.delegate`, `glass.todo.*`, and Git
 fetch/pull/merge/rebase; the documentation coverage gate checks every fixture
 entry against this catalog. The browser-only conformance fixture covers 100
@@ -60,7 +60,7 @@ mutate.
 ## Legacy project and agent names
 
 The `project.*` and local-harness `agent.*` names below document the 0.3.4
-compatibility vocabulary. They are not part of the `0.3.13` negotiated inventory
+compatibility vocabulary. They are not part of the `0.3.14` negotiated inventory
 and new clients must use the `glass.*` resident development tools above. A
 server may retain selected executable aliases during source migration, but an
 unadvertised alias is not a public capability and must not be probed as one.

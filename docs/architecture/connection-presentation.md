@@ -1,6 +1,6 @@
 # Connection-aware browser presentation
 
-Status: Current 0.3.13 source behavior
+Status: Current 0.3.14 source behavior
 
 The source retains profile names from the 0.3.3 design as API labels; that
 historical naming does not make the design-era behavior part of the published

@@ -1,6 +1,6 @@
 # Browser connection controller and Remote View
 
-Status: Current 0.3.13 source behavior
+Status: Current 0.3.14 source behavior
 The [Glass Dev TUI guide](development-tui.md) covers recovery-sheet
 interaction and the [Development Runtime guide](../development-runtime.md)
 covers resident lifecycle and shutdown; this document defines connection

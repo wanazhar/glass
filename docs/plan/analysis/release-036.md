@@ -4,7 +4,7 @@ Status: Active direct implementation. Issue
 [#36](https://github.com/wanazhar/glass/issues/36) is authoritative. It had no
 comments when audited on 2026-08-12. The user authorized conventional commits,
 push, publication, release, and issue completion only after every gate passes.
-Status: Historical record; superseded by the current 0.3.13 source/release evidence. Issue #36's completed gate review is recorded in [release-036-gates.md](../reviews/release-036-gates.md), and current release evidence is recorded in [release-evidence.md](../../release-evidence.md).
+Status: Historical record; superseded by the current 0.3.14 source/release evidence. Issue #36's completed gate review is recorded in [release-036-gates.md](../reviews/release-036-gates.md), and current release evidence is recorded in [release-evidence.md](../../release-evidence.md).
 
 ## Locked decisions
 

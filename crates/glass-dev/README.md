@@ -6,7 +6,7 @@ bounded project runtime, Ratatui editor, local agent harness, MCP server, PTYs,
 tests, diagnostics, Git diff, and a phone-oriented remote cockpit. The browser
 control plane is an integrated optional app surface for UI work and verification.
 
-**Status: Current 0.3.13 source behavior.** This page documents the checked-in
+**Status: Current 0.3.14 source behavior.** This page documents the checked-in
 source checkout; checkout-only TUI behavior is labeled here rather than
 presented as published-release behavior.
 
@@ -35,7 +35,7 @@ want that package to replace the shared `glass-browser` executable.
 
 The public Rust API is documented at [docs.rs/glass-dev](https://docs.rs/glass-dev);
 use the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md)
-for installed command behavior. This guide follows the current `0.3.13` source
+for installed command behavior. This guide follows the current `0.3.14` source
 checkout. Published docs.rs pages match the crate version they were built from
 (`0.3.13` at last publication). Checkout-only TUI behavior can be newer than
 that published API page.
@@ -190,7 +190,7 @@ explicit detach, eviction, server shutdown, or daemon shutdown.
 Repository TypeScript and Python clients provide typed browser/project helpers,
 cursor-bounded event subscriptions, cancellation, process-health waits,
 reconnect workflows, and mutation-lease scopes. They are not published to npm
-or PyPI in the `0.3.13` line.
+or PyPI in the `0.3.14` line.
 
 ## Agents
 

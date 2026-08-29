@@ -4,17 +4,17 @@ Use this checklist for each public release.
 
 ## Release status
 
-The release checkout is `glass-browser` and `glass-dev` version `0.3.13`.
+The release checkout is `glass-browser` and `glass-dev` version `0.3.14`.
 Linux x86-64, Linux arm64, macOS x86-64, and macOS arm64 remain declared
 targets. Target support claims remain bounded by the machine-readable
 feature-parity matrix and native evidence recorded for each environment.
 Windows receives browser-free source checks and native named-pipe daemon
 certification; native browser/PTY support is not certified.
 
-## 0.3.13 release
+## 0.3.14 release
 
-This section is the active release record for the exact 0.3.13 source and
-2026-08-27 release date. Every gate remains open until its evidence is
+This section is the active release record for the exact 0.3.14 source and
+2026-08-29 release date. Every gate remains open until its evidence is
 recorded in [`release-evidence.md`](release-evidence.md).
 
 ### Gate 0 — approval and one candidate version
@@ -157,6 +157,15 @@ gh run view "$RELEASE_RUN_ID" --json status,conclusion,headSha,jobs
       `origin/main`.
 - [ ] Only now announce the release, close the issue, or start the next
       version.
+
+
+## 0.3.13 release (historical)
+
+- [x] Exact signed source, ordered crates.io publication, clean installs,
+      native certification, fuzz, and source-only GitHub Release were recorded
+      in the closed [`0.3.13` evidence](release-evidence.md#0.3.13-release-evidence).
+- [x] Current-source documentation was re-audited before the 0.3.14 section
+      was opened; the 0.3.13 records remain immutable historical evidence.
 
 
 ## 0.3.12 release

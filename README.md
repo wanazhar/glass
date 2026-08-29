@@ -633,6 +633,7 @@ certification. Read the [feature-parity matrix](docs/feature-parity.md),
 | Embed the Rust crate | [Rust SDK](docs/rust-sdk.md) | [Examples](docs/examples.md) |
 | Operate profiles, policy, or daemon | [Profiles](docs/profile-ergonomics.md) | [Policy](docs/policy.md), [daemon](docs/daemon.md) |
 | Understand architecture | [Architecture index](docs/architecture/README.md) | [Documentation index](docs/INDEX.md) |
+| Maintain documentation or release evidence | [Maintainer handbook](docs/maintainers/README.md) | [Contributing](CONTRIBUTING.md), [release checklist](docs/release-checklist.md) |
 
 The role-based [documentation index](docs/INDEX.md) routes every current guide,
 architecture contract, operator runbook, SDK reference, and historical release
@@ -642,13 +643,11 @@ record.
 
 ```console
 cargo fmt --all -- --check
-scripts/check-rust-workspace.sh test
-scripts/check-rust-workspace.sh clippy
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
-python3 scripts/check-documentation-coverage.py
-python3 scripts/check-documentation-depth.py
-python3 scripts/check-release-documentation.py
+scripts/release-certify.sh
 ```
+
+`release-certify.sh` is the common local/CI source gate. Platform fixtures,
+client smokes, and dependency audits remain CI-owned checks.
 
 Run the native browser suite only in an environment with supported Chromium:
 

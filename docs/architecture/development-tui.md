@@ -232,7 +232,8 @@ source buffer (one-based line/column)
 ```
 
 `Ctrl-S` saves; `Ctrl-Z`/`Ctrl-Y` undo/redo; arrows move and Shift+arrows
-extend the selection; Enter inserts a newline and Backspace deletes. `Alt-W`
+extend the selection; `Ctrl-O` opens the symbol picker; Enter inserts a newline
+and Backspace deletes. `Alt-W`
 toggles soft-wrap. No-wrap is the default: source columns are preserved and
 horizontal scroll follows the cursor. Soft-wrap reflows each source line to the
 editor inner width, repeats a blank gutter on continuation rows, maps the

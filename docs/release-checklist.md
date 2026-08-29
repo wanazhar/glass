@@ -236,42 +236,41 @@ Structural validators and link checks do not prove that a prose statement about
 the current release is true. Complete this audit before the candidate is pushed
 or tagged. A clean result from the existing validators is not a substitute.
 
-- [ ] Derive `VERSION` from `cargo metadata` and identify the immediately prior
-      published version from the release records. Do not rely on memory or on
-      the newest tag name alone.
-- [ ] Enumerate the public current-document set and record it in the evidence:
-      `README.md`, crate/client READMEs, and every `docs/**/*.md` file except
-      immutable `docs/releases/`, `docs/migration/`, `docs/plan/`, and
-      `docs/design/` records. Do not exclude a current guide merely because it
-      contains a historical subsection; classify that subsection separately.
-- [ ] Search that complete set for version-sensitive and navigation claims:
+- [ ] Run the dynamic audit, which derives `VERSION`, identifies the prior
+      stable tag, enumerates every non-ignored Markdown file, and writes a
+      complete report:
 
 ```console
-git grep -n -i -E \
-  "$PREVIOUS_VERSION|last publication|latest published|current release|current version|current users|docs\\.rs|published|publication|shortcut|key bindings?|Ctrl-|Alt-" \
-  -- README.md docs crates/*/README.md clients/*/README.md || true
+AUDIT_REPORT="${TMPDIR:-/tmp}/glass-release-documentation.json"
+python3 scripts/check-release-documentation.py \
+  --require-previous-version \
+  --report "$AUDIT_REPORT"
 ```
 
-- [ ] Review every hit, including hits in a document that is otherwise
-      current. Mark each as `CURRENT`, `HISTORICAL`, or `TEST/EXAMPLE` and
-      record the disposition. Every `CURRENT` publication/version claim must
-      name `VERSION` and agree with package metadata, registry state, and the
-      release evidence. Every `HISTORICAL` hit must be visibly scoped and must
-      not be phrased as the current/latest release.
-- [ ] Capture the complete search output and hit count in the release evidence
-      or an attached audit artifact. A truncated terminal excerpt, an
-      unreviewed pager result, or “no matches” is not evidence that the audit
-      was completed.
+- [ ] Review every `semantic_audit_hits` entry in the JSON report, including
+      hits in a document that is otherwise current. The report classifies each
+      hit as `current`, `historical`, `record`, or `generated`; record any `TEST/EXAMPLE`
+      disposition separately. Every current publication/version claim must name
+      `VERSION` and agree with package metadata, registry state, and the release
+      evidence. Every historical hit must be visibly scoped and must not be
+      phrased as the current/latest release.
+- [ ] Preserve the complete JSON report and its `semantic_audit_hit_count` in
+      the release evidence or as an attached audit artifact. A truncated
+      terminal excerpt, an unreviewed pager result, or “no matches” is not
+      evidence that the audit was completed.
 - [ ] Compare user-facing shortcut/key tables and help text against the
       implementation and tests (`crates/glass-dev/src/tui/`), including
       responsive phone routes, aliases, palette keys, editor keys, and browser
       history keys. Update README, architecture guides, and in-app help as one
-      surface; do not audit only the README.
-- [ ] Resolve every current-document link and run the structural validators
-      after the semantic review. The required commands are
-      `check-release-documentation.py`, `check-documentation-depth.py`,
-      `check-documentation-coverage.py`, `check-version-sync.py`, and
-      `git diff --check`.
+      surface; do not audit only the README. Run
+      `python3 scripts/check-tui-shortcuts.py`; its inventory is consumed by
+      in-app help and checks the required public markers.
+- [ ] Resolve every current-document link and run `scripts/release-certify.sh`
+      after the semantic review. It is the common local/CI source gate and
+      includes version sync, release truth, documentation, package, rustdoc,
+      and fuzz-workspace validation. The release-truth audit discovers every
+      non-ignored Markdown file; it does not use a hand-maintained document
+      list.
 - [ ] Record the exact source set, search command, hit count, classifications,
       unresolved count (`0`), and validator output in
       `docs/release-evidence.md` before Gate 1. “No matches” is not evidence
@@ -279,36 +278,24 @@ git grep -n -i -E \
 
 ### Gate 1 — validate the candidate source before any tag
 
-Run the complete local gate set, not a narrowed substitute:
+Run the common source gate once, not a second hand-maintained copy of its
+individual commands:
 
 ```console
-cargo fmt --all -- --check
-python3 scripts/check-version-sync.py
-python3 scripts/check-feature-parity.py
-python3 scripts/check-release-documentation.py
-python3 scripts/check-documentation-coverage.py
-python3 scripts/check-documentation-depth.py
-python3 scripts/check-reliability-matrix.py
-python3 scripts/check-public-readonly-adapters.py
-python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
-scripts/check-rust-workspace.sh test
-scripts/check-rust-workspace.sh clippy
-RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps
+scripts/release-certify.sh
 cargo deny check
 cargo audit
-cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets
-scripts/release-validate.sh
 ```
 
 - [ ] Run the recorded live-browser and PTY suites where the release evidence
       requires them; record the target, architecture, browser, Rust toolchain,
       and exact commands.
-- [ ] Package both crates and inspect their file lists:
+- [ ] Inspect the two package archives produced by `scripts/release-certify.sh`
+      and review their file lists; do not package the same candidate a second
+      time:
 
 ```console
-cargo package --package glass-browser --locked
-cargo package --package glass-dev --locked --no-verify \
-  --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
+ls target/package/glass-browser-*.crate target/package/glass-dev-*.crate
 ```
 
 - [ ] Run both crates.io publish dry runs without uploading:
@@ -335,7 +322,13 @@ cargo publish --package glass-dev --locked --dry-run --no-verify \
       `origin/main` resolves to that exact SHA.
 - [ ] Wait for the complete main CI workflow for `SOURCE_SHA`. Query the run's
       `headSha` and `conclusion`; do not accept “the latest CI is green” when it
-      tested a different commit.
+      tested a different commit. Require the successful exact-source
+      `release-certification` artifact and the matching fuzz certification.
+- [ ] Confirm branch CI and fuzz runs are the source of truth for `SOURCE_SHA`;
+      tag pushes do not start a second full source matrix.
+- [ ] The tag release workflow must consume those exact-source certifications;
+      it must not rerun the full source suite after the branch push has already
+      passed.
 - [ ] If CI fails and is rerun, record both the original failed run and the
       successful rerun. A successful rerun does not erase the original failure.
 

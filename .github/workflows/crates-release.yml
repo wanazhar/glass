@@ -21,6 +21,7 @@ on:
         type: boolean
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -30,8 +31,11 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       already_published: ${{ steps.publication.outputs.already_published }}
+      ci_run_id: ${{ steps.exact_ci.outputs.run_id }}
+      fuzz_run_id: ${{ steps.exact_fuzz.outputs.run_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -39,8 +43,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
       - name: Check tag version
         if: startsWith(github.ref, 'refs/tags/')
@@ -96,78 +98,171 @@ jobs:
               raise SystemExit(f"Refusing to publish prerelease packages: {prereleases}")
           '
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lint with Clippy
-        run: scripts/check-rust-workspace.sh clippy
-
-      - name: Run tests
-        run: scripts/check-rust-workspace.sh test
-
-      - name: Check package version synchronization
-        run: python3 scripts/check-version-sync.py
-
-      - name: Validate release documentation
-        run: python3 scripts/check-release-documentation.py
-
-      - name: Validate documentation inventories and links
-        run: python3 scripts/check-documentation-coverage.py
-
-      - name: Validate documentation depth and command tree
-        run: python3 scripts/check-documentation-depth.py
-
-      - name: Validate feature parity
-        run: python3 scripts/check-feature-parity.py
-
-      - name: Validate deterministic reliability matrix
-        run: python3 scripts/check-reliability-matrix.py
-
-      - name: Validate public read-only adapter inventory
-        run: python3 scripts/check-public-readonly-adapters.py
-
-      - name: Validate Web IR corpus and deterministic baseline
-        run: python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
-
-      - name: Build documentation
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
-
-      - name: Validate the crate packages
+      - name: Locate exact-source green CI certification
+        id: exact_ci
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          cargo package --package glass-browser --locked
-          cargo package --package glass-dev --locked --no-verify \
-            --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
-          version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
-          python3 scripts/check-packaged-dependency.py "target/package/glass-dev-${version}.crate" --version "$version"
+          expected_sha="$(git rev-parse HEAD)"
+          run_id=""
+          for attempt in $(seq 1 30); do
+            run_id="$(gh run list --workflow ci.yml --commit "$expected_sha" \
+              --json databaseId,headSha,status,conclusion,event --limit 50 \
+              | python3 -c 'import json,sys; sha=sys.argv[1]; runs=json.load(sys.stdin); matches=[r for r in runs if r["headSha"] == sha and r["event"] == "push" and r["status"] == "completed" and r["conclusion"] == "success"]; print(matches[0]["databaseId"] if matches else "")' "$expected_sha")"
+            if [[ -n "$run_id" ]]; then
+              break
+            fi
+            if [[ "$attempt" != 30 ]]; then
+              sleep 10
+            fi
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "no completed green CI run found for exact source $expected_sha" >&2
+            exit 1
+          fi
+          echo "sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
-      - name: Smoke-test packaged glass-browser installation
+      - name: Download exact-source CI certification
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-certification-${{ steps.exact_ci.outputs.sha }}
+          path: ${{ runner.temp }}/glass-ci-certification
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.exact_ci.outputs.run_id }}
+
+      - name: Download exact-source documentation audit
+        uses: actions/download-artifact@v4
+        with:
+          name: release-doc-audit-${{ steps.exact_ci.outputs.sha }}
+          path: ${{ runner.temp }}/glass-release-documentation
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.exact_ci.outputs.run_id }}
+
+      - name: Verify exact-source CI certification
+        env:
+          EXPECTED_SHA: ${{ steps.exact_ci.outputs.sha }}
+          EXPECTED_RUN_ID: ${{ steps.exact_ci.outputs.run_id }}
+        run: |
+          python3 - "$RUNNER_TEMP/glass-ci-certification/ci-certification.json" \
+            "$RUNNER_TEMP/glass-release-documentation/glass-release-documentation.json" \
+            "$EXPECTED_SHA" "$EXPECTED_RUN_ID" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          certification_path, report_path, expected_sha, expected_run_id = sys.argv[1:]
+          certification = json.loads(Path(certification_path).read_text(encoding="utf-8"))
+          report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+          required_jobs = {
+              "test",
+              "clients",
+              "Browser-free ubuntu-latest",
+              "Browser-free macos-latest",
+              "Browser-free windows-latest",
+          }
+          if certification.get("git_sha") != expected_sha:
+              raise SystemExit("CI certification SHA does not match the release source")
+          if str(certification.get("run_id")) != expected_run_id:
+              raise SystemExit("CI certification run ID does not match the selected run")
+          if certification.get("event") != "push":
+              raise SystemExit("release certification must come from a push run")
+          if set(certification.get("required_jobs", [])) != required_jobs:
+              raise SystemExit("CI certification job set is incomplete")
+          documentation_report = certification.get("documentation_report", {})
+          if not report.get("passed") or report.get("current_claim_count") != 0:
+              raise SystemExit("CI documentation certification contains current claims")
+          if documentation_report.get("sha256") != hashlib.sha256(
+              Path(report_path).read_bytes()
+          ).hexdigest():
+              raise SystemExit("documentation audit hash does not match CI certification")
+          for key in (
+              "document_count",
+              "current_document_count",
+              "previous_version",
+              "previous_version_hit_count",
+              "semantic_audit_hit_count",
+              "current_claim_count",
+          ):
+              if documentation_report.get(key) != (
+                  len(report["previous_version_hits"])
+                  if key == "previous_version_hit_count"
+                  else report.get(key)
+              ):
+                  raise SystemExit(f"documentation audit field does not match: {key}")
+          print(f"exact-source CI certification verified: {expected_sha} / run {expected_run_id}")
+          PY
+
+      - name: Locate exact-source green fuzz certification
+        id: exact_fuzz
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-browser"))')"
-          root="$(mktemp -d)"
-          trap 'rm -rf "$root"' EXIT
-          mkdir -p "$root/source"
-          tar -xzf "target/package/glass-browser-${version}.crate" -C "$root/source"
-          cargo install --path "$root/source/glass-browser-${version}" --locked --root "$root/install"
-          "$root/install/bin/glass-browser" --help >/dev/null
+          expected_sha="${{ steps.exact_ci.outputs.sha }}"
+          run_id=""
+          for attempt in $(seq 1 30); do
+            run_id="$(gh run list --workflow fuzz.yml --commit "$expected_sha" \
+              --json databaseId,headSha,status,conclusion,event --limit 50 \
+              | python3 -c 'import json,sys; sha=sys.argv[1]; runs=json.load(sys.stdin); matches=[r for r in runs if r["headSha"] == sha and r["event"] == "push" and r["status"] == "completed" and r["conclusion"] == "success"]; print(matches[0]["databaseId"] if matches else "")' "$expected_sha")"
+            if [[ -n "$run_id" ]]; then
+              break
+            fi
+            if [[ "$attempt" != 30 ]]; then
+              sleep 10
+            fi
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "no completed green fuzz run found for exact source $expected_sha" >&2
+            exit 1
+          fi
+          echo "sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
-      - name: Smoke-test packaged full-suite installation
-        shell: bash
+      - name: Download exact-source fuzz certification
+        uses: actions/download-artifact@v4
+        with:
+          name: fuzz-certification-${{ steps.exact_fuzz.outputs.sha }}
+          path: ${{ runner.temp }}/glass-fuzz-certification
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.exact_fuzz.outputs.run_id }}
+
+      - name: Verify exact-source fuzz certification
+        env:
+          EXPECTED_SHA: ${{ steps.exact_fuzz.outputs.sha }}
+          EXPECTED_RUN_ID: ${{ steps.exact_fuzz.outputs.run_id }}
         run: |
-          set -euo pipefail
-          version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
-          root="$(mktemp -d)"
-          trap 'rm -rf "$root"' EXIT
-          mkdir -p "$root/source"
-          tar -xzf "target/package/glass-browser-${version}.crate" -C "$root/source"
-          tar -xzf "target/package/glass-dev-${version}.crate" -C "$root/source"
-          cargo install --path "$root/source/glass-dev-${version}" --locked --root "$root/install" \
-            --config "patch.crates-io.glass-browser.path='$root/source/glass-browser-${version}'"
-          "$root/install/bin/glass" --help >/dev/null
-          "$root/install/bin/glass-browser" --help >/dev/null
+          python3 - "$RUNNER_TEMP/glass-fuzz-certification/fuzz-certification.json" \
+            "$EXPECTED_SHA" "$EXPECTED_RUN_ID" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path, expected_sha, expected_run_id = sys.argv[1:]
+          certification = json.loads(Path(path).read_text(encoding="utf-8"))
+          required_targets = {
+              "mcp_frame",
+              "cdp_message",
+              "ax_dom",
+              "locator",
+              "url_policy",
+              "semantic_contracts",
+          }
+          if certification.get("git_sha") != expected_sha:
+              raise SystemExit("fuzz certification SHA does not match the release source")
+          if str(certification.get("run_id")) != expected_run_id:
+              raise SystemExit("fuzz certification run ID does not match the selected run")
+          if set(certification.get("required_targets", [])) != required_targets:
+              raise SystemExit("fuzz certification target set is incomplete")
+          print(f"exact-source fuzz certification verified: {expected_sha} / run {expected_run_id}")
+          PY
 
       - name: Dry-run crates.io publication
         run: |
@@ -210,6 +305,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
     needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -244,24 +340,9 @@ jobs:
           if [ "$status" = "404" ]; then cargo publish --package glass-dev --locked; else echo "glass-dev ${crate_version} already published"; fi
 
       - name: Smoke-test registry installations
-        shell: bash
         run: |
-          set -euo pipefail
           version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
-          for crate in glass-browser glass-dev; do
-            for attempt in $(seq 1 30); do
-              cargo search "$crate" --limit 1 | grep -F "\"$version\"" && break
-              if [ "$attempt" = "30" ]; then echo "$crate $version did not become searchable" >&2; exit 1; fi
-              sleep 10
-            done
-          done
-          root="$(mktemp -d)"
-          trap 'rm -rf "$root"' EXIT
-          cargo install glass-browser --version "=$version" --locked --root "$root/browser"
-          cargo install glass-dev --version "=$version" --locked --root "$root/dev"
-          "$root/browser/bin/glass-browser" --help >/dev/null
-          "$root/dev/bin/glass" --help >/dev/null
-          "$root/dev/bin/glass-browser" --help >/dev/null
+          scripts/smoke-registry-install.sh "$version"
 
       - name: Confirm existing crates.io publication
         if: needs.validate.outputs.already_published == 'true'
@@ -273,6 +354,7 @@ jobs:
       - validate
       - publish
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -322,6 +404,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.verify_release_records == true
     needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:

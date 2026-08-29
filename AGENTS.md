@@ -42,6 +42,12 @@ Use short, imperative, focused conventional commits, for example
 list validation commands, link the relevant issue, and include a terminal
 screenshot or recording for TUI changes.
 
+For documentation changes, follow the versioned [maintainer
+handbook](docs/maintainers/README.md). Every non-ignored Markdown file is
+covered by the repository documentation inventory; current guides must be
+routed from `docs/INDEX.md`, and historical or generated material must keep
+its scope explicit.
+
 ## Security & Configuration Tips
 
 CDP provides control over the browser. Use `--incognito` for disposable sessions, avoid committing screenshots or profile data, and do not log cookies, page secrets, or evaluated user input. Set `RUST_LOG` when debugging tracing output.

@@ -6,7 +6,9 @@ Install stable Rust with `rustfmt` and Clippy. Install Chrome or Chromium when
 you need to run browser tests.
 
 Read the [documentation style](docs/documentation-style.md) before you edit a
-user guide. Keep commands, field names, and status statements exact.
+user guide. Read the [maintainer handbook](docs/maintainers/README.md) before
+you add or classify a Markdown document. Keep commands, field names, and
+status statements exact.
 
 ## Build and test
 
@@ -51,12 +53,12 @@ Check documentation changes with:
 
 ```console
 git diff --check
-python3 scripts/check-documentation-coverage.py
-python3 scripts/check-documentation-depth.py
-python3 scripts/check-release-documentation.py
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
-cargo test --workspace --all-features --doc --locked
+scripts/release-certify.sh
 ```
+
+The common certification command runs the same source, documentation,
+packaging, and fuzz-workspace gates used by CI. Platform fixtures, client
+smokes, and dependency audits remain CI-owned checks.
 
 Build both debug binaries before the coverage check. Update the complete CLI,
 MCP, example, or Rust module reference in the same change that alters its

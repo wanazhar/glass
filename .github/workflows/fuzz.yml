@@ -3,12 +3,19 @@ name: Parser fuzz smoke
 on:
   pull_request:
   push:
+    branches:
+      - "**"
   schedule:
     - cron: "17 3 * * 1"
+
+concurrency:
+  group: fuzz-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   fuzz:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -16,6 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
+      - name: Cache Cargo fuzz dependencies and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-fuzz
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            fuzz/target
+          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-${{ matrix.target }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fuzz-
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.2 --locked
       - name: Run bounded fuzz target
@@ -26,3 +45,45 @@ jobs:
           else
             cargo fuzz run "${{ matrix.target }}" fuzz/corpus/${{ matrix.target }} -- -runs=512
           fi
+
+  release-certification:
+    if: github.event_name == 'push'
+    needs: fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Write exact-source fuzz certification
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          certification = {
+              "schema_version": 1,
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "git_sha": os.environ["GITHUB_SHA"],
+              "required_targets": [
+                  "mcp_frame",
+                  "cdp_message",
+                  "ax_dom",
+                  "locator",
+                  "url_policy",
+                  "semantic_contracts",
+              ],
+          }
+          Path("fuzz-certification.json").write_text(
+              json.dumps(certification, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload exact-source fuzz certification
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-certification-${{ github.sha }}
+          path: fuzz-certification.json
+          if-no-files-found: error
+          retention-days: 30

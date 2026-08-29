@@ -86,4 +86,7 @@ The coverage gate now exact-compares top-level and nested Clap inventories,
 measures the negotiated MCP tool count and serialized schema against the live
 binary, checks the pinned client fixture, and validates repository-local links.
 The depth gate accounts for every current guide and enforces 16 substantive
-contracts plus known-stale-text rejection.
+contracts plus known-stale-text rejection. The current maintainer handbook at
+`docs/maintainers/README.md` defines the document classes, source-of-truth
+rules, and review questions that keep future Markdown additions inside this
+audit contract.

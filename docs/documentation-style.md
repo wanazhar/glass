@@ -74,8 +74,9 @@ Use explicit status labels:
 - `Unsupported`: the project does not provide the item.
 - `Blocked`: a release gate is not complete.
 
-Review this file and the [documentation index](INDEX.md) when a public command,
-capability, platform, or release process changes.
+Review this file, the [maintainer handbook](maintainers/README.md), and the
+[documentation index](INDEX.md) when a public command, capability, platform,
+or release process changes.
 
 ## Validation
 
@@ -83,14 +84,11 @@ Build both debug binaries, then run the inventory/link gate whenever a public
 command, MCP tool, example, module, package README, or Markdown path changes:
 
 ```console
-cargo build --package glass-browser --all-features --locked
-cargo build --package glass-dev --all-features --locked
-python3 scripts/check-documentation-coverage.py
-python3 scripts/check-documentation-depth.py
-python3 scripts/check-release-documentation.py
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
-cargo test --workspace --all-features --doc --locked
+scripts/release-certify.sh
 ```
+
+The common certification command builds the package targets as part of its
+test gate and runs the same source/documentation checks used by CI.
 
 The coverage gate derives CLI names from both binaries, MCP names from the
 pinned client-conformance fixture, examples from Cargo source, and modules

@@ -87,6 +87,10 @@ DEPTH_CONTRACTS = {
         "## Presets", "## Hardened policy", "## Capability decisions",
         "## Confirmation", "## Decision matrix",
     ),
+    "docs/maintainers/README.md": (
+        "## Documentation contract", "## Add or change a document",
+        "## Validation", "## Review and ownership",
+    ),
     "docs/workflows.md": (
         "## Definition", "## Retry safety", "## Outputs and evidence",
         "## Checkpoints and resume", "## Authoring",
@@ -107,7 +111,19 @@ FORBIDDEN_CURRENT_TEXT = (
 
 
 def tracked_markdown() -> list[pathlib.Path]:
-    output = subprocess.check_output(["git", "ls-files", "*.md"], cwd=ROOT, text=True)
+    output = subprocess.check_output(
+        [
+            "git",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.md",
+        ],
+        cwd=ROOT,
+        text=True,
+    )
     return sorted(ROOT / value for value in output.splitlines())
 
 

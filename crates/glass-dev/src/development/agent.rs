@@ -1174,15 +1174,18 @@ fn propose_agent_file(
     summary: String,
     actor: Actor,
 ) -> DevelopmentResult<Value> {
+    let already_open = workspace.buffer(path).is_some();
     let _ = workspace.create_editor_checkpoint(format!("before-proposal:{path}"), actor.clone());
     if workspace.buffer(path).is_none() && workspace.open_buffer(path, actor.clone()).is_err() {
         workspace.edit_buffer(path, original.clone(), actor.clone())?;
     }
+    let pair_apply = already_open && original != proposed;
     let proposal = workspace.propose_editor_change(path, original, proposed, summary, actor)?;
     Ok(serde_json::json!({
         "path": path,
         "written": false,
         "proposed": true,
+        "pairApply": pair_apply,
         "proposalId": proposal.id,
         "state": "pending",
     }))
@@ -2701,6 +2704,7 @@ mod tests {
             .unwrap();
         assert_eq!(result["proposed"], true);
         assert_eq!(result["written"], false);
+        assert_eq!(result["pairApply"], false);
         assert_eq!(
             fs::read_to_string(root.join("note.txt")).unwrap(),
             "before\n"
@@ -2716,6 +2720,21 @@ mod tests {
             .accept_editor_proposal(&proposal.id, Actor::local())
             .unwrap();
         assert_eq!(workspace.buffer("note.txt").unwrap().content, "after\n");
+        let pair = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "propose-2".into(),
+                    name: "glass.file.write".into(),
+                    arguments: serde_json::json!({
+                        "path":"note.txt",
+                        "content":"streamed\n"
+                    }),
+                },
+                &confirmed,
+            )
+            .unwrap();
+        assert_eq!(pair["pairApply"], true);
         let _ = fs::remove_dir_all(root);
     }
 

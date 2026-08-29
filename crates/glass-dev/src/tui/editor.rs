@@ -208,6 +208,17 @@ pub struct EditorEngine {
     pub symbol_selection: usize,
     pub marks: std::collections::HashMap<char, Jump>,
     pub agent_caret: Option<Jump>,
+    pub pair_apply: Option<PairApply>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairApply {
+    pub proposal_id: String,
+    pub actor: String,
+    pub path: String,
+    pub original: String,
+    pub proposed: String,
+    pub revealed: usize,
 }
 
 impl EditorEngine {
@@ -286,6 +297,32 @@ impl EditorEngine {
         self.hunks = hunks;
         if self.hunk_index >= self.hunks.len() {
             self.hunk_index = self.hunks.len().saturating_sub(1);
+        }
+    }
+
+    pub fn begin_pair_apply(
+        &mut self,
+        proposal_id: String,
+        actor: String,
+        path: String,
+        original: String,
+        proposed: String,
+    ) {
+        self.pair_apply = Some(PairApply {
+            proposal_id,
+            actor,
+            path,
+            original,
+            proposed,
+            revealed: 0,
+        });
+        self.mode = EditorMode::Agent;
+    }
+
+    pub fn stop_pair_apply(&mut self) {
+        self.pair_apply = None;
+        if self.mode == EditorMode::Agent {
+            self.enter_normal();
         }
     }
 
@@ -369,6 +406,124 @@ pub fn textobject_selection(
         | TextObject::Comment { .. }
         | TextObject::Class { .. } => None,
     }
+}
+
+/// Stream `proposed` over `original` by revealing `revealed` bytes of the replacement.
+pub fn pair_apply_content(original: &str, proposed: &str, revealed: usize) -> String {
+    let prefix = common_prefix_len(original, proposed);
+    let suffix = common_suffix_len(original, proposed, prefix);
+    let new_mid = &proposed[prefix..proposed.len() - suffix];
+    let revealed = revealed.min(new_mid.len());
+    let mut revealed = revealed;
+    while revealed > 0 && !new_mid.is_char_boundary(revealed) {
+        revealed -= 1;
+    }
+    let mut content = String::with_capacity(original.len() + new_mid.len());
+    content.push_str(&original[..prefix]);
+    content.push_str(&new_mid[..revealed]);
+    content.push_str(&original[original.len() - suffix..]);
+    content
+}
+
+pub fn pair_apply_caret(original: &str, proposed: &str, revealed: usize) -> usize {
+    let prefix = common_prefix_len(original, proposed);
+    let content = pair_apply_content(original, proposed, revealed);
+    (prefix + revealed).min(content.len())
+}
+
+pub fn pair_apply_step(
+    original: &str,
+    proposed: &str,
+    revealed: usize,
+    step: usize,
+) -> (String, usize, bool) {
+    let prefix = common_prefix_len(original, proposed);
+    let suffix = common_suffix_len(original, proposed, prefix);
+    let new_mid_len = proposed.len() - prefix - suffix;
+    let mut next = (revealed + step.max(1)).min(new_mid_len);
+    while next < new_mid_len && !proposed.is_char_boundary(prefix + next) {
+        next += 1;
+    }
+    let content = pair_apply_content(original, proposed, next);
+    (content, next, next >= new_mid_len)
+}
+
+fn common_prefix_len(old: &str, new: &str) -> usize {
+    let mut prefix = old
+        .as_bytes()
+        .iter()
+        .zip(new.as_bytes())
+        .take_while(|(left, right)| left == right)
+        .count();
+    while prefix > 0 && (!old.is_char_boundary(prefix) || !new.is_char_boundary(prefix)) {
+        prefix -= 1;
+    }
+    prefix
+}
+
+fn common_suffix_len(old: &str, new: &str, prefix: usize) -> usize {
+    let old_rest = &old.as_bytes()[prefix..];
+    let new_rest = &new.as_bytes()[prefix..];
+    let mut suffix = old_rest
+        .iter()
+        .rev()
+        .zip(new_rest.iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    suffix = suffix.min(old.len() - prefix).min(new.len() - prefix);
+    while suffix > 0
+        && (!old.is_char_boundary(old.len() - suffix) || !new.is_char_boundary(new.len() - suffix))
+    {
+        suffix -= 1;
+    }
+    suffix
+}
+
+/// Local fill-in-the-middle candidate from the current buffer.
+pub fn local_fim(content: &str, offset: usize) -> Option<String> {
+    let offset = offset.min(content.len());
+    if !content.is_char_boundary(offset) {
+        return None;
+    }
+    let prefix = &content[..offset];
+    let token: String = prefix
+        .chars()
+        .rev()
+        .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if token.len() >= 2 {
+        let mut best: Option<&str> = None;
+        for candidate in
+            content.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        {
+            if candidate.starts_with(&token) && candidate.len() > token.len() {
+                let rest = &candidate[token.len()..];
+                if best.is_none_or(|current| rest.len() > current.len()) {
+                    best = Some(rest);
+                }
+            }
+        }
+        if let Some(rest) = best.filter(|rest| !rest.is_empty()) {
+            return Some(rest.to_string());
+        }
+    }
+    let line_start = prefix.rfind('\n').map(|index| index + 1).unwrap_or(0);
+    let line_prefix = content[line_start..offset].trim_start();
+    if line_prefix.len() >= 4 {
+        for line in content.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with(line_prefix) && trimmed.len() > line_prefix.len() {
+                let rest = &trimmed[line_prefix.len()..];
+                if !rest.is_empty() {
+                    return Some(rest.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn line_hunks(original: &str, proposed: &str) -> Vec<EditorHunk> {
@@ -900,5 +1055,29 @@ mod tests {
         assert_eq!(back.path, "a.rs");
         let forward = engine.jump_forward().expect("forward");
         assert_eq!(forward.path, "b.rs");
+    }
+
+    #[test]
+    fn pair_apply_reveals_the_replacement_then_matches_proposed() {
+        let original = "fn test() {}\n";
+        let proposed = "fn test(a: u32) {}\n";
+        let mut revealed = 0;
+        let mut content = original.to_string();
+        let mut done = false;
+        while !done {
+            let step = pair_apply_step(original, proposed, revealed, 8);
+            content = step.0;
+            revealed = step.1;
+            done = step.2;
+        }
+        assert_eq!(content, proposed);
+        assert!(pair_apply_content(original, proposed, 3).len() >= original.len());
+    }
+
+    #[test]
+    fn local_fim_completes_an_identifier_from_the_buffer() {
+        let source = "fn hello_world() {}\nfn hello_";
+        let ghost = local_fim(source, source.len()).expect("fim");
+        assert_eq!(ghost, "world");
     }
 }

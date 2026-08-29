@@ -1,8 +1,8 @@
 use super::command;
 use super::editor::{
     self as native, EditorEngine, EditorMode, GhostText, Motion, Operator, TextObject,
-    apply_motion, compile_prove_it, evidence_card, line_hunks, textobject_from_key,
-    textobject_selection,
+    apply_motion, compile_prove_it, evidence_card, line_hunks, local_fim, pair_apply_caret,
+    pair_apply_step, textobject_from_key, textobject_selection,
 };
 use super::parse::IncrementalSyntax;
 use crate::development::TextSelection;
@@ -2849,6 +2849,7 @@ impl DevTuiState {
             } else {
                 self.editor_engine.agent_caret = None;
             }
+            self.maybe_begin_pair_apply();
         } else {
             self.focused_editor_path.clear();
             self.focused_editor_content.clear();
@@ -2937,7 +2938,11 @@ impl DevTuiState {
             return;
         }
         match self.editor_engine.mode {
-            EditorMode::Insert | EditorMode::Select | EditorMode::Agent => {
+            EditorMode::Agent => {
+                self.editor_engine.stop_pair_apply();
+                self.status = "NORMAL · agent yielded · hjkl · i insert · Esc exit".into();
+            }
+            EditorMode::Insert | EditorMode::Select => {
                 self.editor_engine.enter_normal();
                 self.status =
                     "NORMAL · hjkl · d/c/y · iw/if/ia/ic/is · v select · i insert · Esc exit"
@@ -3134,6 +3139,10 @@ impl DevTuiState {
             self.toggle_editor_soft_wrap();
             return;
         }
+        if self.editor_engine.mode == EditorMode::Agent {
+            self.edit_agent_key(code, modifiers);
+            return;
+        }
         if self.editor_engine.mode == EditorMode::Insert
             || modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
             || modifiers.contains(crossterm::event::KeyModifiers::ALT)
@@ -3142,6 +3151,50 @@ impl DevTuiState {
             return;
         }
         self.edit_normal_key(code, modifiers);
+    }
+
+    fn edit_agent_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
+        match code {
+            crossterm::event::KeyCode::Enter => {
+                let id = self
+                    .editor_engine
+                    .pair_apply
+                    .as_ref()
+                    .map(|apply| apply.proposal_id.clone());
+                self.editor_engine.stop_pair_apply();
+                if let Some(id) = id {
+                    match self.accept_review_proposal(Some(&id)) {
+                        Ok(message) => self.status = message,
+                        Err(error) => self.status = error,
+                    }
+                }
+            }
+            crossterm::event::KeyCode::Char('n') => {
+                let id = self
+                    .editor_engine
+                    .pair_apply
+                    .as_ref()
+                    .map(|apply| apply.proposal_id.clone());
+                self.editor_engine.stop_pair_apply();
+                if let Some(id) = id {
+                    match self.reject_review_proposal(Some(&id)) {
+                        Ok(message) => self.status = message,
+                        Err(error) => self.status = error,
+                    }
+                }
+            }
+            crossterm::event::KeyCode::Esc => self.handle_editor_escape(),
+            _ => {
+                self.editor_engine.stop_pair_apply();
+                self.editor_engine.enter_insert();
+                self.edit_insert_or_chords(code, modifiers);
+            }
+        }
+        self.refresh_editor_projection();
     }
 
     fn edit_insert_or_chords(
@@ -3670,6 +3723,85 @@ impl DevTuiState {
         Ok(())
     }
 
+    fn maybe_begin_pair_apply(&mut self) {
+        if self.editor_engine.pair_apply.is_some() {
+            return;
+        }
+        let path = self.focused_editor_path.clone();
+        if path.is_empty() {
+            return;
+        }
+        let Some(proposal) = self
+            .editor_proposals
+            .iter()
+            .find(|item| {
+                item.path == path
+                    && item.state == crate::development::EditorProposalState::Pending
+                    && item.original == self.focused_editor_content
+                    && item.original != item.proposed
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.editor_engine.begin_pair_apply(
+            proposal.id,
+            proposal.actor.name.clone(),
+            proposal.path,
+            proposal.original,
+            proposal.proposed,
+        );
+        self.status = format!(
+            "AGENT · {} pair-apply · Enter accept · n reject · type to yield",
+            proposal.actor.name
+        );
+    }
+
+    pub fn tick_pair_apply(&mut self) -> bool {
+        let Some(apply) = self.editor_engine.pair_apply.clone() else {
+            return false;
+        };
+        if self.focused_editor_content == apply.proposed {
+            return false;
+        }
+        let (content, revealed, _done) =
+            pair_apply_step(&apply.original, &apply.proposed, apply.revealed, 24);
+        let path = apply.path.clone();
+        let actor = apply.actor.clone();
+        let _ = self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .edit_buffer(
+                    &path,
+                    content.clone(),
+                    crate::development::Actor::embedded(),
+                )
+                .map(|_| ())
+        });
+        if let Some(live) = self.editor_engine.pair_apply.as_mut() {
+            live.revealed = revealed;
+        }
+        self.focused_editor_content = content.clone();
+        self.focused_editor_dirty = true;
+        let caret_offset = pair_apply_caret(&apply.original, &apply.proposed, revealed);
+        if let Some(position) =
+            crate::development::editor::text_position_at_offset(&content, caret_offset)
+        {
+            self.focused_editor_line = position.line;
+            self.focused_editor_column = position.column;
+            self.editor_engine.agent_caret = Some(native::Jump {
+                path,
+                line: position.line,
+                column: position.column,
+            });
+            let _ = self.set_editor_cursor(&self.focused_editor_path.clone(), position, false);
+        }
+        self.editor_engine.mode = EditorMode::Agent;
+        self.status = format!("AGENT · {actor} pair-apply · Enter accept · n reject");
+        self.ensure_editor_cursor_visible();
+        true
+    }
+
     pub fn editor_gutter_marks(&self) -> Vec<(u32, native::GutterMark)> {
         let mut marks = Vec::new();
         let path = &self.focused_editor_path;
@@ -3920,6 +4052,17 @@ impl DevTuiState {
 
     pub fn request_ghost_from_line(&mut self) {
         let path = self.focused_editor_path.clone();
+        if let Some(offset) = crate::development::editor::text_position_offset(
+            &self.focused_editor_content,
+            crate::development::TextPosition {
+                line: self.focused_editor_line.max(1),
+                column: self.focused_editor_column.max(1),
+            },
+        ) && let Some(text) = local_fim(&self.focused_editor_content, offset)
+        {
+            self.editor_engine.ghost = Some(GhostText { text });
+            return;
+        }
         let line = self.focused_editor_line.saturating_sub(1);
         let character = self.focused_editor_column.saturating_sub(1);
         if let Some(text) = self.lsp_ghost_insert(&path, line, character) {

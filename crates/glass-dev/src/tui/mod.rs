@@ -863,6 +863,11 @@ pub fn run(
             state.git_diff_requested = false;
             state.queue_git_diff(&mut worker);
         }
+        if state.tick_pair_apply() {
+            last_render = Instant::now()
+                .checked_sub(Duration::from_millis(33))
+                .unwrap_or_else(Instant::now);
+        }
         if last_refresh.elapsed() >= Duration::from_millis(250) {
             worker.request_refresh();
             last_refresh = Instant::now();

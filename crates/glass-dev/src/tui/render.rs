@@ -353,9 +353,10 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
     let editor_block = surface_block(" SOURCE ", ACCENT_BRIGHT);
     let editor_inner = editor_block.inner(rows[1]);
     let marks = editor_mark_glyphs(state);
+    let notes = state.editor_source_notes();
     let decorations = file_view::EditorDecorations {
         marks: &marks,
-        inlays: &state.editor_inlays,
+        inlays: &notes,
     };
     let wrapped_cursor = if state.editor_soft_wrap {
         let wrapped = file_view::render_editable_source_wrapped(
@@ -495,7 +496,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         frame.render_widget(
             Paragraph::new(compact_multiline(overlay, modal.width.saturating_sub(2)))
                 .wrap(Wrap { trim: false })
-                .block(surface_block(" HOVER / DEFINITION ", ACCENT)),
+                .block(surface_block(" NOTE ", ACCENT)),
             modal,
         );
     }
@@ -967,9 +968,10 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .split(rows[1]);
     render_surface(frame, state, columns[0]);
     let marks = editor_mark_glyphs(state);
+    let notes = state.editor_source_notes();
     let decorations = file_view::EditorDecorations {
         marks: &marks,
-        inlays: &state.editor_inlays,
+        inlays: &notes,
     };
     let source = file_view::render_editable_source(
         &state.focused_editor_path,

@@ -264,6 +264,7 @@ pub struct DevTuiState {
     pub editor_comments: Vec<crate::development::EditorComment>,
     pub editor_proposals: Vec<crate::development::EditorProposal>,
     pub editor_checkpoints: Vec<crate::development::EditorCheckpoint>,
+    pub editor_diagnostics: Vec<crate::development::LanguageDiagnostic>,
     pub editor_inlays: Vec<(u32, String)>,
     pub last_crew_wake: Option<String>,
     pub agents: String,
@@ -497,6 +498,7 @@ impl DevTuiState {
             editor_comments: Vec::new(),
             editor_proposals: Vec::new(),
             editor_checkpoints: Vec::new(),
+            editor_diagnostics: Vec::new(),
             editor_inlays: Vec::new(),
             last_crew_wake: None,
             status: initial_status,
@@ -2459,6 +2461,10 @@ impl DevTuiState {
                         self.editor_inlays =
                             parse_inlay_hints(value.get("result").unwrap_or(&value));
                     }
+                    if result.tool == "glass.lsp.diagnostics" {
+                        self.editor_diagnostics =
+                            parse_editor_diagnostics(value.get("result").unwrap_or(&value));
+                    }
                     self.editor = if result.tool == "glass.lsp.diagnostics" {
                         super::projection::lsp(Some(&value))
                     } else {
@@ -2952,7 +2958,7 @@ impl DevTuiState {
     }
 
     pub fn refresh_editor_projection(&mut self) {
-        let (buffers, comments, proposals, checkpoints) = self
+        let (buffers, comments, proposals, checkpoints, diagnostics) = self
             .workspace
             .lock()
             .map(|workspace| {
@@ -2961,6 +2967,7 @@ impl DevTuiState {
                     workspace.project().editor_comments(None),
                     workspace.project().editor_proposals(),
                     workspace.project().editor_checkpoints(),
+                    workspace.project().diagnostics().clone(),
                 )
             })
             .unwrap_or_default();
@@ -2974,6 +2981,7 @@ impl DevTuiState {
             self.focused_editor_line = buffer.cursor_line;
             self.focused_editor_column = buffer.cursor_column;
             self.focused_editor_selection = buffer.selection.clone();
+            self.editor_diagnostics = diagnostics.get(&buffer.path).cloned().unwrap_or_default();
             self.ensure_editor_cursor_visible();
             let path = self.focused_editor_path.clone();
             let content = self.focused_editor_content.clone();
@@ -3004,6 +3012,7 @@ impl DevTuiState {
             self.editor_scroll_line = 0;
             self.editor_scroll_column = 0;
             self.editor_inlays.clear();
+            self.editor_diagnostics.clear();
         }
         self.editor = format_editor_buffers(&buffers);
     }
@@ -3236,9 +3245,10 @@ impl DevTuiState {
                 .into_iter()
                 .map(|(line, mark)| (line, mark.glyph()))
                 .collect::<Vec<_>>();
+            let notes = self.editor_source_notes();
             let decorations = super::file_view::EditorDecorations {
                 marks: &marks,
-                inlays: &self.editor_inlays,
+                inlays: &notes,
             };
             let wrapped = super::file_view::render_editable_source_wrapped(
                 &self.focused_editor_path,
@@ -3660,6 +3670,10 @@ impl DevTuiState {
                 self.editor_engine.pending_g = false;
                 self.jump_page_from_source();
             }
+            crossterm::event::KeyCode::Char('c') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.show_comment_thread();
+            }
             crossterm::event::KeyCode::Char('d') => {
                 self.editor_engine.pending_operator = Some(Operator::Delete);
             }
@@ -3978,6 +3992,28 @@ impl DevTuiState {
     pub fn editor_gutter_marks(&self) -> Vec<(u32, native::GutterMark)> {
         let mut marks = Vec::new();
         let path = &self.focused_editor_path;
+        for diagnostic in &self.editor_diagnostics {
+            if diagnostic_matches_path(diagnostic, path) {
+                marks.push((
+                    diagnostic.start.line.saturating_add(1),
+                    native::GutterMark::Lsp,
+                ));
+            }
+        }
+        let page_lines = self.page_source_lines(path);
+        match self.last_proof_ok {
+            Some(true) => {
+                for line in &page_lines {
+                    marks.push((*line, native::GutterMark::Proof));
+                }
+            }
+            Some(false) => {
+                for line in &page_lines {
+                    marks.push((*line, native::GutterMark::Lsp));
+                }
+            }
+            None => {}
+        }
         for hunk in &self.editor_engine.hunks {
             marks.push((hunk.start_line, native::GutterMark::Git));
         }
@@ -3986,10 +4022,8 @@ impl DevTuiState {
         {
             marks.push((caret.line, native::GutterMark::Agent));
         }
-        if let Ok(workspace) = self.workspace.try_lock() {
-            for link in workspace.project().graph().entities_for_source(path, None) {
-                marks.push((link.source.start_line, native::GutterMark::Page));
-            }
+        for line in page_lines {
+            marks.push((line, native::GutterMark::Page));
         }
         for comment in &self.editor_comments {
             if comment.state == crate::development::EditorCommentState::Open
@@ -3998,12 +4032,80 @@ impl DevTuiState {
                 marks.push((comment.start_line, native::GutterMark::Comment));
             }
         }
-        if self.last_proof_ok == Some(true) {
-            marks.push((self.focused_editor_line.max(1), native::GutterMark::Proof));
-        } else if self.last_proof_ok == Some(false) {
-            marks.push((self.focused_editor_line.max(1), native::GutterMark::Lsp));
-        }
         marks
+    }
+
+    pub fn editor_source_notes(&self) -> Vec<(u32, String)> {
+        let mut by_line = std::collections::BTreeMap::<u32, Vec<String>>::new();
+        for (line, hint) in &self.editor_inlays {
+            by_line.entry(*line).or_default().push(hint.clone());
+        }
+        let path = &self.focused_editor_path;
+        for diagnostic in &self.editor_diagnostics {
+            if diagnostic_matches_path(diagnostic, path) {
+                by_line
+                    .entry(diagnostic.start.line.saturating_add(1))
+                    .or_default()
+                    .push(format!("! {}", truncate_note(&diagnostic.message)));
+            }
+        }
+        for comment in &self.editor_comments {
+            if comment.state == crate::development::EditorCommentState::Open
+                && (path.is_empty() || comment.path == *path)
+            {
+                by_line
+                    .entry(comment.start_line)
+                    .or_default()
+                    .push(format!("# {}", truncate_note(&comment.text)));
+            }
+        }
+        by_line
+            .into_iter()
+            .map(|(line, parts)| (line, parts.join("  ")))
+            .collect()
+    }
+
+    fn page_source_lines(&self, path: &str) -> Vec<u32> {
+        self.workspace
+            .try_lock()
+            .ok()
+            .map(|workspace| {
+                workspace
+                    .project()
+                    .graph()
+                    .entities_for_source(path, None)
+                    .into_iter()
+                    .map(|link| link.source.start_line)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn show_comment_thread(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line.max(1);
+        let thread = self
+            .editor_comments
+            .iter()
+            .filter(|comment| {
+                comment.state == crate::development::EditorCommentState::Open
+                    && (path.is_empty() || comment.path == path)
+                    && line >= comment.start_line
+                    && line <= comment.end_line
+            })
+            .map(|comment| {
+                format!(
+                    "{} · {}:{}\n  {}",
+                    comment.actor.name, comment.path, comment.start_line, comment.text
+                )
+            })
+            .collect::<Vec<_>>();
+        if thread.is_empty() {
+            self.status = "No open comment on this line · :editor comment-selection".into();
+            return;
+        }
+        self.editor_engine.overlay = Some(thread.join("\n\n"));
+        self.status = "Comment thread · Esc closes".into();
     }
 
     fn refresh_editor_hunks(&mut self) {
@@ -5954,6 +6056,41 @@ impl DevTuiState {
     }
 }
 
+fn diagnostic_matches_path(
+    diagnostic: &crate::development::LanguageDiagnostic,
+    path: &str,
+) -> bool {
+    path.is_empty()
+        || diagnostic.path == path
+        || diagnostic.path.ends_with(path)
+        || path.ends_with(&diagnostic.path)
+}
+
+fn truncate_note(text: &str) -> String {
+    let text = text.trim().replace('\n', " ");
+    if text.chars().count() <= 80 {
+        text
+    } else {
+        format!("{}…", text.chars().take(79).collect::<String>())
+    }
+}
+
+fn parse_editor_diagnostics(
+    value: &serde_json::Value,
+) -> Vec<crate::development::LanguageDiagnostic> {
+    if let Ok(list) =
+        serde_json::from_value::<Vec<crate::development::LanguageDiagnostic>>(value.clone())
+    {
+        return list;
+    }
+    value
+        .get("diagnostics")
+        .and_then(|item| {
+            serde_json::from_value::<Vec<crate::development::LanguageDiagnostic>>(item.clone()).ok()
+        })
+        .unwrap_or_default()
+}
+
 fn format_editor_buffers(buffers: &[crate::development::EditorBuffer]) -> String {
     if buffers.is_empty() {
         return "No file open. Select a file below and press Enter to open the full-screen editor."
@@ -6648,6 +6785,83 @@ mod tests {
             });
         let marks = state.editor_gutter_marks();
         assert!(marks.contains(&(4, native::GutterMark::Comment)));
+        let notes = state.editor_source_notes();
+        assert!(
+            notes
+                .iter()
+                .any(|(line, note)| *line == 4 && note.contains("simplify this"))
+        );
+        state.focused_editor_line = 4;
+        state.show_comment_thread();
+        assert!(
+            state
+                .editor_engine
+                .overlay
+                .as_deref()
+                .is_some_and(|overlay| overlay.contains("simplify this"))
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn gutter_marks_diagnostics_and_proof_on_source_lines() {
+        let root = std::env::temp_dir().join(format!("glass-gutter-proof-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\nfn extra() {}\n")
+            .expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.focused_editor_path = "src/main.rs".into();
+        state.focused_editor_line = 2;
+        state
+            .editor_diagnostics
+            .push(crate::development::LanguageDiagnostic {
+                path: "src/main.rs".into(),
+                start: crate::development::DiagnosticPosition {
+                    line: 0,
+                    character: 3,
+                },
+                end: crate::development::DiagnosticPosition {
+                    line: 0,
+                    character: 7,
+                },
+                severity: Some(1),
+                code: None,
+                source: Some("rustc".into()),
+                message: "unused variable".into(),
+            });
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .link_runtime_source(
+                "action.main",
+                "src/main.rs",
+                1,
+                1,
+                crate::development::LinkProvenance::ExplicitMarker,
+                "handler",
+                1.0,
+                crate::development::Actor::local(),
+            )
+            .expect("link");
+        state.last_proof_ok = Some(true);
+        let marks = state.editor_gutter_marks();
+        assert!(
+            marks.contains(&(1, native::GutterMark::Lsp)),
+            "diagnostic is on LSP line 0 → editor line 1: {marks:?}"
+        );
+        assert!(
+            marks.contains(&(1, native::GutterMark::Proof)),
+            "proof sits on the handler, not the cursor: {marks:?}"
+        );
+        assert!(!marks.contains(&(2, native::GutterMark::Proof)));
+        let notes = state.editor_source_notes();
+        assert!(
+            notes
+                .iter()
+                .any(|(line, note)| *line == 1 && note.contains("unused variable"))
+        );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

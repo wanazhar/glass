@@ -207,6 +207,8 @@ current user instructions.
 
 ## Maintainer and release guides
 
+- [Maintainer handbook](maintainers/README.md) — the versioned documentation,
+  ownership, validation, review, and release-process wiki.
 - [Documentation style](documentation-style.md) — terminology, procedure, and
   status conventions.
 - [Contributing](../CONTRIBUTING.md) — source workflow, checks, security, and

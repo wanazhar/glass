@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Validate release truth markers in the current user-facing documentation."""
+"""Validate current release truth in Glass's repository documentation.
 
+The validator intentionally derives the current release from Cargo metadata.
+It also records every occurrence of the previous published version so a
+release audit can distinguish historical context from a stale current claim.
+"""
+
+from __future__ import annotations
+
+import argparse
 import json
 import pathlib
 import re
@@ -8,92 +16,18 @@ import subprocess
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-REQUIRED_MARKERS = {
-    "README.md": [
-        "| `glass-browser 0.3.14`, `glass-dev 0.3.14` | Current release source; public registry state is recorded in release evidence |",
-        "docs/feature-parity.md",
+VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+
+HISTORICAL_PATH_PARTS = frozenset({"design", "migration", "plan", "releases"})
+GENERATED_PATH_PARTS = frozenset({"assets", "fixtures"})
+RECORD_DOCUMENTS = frozenset(
+    {
+        "CHANGELOG.md",
+        "docs/release-checklist.md",
         "docs/release-evidence.md",
-    ],
-    "docs/INDEX.md": [
-        "[Glass 0.3.14 release notes](releases/0.3.14.md)",
-        "[Migrate from 0.3.13 to 0.3.14](migration/0.3.14.md)",
-        "[Glass 0.3.13 release notes](releases/0.3.13.md)",
-        "[Migrate from 0.3.12 to 0.3.13](migration/0.3.13.md)",
-        "[Glass 0.3.12 release notes](releases/0.3.12.md)",
-        "[Migrate from 0.3.11 to 0.3.12](migration/0.3.12.md)",
-    ],
-    "CHANGELOG.md": [
-        "## [0.3.3] - 2026-08-10",
-        "## [0.3.4] - 2026-08-10",
-        "## [0.3.2] - 2026-08-08",
-        "## [Unreleased]",
-    ],
-    "docs/releases/0.3.12.md": [
-        "## Major features",
-        "## Breaking changes",
-        "## Security",
-        "## Installation and migration",
-        "## Known limitations",
-        "## Validation evidence",
-    ],
-    "docs/releases/0.3.13.md": [
-        "## Major features",
-        "## Breaking changes",
-        "## Security",
-        "## Installation and migration",
-        "## Known limitations",
-        "## Validation evidence",
-    ],
-    "docs/releases/0.3.14.md": [
-        "## Major features",
-        "## Breaking changes",
-        "## Security",
-        "## Installation and migration",
-        "## Known limitations",
-        "## Validation evidence",
-    ],
-    "docs/plan/README.md": [
-        "[ir-030-081](tasks/ir-030-081.md)",
-        "[ir-030-089](tasks/ir-030-089.md)",
-        "`glass-browser 0.3.0` is published on crates.io",
-        "release delivery record are complete",
-    ],
-    "docs/release-checklist.md": [
-        "release checkout is `glass-browser` and `glass-dev` version `0.3.14`",
-        "## 0.3.2 release record",
-        "GitHub release binaries, checksum manifests",
-    ],
-    "docs/installation.md": [
-        "## Fully uninstall Glass",
-        "cargo uninstall glass-dev",
-        "cargo uninstall glass-browser",
-        "`$GLASS_CONFIG_HOME/glass`",
-    ],
-    "docs/feature-parity.md": [
-        "0.3.0 release baseline",
-        "runtime verification",
-        "feature parity matrix](feature-parity.json)",
-    ],
-    "docs/release-evidence.md": [
-        "## 0.3.2 publication evidence",
-        "## 0.3.3 release evidence",
-        "## 0.3.4 release evidence",
-        "## 0.3.12 release evidence",
-        "## 0.3.13 release evidence",
-        "## 0.3.14 release evidence",
-        "Release workflow run 31254928934",
-        "GitHub Release v0.3.2",
-        "`feature-parity.json`",
-        "cargo publish --locked --dry-run",
-        "`glass-browser 0.3.0` to crates.io",
-        "85 advertised MCP tools",
-    ],
-    "docs/plan/analysis/release-audit-028.md": [
-        "`0.2.0` publication boundary has been crossed",
-        "`0.2.7 published; source-only GitHub Release",
-        "`0.2.8 local development; not ready for",
-    ],
-}
+    }
+)
+
 FORBIDDEN_MARKERS = (
     "0.2.0 is unpublished",
     "0.2.0 is not published",
@@ -115,23 +49,7 @@ FORBIDDEN_CURRENT_RELEASE_PATTERNS = (
     ),
 )
 FORBIDDEN_PRERELEASE_PATTERNS = (
-    re.compile(
-        r"\b0\.3\.1-(?:alpha|beta|rc)[.0-9-]*\b",
-        re.IGNORECASE,
-    ),
-)
-
-PUBLIC_FACING_DOCS = (
-    "README.md",
-    "CHANGELOG.md",
-    "docs/INDEX.md",
-    "docs/ci-platform-certification.md",
-    "docs/experimental-capabilities.md",
-    "docs/extensions.md",
-    "docs/feature-parity.md",
-    "docs/installation.md",
-    "docs/release-checklist.md",
-    "docs/release-evidence.md",
+    re.compile(r"\b0\.3\.1-(?:alpha|beta|rc)[.0-9-]*\b", re.IGNORECASE),
 )
 FORBIDDEN_PUBLIC_MARKERS = (
     "this machine",
@@ -150,97 +68,491 @@ FORBIDDEN_ARCHITECTURE_PHRASES = (
     "real pi rpc",
     "0.3.4 source line",
 )
+SEMANTIC_AUDIT_TERMS = (
+    "last publication",
+    "latest published",
+    "current release",
+    "current version",
+    "current users",
+    "docs.rs",
+    "published",
+    "publication",
+    "shortcut",
+    "key bindings?",
+    "Ctrl-",
+    "Alt-",
+)
+
+# These markers are release-independent. Versioned current-release markers are
+# generated by required_markers() below so the validator does not need a code
+# edit for every release.
+STATIC_REQUIRED_MARKERS = {
+    "README.md": [
+        "docs/feature-parity.md",
+        "docs/release-evidence.md",
+    ],
+    "docs/plan/README.md": [
+        "[ir-030-081](tasks/ir-030-081.md)",
+        "[ir-030-089](tasks/ir-030-089.md)",
+        "`glass-browser 0.3.0` is published on crates.io",
+        "release delivery record are complete",
+    ],
+    "docs/installation.md": [
+        "## Fully uninstall Glass",
+        "cargo uninstall glass-dev",
+        "cargo uninstall glass-browser",
+        "`$GLASS_CONFIG_HOME/glass`",
+    ],
+    "docs/feature-parity.md": [
+        "0.3.0 release baseline",
+        "runtime verification",
+        "feature parity matrix](feature-parity.json)",
+    ],
+    "docs/release-evidence.md": [
+        "## 0.3.2 publication evidence",
+        "## 0.3.3 release evidence",
+        "## 0.3.4 release evidence",
+        "## 0.3.12 release evidence",
+        "## 0.3.13 release evidence",
+        "Release workflow run 31254928934",
+        "GitHub Release v0.3.2",
+        "`feature-parity.json`",
+        "cargo publish --locked --dry-run",
+        "`glass-browser 0.3.0` to crates.io",
+        "85 advertised MCP tools",
+    ],
+    "docs/plan/analysis/release-audit-028.md": [
+        "`0.2.0` publication boundary has been crossed",
+        "`0.2.7 published; source-only GitHub Release",
+        "`0.2.8 local development; not ready for",
+    ],
+}
 
 
 def fail(message: str) -> None:
     raise SystemExit(f"release documentation check failed: {message}")
 
 
-def main() -> None:
+def normalize_version(value: str) -> str:
+    """Return a stable semver without a leading ``v`` or fail explicitly."""
+
+    match = VERSION_PATTERN.fullmatch(value.strip())
+    if not match:
+        raise ValueError(f"expected stable X.Y.Z version, got {value!r}")
+    return ".".join(match.groups())
+
+
+def version_tuple(value: str) -> tuple[int, int, int]:
+    match = VERSION_PATTERN.fullmatch(value)
+    if not match:
+        raise ValueError(f"invalid stable version {value!r}")
+    return tuple(int(part) for part in match.groups())
+
+
+def read_package_versions(root: pathlib.Path = ROOT) -> dict[str, str]:
     try:
         metadata = json.loads(
             subprocess.check_output(
-                ["cargo", "metadata", "--no-deps", "--locked", "--format-version", "1"],
-                cwd=ROOT,
+                [
+                    "cargo",
+                    "metadata",
+                    "--no-deps",
+                    "--locked",
+                    "--format-version",
+                    "1",
+                ],
+                cwd=root,
                 text=True,
             )
         )
-        package_version = next(
-            package["version"]
+        return {
+            package["name"]: package["version"]
             for package in metadata["packages"]
-            if package["name"] == "glass-browser"
+            if package["name"] in {"glass-browser", "glass-dev"}
+        }
+    except (
+        OSError,
+        subprocess.CalledProcessError,
+        KeyError,
+        json.JSONDecodeError,
+    ) as error:
+        fail(f"cannot read package versions: {error}")
+
+
+def derive_previous_version(
+    current_version: str, root: pathlib.Path = ROOT
+) -> str | None:
+    """Find the newest stable tag older than the current package version."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "tag", "--list", "v*", "--sort=-version:refname"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
         )
-    except (OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError, StopIteration) as error:
-        fail(f"cannot read package version: {error}")
-    if package_version != "0.3.14":
-        fail(f"release checkout must use package version 0.3.14, not {package_version}")
-    marker_sets = REQUIRED_MARKERS
-    failures = []
-    for relative, markers in marker_sets.items():
-        path = ROOT / relative
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+
+    current = version_tuple(current_version)
+    candidates: list[tuple[tuple[int, int, int], str]] = []
+    for raw_tag in completed.stdout.splitlines():
+        try:
+            version = normalize_version(raw_tag)
+        except ValueError:
+            continue
+        parsed = version_tuple(version)
+        if parsed < current:
+            candidates.append((parsed, version))
+    return max(candidates)[1] if candidates else None
+
+
+def discover_markdown_documents(root: pathlib.Path = ROOT) -> list[pathlib.Path]:
+    """Discover every non-ignored Markdown document in the checkout.
+
+    The release audit must not depend on a hand-maintained list of document
+    paths. ``check-documentation-coverage.py`` uses the same Git inventory, so
+    a new Markdown file is automatically included in both the link and
+    release-truth checks.
+    """
+
+    try:
+        output = subprocess.check_output(
+            [
+                "git",
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "--",
+                "*.md",
+            ],
+            cwd=root,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        fail(f"cannot enumerate Markdown documents: {error}")
+    return sorted(
+        root / relative
+        for relative in output.splitlines()
+        if relative and (root / relative).is_file()
+    )
+
+
+def relative_path(path: pathlib.Path, root: pathlib.Path = ROOT) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def document_classification(relative: str) -> str:
+    if relative in RECORD_DOCUMENTS:
+        return "record"
+    parts = pathlib.PurePosixPath(relative).parts
+    if any(part in HISTORICAL_PATH_PARTS for part in parts):
+        return "historical"
+    if parts[:2] == ("benchmarks", "results"):
+        return "historical"
+    if any(part in GENERATED_PATH_PARTS for part in parts):
+        return "generated"
+    return "current"
+
+
+def required_markers(
+    current_version: str, previous_version: str | None
+) -> dict[str, list[str]]:
+    markers: dict[str, list[str]] = {
+        relative: list(values) for relative, values in STATIC_REQUIRED_MARKERS.items()
+    }
+    markers.update(
+        {
+            "README.md": [
+                *markers.get("README.md", []),
+                f"| `glass-browser {current_version}`, `glass-dev {current_version}` |",
+            ],
+            "CHANGELOG.md": ["## [Unreleased]", f"## [{current_version}]"],
+            "docs/INDEX.md": [
+                f"[Glass {current_version} release notes](releases/{current_version}.md)",
+            ],
+            f"docs/releases/{current_version}.md": [
+                "## Major features",
+                "## Breaking changes",
+                "## Security",
+                "## Installation and migration",
+                "## Known limitations",
+                "## Validation evidence",
+            ],
+            f"docs/migration/{current_version}.md": [
+                *(
+                    [f"# Migrate from {previous_version} to {current_version}"]
+                    if previous_version
+                    else [f"# Migrate to {current_version}"]
+                ),
+            ],
+            "docs/release-checklist.md": [
+                f"release checkout is `glass-browser` and `glass-dev` version `{current_version}`",
+                f"## {current_version} release",
+            ],
+            "docs/release-evidence.md": [
+                f"## {current_version} release evidence",
+                f"VERSION={current_version}",
+            ],
+        }
+    )
+    return markers
+
+
+def current_claim_patterns(previous_version: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
+    escaped = re.escape(previous_version)
+    return (
+        (
+            "docs.rs reference to the previous published version",
+            re.compile(
+                rf"(?:\bdocs\.rs\b[^\n]*\b{escaped}\b|\b{escaped}\b[^\n]*\bdocs\.rs\b)",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "current/latest/last release claim uses the previous version",
+            re.compile(
+                rf"(?:\b(?:current|latest|last)\b[^\n]*"
+                rf"\b(?:release|version|publication|published)\b[^\n]*\b{escaped}\b|"
+                rf"\b{escaped}\b[^\n]*\b(?:current|latest|last)\b[^\n]*"
+                rf"\b(?:release|version|publication|published)\b)",
+                re.IGNORECASE,
+            ),
+        ),
+    )
+
+
+def find_previous_version_hits(
+    relative: str,
+    text: str,
+    previous_version: str | None,
+) -> list[dict[str, object]]:
+    if not previous_version:
+        return []
+    patterns = current_claim_patterns(previous_version)
+    classification = document_classification(relative)
+    hits: list[dict[str, object]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if previous_version not in line:
+            continue
+        reasons = [name for name, pattern in patterns if pattern.search(line)]
+        hits.append(
+            {
+                "path": relative,
+                "line": line_number,
+                "text": line,
+                "classification": classification,
+                "current_claim": bool(reasons) and classification == "current",
+                "reasons": reasons,
+            }
+        )
+    return hits
+
+
+def find_semantic_audit_hits(
+    relative: str,
+    text: str,
+    previous_version: str | None,
+) -> list[dict[str, object]]:
+    terms = [re.escape(term) for term in SEMANTIC_AUDIT_TERMS]
+    if previous_version:
+        terms.insert(0, re.escape(previous_version))
+    pattern = re.compile("|".join(terms), re.IGNORECASE)
+    classification = document_classification(relative)
+    return [
+        {
+            "path": relative,
+            "line": line_number,
+            "text": line,
+            "classification": classification,
+        }
+        for line_number, line in enumerate(text.splitlines(), start=1)
+        if pattern.search(line)
+    ]
+
+
+def build_report(
+    root: pathlib.Path = ROOT,
+    previous_version: str | None = None,
+) -> dict[str, object]:
+    package_versions = read_package_versions(root)
+    try:
+        current_version = normalize_version(package_versions["glass-browser"])
+        dev_version = normalize_version(package_versions["glass-dev"])
+    except (KeyError, ValueError) as error:
+        fail(f"cannot determine stable package version: {error}")
+    if current_version != dev_version:
+        fail(
+            "glass-browser and glass-dev package versions differ: "
+            f"{current_version} != {dev_version}"
+        )
+
+    if previous_version is None:
+        previous_version = derive_previous_version(current_version, root)
+    else:
+        try:
+            previous_version = normalize_version(previous_version)
+        except ValueError as error:
+            fail(str(error))
+
+    failures: list[str] = []
+    markers = required_markers(current_version, previous_version)
+    marker_results: list[dict[str, object]] = []
+    for relative, required in markers.items():
+        path = root / relative
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as error:
-            fail(f"cannot read {relative}: {error}")
-        for marker in markers:
-            if marker not in text:
-                failures.append(f"{relative} is missing {marker!r}")
+            failures.append(f"{relative} cannot be read: {error}")
+            continue
+        missing = [marker for marker in required if marker not in text]
+        marker_results.append(
+            {"path": relative, "required": len(required), "missing": missing}
+        )
+        failures.extend(f"{relative} is missing {marker!r}" for marker in missing)
         lowered = text.lower()
         for pattern in FORBIDDEN_PRERELEASE_PATTERNS:
             if pattern.search(lowered):
-                failures.append(
-                    f"{relative} contains stale 0.3.1 prerelease metadata"
-                )
+                failures.append(f"{relative} contains stale 0.3.1 prerelease metadata")
         for marker in FORBIDDEN_MARKERS:
             if marker in lowered:
                 failures.append(f"{relative} contains stale release claim {marker!r}")
-        if relative not in PUBLIC_FACING_DOCS:
+
+    markdown_documents = discover_markdown_documents(root)
+    previous_version_hits: list[dict[str, object]] = []
+    semantic_audit_hits: list[dict[str, object]] = []
+    for path in markdown_documents:
+        relative = relative_path(path, root)
+        text = path.read_text(encoding="utf-8")
+        classification = document_classification(relative)
+        hits = find_previous_version_hits(relative, text, previous_version)
+        previous_version_hits.extend(hits)
+        semantic_audit_hits.extend(
+            find_semantic_audit_hits(relative, text, previous_version)
+        )
+        lowered = text.lower()
+        if classification == "current":
+            for pattern in FORBIDDEN_PRERELEASE_PATTERNS:
+                if pattern.search(lowered):
+                    failures.append(
+                        f"{relative} contains stale 0.3.1 prerelease metadata"
+                    )
             for pattern in FORBIDDEN_CURRENT_RELEASE_PATTERNS:
                 if pattern.search(lowered):
                     failures.append(
-                        f"{relative} contains current-release claim for 0.2.8"
+                        f"{relative} contains stale current-release metadata for 0.2.8"
                     )
-    for relative in PUBLIC_FACING_DOCS:
-        path = ROOT / relative
-        try:
-            lowered = path.read_text(encoding="utf-8").lower()
-        except OSError as error:
-            fail(f"cannot read {relative}: {error}")
-        for pattern in FORBIDDEN_PRERELEASE_PATTERNS:
-            if pattern.search(lowered):
-                failures.append(
-                    f"{relative} contains stale 0.3.1 prerelease metadata"
-                )
-        for pattern in FORBIDDEN_CURRENT_RELEASE_PATTERNS:
-            if pattern.search(lowered):
-                failures.append(
-                    f"{relative} contains current-release claim for 0.2.8"
-                )
-        for marker in FORBIDDEN_PUBLIC_MARKERS:
-            if marker in lowered:
-                failures.append(
-                    f"{relative} contains machine-scoped public wording {marker!r}"
-                )
-    architecture_docs = [ROOT / "README.md", ROOT / "crates/glass-dev/README.md"]
-    architecture_docs.extend(
-        path
-        for path in (ROOT / "docs").rglob("*.md")
-        if "plan" not in path.relative_to(ROOT).parts
-    )
-    for path in architecture_docs:
-        relative = path.relative_to(ROOT)
-        try:
-            lowered = path.read_text(encoding="utf-8").lower()
-        except OSError as error:
-            fail(f"cannot read {relative}: {error}")
+            for marker in FORBIDDEN_PUBLIC_MARKERS:
+                if marker in lowered:
+                    failures.append(
+                        f"{relative} contains machine-scoped public wording {marker!r}"
+                    )
+            for hit in hits:
+                if hit["current_claim"]:
+                    failures.append(
+                        f"{relative}:{hit['line']} makes a current-release claim using "
+                        f"previous version {previous_version}: {hit['text'].strip()}"
+                    )
+
+    architecture_documents = [
+        root / "README.md",
+        root / "crates/glass-dev/README.md",
+        *(root / "docs").rglob("*.md"),
+    ]
+    for path in architecture_documents:
+        if not path.is_file():
+            continue
+        relative = relative_path(path, root)
+        if "plan" in pathlib.PurePosixPath(relative).parts:
+            continue
+        lowered = path.read_text(encoding="utf-8").lower()
         for phrase in FORBIDDEN_ARCHITECTURE_PHRASES:
             if phrase in lowered:
                 failures.append(
                     f"{relative} contains retired architecture phrase {phrase!r}"
                 )
-    if failures:
-        fail("; ".join(failures))
-    print(f"release documentation truth validated: {len(marker_sets)} documents")
+
+    return {
+        "schema_version": 1,
+        "current_version": current_version,
+        "previous_version": previous_version,
+        "package_versions": package_versions,
+        "documents": [relative_path(path, root) for path in markdown_documents],
+        "document_count": len(markdown_documents),
+        "document_classifications": {
+            classification: sum(
+                1
+                for path in markdown_documents
+                if document_classification(relative_path(path, root)) == classification
+            )
+            for classification in ("current", "historical", "record", "generated")
+        },
+        "current_documents": [
+            relative_path(path, root)
+            for path in markdown_documents
+            if document_classification(relative_path(path, root)) == "current"
+        ],
+        "current_document_count": sum(
+            1
+            for path in markdown_documents
+            if document_classification(relative_path(path, root)) == "current"
+        ),
+        "marker_results": marker_results,
+        "previous_version_hits": previous_version_hits,
+        "semantic_audit_hits": semantic_audit_hits,
+        "semantic_audit_hit_count": len(semantic_audit_hits),
+        "current_claim_count": sum(
+            1 for hit in previous_version_hits if hit["current_claim"]
+        ),
+        "failures": failures,
+        "passed": not failures,
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--previous-version",
+        help="previous stable published version; otherwise derive it from git tags",
+    )
+    parser.add_argument(
+        "--require-previous-version",
+        action="store_true",
+        help="fail if no previous stable tag or explicit version is available",
+    )
+    parser.add_argument(
+        "--report",
+        type=pathlib.Path,
+        help="write the complete JSON audit report to this path",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    report = build_report(previous_version=args.previous_version)
+    if args.require_previous_version and not report["previous_version"]:
+        report["failures"].append(
+            "no previous stable version was found; fetch stable tags or pass "
+            "--previous-version"
+        )
+    if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    if report["failures"]:
+        fail("; ".join(report["failures"]))
+    print(
+        "release documentation truth validated: "
+        f"{report['document_count']} Markdown documents; "
+        f"current documents={report['current_document_count']}; "
+        f"previous-version hits={len(report['previous_version_hits'])}; "
+        f"semantic audit hits={report['semantic_audit_hit_count']}; "
+        f"current-claim failures={report['current_claim_count']}"
+    )
 
 
 if __name__ == "__main__":

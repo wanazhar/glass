@@ -1,6 +1,49 @@
 //! The small keymap we teach. Everything else is an alias of these verbs.
 
 use super::state::DevSurface;
+use serde::Deserialize;
+use std::sync::OnceLock;
+
+const SHORTCUT_INVENTORY: &str = include_str!("shortcuts.json");
+
+#[derive(Debug, Deserialize)]
+struct ShortcutInventory {
+    schema_version: u32,
+    help_lines: Vec<ShortcutHelpLine>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShortcutHelpLine {
+    keys: Vec<String>,
+    text: String,
+}
+
+fn documented_shortcut_help() -> &'static str {
+    static HELP: OnceLock<String> = OnceLock::new();
+    HELP.get_or_init(|| {
+        let inventory: ShortcutInventory =
+            serde_json::from_str(SHORTCUT_INVENTORY).expect("invalid TUI shortcut inventory");
+        assert_eq!(
+            inventory.schema_version, 1,
+            "unsupported TUI shortcut inventory schema"
+        );
+        for line in &inventory.help_lines {
+            assert!(!line.keys.is_empty(), "TUI shortcut help line has no keys");
+            for key in &line.keys {
+                assert!(
+                    line.text.contains(key),
+                    "TUI shortcut help line omits its key {key:?}"
+                );
+            }
+        }
+        inventory
+            .help_lines
+            .into_iter()
+            .map(|line| format!("  {}", line.text))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
 
 /// Product verbs advertised in help and the unfocused dock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +98,8 @@ pub fn curriculum_help(surface: DevSurface) -> String {
         DevSurface::More => "MORE\n  j/k routes · Enter runs doctor/cockpit/kernels",
     };
     format!(
-        "DO THIS\n  type in the dock   talk to Glass\n  :                  search commands\n  a                  this surface's actions\n  Enter              do the highlighted thing\n  Esc                back\n  ?                  close help\n\n{surface_lines}\n\nMORE\n  Agent · Code · App · Terminal · Tasks · Git · Debug · More\n\nKEYS\n  Ctrl-L  dock · Alt-A dock from editor\n  Ctrl-P  file · Ctrl-K / Ctrl-Shift-P palette\n  Ctrl-Shift-A  Ask/Plan/Agent · /ask /plan /agent /todo\n  Ctrl-G  App · Tab surfaces · App Alt-Left/Right history\n  editor Ctrl-O symbols · Ctrl-D steer · Ctrl-X abort\n  click dock · double-click open · right-click / long-press = a"
+        "DO THIS\n  type in the dock   talk to Glass\n  :                  search commands\n  a                  this surface's actions\n  Enter              do the highlighted thing\n  Esc                back\n  ?                  close help\n\n{surface_lines}\n\nMORE\n  Agent · Code · App · Terminal · Tasks · Git · Debug · More\n\nKEYS\n{}\n  click dock · double-click open · right-click / long-press = a",
+        documented_shortcut_help()
     )
 }
 

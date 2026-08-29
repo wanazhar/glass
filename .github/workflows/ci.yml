@@ -2,7 +2,13 @@ name: CI
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   browser-free-platforms:
@@ -18,6 +24,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ github.job }}-
       - name: Install Python for Windows kernel fixtures
         if: runner.os == 'Windows'
         uses: actions/setup-python@v6
@@ -37,22 +53,32 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Cache Cargo dependencies and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ github.job }}-
 
-      - name: Lint with Clippy
-        run: scripts/check-rust-workspace.sh clippy
-
-      - name: Run tests
-        run: scripts/check-rust-workspace.sh test
+      - name: Run common source certification
+        env:
+          GLASS_RELEASE_DOC_REPORT: ${{ runner.temp }}/glass-release-documentation.json
+        run: scripts/release-certify.sh
 
       - name: Install native development fixtures
         run: |
@@ -89,41 +115,6 @@ jobs:
           GLASS_DELVE="${RUNNER_TEMP}/glass-dap-bin/dlv" \
             cargo test --package glass-dev --lib debugger::tests::real_ -- --nocapture
 
-      - name: Check package version synchronization
-        run: python3 scripts/check-version-sync.py
-
-      - name: Validate release truth and feature parity
-        run: python3 scripts/check-feature-parity.py
-
-      - name: Validate release documentation
-        run: python3 scripts/check-release-documentation.py
-
-      - name: Validate documentation inventories and links
-        run: python3 scripts/check-documentation-coverage.py
-
-      - name: Validate documentation depth and command tree
-        run: python3 scripts/check-documentation-depth.py
-
-      - name: Validate deterministic reliability matrix
-        run: python3 scripts/check-reliability-matrix.py
-
-      - name: Validate public read-only adapter inventory
-        run: python3 scripts/check-public-readonly-adapters.py
-
-      - name: Build documentation
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
-
-      - name: Validate package and fuzz workspace
-        run: |
-          cargo package --package glass-browser --locked --allow-dirty --no-verify
-          cargo package --package glass-dev --locked --allow-dirty --no-verify \
-            --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
-          version="$(cargo metadata --no-deps --locked --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
-          python3 scripts/check-packaged-dependency.py \
-            "target/package/glass-dev-${version}.crate" --version "$version"
-          cargo fetch --manifest-path fuzz/Cargo.toml --locked
-          cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets
-
       - name: Install release audit tools
         run: cargo install cargo-deny cargo-audit --locked
 
@@ -133,13 +124,34 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
+      - name: Upload release documentation audit
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-doc-audit-${{ github.sha }}
+          path: ${{ runner.temp }}/glass-release-documentation.json
+          if-no-files-found: error
+          retention-days: 30
+
   clients:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ github.job }}-
 
       - name: Build Glass for client smoke tests
         run: cargo build --package glass-dev --locked
@@ -147,6 +159,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: clients/typescript/package-lock.json
 
       - name: Build and typecheck TypeScript client
         working-directory: clients/typescript
@@ -175,3 +189,69 @@ jobs:
           GLASS_BINARY: ${{ github.workspace }}/target/debug/glass
         run: python smoke.py
         working-directory: clients/python
+
+  release-certification:
+    if: github.event_name == 'push'
+    needs:
+      - browser-free-platforms
+      - test
+      - clients
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download release documentation audit
+        uses: actions/download-artifact@v4
+        with:
+          name: release-doc-audit-${{ github.sha }}
+          path: ${{ runner.temp }}/glass-release-documentation
+
+      - name: Write exact-source CI certification
+        env:
+          DOC_REPORT: ${{ runner.temp }}/glass-release-documentation/glass-release-documentation.json
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          report_path = Path(os.environ["DOC_REPORT"])
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          if not report.get("passed") or report.get("current_claim_count") != 0:
+              raise SystemExit("release documentation audit is not clean")
+          certification = {
+              "schema_version": 1,
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "git_sha": os.environ["GITHUB_SHA"],
+              "required_jobs": [
+                  "test",
+                  "clients",
+                  "Browser-free ubuntu-latest",
+                  "Browser-free macos-latest",
+                  "Browser-free windows-latest",
+              ],
+              "documentation_report": {
+                  "document_count": report["document_count"],
+                  "current_document_count": report["current_document_count"],
+                  "previous_version": report["previous_version"],
+                  "previous_version_hit_count": len(report["previous_version_hits"]),
+                  "semantic_audit_hit_count": report["semantic_audit_hit_count"],
+                  "current_claim_count": report["current_claim_count"],
+                  "sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+              },
+          }
+          Path("ci-certification.json").write_text(
+              json.dumps(certification, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload exact-source CI certification
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-certification-${{ github.sha }}
+          path: ci-certification.json
+          if-no-files-found: error
+          retention-days: 30

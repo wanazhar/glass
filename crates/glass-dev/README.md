@@ -37,7 +37,7 @@ The public Rust API is documented at [docs.rs/glass-dev](https://docs.rs/glass-d
 use the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md)
 for installed command behavior. This guide follows the current `0.3.14` source
 checkout. Published docs.rs pages match the crate version they were built from
-(`0.3.13` at last publication). Checkout-only TUI behavior can be newer than
+(`0.3.14` at last publication). Checkout-only TUI behavior can be newer than
 that published API page.
 
 

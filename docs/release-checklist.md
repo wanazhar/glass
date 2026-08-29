@@ -19,12 +19,14 @@ This section is the active release record for the exact 0.3.14 source and
 
 ### Process correction recorded after publication
 
-The first pre-tag documentation audit missed a stale current-publication claim
-in `docs/features.md`: it said the last published docs.rs version was `0.3.13`
-after `0.3.14` had been published. The claim was corrected in post-release
-commit `6fedb65`. This was a documentation-audit failure, not a release-artifact
-change; the mandatory semantic audit below exists to prevent a structurally
-valid but semantically stale sentence from passing the release gates again.
+The first pre-tag documentation audit missed stale current-publication claims in
+`docs/features.md`, `crates/glass-dev/README.md`, and `docs/rust-sdk.md`: they
+said the last published docs.rs version was `0.3.13` after `0.3.14` had been
+published. The claims were corrected in post-release commit `6fedb65` and this
+follow-up documentation fix. This was a documentation-audit failure, not a
+release-artifact change; the mandatory semantic audit below exists to prevent a
+structurally valid but semantically stale sentence from passing the release
+gates again.
 
 ### Gate 0 — approval and one candidate version
 
@@ -256,6 +258,10 @@ git grep -n -i -E \
       name `VERSION` and agree with package metadata, registry state, and the
       release evidence. Every `HISTORICAL` hit must be visibly scoped and must
       not be phrased as the current/latest release.
+- [ ] Capture the complete search output and hit count in the release evidence
+      or an attached audit artifact. A truncated terminal excerpt, an
+      unreviewed pager result, or “no matches” is not evidence that the audit
+      was completed.
 - [ ] Compare user-facing shortcut/key tables and help text against the
       implementation and tests (`crates/glass-dev/src/tui/`), including
       responsive phone routes, aliases, palette keys, editor keys, and browser

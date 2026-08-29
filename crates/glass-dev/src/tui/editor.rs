@@ -211,6 +211,9 @@ pub struct EditorEngine {
     pub marks: std::collections::HashMap<char, Jump>,
     pub agent_caret: Option<Jump>,
     pub pair_apply: Option<PairApply>,
+    /// Additional structural ranges besides the primary caret.
+    pub extra_selections: Vec<TextSelection>,
+    pub last_textobject: Option<TextObject>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +251,18 @@ impl EditorEngine {
         self.pending_find_reverse = false;
         self.pending_around = None;
         self.pending_mark = false;
+    }
+
+    pub fn extra_caret_count(&self) -> usize {
+        self.extra_selections.len()
+    }
+
+    pub fn clear_extra_cursors(&mut self) -> bool {
+        if self.extra_selections.is_empty() {
+            return false;
+        }
+        self.extra_selections.clear();
+        true
     }
 
     pub fn count(&self) -> u32 {
@@ -385,6 +400,99 @@ pub fn apply_motion(content: &str, position: TextPosition, motion: Motion) -> Te
             reverse,
         } => find_char(content, position, needle, till, reverse).unwrap_or(position),
     }
+}
+
+/// Every identifier matching the word under `position`.
+pub fn same_word_ranges(content: &str, position: TextPosition, around: bool) -> Vec<TextSelection> {
+    let Some(seed) = word_object(content, position, false) else {
+        return Vec::new();
+    };
+    let Some((start, end)) = crate::development::editor::selection_offsets(content, &seed) else {
+        return Vec::new();
+    };
+    let word = &content[start..end];
+    if word.is_empty() {
+        return Vec::new();
+    }
+    let bytes = content.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index + word.len() <= content.len() {
+        let boundary = content.is_char_boundary(index)
+            && content[index..].starts_with(word)
+            && (index == 0 || !is_word(bytes[index - 1] as char))
+            && {
+                let after = index + word.len();
+                after == content.len() || !is_word(bytes[after] as char)
+            };
+        if boundary {
+            let mut stop = index + word.len();
+            if around {
+                while stop < bytes.len() && bytes[stop].is_ascii_whitespace() {
+                    stop += 1;
+                }
+            }
+            if let (Some(anchor), Some(active)) = (
+                text_position_at_offset(content, index),
+                text_position_at_offset(content, stop),
+            ) {
+                ranges.push(TextSelection { anchor, active });
+            }
+            index = stop.max(index + 1);
+        } else {
+            index += 1;
+            while index < content.len() && !content.is_char_boundary(index) {
+                index += 1;
+            }
+        }
+    }
+    ranges
+}
+
+/// Insert `text` at each caret, highest offset last, and return the new carets.
+pub fn multi_insert(content: &str, sites: &[usize], text: &str) -> (String, Vec<usize>) {
+    let mut sites = sites.to_vec();
+    sites.sort_unstable();
+    sites.dedup();
+    let mut out = String::with_capacity(content.len() + text.len() * sites.len());
+    let mut last = 0;
+    let mut next_sites = Vec::with_capacity(sites.len());
+    for site in sites {
+        let site = site.min(content.len());
+        if site < last {
+            continue;
+        }
+        out.push_str(&content[last..site]);
+        out.push_str(text);
+        next_sites.push(out.len());
+        last = site;
+    }
+    out.push_str(&content[last..]);
+    (out, next_sites)
+}
+
+/// Delete `[start, end)` ranges from highest start so earlier offsets stay valid.
+pub fn multi_delete(content: &str, ranges: &[(usize, usize)]) -> (String, Vec<usize>) {
+    let mut ranges = ranges
+        .iter()
+        .copied()
+        .filter(|(start, end)| start < end && *end <= content.len())
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|(start, _)| *start);
+    ranges.dedup();
+    let mut out = String::with_capacity(content.len());
+    let mut last = 0;
+    let mut carets = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        if start < last {
+            continue;
+        }
+        out.push_str(&content[last..start]);
+        carets.push(out.len());
+        last = end;
+    }
+    out.push_str(&content[last..]);
+    (out, carets)
 }
 
 pub fn textobject_selection(
@@ -1490,6 +1598,25 @@ mod tests {
         }
         assert_eq!(content, proposed);
         assert!(pair_apply_content(original, proposed, 3).len() >= original.len());
+    }
+
+    #[test]
+    fn same_word_ranges_collect_every_identifier() {
+        let source = "fn greet(name: &str) { name.len(); name }\n";
+        let ranges = same_word_ranges(
+            source,
+            TextPosition {
+                line: 1,
+                column: 10,
+            },
+            false,
+        );
+        assert_eq!(ranges.len(), 3);
+        let (out, carets) = multi_insert(source, &[9, 23], "_");
+        assert!(out.contains("fn greet(_name"));
+        assert_eq!(carets.len(), 2);
+        let (deleted, _) = multi_delete(source, &[(3, 8), (9, 13)]);
+        assert!(deleted.starts_with("fn ("));
     }
 
     #[test]

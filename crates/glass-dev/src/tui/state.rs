@@ -2,9 +2,9 @@ use super::command;
 use super::editor::{
     self as native, EditorEngine, EditorMode, GhostText, Motion, Operator, TextObject,
     apply_motion, compile_prove_it, complete_mention, evidence_card, expand_mentions,
-    inferred_app_path, join_app_url, line_hunks, local_fim, next_edit_after_accept,
-    pair_apply_caret, pair_apply_step, parse_inlay_hints, split_ghost_word, textobject_from_key,
-    textobject_selection,
+    inferred_app_path, join_app_url, line_hunks, local_fim, multi_delete, multi_insert,
+    next_edit_after_accept, pair_apply_caret, pair_apply_step, parse_inlay_hints, same_word_ranges,
+    split_ghost_word, textobject_from_key, textobject_selection,
 };
 use super::parse::IncrementalSyntax;
 use crate::development::TextSelection;
@@ -3253,8 +3253,7 @@ impl DevTuiState {
             self.editor_engine.enter_insert();
             self.refresh_editor_hunks();
             self.refresh_editor_inlays();
-            self.status =
-                "INSERT · Esc normal · i insert · dif function · dia argument · gd · Ctrl-S".into();
+            self.status = "INSERT · Esc normal · gm/gn extra carets · dif · gd · Ctrl-S".into();
         }
     }
 
@@ -3275,11 +3274,28 @@ impl DevTuiState {
             }
             EditorMode::Insert | EditorMode::Select => {
                 self.editor_engine.enter_normal();
-                self.status =
-                    "NORMAL · hjkl · d/c/y · iw/if/ia/ic/is · v select · i insert · Esc exit"
-                        .into();
+                self.status = self.editor_normal_status();
             }
-            EditorMode::Normal => self.request_editor_exit(),
+            EditorMode::Normal => {
+                if self.editor_engine.clear_extra_cursors() {
+                    self.status = "NORMAL · extra carets cleared".into();
+                    self.refresh_editor_projection();
+                    return;
+                }
+                self.request_editor_exit();
+            }
+        }
+    }
+
+    fn editor_normal_status(&self) -> String {
+        let extras = self.editor_engine.extra_caret_count();
+        if extras > 0 {
+            format!(
+                "NORMAL · {} carets · gm match · gn next · d/c/i apply to all · Esc clear",
+                extras + 1
+            )
+        } else {
+            "NORMAL · hjkl · d/c/y · iw/if/ia · gm/gn extra carets · i insert · Esc exit".into()
         }
     }
 
@@ -3410,6 +3426,7 @@ impl DevTuiState {
             let decorations = super::file_view::EditorDecorations {
                 marks: &marks,
                 inlays: &notes,
+                extra_selections: &self.editor_engine.extra_selections,
             };
             let wrapped = super::file_view::render_editable_source_wrapped(
                 &self.focused_editor_path,
@@ -3835,6 +3852,14 @@ impl DevTuiState {
                 self.editor_engine.pending_g = false;
                 self.show_comment_thread();
             }
+            crossterm::event::KeyCode::Char('m') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.match_same_objects(&path, &content, cursor, true);
+            }
+            crossterm::event::KeyCode::Char('n') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.match_same_objects(&path, &content, cursor, false);
+            }
             crossterm::event::KeyCode::Char('d') => {
                 self.editor_engine.pending_operator = Some(Operator::Delete);
             }
@@ -3999,8 +4024,20 @@ impl DevTuiState {
             self.status = "No textobject under cursor".into();
             return;
         };
+        self.editor_engine.last_textobject = Some(object);
         if let Some(operator) = self.editor_engine.pending_operator.take() {
-            if let Err(error) = self.apply_operator_selection(path, content, operator, selection) {
+            let mut ranges = vec![selection];
+            for extra in self.editor_engine.extra_selections.clone() {
+                let origin = extra.active;
+                if let Some(range) = self
+                    .syntax
+                    .textobject(path, content, origin, object)
+                    .or_else(|| textobject_selection(content, origin, object))
+                {
+                    ranges.push(range);
+                }
+            }
+            if let Err(error) = self.apply_operator_ranges(path, content, operator, ranges) {
                 self.status = format!("Operator failed: {error}");
             }
         } else {
@@ -4008,6 +4045,72 @@ impl DevTuiState {
             let _ = self.set_editor_cursor(path, selection.anchor, false);
             let _ = self.set_editor_cursor(path, selection.active, true);
             self.status = format!("{} · textobject selected", self.editor_engine.mode.label());
+        }
+        self.refresh_editor_projection();
+    }
+
+    fn match_same_objects(
+        &mut self,
+        path: &str,
+        content: &str,
+        cursor: crate::development::TextPosition,
+        all: bool,
+    ) {
+        let object = self
+            .editor_engine
+            .last_textobject
+            .unwrap_or(TextObject::Word { around: false });
+        let mut ranges = if matches!(object, TextObject::Word { .. }) {
+            same_word_ranges(
+                content,
+                cursor,
+                matches!(object, TextObject::Word { around: true }),
+            )
+        } else {
+            let mut found = self.syntax.same_textobjects(path, content, cursor, object);
+            if found.is_empty() {
+                found = textobject_selection(content, cursor, object)
+                    .into_iter()
+                    .collect();
+            }
+            found
+        };
+        if ranges.is_empty() {
+            self.status = "No matching objects under the caret".into();
+            return;
+        }
+        ranges.sort_by_key(|selection| (selection.anchor.line, selection.anchor.column));
+        let primary_index = ranges
+            .iter()
+            .position(|selection| selection_covers(content, selection, cursor))
+            .unwrap_or(0);
+        if all {
+            let primary = ranges.remove(primary_index.min(ranges.len().saturating_sub(1)));
+            self.editor_engine.extra_selections = ranges;
+            let _ = self.set_editor_cursor(path, primary.anchor, false);
+            let _ = self.set_editor_cursor(path, primary.active, true);
+            self.editor_engine.last_textobject = Some(object);
+            self.status = self.editor_normal_status();
+        } else {
+            let extras = &self.editor_engine.extra_selections;
+            let next = ranges
+                .iter()
+                .cycle()
+                .skip(primary_index + 1)
+                .take(ranges.len().saturating_sub(1))
+                .find(|candidate| {
+                    !extras.iter().any(|existing| {
+                        existing.anchor == candidate.anchor && existing.active == candidate.active
+                    })
+                })
+                .cloned();
+            if let Some(next) = next {
+                self.editor_engine.extra_selections.push(next);
+                self.editor_engine.last_textobject = Some(object);
+                self.status = self.editor_normal_status();
+            } else {
+                self.status = "No further matching objects".into();
+            }
         }
         self.refresh_editor_projection();
     }
@@ -4020,48 +4123,76 @@ impl DevTuiState {
         operator: Operator,
         motion: Motion,
     ) -> crate::development::DevelopmentResult<()> {
-        let end = apply_motion(content, cursor, motion);
-        self.apply_operator_selection(
-            path,
-            content,
-            operator,
-            TextSelection {
-                anchor: cursor,
-                active: end,
-            },
-        )
+        let mut ranges = vec![TextSelection {
+            anchor: cursor,
+            active: apply_motion(content, cursor, motion),
+        }];
+        for extra in &self.editor_engine.extra_selections {
+            let origin = extra.active;
+            ranges.push(TextSelection {
+                anchor: origin,
+                active: apply_motion(content, origin, motion),
+            });
+        }
+        self.apply_operator_ranges(path, content, operator, ranges)
     }
 
-    fn apply_operator_selection(
+    fn apply_operator_ranges(
         &mut self,
         path: &str,
         content: &str,
         operator: Operator,
-        selection: TextSelection,
+        ranges: Vec<TextSelection>,
     ) -> crate::development::DevelopmentResult<()> {
+        let mut offsets = ranges
+            .iter()
+            .filter_map(|selection| {
+                crate::development::editor::selection_offsets(content, selection)
+            })
+            .collect::<Vec<_>>();
+        offsets.sort_by_key(|(start, _)| *start);
+        offsets.dedup();
+        if offsets.is_empty() {
+            self.editor_engine.clear_pending();
+            return Ok(());
+        }
         self.auto_checkpoint("before-operator");
         match operator {
             Operator::Yank => {
-                if let Some((start, stop)) =
-                    crate::development::editor::selection_offsets(content, &selection)
-                {
-                    self.editor_engine.yank = content[start..stop].to_string();
-                    self.status = format!("Yanked {} bytes", self.editor_engine.yank.len());
-                }
+                self.editor_engine.yank = offsets
+                    .iter()
+                    .map(|(start, stop)| content[*start..*stop].to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.status = format!("Yanked {} bytes", self.editor_engine.yank.len());
             }
             Operator::Delete | Operator::Change => {
+                let (next, carets) = multi_delete(content, &offsets);
+                let mut extras = Vec::new();
+                let mut primary = crate::development::TextPosition { line: 1, column: 1 };
+                for (index, offset) in carets.into_iter().enumerate() {
+                    let position =
+                        crate::development::editor::text_position_at_offset(&next, offset)
+                            .unwrap_or(primary);
+                    if index == 0 {
+                        primary = position;
+                    } else {
+                        extras.push(TextSelection::collapsed(position));
+                    }
+                }
+                let actor = crate::development::Actor::local();
                 let mut workspace = self.workspace.try_lock()?;
-                workspace.project_mut().set_buffer_selection(
-                    path,
-                    Some(selection),
-                    crate::development::Actor::local(),
-                )?;
-                workspace.project_mut().replace_buffer_selection(
-                    path,
-                    String::new(),
-                    crate::development::Actor::local(),
-                )?;
+                workspace
+                    .project_mut()
+                    .edit_buffer(path, next, actor.clone())?;
+                workspace
+                    .project_mut()
+                    .set_buffer_cursor(path, primary.line, primary.column)?;
+                workspace
+                    .project_mut()
+                    .set_buffer_selection(path, None, actor)?;
                 drop(workspace);
+                self.editor_engine.extra_selections = extras;
                 if operator == Operator::Change {
                     self.editor_engine.enter_insert();
                 }
@@ -4806,6 +4937,7 @@ impl DevTuiState {
         path: &str,
         text: &str,
     ) -> crate::development::DevelopmentResult<()> {
+        let extras = self.editor_engine.extra_selections.clone();
         let mut workspace = self.workspace.try_lock()?;
         let project = workspace.project_mut();
         let buffer = project.buffer(path).cloned().ok_or_else(|| {
@@ -4815,6 +4947,7 @@ impl DevTuiState {
             .selection
             .as_ref()
             .is_some_and(|selection| !selection.is_empty())
+            && extras.is_empty()
         {
             project.replace_buffer_selection(
                 path,
@@ -4823,24 +4956,58 @@ impl DevTuiState {
             )?;
             return Ok(());
         }
-        let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
-        let mut content = buffer.content;
-        content.insert_str(offset, text);
-        let cursor =
-            crate::development::editor::text_position_at_offset(&content, offset + text.len())
+        let primary = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
+        if extras.is_empty() {
+            let mut content = buffer.content;
+            content.insert_str(primary, text);
+            let cursor =
+                crate::development::editor::text_position_at_offset(&content, primary + text.len())
+                    .ok_or_else(|| {
+                        crate::development::DevelopmentError::InvalidInput(
+                            "inserted text ended at an invalid UTF-8 boundary".into(),
+                        )
+                    })?;
+            let actor = crate::development::Actor::local();
+            project.edit_buffer(path, content, actor.clone())?;
+            project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+            project.set_buffer_selection(path, None, actor)?;
+            return Ok(());
+        }
+        let mut sites = vec![primary];
+        for extra in &extras {
+            if let Some(offset) =
+                crate::development::editor::text_position_offset(&buffer.content, extra.active)
+            {
+                sites.push(offset);
+            }
+        }
+        let (content, carets) = multi_insert(&buffer.content, &sites, text);
+        let mut next_extras = Vec::new();
+        let mut primary_pos = crate::development::TextPosition { line: 1, column: 1 };
+        for (index, offset) in carets.into_iter().enumerate() {
+            let position = crate::development::editor::text_position_at_offset(&content, offset)
                 .ok_or_else(|| {
                     crate::development::DevelopmentError::InvalidInput(
                         "inserted text ended at an invalid UTF-8 boundary".into(),
                     )
                 })?;
+            if index == 0 {
+                primary_pos = position;
+            } else {
+                next_extras.push(TextSelection::collapsed(position));
+            }
+        }
         let actor = crate::development::Actor::local();
         project.edit_buffer(path, content, actor.clone())?;
-        project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+        project.set_buffer_cursor(path, primary_pos.line, primary_pos.column)?;
         project.set_buffer_selection(path, None, actor)?;
+        drop(workspace);
+        self.editor_engine.extra_selections = next_extras;
         Ok(())
     }
 
     fn backspace_editor(&mut self, path: &str) -> crate::development::DevelopmentResult<()> {
+        let extras = self.editor_engine.extra_selections.clone();
         let mut workspace = self.workspace.try_lock()?;
         let project = workspace.project_mut();
         let buffer = project.buffer(path).cloned().ok_or_else(|| {
@@ -4850,6 +5017,7 @@ impl DevTuiState {
             .selection
             .as_ref()
             .is_some_and(|selection| !selection.is_empty())
+            && extras.is_empty()
         {
             project.replace_buffer_selection(
                 path,
@@ -4858,27 +5026,71 @@ impl DevTuiState {
             )?;
             return Ok(());
         }
-        let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
-        if offset == 0 {
+        let mut sites = vec![editor_offset(
+            &buffer.content,
+            buffer.cursor_line,
+            buffer.cursor_column,
+        )];
+        for extra in &extras {
+            if let Some(offset) =
+                crate::development::editor::text_position_offset(&buffer.content, extra.active)
+            {
+                sites.push(offset);
+            }
+        }
+        let mut ranges = Vec::new();
+        for offset in sites {
+            if offset == 0 {
+                continue;
+            }
+            let previous = buffer.content[..offset]
+                .char_indices()
+                .next_back()
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            ranges.push((previous, offset));
+        }
+        if ranges.is_empty() {
             return Ok(());
         }
-        let previous = buffer.content[..offset]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        let mut content = buffer.content;
-        content.drain(previous..offset);
-        let cursor = crate::development::editor::text_position_at_offset(&content, previous)
-            .ok_or_else(|| {
-                crate::development::DevelopmentError::InvalidInput(
-                    "backspace ended at an invalid UTF-8 boundary".into(),
-                )
-            })?;
+        if extras.is_empty() && ranges.len() == 1 {
+            let (previous, offset) = ranges[0];
+            let mut content = buffer.content;
+            content.drain(previous..offset);
+            let cursor = crate::development::editor::text_position_at_offset(&content, previous)
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::InvalidInput(
+                        "backspace ended at an invalid UTF-8 boundary".into(),
+                    )
+                })?;
+            let actor = crate::development::Actor::local();
+            project.edit_buffer(path, content, actor.clone())?;
+            project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+            project.set_buffer_selection(path, None, actor)?;
+            return Ok(());
+        }
+        let (content, carets) = multi_delete(&buffer.content, &ranges);
+        let mut next_extras = Vec::new();
+        let mut primary_pos = crate::development::TextPosition { line: 1, column: 1 };
+        for (index, offset) in carets.into_iter().enumerate() {
+            let position = crate::development::editor::text_position_at_offset(&content, offset)
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::InvalidInput(
+                        "backspace ended at an invalid UTF-8 boundary".into(),
+                    )
+                })?;
+            if index == 0 {
+                primary_pos = position;
+            } else {
+                next_extras.push(TextSelection::collapsed(position));
+            }
+        }
         let actor = crate::development::Actor::local();
         project.edit_buffer(path, content, actor.clone())?;
-        project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+        project.set_buffer_cursor(path, primary_pos.line, primary_pos.column)?;
         project.set_buffer_selection(path, None, actor)?;
+        drop(workspace);
+        self.editor_engine.extra_selections = next_extras;
         Ok(())
     }
 
@@ -6588,6 +6800,21 @@ fn slug_input_name(name: &str) -> String {
     workflow_slug(name).replace('-', "_")
 }
 
+fn selection_covers(
+    content: &str,
+    selection: &crate::development::TextSelection,
+    cursor: crate::development::TextPosition,
+) -> bool {
+    let Some(offset) = crate::development::editor::text_position_offset(content, cursor) else {
+        return false;
+    };
+    let Some((start, end)) = crate::development::editor::selection_offsets(content, selection)
+    else {
+        return false;
+    };
+    offset >= start && offset <= end
+}
+
 fn editor_offset(content: &str, line: u32, column: u32) -> usize {
     let mut offset = 0;
     for (index, value) in content.split_inclusive('\n').enumerate() {
@@ -7243,6 +7470,59 @@ mod tests {
         assert_eq!(
             state.focused_editor_content, "fn main() { 1 }\n",
             "pack accept must write the proposed buffer"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn gm_adds_structural_carets_and_inserts_at_each() {
+        let root = std::env::temp_dir().join(format!("glass-multi-cursor-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn foo() { foo(); foo }\n").expect("write");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open");
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+        state.handle_editor_escape();
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .set_buffer_cursor("src/main.rs", 1, 4)
+            .expect("cursor");
+        state.refresh_editor_projection();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('g'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('m'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        assert_eq!(
+            state.editor_engine.extra_selections.len(),
+            2,
+            "gm should add a caret on every other foo"
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('i'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('X'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        let content = state.focused_editor_content.clone();
+        assert_eq!(
+            content.matches('X').count(),
+            3,
+            "insert should hit every caret: {content}"
         );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }

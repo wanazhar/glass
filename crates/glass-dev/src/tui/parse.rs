@@ -9,7 +9,7 @@
 use super::editor::TextObject;
 use crate::development::editor::{text_position_at_offset, text_position_offset};
 use crate::development::{TextPosition, TextSelection};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use tree_sitter::{InputEdit, Node, Parser, Point, Tree};
 
@@ -115,6 +115,36 @@ impl IncrementalSyntax {
             anchor: text_position_at_offset(source, start)?,
             active: text_position_at_offset(source, end)?,
         })
+    }
+
+    /// Every structural range of the same object as `position`.
+    ///
+    /// Arguments and parameters stay in the current list. Fields stay on the
+    /// current declaration. Functions, strings, comments, and pairs are
+    /// file-scoped. Words fall back to the lexical matcher.
+    pub fn same_textobjects(
+        &mut self,
+        path: &str,
+        source: &str,
+        position: TextPosition,
+        object: TextObject,
+    ) -> Vec<TextSelection> {
+        if matches!(object, TextObject::Word { .. }) {
+            return Vec::new();
+        }
+        if self.sync_tree(path, source).is_none() {
+            return Vec::new();
+        }
+        let Some(offset) = text_position_offset(source, position) else {
+            return Vec::new();
+        };
+        let Some(cached) = self.trees.get(path) else {
+            return Vec::new();
+        };
+        byte_ranges_to_selections(
+            source,
+            collect_same_object_ranges(&cached.tree, source, cached.language, offset, object),
+        )
     }
 
     fn sync_tree(&mut self, path: &str, source: &str) -> Option<&Tree> {
@@ -312,6 +342,185 @@ fn byte_to_point(text: &str, byte: usize) -> Point {
         }
     }
     Point::new(row, byte - line_start)
+}
+
+fn collect_same_object_ranges(
+    tree: &Tree,
+    source: &str,
+    language: LanguageId,
+    offset: usize,
+    object: TextObject,
+) -> Vec<(usize, usize)> {
+    let byte = cursor_byte(source, offset);
+    let Some(node) = node_at(tree, byte) else {
+        return Vec::new();
+    };
+    match object {
+        TextObject::Word { .. } => Vec::new(),
+        TextObject::Pair {
+            open,
+            close,
+            around,
+        } => collect_pair_ranges(tree.root_node(), open, close, around),
+        TextObject::Function { around } => collect_kind_ranges(
+            tree.root_node(),
+            function_kinds(language),
+            around,
+            body_kinds(),
+        ),
+        TextObject::Class { around } => collect_kind_ranges(
+            tree.root_node(),
+            class_kinds(language),
+            around,
+            body_kinds(),
+        ),
+        TextObject::Argument { around } => list_item_ranges(node, argument_list_kinds(), around),
+        TextObject::Parameter { around } => {
+            list_item_ranges(node, parameter_container_kinds(), around)
+        }
+        TextObject::Field { around } => sibling_field_ranges(node, around),
+        TextObject::String { around } => collect_predicate_ranges(
+            tree.root_node(),
+            source,
+            around,
+            |candidate| is_string_kind(candidate.kind()),
+            string_range,
+        ),
+        TextObject::Comment { around } => collect_predicate_ranges(
+            tree.root_node(),
+            source,
+            around,
+            |candidate| candidate.kind().contains("comment"),
+            comment_range,
+        ),
+    }
+}
+
+fn collect_kind_ranges(
+    root: Node<'_>,
+    kinds: &[&str],
+    around: bool,
+    inner_kinds: &[&str],
+) -> Vec<(usize, usize)> {
+    let mut nodes = Vec::new();
+    collect_nodes(root, |node| kinds.contains(&node.kind()), &mut nodes);
+    nodes
+        .into_iter()
+        .map(|matched| {
+            if !around && let Some(body) = named_child_with_kinds(matched, inner_kinds) {
+                (body.start_byte(), body.end_byte())
+            } else {
+                (matched.start_byte(), matched.end_byte())
+            }
+        })
+        .collect()
+}
+
+fn collect_predicate_ranges(
+    root: Node<'_>,
+    source: &str,
+    around: bool,
+    pred: impl Fn(Node<'_>) -> bool + Copy,
+    range: impl Fn(Node<'_>, &str, bool) -> Option<(usize, usize)>,
+) -> Vec<(usize, usize)> {
+    let mut nodes = Vec::new();
+    collect_nodes(root, pred, &mut nodes);
+    nodes
+        .into_iter()
+        .filter_map(|node| range(node, source, around))
+        .collect()
+}
+
+fn collect_pair_ranges(
+    root: Node<'_>,
+    open: char,
+    close: char,
+    around: bool,
+) -> Vec<(usize, usize)> {
+    let mut nodes = Vec::new();
+    collect_nodes(root, |_| true, &mut nodes);
+    nodes
+        .into_iter()
+        .filter_map(|node| pair_range(node, open, close, around))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn list_item_ranges(node: Node<'_>, list_kinds: &[&str], around: bool) -> Vec<(usize, usize)> {
+    let Some(list) = walk_up(node, |candidate| list_kinds.contains(&candidate.kind())) else {
+        return Vec::new();
+    };
+    let mut ranges = Vec::new();
+    for index in 0..list.named_child_count() {
+        let Some(child) = list.named_child(index as u32) else {
+            continue;
+        };
+        let start = child.start_byte();
+        let end = if around {
+            trailing_separator(child, list.end_byte()).max(child.end_byte())
+        } else {
+            child.end_byte()
+        };
+        ranges.push((start, end));
+    }
+    ranges
+}
+
+fn sibling_field_ranges(node: Node<'_>, around: bool) -> Vec<(usize, usize)> {
+    let Some(field) = walk_up(node, |candidate| field_kinds().contains(&candidate.kind())) else {
+        return Vec::new();
+    };
+    let parent = field.parent().unwrap_or(field);
+    let mut ranges = Vec::new();
+    for index in 0..parent.named_child_count() {
+        let Some(child) = parent.named_child(index as u32) else {
+            continue;
+        };
+        if field_kinds().contains(&child.kind())
+            && let Some(range) = field_range(child, around)
+        {
+            ranges.push(range);
+        }
+    }
+    if ranges.is_empty() {
+        field_range(node, around).into_iter().collect()
+    } else {
+        ranges
+    }
+}
+
+fn collect_nodes<'a>(
+    node: Node<'a>,
+    pred: impl Fn(Node<'a>) -> bool + Copy,
+    out: &mut Vec<Node<'a>>,
+) {
+    if pred(node) {
+        out.push(node);
+    }
+    for index in 0..node.child_count() {
+        if let Some(child) = node.child(index as u32) {
+            collect_nodes(child, pred, out);
+        }
+    }
+}
+
+fn byte_ranges_to_selections(source: &str, ranges: Vec<(usize, usize)>) -> Vec<TextSelection> {
+    let mut selections = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (start, end) in ranges {
+        if start >= end || !seen.insert((start, end)) {
+            continue;
+        }
+        let Some(anchor) = text_position_at_offset(source, start) else {
+            continue;
+        };
+        let Some(active) = text_position_at_offset(source, end) else {
+            continue;
+        };
+        selections.push(TextSelection { anchor, active });
+    }
+    selections
 }
 
 fn object_byte_range(
@@ -640,6 +849,10 @@ fn parameter_list_kinds() -> &'static [&'static str] {
     ]
 }
 
+fn parameter_container_kinds() -> &'static [&'static str] {
+    &["parameters", "parameter_list", "formal_parameters"]
+}
+
 fn field_kinds() -> &'static [&'static str] {
     &[
         "field_declaration",
@@ -842,6 +1055,38 @@ struct Point {
             )
             .expect("pair");
         assert!(slice_of(RUST_SOURCE, &pair).contains("a, b + 1"));
+    }
+
+    #[test]
+    fn same_textobjects_collect_sibling_parameters_and_functions() {
+        let mut syntax = IncrementalSyntax::new();
+        let parameters = syntax.same_textobjects(
+            "lib.rs",
+            RUST_SOURCE,
+            position_in(RUST_SOURCE, "a: i32"),
+            TextObject::Parameter { around: false },
+        );
+        let texts = parameters
+            .iter()
+            .map(|selection| slice_of(RUST_SOURCE, selection).trim())
+            .collect::<Vec<_>>();
+        assert!(texts.contains(&"a: i32"));
+        assert!(texts.contains(&"b: i32"));
+        assert_eq!(parameters.len(), 2);
+
+        let functions = syntax.same_textobjects(
+            "lib.rs",
+            RUST_SOURCE,
+            position_in(RUST_SOURCE, "let name"),
+            TextObject::Function { around: true },
+        );
+        assert_eq!(functions.len(), 2);
+        let joined = functions
+            .iter()
+            .map(|selection| slice_of(RUST_SOURCE, selection))
+            .collect::<String>();
+        assert!(joined.contains("fn outer"));
+        assert!(joined.contains("fn inner"));
     }
 
     #[test]

@@ -242,6 +242,7 @@ pub(crate) fn render_editor(
 pub(crate) struct EditorDecorations<'a> {
     pub marks: &'a [(u32, char)],
     pub inlays: &'a [(u32, String)],
+    pub extra_selections: &'a [crate::development::TextSelection],
 }
 
 pub(crate) fn render_editable_source(
@@ -271,12 +272,26 @@ pub(crate) fn render_editable_source(
             &mut markdown_highlighter,
             &mut highlighter,
         );
-        let source_spans = apply_selection_background(
+        let mut source_spans = apply_selection_background(
             source_spans,
             selection_columns(selection, line_number, source),
         );
+        for extra in decorations.extra_selections {
+            if !extra.is_empty() {
+                source_spans = apply_selection_background(
+                    source_spans,
+                    selection_columns(Some(extra), line_number, source),
+                );
+            }
+        }
         let source_spans = apply_active_line_background(source_spans, active);
-        let source_spans = apply_cursor_style(source_spans, active, cursor_column);
+        let extra_columns = extra_cursor_columns(line_number, decorations.extra_selections);
+        let source_spans = apply_cursor_style(
+            source_spans,
+            line_number == cursor_line,
+            cursor_column,
+            &extra_columns,
+        );
         let gutter_style = if active {
             Style::default()
                 .fg(ACCENT_BRIGHT)
@@ -566,54 +581,73 @@ fn apply_active_line_background(spans: Vec<Span<'static>>, active: bool) -> Vec<
         .collect()
 }
 
+fn extra_cursor_columns(line: u32, extras: &[crate::development::TextSelection]) -> Vec<usize> {
+    extras
+        .iter()
+        .filter(|selection| selection.active.line == line)
+        .map(|selection| selection.active.column.saturating_sub(1) as usize)
+        .collect()
+}
+
 fn apply_cursor_style(
     spans: Vec<Span<'static>>,
     active: bool,
     cursor_column: u32,
+    extra_columns: &[usize],
 ) -> Vec<Span<'static>> {
-    if !active {
+    if !active && extra_columns.is_empty() {
         return spans;
     }
     let cursor_index = cursor_column.saturating_sub(1) as usize;
-    let cursor_style = Style::default()
+    let primary_style = Style::default()
         .fg(Color::Black)
         .bg(ACCENT_BRIGHT)
+        .add_modifier(Modifier::BOLD);
+    let extra_style = Style::default()
+        .fg(Color::Black)
+        .bg(PURPLE)
         .add_modifier(Modifier::BOLD);
     let mut rendered = Vec::with_capacity(spans.len() + 1);
     let mut position = 0;
     for span in spans {
         let style = span.style;
         let mut chunk = String::new();
-        let mut chunk_cursor = None;
+        let mut chunk_kind = None::<u8>;
         for character in span.content.chars() {
-            let is_cursor = position == cursor_index;
-            if chunk_cursor != Some(is_cursor) && !chunk.is_empty() {
+            let kind = if active && position == cursor_index {
+                1
+            } else if extra_columns.contains(&position) {
+                2
+            } else {
+                0
+            };
+            if chunk_kind != Some(kind) && !chunk.is_empty() {
                 rendered.push(Span::styled(
                     std::mem::take(&mut chunk),
-                    if chunk_cursor == Some(true) {
-                        cursor_style
-                    } else {
-                        style
+                    match chunk_kind {
+                        Some(1) => primary_style,
+                        Some(2) => extra_style,
+                        _ => style,
                     },
                 ));
             }
-            chunk_cursor = Some(is_cursor);
+            chunk_kind = Some(kind);
             chunk.push(character);
             position += 1;
         }
         if !chunk.is_empty() {
             rendered.push(Span::styled(
                 chunk,
-                if chunk_cursor == Some(true) {
-                    cursor_style
-                } else {
-                    style
+                match chunk_kind {
+                    Some(1) => primary_style,
+                    Some(2) => extra_style,
+                    _ => style,
                 },
             ));
         }
     }
-    if cursor_index >= position {
-        rendered.push(Span::styled(" ", cursor_style));
+    if active && cursor_index >= position {
+        rendered.push(Span::styled(" ", primary_style));
     }
     rendered
 }
@@ -1774,6 +1808,7 @@ mod tests {
             &EditorDecorations {
                 marks: &[],
                 inlays: &[],
+                extra_selections: &[],
             },
         );
         assert_eq!(symbols(output.clone()), "▶   1 │ fn main() {}\n    2 │ ");
@@ -1799,6 +1834,7 @@ mod tests {
             &EditorDecorations {
                 marks: &[],
                 inlays: &inlays,
+                extra_selections: &[],
             },
         );
         assert!(
@@ -1823,6 +1859,7 @@ mod tests {
             &EditorDecorations {
                 marks: &[],
                 inlays: &[],
+                extra_selections: &[],
             },
         );
         let cursor = wrapped.cursor.expect("empty-line cursor");
@@ -1844,6 +1881,7 @@ mod tests {
             &EditorDecorations {
                 marks: &[],
                 inlays: &[],
+                extra_selections: &[],
             },
         );
         let cursor = wrapped.cursor.expect("wrapped source cursor");
@@ -1875,6 +1913,7 @@ mod tests {
             &EditorDecorations {
                 marks: &[],
                 inlays: &[],
+                extra_selections: &[],
             },
         );
         let selected_rows = wrapped

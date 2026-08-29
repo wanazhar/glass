@@ -357,6 +357,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
     let decorations = file_view::EditorDecorations {
         marks: &marks,
         inlays: &notes,
+        extra_selections: &state.editor_engine.extra_selections,
     };
     let wrapped_cursor = if state.editor_soft_wrap {
         let wrapped = file_view::render_editable_source_wrapped(
@@ -902,7 +903,7 @@ fn help_content(surface: DevSurface) -> String {
             "AGENT\n  Enter    start or continue a conversation\n  Shift-Enter  newline · Tab @mention\n  ↑        previous prompt\n  Ctrl-D   steer the active turn\n  Ctrl-X   abort the selected agent\n  :agent setup / doctor / new\n  :review  show/accept/ship · :task crew GOAL\n  :harness list / start NAME"
         }
         DevSurface::Code => {
-            "CODE\n  Ctrl-P   fuzzy-open a file\n  ↑/↓      select a file\n  Enter    open full-screen editor\n  i        edit the focused buffer\n  gp       jump this handler to App\n  [ / ]    cycle buffers\n  Ctrl-S   save · Ctrl-Z/Y undo/redo\n  Alt-A    ask Pi with this buffer\n  :open PATH · :project search QUERY"
+            "CODE\n  Ctrl-P   fuzzy-open a file\n  ↑/↓      select a file\n  Enter    open full-screen editor\n  i        edit the focused buffer\n  gp       jump this handler to App\n  gm/gn    extra carets on the same object\n  [ / ]    cycle buffers\n  Ctrl-S   save · Ctrl-Z/Y undo/redo\n  Alt-A    ask Pi with this buffer"
         }
         DevSurface::App => {
             "APP\n  :browser start / navigate URL / observe\n  T        target picker\n  Enter    activate selected entity\n  g        jump entity to source\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n  :browser view · :workflow record start"
@@ -972,6 +973,7 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let decorations = file_view::EditorDecorations {
         marks: &marks,
         inlays: &notes,
+        extra_selections: &state.editor_engine.extra_selections,
     };
     let source = file_view::render_editable_source(
         &state.focused_editor_path,

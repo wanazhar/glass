@@ -1,9 +1,11 @@
 //! Decomposed full Glass Dev terminal application.
 
+mod bindings;
 mod command;
 mod editor;
 mod file_view;
 mod parse;
+mod pointer;
 mod projection;
 /// Rendering primitives and frame composition for the development TUI.
 pub mod render;
@@ -321,6 +323,7 @@ pub fn run(
     let mut last_visual = Instant::now();
     let mut last_render = Instant::now() - Duration::from_millis(33);
     let mut previous_overlay_mask = 0_u16;
+    let mut pointer = pointer::PointerState::default();
     loop {
         let size = guard.terminal.size()?;
         let overlay_mask = terminal_overlay_mask(&state);
@@ -867,38 +870,23 @@ pub fn run(
                 }
                 Event::Paste(text) if state.command_mode => state.insert_palette_text(&text),
                 Event::Paste(text) if state.composer_mode => state.insert_composer_text(&text),
-                Event::Mouse(mouse) => match mouse.kind {
-                    crossterm::event::MouseEventKind::ScrollUp => state.scroll_surface(-3),
-                    crossterm::event::MouseEventKind::ScrollDown => state.scroll_surface(3),
-                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
-                        if !state.quit_confirmation
-                            && state.editor_exit_prompt.is_none()
-                            && !state.help_open
-                            && !state.menu_open
-                            && !state.command_mode
-                            && !state.composer_mode
-                            && !state.code_edit_mode
-                            && state.pending_confirmation.is_none()
-                            && state.pending_agent_approval.is_none()
-                            && !state.browser_target_picker
-                            && state.browser_recovery.is_none()
-                            && !state.git_diff_open =>
+                Event::Mouse(mouse) => {
+                    if !state.quit_confirmation
+                        && state.editor_exit_prompt.is_none()
+                        && state.pending_confirmation.is_none()
+                        && state.pending_agent_approval.is_none()
+                        && !state.browser_target_picker
+                        && state.browser_recovery.is_none()
                     {
-                        let responsive =
-                            state.responsive_class(state.terminal_width, state.terminal_height);
-                        let header_height = if state.composer_mode { 3 } else { 2 };
-                        if let Some(surface) = navigation_surface_at(
-                            responsive,
-                            header_height,
-                            mouse.column,
-                            mouse.row,
-                        ) {
-                            state.surface = surface;
-                            state.status = format!("{} selected", surface.label());
+                        pointer.handle(&mut state, mouse, Instant::now());
+                    } else {
+                        match mouse.kind {
+                            crossterm::event::MouseEventKind::ScrollUp => state.scroll_surface(-3),
+                            crossterm::event::MouseEventKind::ScrollDown => state.scroll_surface(3),
+                            _ => {}
                         }
                     }
-                    _ => {}
-                },
+                }
                 Event::FocusLost => {
                     let _ = state
                         .browser_workspace
@@ -908,6 +896,7 @@ pub fn run(
                 Event::Key(_) | Event::Paste(_) | Event::FocusGained => {}
             }
         }
+        pointer.poll(&mut state, Instant::now());
         if state.agent_login_requested {
             state.agent_login_requested = false;
             run_agent_login(&mut state, &mut guard);
@@ -1127,6 +1116,7 @@ fn terminal_overlay_mask(state: &DevTuiState) -> u16 {
 
 /// Map a left-click on the desktop or compact navigation column to a surface.
 /// The caller supplies the rendered header height so composer mode stays aligned.
+#[cfg(test)]
 fn navigation_surface_at(
     responsive: ResponsiveClass,
     header_height: u16,

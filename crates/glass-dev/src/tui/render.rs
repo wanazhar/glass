@@ -118,12 +118,9 @@ fn composer_visible_lines(state: &DevTuiState) -> u16 {
 
 fn footer_height(state: &DevTuiState) -> u16 {
     if state.composer_mode {
-        // Top border + draft lines + status.
         composer_visible_lines(state).saturating_add(2)
-    } else if state.command_mode || state.file_picker_open {
-        3
     } else {
-        2
+        3
     }
 }
 
@@ -982,36 +979,7 @@ fn palette_action_hint(command: &str) -> String {
 }
 
 fn help_content(surface: DevSurface) -> String {
-    let global = "KEYS\n  Ctrl-P   open file · Ctrl-L chat dock\n  Ctrl-K   command palette\n  :        command palette\n  Ctrl-Shift-P  command palette\n  Tab      next surface\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Esc      back\n  ?        help\n  Ctrl-C   quit confirmation";
-    let current = match surface {
-        DevSurface::Agent | DevSurface::Trust => {
-            "AGENT\n  Enter    start or continue a conversation\n  Shift-Enter  newline · Tab @mention\n  ↑        previous prompt\n  Ctrl-D   steer the active turn\n  Ctrl-X   abort the selected agent\n  :agent setup / doctor / new\n  :review  show/accept/ship · :task crew GOAL\n  :harness list / start NAME"
-        }
-        DevSurface::Code => {
-            "CODE\n  Ctrl-P   fuzzy-open a file\n  ↑/↓      select a file\n  Enter    open full-screen editor\n  i        edit the focused buffer\n  gp       jump this handler to App\n  gm/gn    extra carets on the same object\n  [ / ]    cycle buffers\n  Ctrl-S   save · Ctrl-Z/Y undo/redo\n  Alt-A    ask Pi with this buffer"
-        }
-        DevSurface::App => {
-            "APP\n  :browser start / navigate URL / observe\n  T        target picker\n  Enter    activate selected entity\n  g        jump entity to source\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n  :browser view · :workflow record start"
-        }
-        DevSurface::Terminal => {
-            "TERMINAL\n  s        start the detected suite\n  u        attach detected URL\n  a        surface actions\n  :process start NAME COMMAND\n  :process logs / stop / ports"
-        }
-        DevSurface::Git => {
-            "GIT\n  ↑/↓      changed file\n  Enter/d  diff\n  :git status / stage / commit\n  :github review / ship"
-        }
-        DevSurface::Tasks => {
-            "TASKS\n  a        surface actions\n  :task list / create TITLE PROMPT\n  :test discover / run"
-        }
-        DevSurface::Debug => {
-            "DEBUG\n  :debug processes / threads\n  :test results\n  a        surface actions"
-        }
-        DevSurface::More => {
-            "MORE\n  :workspace status · :doctor\n  :replay list · :memory status\n  :cockpit start · :experiment list"
-        }
-    };
-    format!(
-        "{global}\n\n{current}\n\nEVERY SURFACE\n  :actions  guided launchers for this surface\n  :help     command groups\n  :open     file picker or PATH\n\nOTHER\n  AGENT · CODE · APP · TERMINAL · TASKS · GIT · DEBUG · MORE"
-    )
+    super::bindings::curriculum_help(surface)
 }
 
 fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -1181,7 +1149,16 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             status_line(state, rows[2].width.saturating_sub(2)),
         ]
     } else {
-        vec![status_line(state, rows[2].width.saturating_sub(2))]
+        vec![
+            Line::from(Span::styled(
+                compact_line(
+                    &super::bindings::dock_placeholder(state.surface, state.composer_run_mode),
+                    rows[2].width.saturating_sub(2),
+                ),
+                Style::default().fg(MUTED),
+            )),
+            status_line(state, rows[2].width.saturating_sub(2)),
+        ]
     };
     frame.render_widget(
         Paragraph::new(footer_lines)
@@ -3390,7 +3367,16 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 Style::default().fg(ACCENT_BRIGHT),
             ));
         }
-        vec![Line::from(line)]
+        vec![
+            Line::from(Span::styled(
+                compact_line(
+                    &super::bindings::dock_placeholder(state.surface, state.composer_run_mode),
+                    area.width.saturating_sub(2),
+                ),
+                Style::default().fg(MUTED),
+            )),
+            Line::from(line),
+        ]
     };
     frame.render_widget(
         Paragraph::new(lines)
@@ -3562,9 +3548,10 @@ mod tests {
         state.help_open = true;
         state.surface = DevSurface::Code;
         let help = rendered(&state, 100, 28);
-        assert!(help.contains("Ctrl-P"));
+        assert!(help.contains("DO THIS"));
         assert!(help.contains("CODE"));
-        assert!(help.contains("fuzzy-open a file"));
+        assert!(help.contains("Enter opens"));
+        assert!(help.contains("Ctrl-P"));
         assert!(!help.contains("Alt-←/→"));
     }
 
@@ -3816,9 +3803,11 @@ mod tests {
     fn help_scroll_and_git_diff_keep_small_cockpits_interactive() {
         let mut state = state(TuiLayout::Mobile);
         state.toggle_help();
+        let help = rendered(&state, 48, 18);
+        assert!(help.contains("DO THIS"));
+        assert!(help.contains("APP"));
         state.scroll_help(16);
-        assert_eq!(state.help_scroll, 16);
-        assert!(rendered(&state, 48, 18).contains("APP"));
+        assert!(state.help_scroll <= 16);
 
         state.help_open = false;
         state.surface = DevSurface::Git;

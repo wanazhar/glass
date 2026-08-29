@@ -217,6 +217,17 @@ impl LanguageService {
         })
     }
 
+    pub fn inlay_hints(
+        &mut self,
+        name: &str,
+        actor: &str,
+        path: &str,
+    ) -> DevelopmentResult<LanguageResponse> {
+        self.position_request(name, actor, "inlayHints", path, |client| {
+            client.inlay_hints(path)
+        })
+    }
+
     pub fn signature_help(
         &mut self,
         name: &str,

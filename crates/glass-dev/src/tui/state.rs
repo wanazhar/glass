@@ -1,6 +1,17 @@
 use super::command;
+use super::editor::{
+    self as native, EditorEngine, EditorMode, GhostText, Motion, Operator, TextObject,
+    apply_motion, compile_prove_it, complete_mention, evidence_card, expand_mentions,
+    inferred_app_path, join_app_url, line_hunks, local_fim, multi_delete, multi_insert,
+    next_edit_after_accept, pair_apply_caret, pair_apply_step, parse_inlay_hints, same_word_ranges,
+    split_ghost_word, textobject_from_key, textobject_selection,
+};
+use super::parse::IncrementalSyntax;
+use crate::development::TextSelection;
 use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
+use glass_browser::browser::WorkflowRecorder;
 use glass_browser::browser::policy::PolicyPreset;
+use glass_browser::browser::session::VerificationPredicate;
 use glass_browser::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAction, BrowserWorkspaceAdapterKind,
     BrowserWorkspaceController, BrowserWorkspaceEntity, BrowserWorkspaceIntent,
@@ -22,6 +33,48 @@ pub struct PendingConfirmation {
 }
 
 #[derive(Debug, Clone)]
+pub struct TuiWorkflowRecording {
+    pub name: String,
+    pub recorder: WorkflowRecorder,
+    step: usize,
+}
+
+impl TuiWorkflowRecording {
+    fn next_id(&mut self) -> String {
+        self.step += 1;
+        format!("step-{}", self.step)
+    }
+}
+
+enum PendingFim {
+    Thread {
+        path: String,
+        offset: usize,
+        rx: std::sync::mpsc::Receiver<Option<String>>,
+    },
+    Pi {
+        path: String,
+        offset: usize,
+        agent_id: crate::AgentId,
+        since: u64,
+    },
+}
+
+impl PendingFim {
+    fn path(&self) -> &str {
+        match self {
+            Self::Thread { path, .. } | Self::Pi { path, .. } => path,
+        }
+    }
+
+    fn offset(&self) -> usize {
+        match self {
+            Self::Thread { offset, .. } | Self::Pi { offset, .. } => *offset,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct PendingAgentApproval {
     pub agent_id: String,
     pub frame_id: String,
@@ -34,6 +87,110 @@ pub enum ChatMessageState {
     Sending,
     Sent,
     Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WorkspacePlan {
+    pub id: String,
+    pub goal: String,
+    pub body: String,
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionPickerItem {
+    pub path: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessRow {
+    pub name: String,
+    pub command: String,
+    pub pid: Option<u32>,
+    pub health: crate::development::ProcessHealth,
+    pub url: Option<String>,
+}
+
+impl ProcessRow {
+    pub fn from_snapshot(item: &crate::development::ProcessSnapshot) -> Self {
+        Self {
+            name: item.name.clone(),
+            command: item.command.clone(),
+            pid: item.pid,
+            health: item.health.clone(),
+            url: item.detected_urls.first().cloned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugSessionRow {
+    pub name: String,
+    pub state: crate::debugger::DebugSessionState,
+    pub pid: u32,
+    pub breakpoints: usize,
+    pub watches: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugScopeRow {
+    pub name: String,
+    pub variables_reference: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugVariableRow {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugThreadRow {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugFrameRow {
+    pub id: i64,
+    pub name: String,
+    pub path: Option<String>,
+    pub line: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugPane {
+    #[default]
+    Sessions,
+    Threads,
+    Frames,
+}
+
+impl DebugPane {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sessions => "sessions",
+            Self::Threads => "threads",
+            Self::Frames => "frames",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Sessions => Self::Threads,
+            Self::Threads => Self::Frames,
+            Self::Frames => Self::Sessions,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Sessions => Self::Frames,
+            Self::Threads => Self::Sessions,
+            Self::Frames => Self::Threads,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,15 +358,46 @@ pub struct DevTuiState {
     pub help_open: bool,
     pub help_scroll: u16,
     pub composer_mode: bool,
+    pub composer_run_mode: crate::AgentTurnMode,
+    pub pending_plan: Option<WorkspacePlan>,
     pub composer_input: String,
     pub composer_cursor: usize,
     pub composer_steer: bool,
+    pub last_app_comment: Option<String>,
+    pub session_todos: crate::SessionTodoList,
+    pub composer_history: Vec<String>,
+    pub composer_history_index: Option<usize>,
+    pub composer_history_draft: String,
+    pub file_picker_open: bool,
+    pub file_picker_query: String,
+    pub file_picker_cursor: usize,
+    pub file_picker_selection: usize,
+    pub transcript_selection: usize,
+    pub transcript_expanded: bool,
+    pub session_picker_open: bool,
+    pub session_picker_items: Vec<SessionPickerItem>,
+    pub session_picker_selection: usize,
+    pub conversation_items: Vec<super::projection::ConversationEntry>,
+    pub agent_model: String,
+    pub agent_thinking: String,
+    pub agent_session_name: String,
+    pub agent_token_summary: String,
+    pub git_branch: String,
+    pub git_dirty: bool,
+    pub git_ahead: u64,
+    pub git_behind: u64,
+    pub git_conflicts: Vec<String>,
+    pub github_review_requested: bool,
+    pub pending_trust: Option<crate::LocalTrustDecision>,
+    pub pending_open_file: Option<String>,
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
     pub pending_confirmation: Option<PendingConfirmation>,
     /// URL retained while the TUI launches a detached browser before navigation.
     pub pending_browser_navigation: Option<String>,
+    pub pending_page_entity: Option<String>,
+    pub process_urls: Vec<String>,
     pub pending_agent_approval: Option<PendingAgentApproval>,
     pub editor_exit_prompt: Option<EditorExitPrompt>,
     pub queued_tool_request: Option<(
@@ -244,6 +432,9 @@ pub struct DevTuiState {
     pub editor_comments: Vec<crate::development::EditorComment>,
     pub editor_proposals: Vec<crate::development::EditorProposal>,
     pub editor_checkpoints: Vec<crate::development::EditorCheckpoint>,
+    pub editor_diagnostics: Vec<crate::development::LanguageDiagnostic>,
+    pub editor_inlays: Vec<(u32, String)>,
+    pub last_crew_wake: Option<String>,
     pub agents: String,
     pub agent_readiness: String,
     pub harnesses: String,
@@ -262,8 +453,18 @@ pub struct DevTuiState {
     pub editor_soft_wrap: bool,
     pub editor_scroll_line: usize,
     pub editor_scroll_column: usize,
+    pub editor_engine: EditorEngine,
+    pub syntax: IncrementalSyntax,
+    pub last_verify: Option<String>,
+    pub last_proof_ok: Option<bool>,
+    pub pending_verify: Option<serde_json::Value>,
+    pub factory_split: bool,
     pub lsp: String,
     pub processes: String,
+    pub process_entries: Vec<ProcessRow>,
+    pub selected_process: usize,
+    pub process_logs: String,
+    pub process_logs_requested: bool,
     pub git: String,
     pub git_entries: Vec<crate::git::GitStatusEntry>,
     pub github: crate::github::GitHubStatus,
@@ -276,6 +477,23 @@ pub struct DevTuiState {
     pub tests: String,
     pub kernels: String,
     pub debugger: String,
+    pub debug_sessions: Vec<DebugSessionRow>,
+    pub selected_debug_session: usize,
+    pub debug_threads: Vec<DebugThreadRow>,
+    pub selected_debug_thread: usize,
+    pub debug_frames: Vec<DebugFrameRow>,
+    pub selected_debug_frame: usize,
+    pub debug_pane: DebugPane,
+    pub debug_threads_requested: bool,
+    pub debug_stack_requested: bool,
+    pub debug_scopes: Vec<DebugScopeRow>,
+    pub selected_debug_scope: usize,
+    pub debug_variables: Vec<DebugVariableRow>,
+    pub debug_scopes_requested: bool,
+    pub debug_variables_requested: bool,
+    pub selected_todo: usize,
+    pub selected_more: usize,
+    pub more_result: String,
     pub replay: String,
     pub browser: String,
     pub browser_detail: String,
@@ -295,6 +513,8 @@ pub struct DevTuiState {
     pub experiments: String,
     pub cockpit_url: String,
     pub private_cockpit: Option<crate::development::LocalCockpit>,
+    pub workflow_recording: Option<TuiWorkflowRecording>,
+    pending_fim: Option<PendingFim>,
 }
 
 impl DevTuiState {
@@ -396,7 +616,7 @@ impl DevTuiState {
         let initial_status = if trust_prompt {
             "Trust required · I inspect · O untrusted · 1 once · T project".to_string()
         } else if agent_readiness.starts_with("✓ Ready") {
-            "Ready · describe a coding task".to_string()
+            "Ready · Enter chat · Ctrl-P files · : commands · ? help".to_string()
         } else {
             "Pi setup required · press :actions or Enter to continue".to_string()
         };
@@ -424,9 +644,38 @@ impl DevTuiState {
             help_open: false,
             help_scroll: 0,
             composer_mode: false,
+            composer_run_mode: crate::AgentTurnMode::Agent,
+            pending_plan: None,
             composer_input: String::new(),
             composer_cursor: 0,
             composer_steer: false,
+            last_app_comment: None,
+            session_todos: crate::SessionTodoList::default(),
+            composer_history: Vec::new(),
+            composer_history_index: None,
+            composer_history_draft: String::new(),
+            file_picker_open: false,
+            file_picker_query: String::new(),
+            file_picker_cursor: 0,
+            file_picker_selection: 0,
+            transcript_selection: 0,
+            transcript_expanded: false,
+            session_picker_open: false,
+            session_picker_items: Vec::new(),
+            session_picker_selection: 0,
+            conversation_items: Vec::new(),
+            agent_model: String::new(),
+            agent_thinking: String::new(),
+            agent_session_name: String::new(),
+            agent_token_summary: String::new(),
+            git_branch: String::new(),
+            git_dirty: false,
+            git_ahead: 0,
+            git_behind: 0,
+            git_conflicts: Vec::new(),
+            github_review_requested: false,
+            pending_trust: None,
+            pending_open_file: None,
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
             selected_agent: None,
@@ -434,6 +683,8 @@ impl DevTuiState {
             editor_exit_prompt: None,
             pending_agent_approval: None,
             pending_browser_navigation: None,
+            pending_page_entity: None,
+            process_urls: Vec::new(),
             queued_tool_request: None,
             running_tool_job: None,
             surface_scroll: std::collections::BTreeMap::new(),
@@ -458,6 +709,9 @@ impl DevTuiState {
             editor_comments: Vec::new(),
             editor_proposals: Vec::new(),
             editor_checkpoints: Vec::new(),
+            editor_diagnostics: Vec::new(),
+            editor_inlays: Vec::new(),
+            last_crew_wake: None,
             status: initial_status,
             agents: String::new(),
             agent_readiness,
@@ -474,8 +728,21 @@ impl DevTuiState {
             editor_soft_wrap: false,
             editor_scroll_line: 0,
             editor_scroll_column: 0,
+            editor_engine: EditorEngine {
+                mode: EditorMode::Insert,
+                ..EditorEngine::default()
+            },
+            syntax: IncrementalSyntax::new(),
+            last_verify: None,
+            last_proof_ok: None,
+            pending_verify: None,
+            factory_split: true,
             lsp: String::new(),
             processes: String::new(),
+            process_entries: Vec::new(),
+            selected_process: 0,
+            process_logs: String::new(),
+            process_logs_requested: false,
             git: String::new(),
             git_entries: Vec::new(),
             github: crate::github::GitHubStatus::default(),
@@ -488,6 +755,23 @@ impl DevTuiState {
             tests: String::new(),
             kernels: String::new(),
             debugger: String::new(),
+            debug_sessions: Vec::new(),
+            selected_debug_session: 0,
+            debug_threads: Vec::new(),
+            selected_debug_thread: 0,
+            debug_frames: Vec::new(),
+            selected_debug_frame: 0,
+            debug_pane: DebugPane::Sessions,
+            debug_threads_requested: false,
+            debug_stack_requested: false,
+            debug_scopes: Vec::new(),
+            selected_debug_scope: 0,
+            debug_variables: Vec::new(),
+            debug_scopes_requested: false,
+            debug_variables_requested: false,
+            selected_todo: 0,
+            selected_more: 0,
+            more_result: String::new(),
             replay: String::new(),
             browser: String::new(),
             browser_detail: "No browser observation yet".into(),
@@ -514,6 +798,8 @@ impl DevTuiState {
             experiments: "No experiments. :experiment create ID BRANCH [PORT]".into(),
             cockpit_url: String::new(),
             private_cockpit: None,
+            workflow_recording: None,
+            pending_fim: None,
         };
         if initial_refresh {
             state.refresh();
@@ -613,6 +899,157 @@ impl DevTuiState {
             .unwrap_or_else(|| "not running · use `cockpit start`".into())
     }
 
+    pub fn start_workflow_recording(&mut self, name: &str) -> Result<String, String> {
+        if let Some(recording) = &self.workflow_recording {
+            return Err(format!(
+                "already recording {} · :workflow record stop first",
+                recording.name
+            ));
+        }
+        let name = workflow_slug(name);
+        self.workflow_recording = Some(TuiWorkflowRecording {
+            name: name.clone(),
+            recorder: WorkflowRecorder::new(name.clone(), "1.0.0"),
+            step: 0,
+        });
+        self.surface = DevSurface::App;
+        self.refresh_workflow_recording_status();
+        self.status = format!("Recording {name} · Enter activates and records locators");
+        Ok(self.status.clone())
+    }
+
+    pub fn workflow_recording_status(&self) -> String {
+        match &self.workflow_recording {
+            Some(recording) => format!(
+                "recording {} · {} step(s)",
+                recording.name,
+                recording.recorder.draft().steps.len()
+            ),
+            None => "not recording · :workflow record start NAME".into(),
+        }
+    }
+
+    pub fn capture_workflow_click(&mut self) -> Result<bool, String> {
+        if self.workflow_recording.is_none() {
+            return Ok(false);
+        }
+        let selected = self
+            .browser_workspace
+            .state()
+            .selected()
+            .cloned()
+            .filter(|entity| entity.actionable)
+            .ok_or("no actionable semantic entity is selected")?;
+        let Some(recording) = self.workflow_recording.as_mut() else {
+            return Ok(false);
+        };
+        let id = recording.next_id();
+        recording
+            .recorder
+            .record_click(id, selected.role, selected.name, None)
+            .map_err(|error| error.to_string())?;
+        self.refresh_workflow_recording_status();
+        Ok(true)
+    }
+
+    pub fn record_workflow_type(&mut self, input_name: &str) -> Result<String, String> {
+        let selected = self
+            .browser_workspace
+            .state()
+            .selected()
+            .cloned()
+            .ok_or("no semantic entity is selected")?;
+        let recording = self
+            .workflow_recording
+            .as_mut()
+            .ok_or("start a recording first")?;
+        let id = recording.next_id();
+        let input = workflow_slug(input_name);
+        recording
+            .recorder
+            .record_type_input(id, selected.role, selected.name, input.clone())
+            .map_err(|error| error.to_string())?;
+        let steps = recording.recorder.draft().steps.len();
+        self.refresh_workflow_recording_status();
+        self.status = format!("REC {steps} · typed ${{inputs.{input}}}");
+        Ok(self.status.clone())
+    }
+
+    pub fn record_workflow_verify(&mut self) -> Result<String, String> {
+        let value = self
+            .pending_verify
+            .clone()
+            .ok_or("no pending prove-it predicate to attach")?;
+        let expect: VerificationPredicate = serde_json::from_value(value)
+            .map_err(|error| format!("pending verify is not a workflow predicate: {error}"))?;
+        let recording = self
+            .workflow_recording
+            .as_mut()
+            .ok_or("start a recording first")?;
+        recording
+            .recorder
+            .attach_expect_to_last(expect)
+            .map_err(|error| error.to_string())?;
+        let steps = recording.recorder.draft().steps.len();
+        self.refresh_workflow_recording_status();
+        self.status = format!("REC {steps} · attached prove-it to the last step");
+        Ok(self.status.clone())
+    }
+
+    pub fn stop_workflow_recording(&mut self) -> Result<String, String> {
+        let recording = self
+            .workflow_recording
+            .take()
+            .ok_or("no click-path recording is active")?;
+        let draft = recording.recorder.draft();
+        if draft.steps.is_empty() {
+            self.workflow = "No workflow evidence yet".into();
+            return Err("recording had no steps · activate entities before stop".into());
+        }
+        let dir = Path::new(&self.snapshot_root)
+            .join(".glass")
+            .join("workflows");
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        let path = dir.join(format!("{}.draft.json", recording.name));
+        let encoded = serde_json::to_vec_pretty(draft).map_err(|error| error.to_string())?;
+        std::fs::write(&path, &encoded).map_err(|error| error.to_string())?;
+        self.workflow = format!(
+            "Draft {} · {} step(s) · {}",
+            recording.name,
+            draft.steps.len(),
+            path.display()
+        );
+        self.status = format!(
+            "Recorded {} step(s) · {}",
+            draft.steps.len(),
+            path.display()
+        );
+        Ok(self.status.clone())
+    }
+
+    fn refresh_workflow_recording_status(&mut self) {
+        if let Some(recording) = &self.workflow_recording {
+            self.workflow = format!(
+                "REC {} · {} step(s) · :workflow record stop",
+                recording.name,
+                recording.recorder.draft().steps.len()
+            );
+        }
+    }
+
+    fn capture_workflow_type_from_selection(&mut self) {
+        if self.workflow_recording.is_none() {
+            return;
+        }
+        let input = self
+            .browser_workspace
+            .state()
+            .selected()
+            .map(|entity| slug_input_name(&entity.name))
+            .unwrap_or_else(|| "value".into());
+        let _ = self.record_workflow_type(&input);
+    }
+
     /// Run the selected command-center launcher. Keyboard hints apply
     /// directly; strings starting with `:` open the palette prefilled with
     /// the command.
@@ -704,6 +1141,7 @@ impl DevTuiState {
     }
 
     pub fn open_palette(&mut self) {
+        self.close_file_picker();
         self.command_mode = true;
         self.command_input.clear();
         self.command_cursor = 0;
@@ -712,7 +1150,7 @@ impl DevTuiState {
         self.palette_scroll = 0;
         self.palette_selection = 0;
         self.status = format!(
-            "Command search · {} actions · ↑↓ select · Enter run",
+            "Command search · {} actions · ↑↓ select · Enter run · Ctrl-P files",
             self.surface.label()
         );
     }
@@ -765,8 +1203,9 @@ impl DevTuiState {
 
     pub fn submit_palette(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let typed = self.command_input.trim().to_string();
-        let command = match (typed.as_str(), self.selected_palette_action()) {
-            ("a" | "actions" | "help" | "?" | "q" | "quit", _) => {
+        let typed_root = typed.split_whitespace().next().unwrap_or("");
+        let command = match (typed_root, self.selected_palette_action()) {
+            ("a" | "actions" | "help" | "?" | "q" | "quit" | "open" | "search" | "doctor", _) => {
                 self.command_mode = false;
                 self.command_input.clear();
                 self.command_cursor = 0;
@@ -867,6 +1306,52 @@ impl DevTuiState {
                 self.command_mode = false;
                 self.request_detected_dev();
                 None
+            }
+            "debug threads SESSION" | "debug continue SESSION THREAD_ID" => {
+                if let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) {
+                    let action = action
+                        .command
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("threads");
+                    if action == "continue" {
+                        if let Some(thread) = self.selected_debug_thread() {
+                            self.open_palette_with(&format!(
+                                "debug continue {session} {}",
+                                thread.id
+                            ));
+                        } else {
+                            self.open_palette_with(&format!("debug continue {session} "));
+                        }
+                    } else {
+                        self.open_palette_with(&format!("debug threads {session}"));
+                    }
+                    None
+                } else {
+                    self.open_palette_with("debug threads ");
+                    None
+                }
+            }
+            "process logs NAME" | "process stop NAME" | "process restart NAME" => {
+                if let Some(name) = self
+                    .selected_process_entry()
+                    .map(|entry| entry.name.clone())
+                {
+                    let action = action.command.split_whitespace().nth(1).unwrap_or("logs");
+                    self.open_palette_with(&format!("process {action} {name}"));
+                    None
+                } else {
+                    self.open_palette_with(&format!(
+                        "{} ",
+                        action
+                            .command
+                            .split_whitespace()
+                            .take(2)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                    None
+                }
             }
             "git diff" if self.surface == DevSurface::Git => {
                 self.command_mode = false;
@@ -1253,6 +1738,240 @@ impl DevTuiState {
         conversation
     }
 
+    pub fn conversation_entries_view(&self) -> Vec<super::projection::ConversationEntry> {
+        let mut entries = self.conversation_items.clone();
+        if entries.is_empty() && !self.agent_conversation.starts_with("No conversation yet.") {
+            entries = parse_conversation_view(&self.agent_conversation);
+        }
+        let mut observed = std::collections::BTreeMap::<String, usize>::new();
+        for message in &self.pending_chat_messages {
+            if message.state != ChatMessageState::Failed {
+                let seen = observed.entry(message.text.clone()).or_default();
+                let existing = entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.kind == super::projection::ConversationKind::User
+                            && entry.text == message.text
+                    })
+                    .count();
+                if *seen < existing {
+                    *seen += 1;
+                    continue;
+                }
+            }
+            let suffix = match message.state {
+                ChatMessageState::Sending => "· sending…",
+                ChatMessageState::Sent => "· sent · Glass Agent is thinking…",
+                ChatMessageState::Failed => "× send failed · press Enter to retry",
+            };
+            entries.push(super::projection::ConversationEntry {
+                kind: super::projection::ConversationKind::User,
+                text: format!("{}\n{suffix}", message.text),
+                streaming: false,
+                entry_id: None,
+                tool_name: None,
+            });
+        }
+        entries
+    }
+
+    pub fn composer_context_chips(&self) -> String {
+        let mut chips = Vec::new();
+        if !self.focused_editor_path.is_empty() {
+            chips.push(format!("@{}", self.focused_editor_path));
+        } else if let Some(path) = self.files.get(self.selected_file) {
+            chips.push(format!("@{path}"));
+        }
+        if self.focused_editor_selection.is_some() {
+            chips.push("selection".into());
+        }
+        if let Some(entity) = self.browser_workspace.state().selected() {
+            chips.push(format!("app {}", entity.name));
+        }
+        if self.pending_verify.is_some() {
+            chips.push("prove-it".into());
+        }
+        if self.composer_steer {
+            chips.push("steer".into());
+        }
+        chips.join(" · ")
+    }
+
+    pub fn agent_chrome_line(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.agent_model.is_empty() {
+            parts.push(self.agent_model.clone());
+        }
+        if !self.agent_thinking.is_empty() {
+            parts.push(format!("think {}", self.agent_thinking));
+        }
+        if !self.agent_session_name.is_empty() {
+            parts.push(self.agent_session_name.clone());
+        }
+        if !self.agent_token_summary.is_empty() {
+            parts.push(self.agent_token_summary.clone());
+        }
+        let queued = self
+            .pending_chat_messages
+            .iter()
+            .filter(|message| matches!(message.state, ChatMessageState::Sending))
+            .count();
+        if queued > 0 {
+            parts.push(format!("queued {queued}"));
+        }
+        parts.join(" · ")
+    }
+
+    pub fn move_transcript_selection(&mut self, delta: i32) {
+        let len = self.conversation_entries_view().len();
+        if len == 0 {
+            self.scroll_surface(delta);
+            return;
+        }
+        let next = self.transcript_selection as i32 + delta;
+        self.transcript_selection = next.clamp(0, len as i32 - 1) as usize;
+        self.transcript_expanded = false;
+        self.status = format!(
+            "Bubble {}/{} · f fork · r rewind · e edit last · o expand",
+            self.transcript_selection + 1,
+            len
+        );
+    }
+
+    pub fn toggle_transcript_expand(&mut self) {
+        self.transcript_expanded = !self.transcript_expanded;
+        self.status = if self.transcript_expanded {
+            "Expanded tool card · o collapse".into()
+        } else {
+            "Collapsed · o expand".into()
+        };
+    }
+
+    pub fn fork_selected_transcript(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        self.branch_selected_transcript("glass.agent.fork", worker);
+    }
+
+    pub fn rewind_selected_transcript(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        self.branch_selected_transcript("glass.agent.rewind", worker);
+    }
+
+    fn branch_selected_transcript(
+        &mut self,
+        tool: &str,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        let Some(entry) = self
+            .conversation_entries_view()
+            .get(self.transcript_selection)
+            .cloned()
+        else {
+            self.status = "No transcript bubble to branch".into();
+            return;
+        };
+        let Some(entry_id) = entry.entry_id.clone() else {
+            self.status = "Selected bubble has no Pi entry · send a turn first".into();
+            return;
+        };
+        let mut arguments = serde_json::json!({"entryId": entry_id});
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        match self.tool_request(tool, arguments, true) {
+            Ok((call, context)) => match worker.submit_tool(call, context) {
+                Ok(_) => {
+                    self.status = format!("{tool} · branching at {entry_id}");
+                    worker.request_conversation();
+                }
+                Err(error) => self.status = format!("Could not {tool}: {error}"),
+            },
+            Err(error) => self.status = format!("Could not {tool}: {error}"),
+        }
+    }
+
+    pub fn edit_last_user_message(&mut self) {
+        let entries = self.conversation_entries_view();
+        let Some(entry) = entries
+            .iter()
+            .rev()
+            .find(|entry| entry.kind == super::projection::ConversationKind::User)
+        else {
+            self.status = "No user message to edit".into();
+            return;
+        };
+        let text = entry
+            .text
+            .lines()
+            .next()
+            .unwrap_or(entry.text.as_str())
+            .to_string();
+        self.composer_input = text;
+        self.composer_cursor = self.composer_input.len();
+        self.composer_steer = false;
+        self.open_composer();
+        if let Some(entry_id) = entry.entry_id.clone() {
+            self.status = format!("Editing last user message · rewind {entry_id} on send");
+        } else {
+            self.status = "Editing last user message · Enter resends".into();
+        }
+    }
+
+    pub fn open_session_picker(&mut self, value: &serde_json::Value) {
+        self.session_picker_items = parse_session_picker_items(value);
+        self.session_picker_selection = 0;
+        self.session_picker_open = !self.session_picker_items.is_empty();
+        self.status = if self.session_picker_open {
+            format!(
+                "{} Pi session(s) · Enter switch · Esc close",
+                self.session_picker_items.len()
+            )
+        } else {
+            "No persisted Pi sessions".into()
+        };
+    }
+
+    pub fn close_session_picker(&mut self) {
+        self.session_picker_open = false;
+    }
+
+    pub fn move_session_picker_selection(&mut self, delta: i32) {
+        if self.session_picker_items.is_empty() {
+            return;
+        }
+        let next = self.session_picker_selection as i32 + delta;
+        self.session_picker_selection =
+            next.clamp(0, self.session_picker_items.len() as i32 - 1) as usize;
+    }
+
+    pub fn submit_session_picker(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(item) = self.session_picker_items.get(self.session_picker_selection) else {
+            self.status = "No session selected".into();
+            return;
+        };
+        let mut arguments = serde_json::json!({"path": item.path});
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        match self.tool_request("glass.agent.switch-session", arguments, true) {
+            Ok((call, context)) => match worker.submit_tool(call, context) {
+                Ok(_) => {
+                    self.agent_session_name = item.label.clone();
+                    self.session_picker_open = false;
+                    self.status = format!("Switching to {}", item.label);
+                    worker.request_conversation();
+                }
+                Err(error) => self.status = format!("Could not switch session: {error}"),
+            },
+            Err(error) => self.status = format!("Could not switch session: {error}"),
+        }
+    }
+
+    fn composer_send_blocked(&self) -> bool {
+        self.pending_confirmation.is_some()
+            || self.pending_agent_approval.is_some()
+            || self.queued_tool_request.is_some()
+            || (self.running_tool_job.is_some() && self.agent_send_job.is_none())
+    }
+
     fn reconcile_pending_chat(&mut self) {
         let conversation = self.agent_conversation.clone();
         let mut confirmed = std::collections::BTreeMap::<String, usize>::new();
@@ -1336,10 +2055,193 @@ impl DevTuiState {
     }
 
     pub fn open_composer(&mut self) {
+        self.close_file_picker();
         self.composer_mode = true;
         self.composer_cursor = self.composer_input.len();
-        self.status = "Agent composer · Enter sends · draft stays open · Esc cancels".into();
+        self.status = format!(
+            "{} dock on {} · Enter sends · Tab @mention · Shift-Enter newline · Ctrl-Shift-A mode · Esc back",
+            self.composer_run_mode.label(),
+            self.surface.label()
+        );
     }
+
+    /// Focus the shared chat dock without changing the active surface.
+    pub fn focus_composer_dock(&mut self) {
+        if self.snapshot_trust_label == "untrusted" {
+            self.surface = DevSurface::Trust;
+            self.status = "Trust this workspace before chatting · T or 1".into();
+            return;
+        }
+        if !self.agent_readiness.starts_with("✓ Ready") {
+            self.start_agent_interaction();
+            return;
+        }
+        self.open_composer();
+    }
+
+    pub fn cycle_composer_run_mode(&mut self) {
+        self.composer_run_mode = self.composer_run_mode.next();
+        let _ = self.ws_mut().map(|mut workspace| {
+            workspace.set_agent_turn_mode(self.composer_run_mode);
+        });
+        self.status = format!(
+            "{} mode · Ask is read-only · Plan writes a reviewable plan · Agent proposes",
+            self.composer_run_mode.label()
+        );
+        if self.composer_mode {
+            self.open_composer();
+        }
+    }
+
+    pub fn set_composer_run_mode(&mut self, mode: crate::AgentTurnMode) {
+        self.composer_run_mode = mode;
+        let _ = self.ws_mut().map(|mut workspace| {
+            workspace.set_agent_turn_mode(mode);
+        });
+        self.status = format!("{} mode", mode.label());
+    }
+
+    pub fn toggle_selected_git_stage(&mut self) {
+        let Some(entry) = self.selected_git_entry().cloned() else {
+            self.status = "Select a changed file · Space stages or unstages".into();
+            return;
+        };
+        let staged = entry.index_status != ' ' && !entry.untracked;
+        let tool = if staged {
+            "glass.git.unstage"
+        } else {
+            "glass.git.stage"
+        };
+        let arguments = serde_json::json!({"paths": [entry.path]});
+        match self.tool_request(tool, arguments, true) {
+            Ok((call, context)) => {
+                let summary = format!(
+                    "{} {}",
+                    if staged { "Unstage" } else { "Stage" },
+                    self.selected_git_entry()
+                        .map(|entry| entry.path.as_str())
+                        .unwrap_or("path")
+                );
+                let _ = self.queue_or_confirm(call, context, summary);
+            }
+            Err(error) => self.status = format!("Git stage unavailable: {error}"),
+        }
+    }
+
+    pub fn jump_to_app_keep_dock(&mut self) {
+        self.surface = DevSurface::App;
+        self.status = if self.composer_mode {
+            "App · dock stays open · watch the agent or type a follow-up".into()
+        } else {
+            "App selected · Ctrl-L talks about this page".into()
+        };
+    }
+
+    pub fn watch_agent_on_app(&mut self, tool: &str, value: &serde_json::Value) {
+        self.browser_workspace.state_mut().input_owner =
+            glass_browser::browser_workspace::BrowserInputOwner::Agent;
+        if !self.browser_visual_live {
+            self.browser_visual_live = true;
+        }
+        let target = value
+            .get("target")
+            .or_else(|| value.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("page");
+        let action = tool.rsplit('.').next().unwrap_or("act");
+        self.status = format!("Agent {action} {target} · watching · Ctrl-L to steer");
+    }
+
+    pub fn comment_selected_app_entity(&mut self) {
+        let Some(entity) = self.browser_workspace.state().selected().cloned() else {
+            self.status = "No App entity selected · ↑/↓ then C comments".into();
+            return;
+        };
+        self.last_app_comment = Some(format!("{} ({})", entity.name, entity.role));
+        self.composer_input = format!(
+            "About the selected App control [{}] {}: ",
+            entity.role, entity.name
+        );
+        self.composer_cursor = self.composer_input.len();
+        self.focus_composer_dock();
+        self.status = format!(
+            "App comment on {} · finish the note, then Enter",
+            entity.name
+        );
+    }
+
+    pub fn capture_plan_from_goal(&mut self, goal: &str) {
+        self.pending_plan = Some(WorkspacePlan {
+            id: format!(
+                "plan-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis())
+                    .unwrap_or(0)
+            ),
+            goal: goal.chars().take(240).collect(),
+            body: String::new(),
+            accepted: false,
+        });
+    }
+
+    pub fn accept_pending_plan(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(mut plan) = self.pending_plan.clone() else {
+            self.status = "No plan to accept · switch to Plan and send a goal".into();
+            return;
+        };
+        if plan.body.is_empty()
+            && let Some(entry) = self
+                .conversation_entries_view()
+                .into_iter()
+                .rev()
+                .find(|entry| entry.kind == super::projection::ConversationKind::Assistant)
+        {
+            plan.body = entry.text;
+        }
+        plan.accepted = true;
+        self.persist_plan(&plan);
+        if let Ok(list) = self.ws_mut().and_then(|mut workspace| {
+            workspace
+                .seed_todos_from_plan(&plan.goal, &plan.body)
+                .map_err(|error| error.to_string())
+        }) {
+            self.session_todos = list;
+        }
+        self.pending_plan = Some(plan.clone());
+        self.set_composer_run_mode(crate::AgentTurnMode::Agent);
+        self.composer_input = format!(
+            "Implement this accepted plan. Stay in proposals unless I say otherwise.\n\nGoal: {}\n\n{}",
+            plan.goal, plan.body
+        );
+        self.composer_cursor = self.composer_input.len();
+        self.open_composer();
+        self.submit_composer(worker);
+        self.status = format!("Plan {} accepted · Agent implementing", plan.id);
+    }
+
+    pub fn reject_pending_plan(&mut self) {
+        if let Some(plan) = self.pending_plan.as_mut() {
+            plan.accepted = false;
+            self.status = format!("Plan {} rejected · stay in Plan and revise", plan.id);
+        } else {
+            self.status = "No plan to reject".into();
+        }
+        self.set_composer_run_mode(crate::AgentTurnMode::Plan);
+    }
+
+    fn persist_plan(&self, plan: &WorkspacePlan) {
+        let Ok(workspace) = self.ws() else {
+            return;
+        };
+        let dir = workspace.root().join(".glass/plans");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(
+            dir.join("latest.json"),
+            serde_json::to_vec_pretty(plan).unwrap_or_default(),
+        );
+    }
+
     /// Move from the native editor into the shared agent conversation with
     /// the focused buffer attached as unsaved, bounded context.
     pub fn prepare_editor_agent_prompt(&mut self) {
@@ -1362,12 +2264,174 @@ impl DevTuiState {
         self.composer_steer = false;
         self.code_edit_mode = false;
         self.editor_exit_prompt = None;
-        self.surface = DevSurface::Agent;
         self.open_composer();
         self.status = format!(
-            "Editor context attached · {}:{} · review the prompt, then press Enter",
+            "Editor context attached · stay on Code · {}:{} · Enter sends",
             buffer.path, buffer.cursor_line
         );
+    }
+
+    pub fn review_object_text(&self) -> String {
+        let proposals = self
+            .editor_proposals
+            .iter()
+            .map(|item| {
+                (
+                    item.id.clone(),
+                    item.path.clone(),
+                    format!("{:?}", item.state),
+                )
+            })
+            .collect::<Vec<_>>();
+        let checkpoint = self
+            .editor_checkpoints
+            .last()
+            .map(|item| item.name.as_str());
+        let diff = if self.git_diff.starts_with("REVIEW") {
+            None
+        } else {
+            Some(self.git_diff.as_str()).filter(|diff| !diff.trim().is_empty())
+        };
+        let wake = self.last_crew_wake.as_deref();
+        let packed = wake.is_some_and(|wake| wake.starts_with("WAKE"));
+        super::editor::review_object(
+            &self.github.summary(),
+            &self.github_review,
+            &proposals,
+            super::editor::ReviewEvidence {
+                last_verify: if packed {
+                    None
+                } else {
+                    self.last_verify.as_deref()
+                },
+                git_diff: if packed { None } else { diff },
+                tasks: if packed {
+                    None
+                } else {
+                    Some(self.tasks.as_str()).filter(|tasks| !tasks.trim().is_empty())
+                },
+                checkpoint: if packed { None } else { checkpoint },
+                wake,
+            },
+        )
+    }
+
+    pub fn refresh_review_object(&mut self) {
+        self.refresh_crew_wake_from_live();
+        let text = self.review_object_text();
+        self.editor = text.clone();
+        self.git_diff = text;
+        self.git_diff_path = Some("REVIEW".into());
+        self.git_diff_open = true;
+        self.status = "REVIEW · :review accept applies the pack · ship TITLE · ask".into();
+    }
+
+    pub fn accept_review_pack(&mut self) -> Result<String, String> {
+        self.auto_checkpoint("before-review-accept");
+        match self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .accept_pending_editor_proposals(crate::development::Actor::local())
+        }) {
+            Some(Ok(buffers)) => {
+                self.refresh_editor_hunks();
+                self.refresh_editor_projection();
+                self.refresh_review_object();
+                Ok(format!(
+                    "Accepted {} proposal(s) from the wake pack",
+                    buffers.len()
+                ))
+            }
+            Some(Err(crate::development::DevelopmentError::NotFound(_))) => {
+                Err("No pending proposals in the wake pack".into())
+            }
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("Accept failed · workspace busy".into()),
+        }
+    }
+
+    pub fn accept_review_proposal(&mut self, id: Option<&str>) -> Result<String, String> {
+        let id = self.resolve_review_proposal_id(id)?;
+        self.auto_checkpoint("before-review-accept");
+        match self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .accept_editor_proposal(&id, crate::development::Actor::local())
+                .map(|_| ())
+        }) {
+            Some(Ok(())) => {
+                self.refresh_editor_hunks();
+                self.refresh_editor_projection();
+                self.refresh_review_object();
+                Ok(format!("Accepted proposal {id}"))
+            }
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("Accept failed · workspace busy".into()),
+        }
+    }
+
+    pub fn reject_review_proposal(&mut self, id: Option<&str>) -> Result<String, String> {
+        let id = self.resolve_review_proposal_id(id)?;
+        match self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .reject_editor_proposal(&id, crate::development::Actor::local())
+                .map(|_| ())
+        }) {
+            Some(Ok(())) => {
+                self.refresh_editor_hunks();
+                self.refresh_review_object();
+                Ok(format!("Rejected proposal {id}"))
+            }
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("Reject failed · workspace busy".into()),
+        }
+    }
+
+    fn resolve_review_proposal_id(&self, id: Option<&str>) -> Result<String, String> {
+        if let Some(id) = id {
+            return Ok(id.to_string());
+        }
+        self.editor_proposals
+            .iter()
+            .find(|item| item.state == crate::development::EditorProposalState::Pending)
+            .map(|item| item.id.clone())
+            .ok_or_else(|| "No pending editor proposal".into())
+    }
+
+    fn refresh_crew_wake_from_live(&mut self) {
+        let accept = self
+            .editor_proposals
+            .iter()
+            .find(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
+            .map(|proposal| proposal.id.clone());
+        let browser = self.browser_workspace.state();
+        let page = if browser.url.is_empty() && browser.selected().is_none() {
+            None
+        } else {
+            Some(self.page_evidence())
+        };
+        let live = crate::CrewWakeLiveEvidence {
+            verify: self.last_verify.clone(),
+            page,
+            accept,
+        };
+        if let Some(Ok(Some(wake))) = self.locked(|workspace| workspace.refresh_crew_wake(live)) {
+            self.last_crew_wake = Some(wake.render());
+        }
+    }
+
+    fn page_evidence(&self) -> String {
+        let browser = self.browser_workspace.state();
+        let url = safe_browser_url(&browser.url).unwrap_or_else(|| "—".into());
+        let entity = browser
+            .selected()
+            .map(|entity| entity.reference.as_str())
+            .unwrap_or("—");
+        format!(
+            "url {url}\n  entity {entity}\n  revision {}",
+            browser.browser_revision.unwrap_or(0)
+        )
     }
 
     /// Prepare an editable review prompt using the current workspace evidence.
@@ -1517,10 +2581,204 @@ impl DevTuiState {
         }
     }
 
+    pub fn insert_composer_newline(&mut self) {
+        self.insert_composer_text("\n");
+        self.status = "Shift-Enter newline · Enter send · ↑ history".into();
+    }
+
+    pub fn navigate_composer_history(&mut self, previous: bool) {
+        if previous && !self.composer_on_first_line() {
+            self.move_composer_line(-1);
+            return;
+        }
+        if !previous && !self.composer_on_last_line() {
+            self.move_composer_line(1);
+            return;
+        }
+        if self.composer_history.is_empty() {
+            return;
+        }
+        if previous {
+            let index = match self.composer_history_index {
+                None => {
+                    self.composer_history_draft = self.composer_input.clone();
+                    self.composer_history.len().saturating_sub(1)
+                }
+                Some(0) => 0,
+                Some(index) => index - 1,
+            };
+            self.composer_history_index = Some(index);
+            self.composer_input = self.composer_history[index].clone();
+            self.composer_cursor = self.composer_input.len();
+            return;
+        }
+        match self.composer_history_index {
+            None => {}
+            Some(index) if index + 1 < self.composer_history.len() => {
+                self.composer_history_index = Some(index + 1);
+                self.composer_input = self.composer_history[index + 1].clone();
+                self.composer_cursor = self.composer_input.len();
+            }
+            Some(_) => {
+                self.composer_history_index = None;
+                self.composer_input = std::mem::take(&mut self.composer_history_draft);
+                self.composer_cursor = self.composer_input.len();
+            }
+        }
+    }
+
+    fn composer_on_first_line(&self) -> bool {
+        !self.composer_input[..self.composer_cursor.min(self.composer_input.len())].contains('\n')
+    }
+
+    fn composer_on_last_line(&self) -> bool {
+        !self.composer_input[self.composer_cursor.min(self.composer_input.len())..].contains('\n')
+    }
+
+    fn move_composer_line(&mut self, delta: i32) {
+        let cursor = self.composer_cursor.min(self.composer_input.len());
+        if delta < 0 {
+            if let Some(offset) = self.composer_input[..cursor].rfind('\n') {
+                self.composer_cursor = offset;
+            }
+            return;
+        }
+        if let Some(relative) = self.composer_input[cursor..].find('\n') {
+            self.composer_cursor = (cursor + relative + 1).min(self.composer_input.len());
+        }
+    }
+
+    pub fn remember_composer_history(&mut self, text: &str) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if self.composer_history.last().map(String::as_str) != Some(trimmed) {
+            self.composer_history.push(text.to_string());
+            if self.composer_history.len() > 64 {
+                self.composer_history.remove(0);
+            }
+        }
+        self.composer_history_index = None;
+        self.composer_history_draft.clear();
+    }
+
+    pub fn open_file_picker(&mut self) {
+        self.command_mode = false;
+        self.file_picker_open = true;
+        self.file_picker_query.clear();
+        self.file_picker_cursor = 0;
+        self.file_picker_selection = 0;
+        self.status = if self.files.is_empty() {
+            "Open file · no files yet · wait for refresh or Esc close".into()
+        } else {
+            format!(
+                "Open file · {} paths · type to filter · Enter open · Esc close",
+                self.files.len()
+            )
+        };
+    }
+
+    pub fn close_file_picker(&mut self) {
+        if !self.file_picker_open {
+            return;
+        }
+        self.file_picker_open = false;
+        self.file_picker_query.clear();
+        self.file_picker_cursor = 0;
+        self.file_picker_selection = 0;
+        self.status = "File picker closed · Ctrl-P to reopen".into();
+    }
+
+    pub fn file_picker_matches(&self) -> Vec<usize> {
+        self.files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, path)| {
+                fuzzy_contains(path, self.file_picker_query.trim()).then_some(index)
+            })
+            .collect()
+    }
+
+    pub fn insert_file_picker_char(&mut self, character: char) {
+        if character.is_control() {
+            return;
+        }
+        self.file_picker_query
+            .insert(self.file_picker_cursor, character);
+        self.file_picker_cursor += character.len_utf8();
+        self.file_picker_selection = 0;
+    }
+
+    pub fn file_picker_backspace(&mut self) {
+        if self.file_picker_cursor == 0 {
+            return;
+        }
+        let previous = self.file_picker_query[..self.file_picker_cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        self.file_picker_query
+            .drain(previous..self.file_picker_cursor);
+        self.file_picker_cursor = previous;
+        self.file_picker_selection = 0;
+    }
+
+    pub fn move_file_picker_selection(&mut self, delta: i32) {
+        let count = self.file_picker_matches().len();
+        if count == 0 {
+            self.file_picker_selection = 0;
+            return;
+        }
+        self.file_picker_selection =
+            (self.file_picker_selection as i32 + delta).rem_euclid(count as i32) as usize;
+    }
+
+    pub fn submit_file_picker(&mut self) {
+        let matches = self.file_picker_matches();
+        let Some(&index) = matches.get(self.file_picker_selection) else {
+            self.status = "No matching file".into();
+            return;
+        };
+        self.selected_file = index;
+        self.close_file_picker();
+        self.open_selected_file_for_edit();
+    }
+
+    pub fn open_path(&mut self, path: &str) -> Result<String, String> {
+        if path.trim().is_empty() {
+            return Err("open requires PATH".into());
+        }
+        if let Some(index) = self.files.iter().position(|item| {
+            item == path || item.ends_with(path) || item.rsplit('/').next() == Some(path)
+        }) {
+            self.selected_file = index;
+        } else {
+            self.files.insert(0, path.to_string());
+            self.selected_file = 0;
+        }
+        self.open_selected_file_for_edit();
+        Ok(format!("Opened {path}"))
+    }
+
     pub fn insert_composer_text(&mut self, text: &str) {
         for character in text.chars().take(16_384) {
             self.composer_input.insert(self.composer_cursor, character);
             self.composer_cursor += character.len_utf8();
+        }
+    }
+
+    pub fn complete_composer_mention(&mut self) {
+        match complete_mention(&self.composer_input, self.composer_cursor, &self.files) {
+            Some((text, cursor)) => {
+                self.composer_input = text;
+                self.composer_cursor = cursor;
+                self.status = "Mention completed · Tab cycles @file".into();
+            }
+            None => {
+                self.status = "Mentions: @file @page @entity @workflow @workspace".into();
+            }
         }
     }
 
@@ -1538,12 +2796,12 @@ impl DevTuiState {
     }
 
     pub fn submit_composer(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        if self.background_action_running() {
-            self.status = if self.agent_send_job.is_some() {
-                "Sending the previous message · keep typing, then press Enter again".into()
-            } else {
-                "Background operation running · message kept in composer".into()
-            };
+        if self.composer_input.trim_start().starts_with('/') {
+            self.submit_composer_slash(worker);
+            return;
+        }
+        if self.composer_send_blocked() {
+            self.status = "Background operation running · message kept in composer".into();
             return;
         }
         if self.snapshot_trust_label == "untrusted" {
@@ -1560,23 +2818,103 @@ impl DevTuiState {
             self.status = "Message is empty · type a prompt, then press Enter".into();
             return;
         }
-        let display_text = self.composer_input.clone();
-        let text = std::mem::take(&mut self.composer_input);
+        let file = if !self.focused_editor_path.is_empty() {
+            Some(self.focused_editor_path.as_str())
+        } else {
+            self.files.get(self.selected_file).map(String::as_str)
+        };
+        let display_text = expand_mentions(&self.composer_input, file);
+        let text = expand_mentions(&std::mem::take(&mut self.composer_input), file);
+        self.remember_composer_history(&text);
+        if self.composer_run_mode == crate::AgentTurnMode::Plan {
+            self.capture_plan_from_goal(&text);
+        }
+        let prove = compile_prove_it(&text);
         let steer = self.composer_steer;
+        let queued_follow_up = self.agent_send_job.is_some();
         self.composer_cursor = 0;
         self.composer_steer = false;
         self.composer_mode = true;
+        let _ = self.ws_mut().map(|mut workspace| {
+            workspace.set_agent_turn_mode(self.composer_run_mode);
+        });
         let mut context = self.agent_browser_context();
         context["editor"] = self.agent_editor_context();
+        context["surface"] = serde_json::Value::String(self.surface.label().to_ascii_lowercase());
+        context["runMode"] =
+            serde_json::Value::String(self.composer_run_mode.label().to_ascii_lowercase());
+        context["playbook"] =
+            serde_json::Value::String(super::playbooks::playbook_name(self.surface).into());
+        context["playbookText"] =
+            serde_json::Value::String(super::playbooks::playbook(self.surface).into());
+        context["todos"] =
+            serde_json::to_value(&self.session_todos).unwrap_or(serde_json::json!({}));
+        if let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) {
+            context["git"] = serde_json::json!({
+                "branch": self.git_branch,
+                "selectedPath": path,
+            });
+        }
+        if let Some(process) = self.selected_process_entry() {
+            context["process"] = serde_json::json!({
+                "name": process.name,
+                "health": process.health.label(),
+                "pid": process.pid,
+                "url": process.url,
+            });
+        }
+        if let Some(session) = self.selected_debug_session() {
+            context["debug"] = serde_json::json!({
+                "session": session.name,
+                "state": session.state.label(),
+                "threadId": self.selected_debug_thread().map(|thread| thread.id),
+                "frameId": self.selected_debug_frame().map(|frame| frame.id),
+                "path": self.selected_debug_frame().and_then(|frame| frame.path.clone()),
+                "line": self.selected_debug_frame().and_then(|frame| frame.line),
+            });
+        }
+        if let Some(plan) = &self.pending_plan {
+            context["plan"] = serde_json::json!({
+                "id": plan.id,
+                "goal": plan.goal,
+                "accepted": plan.accepted,
+            });
+        }
+        if let Some(comment) = &self.last_app_comment {
+            context["appComment"] = serde_json::Value::String(comment.clone());
+        }
         if context["browser"]["selectedEntity"].is_object() {
             self.browser_workspace.state_mut().input_owner =
                 glass_browser::browser_workspace::BrowserInputOwner::Agent;
         }
+        let playbook = super::playbooks::playbook(self.surface);
+        let prefixed = match self.composer_run_mode.instruction() {
+            "" => format!("{playbook}\n\n{text}"),
+            instruction => format!("{instruction}\n\n{playbook}\n\n{text}"),
+        };
         let mut arguments = serde_json::json!({
-            "text": text,
+            "text": prefixed,
             "mode": if steer { "steer" } else { "follow-up" },
             "context": context,
         });
+        if let Some(prove) = prove {
+            arguments["verify"] = prove.verify.clone();
+            arguments["intent"] = serde_json::Value::String(prove.intent);
+            self.pending_verify = Some(prove.verify);
+            self.last_proof_ok = None;
+            self.last_verify = Some(evidence_card(
+                arguments["context"]["browser"]["url"]
+                    .as_str()
+                    .unwrap_or("about:blank"),
+                arguments["context"]["browser"]["revision"]
+                    .as_u64()
+                    .unwrap_or(0),
+                arguments["context"]["browser"]["selectedEntity"].as_str(),
+                "composer prove-it queued",
+                false,
+            ));
+            self.auto_checkpoint("before-prove-it");
+        }
         if let Some(agent) = self.selected_agent.as_ref() {
             arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
         }
@@ -1600,8 +2938,12 @@ impl DevTuiState {
                 });
                 self.status = if steer {
                     "Sent · steering Glass Agent…".into()
+                } else if self.composer_run_mode == crate::AgentTurnMode::Plan {
+                    "Plan turn · inspect only · :plan accept when ready".into()
+                } else if queued_follow_up {
+                    "Queued follow-up · Glass Agent will continue".into()
                 } else {
-                    "Sent · Glass Agent is thinking…".into()
+                    format!("Sent · {} is thinking…", self.composer_run_mode.label())
                 };
                 worker.request_conversation();
             }
@@ -1610,6 +2952,104 @@ impl DevTuiState {
                 self.composer_cursor = self.composer_input.len();
                 self.status = format!("Message unavailable · edit and retry: {error}");
             }
+        }
+    }
+
+    fn submit_composer_slash(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let raw = self.composer_input.trim().to_string();
+        let mut parts = raw.trim_start_matches('/').split_whitespace();
+        let Some(command) = parts.next() else {
+            self.status = "Empty slash command".into();
+            return;
+        };
+        let rest = parts.collect::<Vec<_>>();
+        let mut arguments = serde_json::json!({});
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        let (tool, mutating) = match command {
+            "compact" => {
+                if !rest.is_empty() {
+                    arguments["instructions"] = serde_json::Value::String(rest.join(" "));
+                }
+                ("glass.agent.compact", true)
+            }
+            "model" => {
+                let provider = rest.first().copied().unwrap_or("");
+                let model = rest.get(1).copied().unwrap_or("");
+                if provider.is_empty() || model.is_empty() {
+                    self.status = "/model requires PROVIDER MODEL".into();
+                    return;
+                }
+                arguments["provider"] = serde_json::Value::String(provider.into());
+                arguments["modelId"] = serde_json::Value::String(model.into());
+                self.agent_model = format!("{provider}/{model}");
+                ("glass.agent.model", true)
+            }
+            "think" | "thinking" => {
+                let level = rest.first().copied().unwrap_or("");
+                if level.is_empty() {
+                    self.status = "/think requires LEVEL".into();
+                    return;
+                }
+                arguments["level"] = serde_json::Value::String(level.into());
+                self.agent_thinking = level.into();
+                ("glass.agent.thinking", true)
+            }
+            "new" => ("glass.agent.new-session", true),
+            "clone" => ("glass.agent.clone-session", true),
+            "name" => {
+                let name = rest.join(" ");
+                if name.is_empty() {
+                    self.status = "/name requires TITLE".into();
+                    return;
+                }
+                arguments["name"] = serde_json::Value::String(name.clone());
+                self.agent_session_name = name;
+                ("glass.agent.name", true)
+            }
+            "stats" => ("glass.agent.stats", false),
+            "sessions" => ("glass.agent.sessions", false),
+            "tree" => ("glass.agent.tree", false),
+            "todo" => {
+                self.composer_input = self.session_todos.render();
+                self.composer_cursor = 0;
+                self.status = "Session todos · edit or Esc".into();
+                return;
+            }
+            "ask" | "plan" | "agent" => {
+                let mode = match command {
+                    "ask" => crate::AgentTurnMode::Ask,
+                    "plan" => crate::AgentTurnMode::Plan,
+                    _ => crate::AgentTurnMode::Agent,
+                };
+                self.set_composer_run_mode(mode);
+                self.remember_composer_history(&raw);
+                self.composer_input = rest.join(" ");
+                self.composer_cursor = self.composer_input.len();
+                if self.composer_input.trim().is_empty() {
+                    return;
+                }
+                self.submit_composer(worker);
+                return;
+            }
+            _ => {
+                self.status = format!("Unknown slash command /{command}");
+                return;
+            }
+        };
+        match self.tool_request(tool, arguments, mutating) {
+            Ok((call, context)) => match worker.submit_tool(call, context) {
+                Ok(id) => {
+                    self.running_tool_job = Some(id);
+                    self.remember_composer_history(&raw);
+                    self.composer_input.clear();
+                    self.composer_cursor = 0;
+                    self.status = format!("{tool} · queued from composer");
+                }
+                Err(error) => self.status = format!("{tool} failed: {error}"),
+            },
+            Err(error) => self.status = format!("{tool} unavailable: {error}"),
         }
     }
 
@@ -1764,6 +3204,31 @@ impl DevTuiState {
         }
     }
 
+    pub fn submit_pending_verify(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(predicate) = self.pending_verify.take() else {
+            return;
+        };
+        let arguments = serde_json::json!({ "predicate": predicate, "timeoutSeconds": 8 });
+        let (call, context) = match self.tool_request("glass.browser.verify", arguments, false) {
+            Ok(request) => request,
+            Err(error) => {
+                self.last_proof_ok = Some(false);
+                self.status = format!("Prove-it unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = "Prove-it running against the live page".into();
+            }
+            Err(error) => {
+                self.last_proof_ok = Some(false);
+                self.status = format!("Prove-it failed to start: {error}");
+            }
+        }
+    }
+
     pub fn submit_queued_tool(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some((call, context)) = self.queued_tool_request.take() else {
             return;
@@ -1843,13 +3308,105 @@ impl DevTuiState {
         self.running_tool_job = None;
         match result.result {
             Ok(value) => {
-                if result.tool.starts_with("glass.browser") {
+                if result.tool == "glass.agent.sessions" {
+                    self.open_session_picker(&value);
+                    return;
+                }
+                if result.tool == "glass.agent.stats" {
+                    self.agent_token_summary = stats_summary(&value);
+                    self.status = format!("Session stats · {}", self.agent_token_summary);
+                    return;
+                }
+                if result.tool == "glass.browser.verify" {
+                    let ok = value.get("status").and_then(serde_json::Value::as_str)
+                        == Some("satisfied");
+                    self.last_proof_ok = Some(ok);
+                    self.last_verify = Some(evidence_card(
+                        value
+                            .pointer("/predicate/urlEquals")
+                            .and_then(serde_json::Value::as_str)
+                            .or_else(|| value.get("state").and_then(serde_json::Value::as_str))
+                            .unwrap_or("live page"),
+                        value
+                            .get("elapsedMs")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0),
+                        None,
+                        value
+                            .get("state")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("verify"),
+                        ok,
+                    ));
+                    self.status = if ok {
+                        "Prove-it passed · gutter ✓".into()
+                    } else {
+                        "Prove-it failed · inspect last verify".into()
+                    };
+                } else if result.tool.starts_with("glass.browser") {
                     self.apply_browser_result(&result.tool, &value);
                     self.browser_detail = super::projection::browser_result(&result.tool, &value);
                     if result.tool == "glass.browser.act" || result.tool == "glass.browser.navigate"
                     {
                         self.browser_observe_pending = true;
+                        self.watch_agent_on_app(&result.tool, &value);
                     }
+                } else if result.tool == "glass.process.logs" {
+                    self.process_logs = value
+                        .get("output")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .chars()
+                        .rev()
+                        .take(8 * 1024)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect();
+                    self.surface = DevSurface::Terminal;
+                    self.status = format!(
+                        "Logs · {}",
+                        value
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("process")
+                    );
+                } else if result.tool == "glass.debug.threads" {
+                    self.debug_threads = parse_debug_threads(&value);
+                    self.selected_debug_thread = self
+                        .selected_debug_thread
+                        .min(self.debug_threads.len().saturating_sub(1));
+                    self.debug_frames.clear();
+                    if !self.debug_threads.is_empty() {
+                        self.debug_pane = DebugPane::Threads;
+                        self.debug_stack_requested = true;
+                    }
+                    self.status = format!(
+                        "{} thread(s) · Enter stack · Space continue",
+                        self.debug_threads.len()
+                    );
+                } else if result.tool == "glass.debug.stack" {
+                    self.debug_frames = parse_debug_frames(&value);
+                    self.selected_debug_frame = 0;
+                    if !self.debug_frames.is_empty() {
+                        self.debug_pane = DebugPane::Frames;
+                        self.debug_scopes_requested = true;
+                    }
+                    self.status = format!(
+                        "{} frame(s) · Enter jumps to source",
+                        self.debug_frames.len()
+                    );
+                } else if result.tool == "glass.debug.scopes" {
+                    self.debug_scopes = parse_debug_scopes(&value);
+                    self.selected_debug_scope = 0;
+                    self.debug_variables.clear();
+                    if !self.debug_scopes.is_empty() {
+                        self.debug_variables_requested = true;
+                    }
+                    self.status = format!("{} scope(s)", self.debug_scopes.len());
+                } else if result.tool == "glass.debug.variables" {
+                    self.debug_variables = parse_debug_variables(&value);
+                    self.status = format!("{} variable(s)", self.debug_variables.len());
                 } else if result.tool == "glass.git.diff" {
                     let empty = value.as_str().is_none_or(|diff| diff.trim().is_empty());
                     self.git_diff = if empty {
@@ -1933,7 +3490,40 @@ impl DevTuiState {
                         .and_then(serde_json::Value::as_str)
                         .map(|url| format!("Pull request created · {url}"))
                         .unwrap_or_else(|| "Pull request created · review GitHub status".into());
+                } else if result.tool == "glass.task.wake" {
+                    self.last_crew_wake = serde_json::from_value::<crate::CrewWake>(value.clone())
+                        .ok()
+                        .map(|wake| wake.render());
+                    self.surface = DevSurface::Tasks;
+                    self.status = "Crew wake loaded · :review".into();
+                } else if result.tool == "glass.task.crew" {
+                    let wake = value.get("wake").cloned().unwrap_or_else(|| value.clone());
+                    self.last_crew_wake = serde_json::from_value::<crate::CrewWake>(wake)
+                        .ok()
+                        .map(|wake| wake.render())
+                        .or_else(|| {
+                            value
+                                .get("goal")
+                                .and_then(serde_json::Value::as_str)
+                                .map(|goal| format!("WAKE\n  goal {goal}"))
+                        });
+                    self.surface = DevSurface::Tasks;
+                    self.status = format!(
+                        "Crew wake {} · :review",
+                        value
+                            .pointer("/wake/id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("queued")
+                    );
                 } else if result.tool.starts_with("glass.lsp") {
+                    if result.tool == "glass.lsp.inlay_hints" {
+                        self.editor_inlays =
+                            parse_inlay_hints(value.get("result").unwrap_or(&value));
+                    }
+                    if result.tool == "glass.lsp.diagnostics" {
+                        self.editor_diagnostics =
+                            parse_editor_diagnostics(value.get("result").unwrap_or(&value));
+                    }
                     self.editor = if result.tool == "glass.lsp.diagnostics" {
                         super::projection::lsp(Some(&value))
                     } else {
@@ -1948,11 +3538,23 @@ impl DevTuiState {
                         | "glass.git.diff"
                         | "glass.github.review"
                         | "glass.github.ship"
+                        | "glass.browser.verify"
+                        | "glass.task.crew"
+                        | "glass.task.wake"
+                        | "glass.process.logs"
+                        | "glass.debug.threads"
+                        | "glass.debug.stack"
+                        | "glass.debug.scopes"
+                        | "glass.debug.variables"
                 ) {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
             }
             Err(error) => {
+                if result.tool == "glass.browser.verify" {
+                    self.last_proof_ok = Some(false);
+                    self.last_verify = Some(evidence_card("live page", 0, None, &error, false));
+                }
                 if result.tool.starts_with("glass.browser") {
                     self.note_browser_failure(&result.tool, &error);
                 }
@@ -1967,6 +3569,7 @@ impl DevTuiState {
 
     pub fn deny_confirmation(&mut self) {
         self.pending_browser_navigation = None;
+        self.pending_page_entity = None;
         if let Some(pending) = self.pending_confirmation.take() {
             self.status = format!("Denied · {}", pending.summary);
         }
@@ -2022,18 +3625,7 @@ impl DevTuiState {
                 _ => None,
             };
             if let Some(decision) = decision {
-                match self
-                    .workspace
-                    .try_lock()
-                    .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
-                {
-                    Ok(trust) => {
-                        self.surface = DevSurface::Agent;
-                        self.snapshot_trust_label = trust.label().into();
-                        self.status = format!("Workspace opened with {} authority", trust.label());
-                    }
-                    Err(error) => self.status = format!("Trust decision failed: {error}"),
-                }
+                self.queue_trust(decision);
                 return;
             }
         }
@@ -2044,17 +3636,7 @@ impl DevTuiState {
                 _ => None,
             };
             if let Some(decision) = decision {
-                match self
-                    .workspace
-                    .try_lock()
-                    .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
-                {
-                    Ok(trust) => {
-                        self.snapshot_trust_label = trust.label().into();
-                        self.status = format!("Workspace opened with {} authority", trust.label());
-                    }
-                    Err(error) => self.status = format!("Trust decision failed: {error}"),
-                }
+                self.queue_trust(decision);
                 return;
             }
         }
@@ -2092,8 +3674,7 @@ impl DevTuiState {
                 _ => None,
             };
             if let Some(surface) = surface {
-                self.surface = surface;
-                self.status = format!("{} selected", surface.label());
+                self.show_surface(surface);
                 return;
             }
         }
@@ -2109,8 +3690,7 @@ impl DevTuiState {
             _ => None,
         };
         if let Some(surface) = surface {
-            self.surface = surface;
-            self.status = format!("{} selected", surface.label());
+            self.show_surface(surface);
         } else if self.surface == DevSurface::Agent && self.snapshot_trust_label != "untrusted" {
             self.open_composer();
             self.insert_composer_text(&character.to_string());
@@ -2179,6 +3759,104 @@ impl DevTuiState {
         }
     }
 
+    pub fn show_surface(&mut self, surface: DevSurface) {
+        self.surface = surface;
+        self.status = format!("{} selected", surface.label());
+        if surface != DevSurface::Code {
+            self.pending_open_file = None;
+        }
+        if surface == DevSurface::Code && !self.code_edit_mode {
+            self.queue_selected_file_preview();
+        }
+        if surface == DevSurface::Git {
+            self.request_selected_git_diff();
+        }
+    }
+
+    pub fn queue_trust(&mut self, decision: crate::LocalTrustDecision) {
+        if self.apply_trust(decision) {
+            return;
+        }
+        self.pending_trust = Some(decision);
+        self.status = "Trust queued · applying when the workspace is free".into();
+    }
+
+    fn apply_trust(&mut self, decision: crate::LocalTrustDecision) -> bool {
+        match self
+            .workspace
+            .try_lock()
+            .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
+        {
+            Ok(trust) => {
+                if self.surface == DevSurface::Trust {
+                    self.surface = DevSurface::Agent;
+                }
+                self.snapshot_trust_label = trust.label().into();
+                self.status = format!("Workspace opened with {} authority", trust.label());
+                true
+            }
+            Err(error) if error.to_string().contains("workspace busy") => false,
+            Err(error) => {
+                self.status = format!("Trust decision failed: {error}");
+                true
+            }
+        }
+    }
+
+    pub fn flush_pending_trust(&mut self) {
+        let Some(decision) = self.pending_trust else {
+            return;
+        };
+        if self.apply_trust(decision) {
+            self.pending_trust = None;
+        }
+    }
+
+    fn queue_selected_file_preview(&mut self) {
+        if self.files.is_empty() {
+            self.pending_open_file = Some(String::new());
+            return;
+        }
+        self.open_selected_file();
+    }
+
+    pub fn flush_pending_open_file(&mut self) {
+        if self.pending_open_file.is_none() {
+            return;
+        }
+        if self.surface != DevSurface::Code || self.code_edit_mode {
+            return;
+        }
+        if self.files.is_empty() {
+            return;
+        }
+        let queued = self.pending_open_file.take().unwrap_or_default();
+        if !queued.is_empty()
+            && let Some(index) = self.files.iter().position(|path| path == &queued)
+        {
+            self.selected_file = index;
+        }
+        self.open_selected_file();
+    }
+
+    fn request_selected_git_diff(&mut self) {
+        if self.git_entries.is_empty() {
+            return;
+        }
+        self.git_diff_requested = true;
+        if let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) {
+            self.git_diff_path = Some(path);
+        }
+        if !self.git_diff_open {
+            self.git_diff_open = true;
+            self.git_diff = "Loading Git diff…".into();
+        }
+    }
+
+    fn is_workspace_busy(error: &impl std::fmt::Display) -> bool {
+        error.to_string().contains("workspace busy")
+    }
+
     pub fn next_surface(&mut self) {
         let surfaces: &[DevSurface] = if self
             .responsive_class(self.terminal_width, self.terminal_height)
@@ -2192,8 +3870,7 @@ impl DevTuiState {
             .iter()
             .position(|surface| *surface == self.surface)
             .unwrap_or(0);
-        self.surface = surfaces[(index + 1) % surfaces.len()];
-        self.status = format!("{} selected", self.surface.label());
+        self.show_surface(surfaces[(index + 1) % surfaces.len()]);
     }
 
     pub fn scroll_surface(&mut self, delta: i32) {
@@ -2244,6 +3921,9 @@ impl DevTuiState {
         self.selected_file = (self.selected_file as i32 + delta)
             .clamp(0, self.files.len().saturating_sub(1) as i32)
             as usize;
+        if !self.code_edit_mode {
+            self.open_selected_file();
+        }
     }
     pub fn move_git_selection(&mut self, delta: i32) {
         if self.git_entries.is_empty() {
@@ -2255,12 +3935,616 @@ impl DevTuiState {
             .clamp(0, self.git_entries.len().saturating_sub(1) as i32)
             as usize;
         if let Some(entry) = self.git_entries.get(self.selected_git_file) {
-            self.status = format!("{} · Enter diff", entry.path);
+            self.status = format!(
+                "{} · Enter diff · Space stage · c commit · o open",
+                entry.path
+            );
+            self.git_diff_requested = true;
         }
     }
 
     pub fn selected_git_entry(&self) -> Option<&crate::git::GitStatusEntry> {
         self.git_entries.get(self.selected_git_file)
+    }
+
+    pub fn open_selected_git_file(&mut self) {
+        let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) else {
+            self.status = "Select a changed file · o opens it in Code".into();
+            return;
+        };
+        match self.open_path(&path) {
+            Ok(_) => self.status = format!("Opened {path} in Code"),
+            Err(error) => self.status = format!("Could not open {path}: {error}"),
+        }
+    }
+
+    pub fn compose_git_commit(&mut self) {
+        self.open_palette_with("git commit ");
+        self.status = "Commit · type a message, then Enter".into();
+    }
+
+    pub fn discard_selected_git_file(&mut self) {
+        let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) else {
+            self.status = "Select a changed file · x discards working-tree changes".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.git.discard",
+            serde_json::json!({"paths": [path.clone()]}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(call, context, format!("Discard {path}"));
+            }
+            Err(error) => self.status = format!("Git discard unavailable: {error}"),
+        }
+    }
+
+    pub fn queue_github_review(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if self.background_action_running() {
+            self.status = "GitHub review waits for the current background operation".into();
+            return;
+        }
+        let (call, context) =
+            match self.tool_request("glass.github.review", serde_json::json!({}), false) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.status = format!("GitHub review unavailable: {error}");
+                    return;
+                }
+            };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = "Loading pull-request review…".into();
+            }
+            Err(error) => self.status = format!("GitHub review unavailable: {error}"),
+        }
+    }
+
+    pub fn move_process_selection(&mut self, delta: i32) {
+        if self.process_entries.is_empty() {
+            self.selected_process = 0;
+            self.status = "No managed process selected".into();
+            return;
+        }
+        self.selected_process = (self.selected_process as i32 + delta)
+            .clamp(0, self.process_entries.len().saturating_sub(1) as i32)
+            as usize;
+        if let Some(entry) = self.selected_process_entry() {
+            self.status = format!(
+                "{} · {} · Enter logs · Space restart · u App · x stop",
+                entry.name,
+                entry.health.label()
+            );
+            self.process_logs_requested = true;
+        }
+    }
+
+    pub fn selected_process_entry(&self) -> Option<&ProcessRow> {
+        self.process_entries.get(self.selected_process)
+    }
+
+    pub fn queue_selected_process_logs(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(name) = self
+            .selected_process_entry()
+            .map(|entry| entry.name.clone())
+        else {
+            self.status = "Select a process · j/k then Enter logs".into();
+            return;
+        };
+        if self.background_action_running() {
+            self.status = "Process logs wait for the current background operation".into();
+            return;
+        }
+        let (call, context) = match self.tool_request(
+            "glass.process.logs",
+            serde_json::json!({"name": name}),
+            false,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Process logs unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Loading logs for {name}…");
+            }
+            Err(error) => self.status = format!("Process logs unavailable: {error}"),
+        }
+    }
+
+    pub fn restart_selected_process(&mut self) {
+        let Some(name) = self
+            .selected_process_entry()
+            .map(|entry| entry.name.clone())
+        else {
+            self.status = "Select a process · j/k then Space restarts".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.process.restart",
+            serde_json::json!({"name": name}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(call, context, format!("Restart {name}"));
+            }
+            Err(error) => self.status = format!("Process restart unavailable: {error}"),
+        }
+    }
+
+    pub fn stop_selected_process(&mut self) {
+        let Some(name) = self
+            .selected_process_entry()
+            .map(|entry| entry.name.clone())
+        else {
+            self.status = "Select a process · x stops it".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.process.stop",
+            serde_json::json!({"name": name}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(call, context, format!("Stop {name}"));
+            }
+            Err(error) => self.status = format!("Process stop unavailable: {error}"),
+        }
+    }
+
+    pub fn attach_selected_process_url(&mut self) -> Result<String, String> {
+        let url = self
+            .selected_process_entry()
+            .and_then(|entry| entry.url.clone())
+            .or_else(|| self.resolved_app_url())
+            .ok_or_else(|| {
+                "No URL on the selected process · start a suite that prints one".to_string()
+            })?;
+        self.auto_checkpoint("before-app-attach");
+        self.prepare_browser_navigation(&url)
+    }
+
+    pub fn cycle_debug_pane(&mut self, delta: i32) {
+        self.debug_pane = if delta < 0 {
+            self.debug_pane.previous()
+        } else {
+            self.debug_pane.next()
+        };
+        self.status = format!(
+            "Debug {} · j/k select · Enter · Space continue",
+            self.debug_pane.label()
+        );
+    }
+
+    pub fn move_debug_selection(&mut self, delta: i32) {
+        match self.debug_pane {
+            DebugPane::Sessions => {
+                if self.debug_sessions.is_empty() {
+                    self.selected_debug_session = 0;
+                    self.status = "No debugger session · :debug start NAME COMMAND".into();
+                    return;
+                }
+                self.selected_debug_session = (self.selected_debug_session as i32 + delta)
+                    .clamp(0, self.debug_sessions.len().saturating_sub(1) as i32)
+                    as usize;
+                if let Some(session) = self.selected_debug_session() {
+                    self.status = format!(
+                        "{} · {} · Enter threads",
+                        session.name,
+                        session.state.label()
+                    );
+                }
+            }
+            DebugPane::Threads => {
+                if self.debug_threads.is_empty() {
+                    self.status = "No threads · Enter on a session to refresh".into();
+                    return;
+                }
+                self.selected_debug_thread = (self.selected_debug_thread as i32 + delta)
+                    .clamp(0, self.debug_threads.len().saturating_sub(1) as i32)
+                    as usize;
+                if let Some(thread) = self.selected_debug_thread() {
+                    self.status = format!("{} · Enter stack · Space continue", thread.name);
+                }
+            }
+            DebugPane::Frames => {
+                if self.debug_frames.is_empty() {
+                    self.status = "No frames · Enter on a thread to load the stack".into();
+                    return;
+                }
+                self.selected_debug_frame = (self.selected_debug_frame as i32 + delta)
+                    .clamp(0, self.debug_frames.len().saturating_sub(1) as i32)
+                    as usize;
+                if let Some(frame) = self.selected_debug_frame() {
+                    self.status = format!(
+                        "{} · Enter jumps to {}",
+                        frame.name,
+                        frame.path.as_deref().unwrap_or("source")
+                    );
+                }
+            }
+        }
+    }
+
+    pub fn selected_debug_session(&self) -> Option<&DebugSessionRow> {
+        self.debug_sessions.get(self.selected_debug_session)
+    }
+
+    pub fn selected_debug_thread(&self) -> Option<&DebugThreadRow> {
+        self.debug_threads.get(self.selected_debug_thread)
+    }
+
+    pub fn selected_debug_frame(&self) -> Option<&DebugFrameRow> {
+        self.debug_frames.get(self.selected_debug_frame)
+    }
+
+    pub fn activate_debug_selection(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        match self.debug_pane {
+            DebugPane::Sessions => self.queue_debug_threads(worker),
+            DebugPane::Threads => self.queue_debug_stack(worker),
+            DebugPane::Frames => self.jump_selected_debug_frame(),
+        }
+    }
+
+    pub fn queue_debug_threads(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Start a debugger with :debug start NAME COMMAND".into();
+            return;
+        };
+        if self.background_action_running() {
+            self.status = "Debug threads wait for the current background operation".into();
+            return;
+        }
+        let (call, context) = match self.tool_request(
+            "glass.debug.threads",
+            serde_json::json!({"session": session}),
+            false,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Debug threads unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Loading threads for {session}…");
+            }
+            Err(error) => self.status = format!("Debug threads unavailable: {error}"),
+        }
+    }
+
+    pub fn queue_debug_stack(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Select a debugger session first".into();
+            return;
+        };
+        let Some(thread_id) = self.selected_debug_thread().map(|thread| thread.id) else {
+            self.status = "Select a thread · Enter on a session first".into();
+            return;
+        };
+        if self.background_action_running() {
+            self.status = "Debug stack waits for the current background operation".into();
+            return;
+        }
+        let (call, context) = match self.tool_request(
+            "glass.debug.stack",
+            serde_json::json!({"session": session, "threadId": thread_id}),
+            false,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Debug stack unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Loading stack for thread {thread_id}…");
+            }
+            Err(error) => self.status = format!("Debug stack unavailable: {error}"),
+        }
+    }
+
+    pub fn continue_selected_debug(&mut self) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Select a debugger session · Space continues".into();
+            return;
+        };
+        let Some(thread_id) = self.selected_debug_thread().map(|thread| thread.id) else {
+            self.status = "Refresh threads before continue".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.debug.continue",
+            serde_json::json!({"session": session, "threadId": thread_id}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(
+                    call,
+                    context,
+                    format!("Continue {session} thread {thread_id}"),
+                );
+            }
+            Err(error) => self.status = format!("Debug continue unavailable: {error}"),
+        }
+    }
+
+    pub fn step_selected_debug(&mut self, kind: &str) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Select a debugger session · n over · i in · o out".into();
+            return;
+        };
+        let Some(thread_id) = self.selected_debug_thread().map(|thread| thread.id) else {
+            self.status = "Refresh threads before stepping".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.debug.step",
+            serde_json::json!({"session": session, "threadId": thread_id, "kind": kind}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(
+                    call,
+                    context,
+                    format!("Step {kind} {session} thread {thread_id}"),
+                );
+            }
+            Err(error) => self.status = format!("Debug step unavailable: {error}"),
+        }
+    }
+
+    pub fn pause_selected_debug(&mut self) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Select a debugger session · p pauses".into();
+            return;
+        };
+        let thread_id = self
+            .selected_debug_thread()
+            .map(|thread| thread.id)
+            .unwrap_or(1);
+        match self.tool_request(
+            "glass.debug.pause",
+            serde_json::json!({"session": session, "threadId": thread_id}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(call, context, format!("Pause {session}"));
+            }
+            Err(error) => self.status = format!("Debug pause unavailable: {error}"),
+        }
+    }
+
+    pub fn breakpoint_focused_line(&mut self) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Start a debugger before setting breakpoints".into();
+            return;
+        };
+        if self.focused_editor_path.is_empty() {
+            self.status = "Open a file in Code · b sets a breakpoint on the cursor line".into();
+            return;
+        }
+        let line = u64::from(self.focused_editor_line.max(1));
+        match self.tool_request(
+            "glass.debug.breakpoint.set",
+            serde_json::json!({
+                "session": session,
+                "path": self.focused_editor_path,
+                "lines": [line],
+            }),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(
+                    call,
+                    context,
+                    format!("Breakpoint {}:{}", self.focused_editor_path, line),
+                );
+            }
+            Err(error) => self.status = format!("Breakpoint unavailable: {error}"),
+        }
+    }
+
+    pub fn queue_debug_scopes(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            return;
+        };
+        let Some(frame_id) = self.selected_debug_frame().map(|frame| frame.id) else {
+            return;
+        };
+        if self.background_action_running() {
+            return;
+        }
+        let Ok((call, context)) = self.tool_request(
+            "glass.debug.scopes",
+            serde_json::json!({"session": session, "frameId": frame_id}),
+            false,
+        ) else {
+            return;
+        };
+        if let Ok(id) = worker.submit_tool(call, context) {
+            self.running_tool_job = Some(id);
+            self.status = "Loading scopes…".into();
+        }
+    }
+
+    pub fn queue_debug_variables(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            return;
+        };
+        let Some(reference) = self
+            .debug_scopes
+            .get(self.selected_debug_scope)
+            .map(|scope| scope.variables_reference)
+        else {
+            return;
+        };
+        if reference <= 0 || self.background_action_running() {
+            return;
+        }
+        let Ok((call, context)) = self.tool_request(
+            "glass.debug.variables",
+            serde_json::json!({"session": session, "variablesReference": reference}),
+            false,
+        ) else {
+            return;
+        };
+        if let Ok(id) = worker.submit_tool(call, context) {
+            self.running_tool_job = Some(id);
+            self.status = "Loading variables…".into();
+        }
+    }
+
+    pub fn jump_selected_debug_frame(&mut self) {
+        let Some(frame) = self.selected_debug_frame().cloned() else {
+            self.status = "Select a stack frame · Enter jumps to source".into();
+            return;
+        };
+        let Some(path) = frame.path.clone() else {
+            self.status = format!("{} has no source path", frame.name);
+            return;
+        };
+        match self.open_path(&path) {
+            Ok(_) => {
+                if let Some(line) = frame.line {
+                    let _ = self.set_editor_cursor(
+                        &self.focused_editor_path.clone(),
+                        crate::development::TextPosition {
+                            line: u32::try_from(line).unwrap_or(u32::MAX).max(1),
+                            column: 1,
+                        },
+                        false,
+                    );
+                    self.refresh_editor_projection();
+                }
+                self.status = format!(
+                    "Debug {} · {}{}",
+                    frame.name,
+                    path,
+                    frame
+                        .line
+                        .map(|line| format!(":{line}"))
+                        .unwrap_or_default()
+                );
+                self.debug_scopes_requested = true;
+            }
+            Err(error) => self.status = format!("Could not open {path}: {error}"),
+        }
+    }
+
+    pub fn move_todo_selection(&mut self, delta: i32) {
+        if self.session_todos.items.is_empty() {
+            self.selected_todo = 0;
+            self.status = "No session todos · Plan accept or glass.todo.write".into();
+            return;
+        }
+        self.selected_todo = (self.selected_todo as i32 + delta)
+            .clamp(0, self.session_todos.items.len().saturating_sub(1) as i32)
+            as usize;
+        if let Some(item) = self.session_todos.items.get(self.selected_todo) {
+            self.status = format!(
+                "{} · {} · Enter complete · Space activate",
+                item.id,
+                item.status.label()
+            );
+        }
+    }
+
+    pub fn complete_selected_todo(&mut self) {
+        let Some(id) = self
+            .session_todos
+            .items
+            .get(self.selected_todo)
+            .map(|item| item.id.clone())
+        else {
+            self.status = "Select a session todo · Enter marks it done".into();
+            return;
+        };
+        match self.ws_mut().and_then(|mut workspace| {
+            workspace
+                .complete_todo(&id)
+                .map_err(|error| error.to_string())
+        }) {
+            Ok(item) => {
+                if let Ok(list) = self.ws().map(|workspace| workspace.todos()) {
+                    self.session_todos = list;
+                    self.selected_todo = self
+                        .selected_todo
+                        .min(self.session_todos.items.len().saturating_sub(1));
+                }
+                self.status = format!("Todo {} done · {}", item.id, item.title);
+            }
+            Err(error) => self.status = format!("Todo complete unavailable: {error}"),
+        }
+    }
+
+    pub fn activate_selected_todo(&mut self) {
+        let Some(id) = self
+            .session_todos
+            .items
+            .get(self.selected_todo)
+            .map(|item| item.id.clone())
+        else {
+            self.status = "Select a session todo · Space makes it active".into();
+            return;
+        };
+        match self.ws_mut().and_then(|mut workspace| {
+            workspace
+                .activate_todo(&id)
+                .map_err(|error| error.to_string())
+        }) {
+            Ok(item) => {
+                if let Ok(list) = self.ws().map(|workspace| workspace.todos()) {
+                    self.session_todos = list;
+                }
+                self.status = format!("Todo {} active · {}", item.id, item.title);
+            }
+            Err(error) => self.status = format!("Todo activate unavailable: {error}"),
+        }
+    }
+
+    pub const MORE_ROUTES: [&'static str; 5] = [
+        "doctor",
+        "cockpit start",
+        "kernel start",
+        "experiment",
+        "harness list",
+    ];
+
+    pub fn move_more_selection(&mut self, delta: i32) {
+        let last = Self::MORE_ROUTES.len().saturating_sub(1) as i32;
+        self.selected_more = (self.selected_more as i32 + delta).clamp(0, last) as usize;
+        self.status = format!("{} · Enter runs", Self::MORE_ROUTES[self.selected_more]);
+    }
+
+    pub fn activate_more_selection(&mut self) {
+        let command = Self::MORE_ROUTES[self.selected_more.min(Self::MORE_ROUTES.len() - 1)];
+        if command == "kernel start" {
+            self.open_palette_with("kernel start ");
+            self.status = "kernel start · NAME KIND, then Enter".into();
+            return;
+        }
+        match super::command::execute(self, command) {
+            Ok(message) => {
+                self.surface = DevSurface::More;
+                self.more_result = message.clone();
+                self.status = more_route_status(command, &message);
+            }
+            Err(error) => {
+                self.surface = DevSurface::More;
+                self.open_palette_with(command);
+                self.status = format!("{command} · {error}");
+            }
+        }
     }
 
     pub fn open_selected_file(&mut self) {
@@ -2285,6 +4569,7 @@ impl DevTuiState {
         };
         match result {
             Ok(()) => {
+                self.pending_open_file = None;
                 self.editor_buffer_index = self
                     .workspace
                     .try_lock()
@@ -2302,6 +4587,10 @@ impl DevTuiState {
                 } else {
                     format!("Opened {path} · Enter opens the full-screen editor")
                 };
+            }
+            Err(error) if Self::is_workspace_busy(&error) => {
+                self.pending_open_file = Some(path.clone());
+                self.status = format!("Opening {path} when the workspace is free");
             }
             Err(error) => self.status = format!("Open failed: {error}"),
         }
@@ -2419,7 +4708,7 @@ impl DevTuiState {
     }
 
     pub fn refresh_editor_projection(&mut self) {
-        let (buffers, comments, proposals, checkpoints) = self
+        let (buffers, comments, proposals, checkpoints, diagnostics) = self
             .workspace
             .lock()
             .map(|workspace| {
@@ -2428,6 +4717,7 @@ impl DevTuiState {
                     workspace.project().editor_comments(None),
                     workspace.project().editor_proposals(),
                     workspace.project().editor_checkpoints(),
+                    workspace.project().diagnostics().clone(),
                 )
             })
             .unwrap_or_default();
@@ -2441,7 +4731,27 @@ impl DevTuiState {
             self.focused_editor_line = buffer.cursor_line;
             self.focused_editor_column = buffer.cursor_column;
             self.focused_editor_selection = buffer.selection.clone();
+            self.editor_diagnostics = diagnostics.get(&buffer.path).cloned().unwrap_or_default();
             self.ensure_editor_cursor_visible();
+            let path = self.focused_editor_path.clone();
+            let content = self.focused_editor_content.clone();
+            self.syntax.sync(&path, &content);
+            if let Some(proposal) = self.editor_proposals.iter().find(|item| {
+                item.path == path && item.state == crate::development::EditorProposalState::Pending
+            }) {
+                let line = native::line_hunks(&proposal.original, &proposal.proposed)
+                    .first()
+                    .map(|hunk| hunk.start_line)
+                    .unwrap_or(1);
+                self.editor_engine.agent_caret = Some(native::Jump {
+                    path: path.clone(),
+                    line,
+                    column: 1,
+                });
+            } else {
+                self.editor_engine.agent_caret = None;
+            }
+            self.maybe_begin_pair_apply();
         } else {
             self.focused_editor_path.clear();
             self.focused_editor_content.clear();
@@ -2451,8 +4761,25 @@ impl DevTuiState {
             self.focused_editor_selection = None;
             self.editor_scroll_line = 0;
             self.editor_scroll_column = 0;
+            self.editor_inlays.clear();
+            self.editor_diagnostics.clear();
         }
         self.editor = format_editor_buffers(&buffers);
+    }
+
+    fn refresh_editor_inlays(&mut self) {
+        let path = self.focused_editor_path.clone();
+        if path.is_empty() {
+            self.editor_inlays.clear();
+            return;
+        }
+        let response = self.workspace.try_lock().ok().and_then(|mut workspace| {
+            let name = workspace.language().names().next()?.to_string();
+            workspace.language().inlay_hints(&name, "local", &path).ok()
+        });
+        self.editor_inlays = response
+            .map(|response| parse_inlay_hints(&response.result))
+            .unwrap_or_default();
     }
 
     pub fn editor_collaboration_summary(&self) -> String {
@@ -2507,14 +4834,61 @@ impl DevTuiState {
         if !has_buffer {
             self.open_selected_file();
         }
-        if self.focused_buffer().is_some() {
+        if self.focused_buffer().is_some() || !self.focused_editor_path.is_empty() {
             self.surface = DevSurface::Code;
             self.code_edit_mode = true;
             self.editor_exit_prompt = None;
             self.ensure_editor_cursor_visible();
-            self.status =
-                "EDITING · arrows move · Shift+arrows select · Ctrl-S save · Alt-A ask Pi · Esc exit"
-                    .into();
+            self.editor_engine.enter_insert();
+            self.refresh_editor_hunks();
+            self.refresh_editor_inlays();
+            self.status = "INSERT · Esc normal · gm/gn extra carets · dif · gd · Ctrl-S".into();
+        }
+    }
+
+    pub fn handle_editor_escape(&mut self) {
+        if self.editor_engine.overlay.take().is_some()
+            || !self.editor_engine.symbols.is_empty()
+            || self.editor_engine.ghost.take().is_some()
+        {
+            self.editor_engine.symbols.clear();
+            self.editor_engine.clear_pending();
+            self.status = format!("{} · overlay closed", self.editor_engine.mode.label());
+            return;
+        }
+        match self.editor_engine.mode {
+            EditorMode::Agent => {
+                self.editor_engine.stop_pair_apply();
+                self.status = "NORMAL · agent yielded · hjkl · i insert · Esc exit".into();
+            }
+            EditorMode::Insert | EditorMode::Select => {
+                self.editor_engine.enter_normal();
+                self.status = self.editor_normal_status();
+            }
+            EditorMode::Normal => {
+                if self.editor_engine.clear_extra_cursors() {
+                    self.status = "NORMAL · extra carets cleared".into();
+                    self.refresh_editor_projection();
+                    return;
+                }
+                if !self.focused_editor_dirty {
+                    self.close_code_edit();
+                    return;
+                }
+                self.request_editor_exit();
+            }
+        }
+    }
+
+    fn editor_normal_status(&self) -> String {
+        let extras = self.editor_engine.extra_caret_count();
+        if extras > 0 {
+            format!(
+                "NORMAL · {} carets · gm match · gn next · d/c/i apply to all · Esc clear",
+                extras + 1
+            )
+        } else {
+            "NORMAL · hjkl · d/c/y · iw/if/ia · gm/gn extra carets · i insert · Esc exit".into()
         }
     }
 
@@ -2636,6 +5010,17 @@ impl DevTuiState {
         }
         let viewport_height = usize::from(self.terminal_height.saturating_sub(8).max(1));
         if self.editor_soft_wrap {
+            let marks = self
+                .editor_gutter_marks()
+                .into_iter()
+                .map(|(line, mark)| (line, mark.glyph()))
+                .collect::<Vec<_>>();
+            let notes = self.editor_source_notes();
+            let decorations = super::file_view::EditorDecorations {
+                marks: &marks,
+                inlays: &notes,
+                extra_selections: &self.editor_engine.extra_selections,
+            };
             let wrapped = super::file_view::render_editable_source_wrapped(
                 &self.focused_editor_path,
                 &self.focused_editor_content,
@@ -2643,6 +5028,7 @@ impl DevTuiState {
                 self.focused_editor_column,
                 self.focused_editor_selection.as_ref(),
                 self.terminal_width.saturating_sub(4).max(1),
+                &decorations,
             );
             let Some(cursor) = wrapped.cursor else {
                 return;
@@ -2699,11 +5085,90 @@ impl DevTuiState {
             self.toggle_editor_soft_wrap();
             return;
         }
+        if self.editor_engine.mode == EditorMode::Agent {
+            self.edit_agent_key(code, modifiers);
+            return;
+        }
+        if self.editor_engine.mode == EditorMode::Insert
+            || modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+            || modifiers.contains(crossterm::event::KeyModifiers::ALT)
+        {
+            self.edit_insert_or_chords(code, modifiers);
+            return;
+        }
+        self.edit_normal_key(code, modifiers);
+    }
+
+    fn edit_agent_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
+        match code {
+            crossterm::event::KeyCode::Enter => {
+                let id = self
+                    .editor_engine
+                    .pair_apply
+                    .as_ref()
+                    .map(|apply| apply.proposal_id.clone());
+                self.editor_engine.stop_pair_apply();
+                if let Some(id) = id {
+                    match self.accept_review_proposal(Some(&id)) {
+                        Ok(message) => self.status = message,
+                        Err(error) => self.status = error,
+                    }
+                }
+            }
+            crossterm::event::KeyCode::Char('n') => {
+                let id = self
+                    .editor_engine
+                    .pair_apply
+                    .as_ref()
+                    .map(|apply| apply.proposal_id.clone());
+                self.editor_engine.stop_pair_apply();
+                if let Some(id) = id {
+                    match self.reject_review_proposal(Some(&id)) {
+                        Ok(message) => self.status = message,
+                        Err(error) => self.status = error,
+                    }
+                }
+            }
+            crossterm::event::KeyCode::Esc => self.handle_editor_escape(),
+            _ => {
+                self.editor_engine.stop_pair_apply();
+                self.editor_engine.enter_insert();
+                self.edit_insert_or_chords(code, modifiers);
+            }
+        }
+        self.refresh_editor_projection();
+    }
+
+    fn edit_insert_or_chords(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
         let Some(buffer) = self.focused_buffer() else {
             self.status = "No open buffer".into();
             return;
         };
         let path = buffer.path.clone();
+        if code == crossterm::event::KeyCode::Tab
+            && let Some(ghost) = self.editor_engine.ghost.take()
+        {
+            self.accept_ghost_text(&path, &ghost.text);
+            return;
+        }
+        if matches!(
+            code,
+            crossterm::event::KeyCode::Right | crossterm::event::KeyCode::Char('f')
+        ) && modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+            && !modifiers.contains(crossterm::event::KeyModifiers::SHIFT)
+            && self.editor_engine.ghost.is_some()
+        {
+            self.accept_ghost_word(&path);
+            return;
+        }
         let result = match (code, modifiers) {
             (crossterm::event::KeyCode::Char('a'), value)
                 if value.contains(crossterm::event::KeyModifiers::ALT) =>
@@ -2741,6 +5206,12 @@ impl DevTuiState {
                         ))
                     })
             }
+            (crossterm::event::KeyCode::Char('o'), value)
+                if value.contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.open_symbol_picker();
+                Ok(())
+            }
             (crossterm::event::KeyCode::Left, value) => self.move_editor_cursor(
                 &path,
                 0,
@@ -2767,8 +5238,12 @@ impl DevTuiState {
             ),
             (crossterm::event::KeyCode::Enter, _) => self.insert_editor_text(&path, "\n"),
             (crossterm::event::KeyCode::Backspace, _) => self.backspace_editor(&path),
-            (crossterm::event::KeyCode::Char(character), _) => {
-                self.insert_editor_text(&path, &character.to_string())
+            (crossterm::event::KeyCode::Char(character), _)
+                if self.editor_engine.mode == EditorMode::Insert =>
+            {
+                let result = self.insert_editor_text(&path, &character.to_string());
+                self.request_ghost_from_line();
+                result
             }
             _ => Ok(()),
         };
@@ -2776,6 +5251,1386 @@ impl DevTuiState {
             self.status = format!("Editor action failed: {error}");
         }
         self.refresh_editor_projection();
+    }
+
+    fn edit_normal_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
+        let Some(buffer) = self.focused_buffer() else {
+            self.status = "No open buffer".into();
+            return;
+        };
+        let path = buffer.path.clone();
+        let content = buffer.content.clone();
+        let cursor = crate::development::TextPosition {
+            line: buffer.cursor_line,
+            column: buffer.cursor_column,
+        };
+        if let crossterm::event::KeyCode::Char(digit) = code
+            && digit.is_ascii_digit()
+            && !(digit == '0' && self.editor_engine.pending_count == 0)
+        {
+            self.editor_engine
+                .push_digit(digit.to_digit(10).unwrap_or(0));
+            return;
+        }
+        let count = self.editor_engine.count();
+        if self.editor_engine.pending_find.is_some() {
+            if let crossterm::event::KeyCode::Char(needle) = code {
+                let jumping_mark = self.editor_engine.pending_find == Some('\'');
+                self.editor_engine.pending_find = None;
+                if jumping_mark {
+                    if let Some(mark) = self.editor_engine.marks.get(&needle).cloned() {
+                        self.editor_engine
+                            .record_jump(&path, cursor.line, cursor.column);
+                        if mark.path == path {
+                            let _ = self.set_editor_cursor(
+                                &path,
+                                crate::development::TextPosition {
+                                    line: mark.line,
+                                    column: mark.column,
+                                },
+                                false,
+                            );
+                        } else {
+                            self.status = format!("Mark '{needle}' is {}", mark.path);
+                        }
+                    } else {
+                        self.status = format!("Mark '{needle}' is empty");
+                    }
+                } else {
+                    let motion = Motion::Find {
+                        needle,
+                        till: self.editor_engine.pending_find_till,
+                        reverse: self.editor_engine.pending_find_reverse,
+                    };
+                    if let Some(operator) = self.editor_engine.pending_operator.take() {
+                        let _ = self.apply_operator(&path, &content, cursor, operator, motion);
+                    } else {
+                        let next = apply_motion(&content, cursor, motion);
+                        let _ = self.set_editor_cursor(&path, next, false);
+                    }
+                }
+                self.refresh_editor_projection();
+            } else {
+                self.editor_engine.clear_pending();
+            }
+            return;
+        }
+        if self.editor_engine.pending_mark {
+            if let crossterm::event::KeyCode::Char(name) = code {
+                self.editor_engine.marks.insert(
+                    name,
+                    native::Jump {
+                        path: path.clone(),
+                        line: cursor.line,
+                        column: cursor.column,
+                    },
+                );
+                self.status = format!("Mark '{name}' set");
+            }
+            self.editor_engine.pending_mark = false;
+            return;
+        }
+        if let crossterm::event::KeyCode::Char(character) = code
+            && let Some(around) = self.editor_engine.pending_around
+        {
+            if let Some(object) = textobject_from_key(character, around) {
+                self.apply_textobject(&path, &content, cursor, object);
+            } else {
+                self.editor_engine.clear_pending();
+                self.status = format!("Unknown textobject '{character}'");
+            }
+            return;
+        }
+        if self.editor_engine.pending_operator.is_some() {
+            match code {
+                crossterm::event::KeyCode::Char('i') => {
+                    self.editor_engine.pending_around = Some(false);
+                    self.status =
+                        "inner textobject · w word · f fn · a arg · c comment · s string".into();
+                    return;
+                }
+                crossterm::event::KeyCode::Char('a') => {
+                    self.editor_engine.pending_around = Some(true);
+                    self.status =
+                        "around textobject · w word · f fn · a arg · c comment · s string".into();
+                    return;
+                }
+                crossterm::event::KeyCode::Char('f') => {
+                    self.apply_textobject(
+                        &path,
+                        &content,
+                        cursor,
+                        TextObject::Function { around: true },
+                    );
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let motion = match code {
+            crossterm::event::KeyCode::Char('h') | crossterm::event::KeyCode::Left => {
+                Some(Motion::Left)
+            }
+            crossterm::event::KeyCode::Char('l') | crossterm::event::KeyCode::Right => {
+                Some(Motion::Right)
+            }
+            crossterm::event::KeyCode::Char('j') | crossterm::event::KeyCode::Down => {
+                Some(Motion::Down)
+            }
+            crossterm::event::KeyCode::Char('k') | crossterm::event::KeyCode::Up => {
+                Some(Motion::Up)
+            }
+            crossterm::event::KeyCode::Char('w') => Some(Motion::WordForward),
+            crossterm::event::KeyCode::Char('b') => Some(Motion::WordBackward),
+            crossterm::event::KeyCode::Char('e') => Some(Motion::WordEnd),
+            crossterm::event::KeyCode::Char('0') => Some(Motion::LineStart),
+            crossterm::event::KeyCode::Char('$') => Some(Motion::LineEnd),
+            crossterm::event::KeyCode::Char('%') => Some(Motion::MatchPair),
+            crossterm::event::KeyCode::Char('G') => Some(Motion::FileEnd),
+            _ => None,
+        };
+        if code == crossterm::event::KeyCode::Char('g') {
+            if self.editor_engine.pending_g {
+                self.editor_engine.pending_g = false;
+                self.apply_editor_motion(&path, &content, cursor, Motion::FileStart, false);
+            } else {
+                self.editor_engine.pending_g = true;
+            }
+            return;
+        }
+        if let Some(motion) = motion {
+            if let Some(operator) = self.editor_engine.pending_operator.take() {
+                let _ = self.apply_operator(&path, &content, cursor, operator, motion);
+            } else {
+                let mut position = cursor;
+                for _ in 0..count {
+                    position = apply_motion(&content, position, motion);
+                }
+                self.editor_engine.clear_pending();
+                let extend = self.editor_engine.mode == EditorMode::Select
+                    || modifiers.contains(crossterm::event::KeyModifiers::SHIFT);
+                let _ = self.set_editor_cursor(&path, position, extend);
+            }
+            self.refresh_editor_projection();
+            return;
+        }
+        match code {
+            crossterm::event::KeyCode::Char('i') => self.editor_engine.enter_insert(),
+            crossterm::event::KeyCode::Char('a') => {
+                let next = apply_motion(&content, cursor, Motion::Right);
+                let _ = self.set_editor_cursor(&path, next, false);
+                self.editor_engine.enter_insert();
+            }
+            crossterm::event::KeyCode::Char('v') => self.editor_engine.enter_select(),
+            crossterm::event::KeyCode::Char('W') => {
+                self.apply_textobject(&path, &content, cursor, TextObject::Word { around: true });
+            }
+            crossterm::event::KeyCode::Char('d') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.editor_go_to_definition();
+            }
+            crossterm::event::KeyCode::Char('r') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.editor_references();
+            }
+            crossterm::event::KeyCode::Char('p') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.jump_page_from_source();
+            }
+            crossterm::event::KeyCode::Char('c') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.show_comment_thread();
+            }
+            crossterm::event::KeyCode::Char('m') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.match_same_objects(&path, &content, cursor, true);
+            }
+            crossterm::event::KeyCode::Char('n') if self.editor_engine.pending_g => {
+                self.editor_engine.pending_g = false;
+                self.match_same_objects(&path, &content, cursor, false);
+            }
+            crossterm::event::KeyCode::Char('d') => {
+                self.editor_engine.pending_operator = Some(Operator::Delete);
+            }
+            crossterm::event::KeyCode::Char('c') => {
+                self.editor_engine.pending_operator = Some(Operator::Change);
+            }
+            crossterm::event::KeyCode::Char('y')
+                if !modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.editor_engine.pending_operator = Some(Operator::Yank);
+            }
+            crossterm::event::KeyCode::Char('x') => {
+                let _ =
+                    self.apply_operator(&path, &content, cursor, Operator::Delete, Motion::Right);
+            }
+            crossterm::event::KeyCode::Char('u') => {
+                let _ =
+                    self.locked(|workspace| workspace.project_mut().undo_buffer(&path).map(|_| ()));
+            }
+            crossterm::event::KeyCode::Char('p') => {
+                if !self.editor_engine.yank.is_empty() {
+                    let _ = self.insert_editor_text(&path, &self.editor_engine.yank.clone());
+                }
+            }
+            crossterm::event::KeyCode::Char('m') => {
+                self.editor_engine.pending_mark = true;
+                self.status = "Mark · next character names the mark".into();
+            }
+            crossterm::event::KeyCode::Char('\'') => {
+                self.status = "Jump to mark · next character".into();
+                self.editor_engine.pending_find = Some('\'');
+            }
+            crossterm::event::KeyCode::Char('K') => self.editor_hover(),
+            crossterm::event::KeyCode::Char(']') => {
+                if let Some(hunk) = self.editor_engine.step_hunk(1).cloned() {
+                    let _ = self.set_editor_cursor(
+                        &path,
+                        crate::development::TextPosition {
+                            line: hunk.start_line,
+                            column: 1,
+                        },
+                        false,
+                    );
+                    self.status = format!(
+                        "Hunk {}/{}",
+                        self.editor_engine.hunk_index + 1,
+                        self.editor_engine.hunks.len()
+                    );
+                }
+            }
+            crossterm::event::KeyCode::Char('[') => {
+                if let Some(hunk) = self.editor_engine.step_hunk(-1).cloned() {
+                    let _ = self.set_editor_cursor(
+                        &path,
+                        crate::development::TextPosition {
+                            line: hunk.start_line,
+                            column: 1,
+                        },
+                        false,
+                    );
+                }
+            }
+            crossterm::event::KeyCode::Enter => self.accept_current_hunk(),
+            crossterm::event::KeyCode::Char('n') => self.reject_current_hunk(),
+            crossterm::event::KeyCode::Char('o') => self.open_symbol_picker(),
+            crossterm::event::KeyCode::Char('f') => {
+                self.editor_engine.pending_find = Some('f');
+                self.editor_engine.pending_find_till = false;
+                self.editor_engine.pending_find_reverse = false;
+                self.status = "find · next character".into();
+            }
+            crossterm::event::KeyCode::Char('t') => {
+                self.editor_engine.pending_find = Some('t');
+                self.editor_engine.pending_find_till = true;
+                self.editor_engine.pending_find_reverse = false;
+                self.status = "till · next character".into();
+            }
+            crossterm::event::KeyCode::Char('F') => {
+                self.editor_engine.pending_find = Some('F');
+                self.editor_engine.pending_find_till = false;
+                self.editor_engine.pending_find_reverse = true;
+                self.status = "find back · next character".into();
+            }
+            crossterm::event::KeyCode::Char('T') => {
+                self.editor_engine.pending_find = Some('T');
+                self.editor_engine.pending_find_till = true;
+                self.editor_engine.pending_find_reverse = true;
+                self.status = "till back · next character".into();
+            }
+            _ => {}
+        }
+        self.refresh_editor_projection();
+    }
+
+    fn set_editor_cursor(
+        &mut self,
+        path: &str,
+        position: crate::development::TextPosition,
+        extend: bool,
+    ) -> crate::development::DevelopmentResult<()> {
+        let buffer = self
+            .workspace
+            .try_lock()?
+            .project()
+            .buffer(path)
+            .cloned()
+            .ok_or_else(|| {
+                crate::development::DevelopmentError::NotFound(format!("buffer {path}"))
+            })?;
+        let position = native::clamp_position(&buffer.content, position);
+        let anchor = if extend {
+            buffer
+                .selection
+                .map(|selection| selection.anchor)
+                .unwrap_or(crate::development::TextPosition {
+                    line: buffer.cursor_line,
+                    column: buffer.cursor_column,
+                })
+        } else {
+            position
+        };
+        let mut workspace = self.workspace.try_lock()?;
+        workspace
+            .project_mut()
+            .set_buffer_cursor(path, position.line, position.column)?;
+        workspace.project_mut().set_buffer_selection(
+            path,
+            extend.then_some(crate::development::TextSelection {
+                anchor,
+                active: position,
+            }),
+            crate::development::Actor::local(),
+        )?;
+        Ok(())
+    }
+
+    fn apply_editor_motion(
+        &mut self,
+        path: &str,
+        content: &str,
+        cursor: crate::development::TextPosition,
+        motion: Motion,
+        extend: bool,
+    ) {
+        let next = apply_motion(content, cursor, motion);
+        let _ = self.set_editor_cursor(path, next, extend);
+    }
+
+    fn apply_textobject(
+        &mut self,
+        path: &str,
+        content: &str,
+        cursor: crate::development::TextPosition,
+        object: TextObject,
+    ) {
+        let selection = self
+            .syntax
+            .textobject(path, content, cursor, object)
+            .or_else(|| textobject_selection(content, cursor, object));
+        let Some(selection) = selection else {
+            self.editor_engine.clear_pending();
+            self.status = "No textobject under cursor".into();
+            return;
+        };
+        self.editor_engine.last_textobject = Some(object);
+        if let Some(operator) = self.editor_engine.pending_operator.take() {
+            let mut ranges = vec![selection];
+            for extra in self.editor_engine.extra_selections.clone() {
+                let origin = extra.active;
+                if let Some(range) = self
+                    .syntax
+                    .textobject(path, content, origin, object)
+                    .or_else(|| textobject_selection(content, origin, object))
+                {
+                    ranges.push(range);
+                }
+            }
+            if let Err(error) = self.apply_operator_ranges(path, content, operator, ranges) {
+                self.status = format!("Operator failed: {error}");
+            }
+        } else {
+            self.editor_engine.enter_select();
+            let _ = self.set_editor_cursor(path, selection.anchor, false);
+            let _ = self.set_editor_cursor(path, selection.active, true);
+            self.status = format!("{} · textobject selected", self.editor_engine.mode.label());
+        }
+        self.refresh_editor_projection();
+    }
+
+    fn match_same_objects(
+        &mut self,
+        path: &str,
+        content: &str,
+        cursor: crate::development::TextPosition,
+        all: bool,
+    ) {
+        let object = self
+            .editor_engine
+            .last_textobject
+            .unwrap_or(TextObject::Word { around: false });
+        let mut ranges = if matches!(object, TextObject::Word { .. }) {
+            same_word_ranges(
+                content,
+                cursor,
+                matches!(object, TextObject::Word { around: true }),
+            )
+        } else {
+            let mut found = self.syntax.same_textobjects(path, content, cursor, object);
+            if found.is_empty() {
+                found = textobject_selection(content, cursor, object)
+                    .into_iter()
+                    .collect();
+            }
+            found
+        };
+        if ranges.is_empty() {
+            self.status = "No matching objects under the caret".into();
+            return;
+        }
+        ranges.sort_by_key(|selection| (selection.anchor.line, selection.anchor.column));
+        let primary_index = ranges
+            .iter()
+            .position(|selection| selection_covers(content, selection, cursor))
+            .unwrap_or(0);
+        if all {
+            let primary = ranges.remove(primary_index.min(ranges.len().saturating_sub(1)));
+            self.editor_engine.extra_selections = ranges;
+            let _ = self.set_editor_cursor(path, primary.anchor, false);
+            let _ = self.set_editor_cursor(path, primary.active, true);
+            self.editor_engine.last_textobject = Some(object);
+            self.status = self.editor_normal_status();
+        } else {
+            let extras = &self.editor_engine.extra_selections;
+            let next = ranges
+                .iter()
+                .cycle()
+                .skip(primary_index + 1)
+                .take(ranges.len().saturating_sub(1))
+                .find(|candidate| {
+                    !extras.iter().any(|existing| {
+                        existing.anchor == candidate.anchor && existing.active == candidate.active
+                    })
+                })
+                .cloned();
+            if let Some(next) = next {
+                self.editor_engine.extra_selections.push(next);
+                self.editor_engine.last_textobject = Some(object);
+                self.status = self.editor_normal_status();
+            } else {
+                self.status = "No further matching objects".into();
+            }
+        }
+        self.refresh_editor_projection();
+    }
+
+    fn apply_operator(
+        &mut self,
+        path: &str,
+        content: &str,
+        cursor: crate::development::TextPosition,
+        operator: Operator,
+        motion: Motion,
+    ) -> crate::development::DevelopmentResult<()> {
+        let mut ranges = vec![TextSelection {
+            anchor: cursor,
+            active: apply_motion(content, cursor, motion),
+        }];
+        for extra in &self.editor_engine.extra_selections {
+            let origin = extra.active;
+            ranges.push(TextSelection {
+                anchor: origin,
+                active: apply_motion(content, origin, motion),
+            });
+        }
+        self.apply_operator_ranges(path, content, operator, ranges)
+    }
+
+    fn apply_operator_ranges(
+        &mut self,
+        path: &str,
+        content: &str,
+        operator: Operator,
+        ranges: Vec<TextSelection>,
+    ) -> crate::development::DevelopmentResult<()> {
+        let mut offsets = ranges
+            .iter()
+            .filter_map(|selection| {
+                crate::development::editor::selection_offsets(content, selection)
+            })
+            .collect::<Vec<_>>();
+        offsets.sort_by_key(|(start, _)| *start);
+        offsets.dedup();
+        if offsets.is_empty() {
+            self.editor_engine.clear_pending();
+            return Ok(());
+        }
+        self.auto_checkpoint("before-operator");
+        match operator {
+            Operator::Yank => {
+                self.editor_engine.yank = offsets
+                    .iter()
+                    .map(|(start, stop)| content[*start..*stop].to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.status = format!("Yanked {} bytes", self.editor_engine.yank.len());
+            }
+            Operator::Delete | Operator::Change => {
+                let (next, carets) = multi_delete(content, &offsets);
+                let mut extras = Vec::new();
+                let mut primary = crate::development::TextPosition { line: 1, column: 1 };
+                for (index, offset) in carets.into_iter().enumerate() {
+                    let position =
+                        crate::development::editor::text_position_at_offset(&next, offset)
+                            .unwrap_or(primary);
+                    if index == 0 {
+                        primary = position;
+                    } else {
+                        extras.push(TextSelection::collapsed(position));
+                    }
+                }
+                let actor = crate::development::Actor::local();
+                let mut workspace = self.workspace.try_lock()?;
+                workspace
+                    .project_mut()
+                    .edit_buffer(path, next, actor.clone())?;
+                workspace
+                    .project_mut()
+                    .set_buffer_cursor(path, primary.line, primary.column)?;
+                workspace
+                    .project_mut()
+                    .set_buffer_selection(path, None, actor)?;
+                drop(workspace);
+                self.editor_engine.extra_selections = extras;
+                if operator == Operator::Change {
+                    self.editor_engine.enter_insert();
+                }
+            }
+        }
+        self.editor_engine.clear_pending();
+        Ok(())
+    }
+
+    fn maybe_begin_pair_apply(&mut self) {
+        if self.editor_engine.pair_apply.is_some() {
+            return;
+        }
+        let path = self.focused_editor_path.clone();
+        if path.is_empty() {
+            return;
+        }
+        let Some(proposal) = self
+            .editor_proposals
+            .iter()
+            .find(|item| {
+                item.path == path
+                    && item.state == crate::development::EditorProposalState::Pending
+                    && item.original == self.focused_editor_content
+                    && item.original != item.proposed
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.editor_engine.begin_pair_apply(
+            proposal.id,
+            proposal.actor.name.clone(),
+            proposal.path,
+            proposal.original,
+            proposal.proposed,
+        );
+        self.status = format!(
+            "AGENT · {} pair-apply · Enter accept · n reject · type to yield",
+            proposal.actor.name
+        );
+    }
+
+    pub fn tick_pair_apply(&mut self) -> bool {
+        let Some(apply) = self.editor_engine.pair_apply.clone() else {
+            return false;
+        };
+        if self.focused_editor_content == apply.proposed {
+            return false;
+        }
+        let (content, revealed, _done) =
+            pair_apply_step(&apply.original, &apply.proposed, apply.revealed, 24);
+        let path = apply.path.clone();
+        let actor = apply.actor.clone();
+        let _ = self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .edit_buffer(
+                    &path,
+                    content.clone(),
+                    crate::development::Actor::embedded(),
+                )
+                .map(|_| ())
+        });
+        if let Some(live) = self.editor_engine.pair_apply.as_mut() {
+            live.revealed = revealed;
+        }
+        self.focused_editor_content = content.clone();
+        self.focused_editor_dirty = true;
+        let caret_offset = pair_apply_caret(&apply.original, &apply.proposed, revealed);
+        if let Some(position) =
+            crate::development::editor::text_position_at_offset(&content, caret_offset)
+        {
+            self.focused_editor_line = position.line;
+            self.focused_editor_column = position.column;
+            self.editor_engine.agent_caret = Some(native::Jump {
+                path,
+                line: position.line,
+                column: position.column,
+            });
+            let _ = self.set_editor_cursor(&self.focused_editor_path.clone(), position, false);
+        }
+        self.editor_engine.mode = EditorMode::Agent;
+        self.status = format!("AGENT · {actor} pair-apply · Enter accept · n reject");
+        self.ensure_editor_cursor_visible();
+        true
+    }
+
+    pub fn editor_gutter_marks(&self) -> Vec<(u32, native::GutterMark)> {
+        let mut marks = Vec::new();
+        let path = &self.focused_editor_path;
+        for diagnostic in &self.editor_diagnostics {
+            if diagnostic_matches_path(diagnostic, path) {
+                marks.push((
+                    diagnostic.start.line.saturating_add(1),
+                    native::GutterMark::Lsp,
+                ));
+            }
+        }
+        let page_lines = self.page_source_lines(path);
+        match self.last_proof_ok {
+            Some(true) => {
+                for line in &page_lines {
+                    marks.push((*line, native::GutterMark::Proof));
+                }
+            }
+            Some(false) => {
+                for line in &page_lines {
+                    marks.push((*line, native::GutterMark::Lsp));
+                }
+            }
+            None => {}
+        }
+        for hunk in &self.editor_engine.hunks {
+            marks.push((hunk.start_line, native::GutterMark::Git));
+        }
+        if let Some(caret) = &self.editor_engine.agent_caret
+            && caret.path == *path
+        {
+            marks.push((caret.line, native::GutterMark::Agent));
+        }
+        for line in page_lines {
+            marks.push((line, native::GutterMark::Page));
+        }
+        for comment in &self.editor_comments {
+            if comment.state == crate::development::EditorCommentState::Open
+                && (path.is_empty() || comment.path == *path)
+            {
+                marks.push((comment.start_line, native::GutterMark::Comment));
+            }
+        }
+        marks
+    }
+
+    pub fn editor_source_notes(&self) -> Vec<(u32, String)> {
+        let mut by_line = std::collections::BTreeMap::<u32, Vec<String>>::new();
+        for (line, hint) in &self.editor_inlays {
+            by_line.entry(*line).or_default().push(hint.clone());
+        }
+        let path = &self.focused_editor_path;
+        for diagnostic in &self.editor_diagnostics {
+            if diagnostic_matches_path(diagnostic, path) {
+                by_line
+                    .entry(diagnostic.start.line.saturating_add(1))
+                    .or_default()
+                    .push(format!("! {}", truncate_note(&diagnostic.message)));
+            }
+        }
+        for comment in &self.editor_comments {
+            if comment.state == crate::development::EditorCommentState::Open
+                && (path.is_empty() || comment.path == *path)
+            {
+                by_line
+                    .entry(comment.start_line)
+                    .or_default()
+                    .push(format!("# {}", truncate_note(&comment.text)));
+            }
+        }
+        by_line
+            .into_iter()
+            .map(|(line, parts)| (line, parts.join("  ")))
+            .collect()
+    }
+
+    fn page_source_lines(&self, path: &str) -> Vec<u32> {
+        self.workspace
+            .try_lock()
+            .ok()
+            .map(|workspace| {
+                workspace
+                    .project()
+                    .graph()
+                    .entities_for_source(path, None)
+                    .into_iter()
+                    .map(|link| link.source.start_line)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn show_comment_thread(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line.max(1);
+        let thread = self
+            .editor_comments
+            .iter()
+            .filter(|comment| {
+                comment.state == crate::development::EditorCommentState::Open
+                    && (path.is_empty() || comment.path == path)
+                    && line >= comment.start_line
+                    && line <= comment.end_line
+            })
+            .map(|comment| {
+                format!(
+                    "{} · {}:{}\n  {}",
+                    comment.actor.name, comment.path, comment.start_line, comment.text
+                )
+            })
+            .collect::<Vec<_>>();
+        if thread.is_empty() {
+            self.status = "No open comment on this line · :editor comment-selection".into();
+            return;
+        }
+        self.editor_engine.overlay = Some(thread.join("\n\n"));
+        self.status = "Comment thread · Esc closes".into();
+    }
+
+    fn refresh_editor_hunks(&mut self) {
+        let path = self.focused_editor_path.clone();
+        if path.is_empty() {
+            return;
+        }
+        let proposal = self.editor_proposals.iter().find(|item| item.path == path);
+        if let Some(proposal) = proposal {
+            self.editor_engine
+                .set_hunks(line_hunks(&proposal.original, &proposal.proposed));
+        }
+    }
+
+    fn auto_checkpoint(&mut self, name: &str) {
+        let _ = self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .create_editor_checkpoint(name.to_string(), crate::development::Actor::local())
+                .map(|_| ())
+        });
+    }
+
+    fn editor_hover(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line.saturating_sub(1);
+        let character = self.focused_editor_column.saturating_sub(1);
+        match self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .hover(&server, "local", &path, line, character)
+        }) {
+            Some(Ok(response)) => {
+                self.editor_engine.overlay = Some(response.result.to_string());
+                self.status = "Hover · Esc closes".into();
+            }
+            Some(Err(error)) => self.status = format!("Hover unavailable: {error}"),
+            None => self.status = "Hover unavailable · workspace busy".into(),
+        }
+    }
+
+    fn editor_references(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line.saturating_sub(1);
+        let character = self.focused_editor_column.saturating_sub(1);
+        match self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .references(&server, "local", &path, line, character)
+        }) {
+            Some(Ok(response)) => {
+                self.editor_engine.overlay = Some(format_lsp_locations(&response.result));
+                self.status = "References · Esc closes".into();
+            }
+            Some(Err(error)) => self.status = format!("References unavailable: {error}"),
+            None => self.status = "References unavailable · workspace busy".into(),
+        }
+    }
+
+    fn editor_go_to_definition(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let line = self.focused_editor_line.saturating_sub(1);
+        let character = self.focused_editor_column.saturating_sub(1);
+        self.editor_engine
+            .record_jump(&path, self.focused_editor_line, self.focused_editor_column);
+        match self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .definition(&server, "local", &path, line, character)
+        }) {
+            Some(Ok(response)) => {
+                self.editor_engine.overlay = Some(format!("definition {}", response.result));
+                if let Some(target) = parse_lsp_location(&response.result) {
+                    let _ = self.open_path(&target.path);
+                    let _ = self.set_editor_cursor(
+                        &self.focused_editor_path.clone(),
+                        crate::development::TextPosition {
+                            line: target.line.max(1),
+                            column: target.column.max(1),
+                        },
+                        false,
+                    );
+                }
+                self.status = "Definition · Ctrl-O back".into();
+            }
+            Some(Err(error)) => self.status = format!("Definition unavailable: {error}"),
+            None => self.status = "Definition unavailable · workspace busy".into(),
+        }
+    }
+
+    fn open_symbol_picker(&mut self) {
+        let path = self.focused_editor_path.clone();
+        match self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .document_symbols(&server, "local", &path)
+        }) {
+            Some(Ok(response)) => {
+                self.editor_engine.symbols = parse_lsp_symbols(&response.result);
+                self.editor_engine.symbol_selection = 0;
+                self.status = format!(
+                    "Symbols · {} · Enter jumps",
+                    self.editor_engine.symbols.len()
+                );
+            }
+            _ => {
+                self.editor_engine.symbols = self
+                    .focused_editor_content
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, line)| {
+                        let trimmed = line.trim_start();
+                        trimmed.starts_with("fn ")
+                            || trimmed.starts_with("struct ")
+                            || trimmed.starts_with("impl ")
+                            || trimmed.starts_with("pub ")
+                    })
+                    .map(|(index, line)| (line.trim().to_string(), index as u32 + 1))
+                    .collect();
+                self.status = format!("Symbols (lexical) · {}", self.editor_engine.symbols.len());
+            }
+        }
+    }
+
+    fn accept_current_hunk(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let Some(proposal) = self
+            .editor_proposals
+            .iter()
+            .find(|item| item.path == path)
+            .cloned()
+        else {
+            self.status = "No proposal hunk on this buffer".into();
+            return;
+        };
+        self.auto_checkpoint("before-hunk-accept");
+        match self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .accept_editor_proposal(&proposal.id, crate::development::Actor::local())
+                .map(|_| ())
+        }) {
+            Some(Ok(())) => {
+                self.status = format!("Accepted proposal {}", proposal.id);
+                self.refresh_editor_hunks();
+            }
+            Some(Err(error)) => self.status = format!("Accept failed: {error}"),
+            None => self.status = "Accept failed · workspace busy".into(),
+        }
+    }
+
+    fn reject_current_hunk(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let Some(proposal) = self
+            .editor_proposals
+            .iter()
+            .find(|item| item.path == path)
+            .cloned()
+        else {
+            return;
+        };
+        let _ = self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .reject_editor_proposal(&proposal.id, crate::development::Actor::local())
+                .map(|_| ())
+        });
+        self.status = format!("Rejected proposal {}", proposal.id);
+        self.refresh_editor_hunks();
+    }
+
+    pub fn jump_page_from_source(&mut self) {
+        let path = self.focused_editor_path.clone();
+        if path.is_empty() {
+            self.status = "Open a buffer, then gp jumps to App".into();
+            return;
+        }
+        let line = self.focused_editor_line.max(1);
+        let entity = self
+            .locked(|workspace| {
+                let _ = workspace.project_mut().discover_runtime_links();
+                workspace
+                    .project()
+                    .graph()
+                    .entities_for_source(&path, Some(line))
+                    .first()
+                    .map(|link| link.entity_id.clone())
+            })
+            .flatten();
+        if let Some(entity) = entity.clone() {
+            self.pending_page_entity = Some(entity.clone());
+            if self.select_page_entity(&entity) {
+                self.surface = DevSurface::App;
+                self.code_edit_mode = false;
+                self.status = format!("Page bound · entity {entity}");
+            }
+        }
+        let route = inferred_app_path(&path);
+        let Some(base) = self.resolved_app_url() else {
+            if entity.is_none() {
+                self.status = "No App URL · start the detected suite, then gp".into();
+            }
+            return;
+        };
+        let url = join_app_url(&base, route.as_deref());
+        let current = self.browser_workspace.state().url.clone();
+        let current_origin = current.trim_end_matches('/');
+        if entity.is_some()
+            && !current.is_empty()
+            && (current == url || current.starts_with(&url) || url.starts_with(current_origin))
+        {
+            self.surface = DevSurface::App;
+            self.code_edit_mode = false;
+            return;
+        }
+        self.auto_checkpoint("before-app-jump");
+        match self.prepare_browser_navigation(&url) {
+            Ok(message) => {
+                self.status = if entity.is_some() {
+                    format!("{message} · will bind page entity")
+                } else {
+                    message
+                };
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    pub fn jump_source_from_page(&mut self) {
+        let Some(entity) = self.browser_workspace.state().selected().cloned() else {
+            self.status = "Select an App entity, then g jumps to source".into();
+            return;
+        };
+        let reference = entity.reference.clone();
+        let name = entity.name.clone();
+        let link = self
+            .locked(|workspace| {
+                let _ = workspace.project_mut().discover_runtime_links();
+                let graph = workspace.project().graph();
+                graph
+                    .best_link(&reference)
+                    .cloned()
+                    .or_else(|| graph.best_link(&name).cloned())
+                    .or_else(|| {
+                        graph
+                            .links
+                            .values()
+                            .flatten()
+                            .find(|link| {
+                                reference.ends_with(&link.entity_id)
+                                    || name.contains(&link.entity_id)
+                            })
+                            .cloned()
+                    })
+            })
+            .flatten();
+        let Some(link) = link else {
+            self.status = format!("No source link for {reference} · :project graph discover");
+            return;
+        };
+        self.open_source_at(&link.source.path, link.source.start_line);
+    }
+
+    pub fn attach_detected_app(&mut self) -> Result<String, String> {
+        let url = self
+            .resolved_app_url()
+            .ok_or_else(|| "No App URL · start the detected suite".to_string())?;
+        self.auto_checkpoint("before-app-attach");
+        self.prepare_browser_navigation(&url)
+    }
+
+    pub fn resolved_app_url(&self) -> Option<String> {
+        self.process_urls
+            .iter()
+            .find(|url| !url.is_empty())
+            .cloned()
+            .or_else(|| {
+                self.workspace.try_lock().ok().and_then(|workspace| {
+                    let detection = workspace.project().detection();
+                    detection.browser_url.clone().or_else(|| {
+                        detection
+                            .local_development_urls
+                            .iter()
+                            .find(|url| !url.is_empty())
+                            .cloned()
+                    })
+                })
+            })
+            .map(|url| join_app_url(&url, None))
+    }
+
+    fn select_page_entity(&mut self, entity_id: &str) -> bool {
+        let index = self
+            .browser_workspace
+            .state()
+            .entities
+            .iter()
+            .position(|entity| {
+                entity.reference == entity_id
+                    || entity.reference.ends_with(entity_id)
+                    || entity.name == entity_id
+                    || (!entity_id.is_empty() && entity.name.contains(entity_id))
+            });
+        let Some(index) = index else {
+            return false;
+        };
+        self.browser_workspace.state_mut().selected_entity = Some(index);
+        self.browser = self.browser_workspace_summary();
+        true
+    }
+
+    fn open_source_at(&mut self, path: &str, line: u32) {
+        match self.open_path(path) {
+            Ok(_) => {
+                let focused = self.focused_editor_path.clone();
+                let _ = self.set_editor_cursor(
+                    &focused,
+                    crate::development::TextPosition {
+                        line: line.max(1),
+                        column: 1,
+                    },
+                    false,
+                );
+                self.refresh_editor_projection();
+                self.ensure_editor_cursor_visible();
+                self.status = format!("Source · {path}:{line}");
+            }
+            Err(error) => self.status = format!("Source jump failed: {error}"),
+        }
+    }
+
+    fn accept_ghost_text(&mut self, path: &str, text: &str) {
+        let _ = self.insert_editor_text(path, text);
+        self.refresh_editor_projection();
+        self.advance_next_edit();
+    }
+
+    fn accept_ghost_word(&mut self, path: &str) {
+        let Some(ghost) = self.editor_engine.ghost.take() else {
+            return;
+        };
+        match split_ghost_word(&ghost.text) {
+            Some((word, rest)) if !rest.is_empty() => {
+                let _ = self.insert_editor_text(path, word);
+                self.refresh_editor_projection();
+                self.editor_engine.ghost = Some(GhostText {
+                    text: rest.to_string(),
+                });
+                self.status = "Ghost word accepted · Tab rest · Ctrl-Right another word".into();
+            }
+            Some((word, _)) => self.accept_ghost_text(path, word),
+            None => self.accept_ghost_text(path, &ghost.text),
+        }
+    }
+
+    fn advance_next_edit(&mut self) {
+        let content = self.focused_editor_content.clone();
+        let caret = crate::development::editor::text_position_offset(
+            &content,
+            crate::development::TextPosition {
+                line: self.focused_editor_line.max(1),
+                column: self.focused_editor_column.max(1),
+            },
+        )
+        .unwrap_or(content.len());
+        let Some(offset) = next_edit_after_accept(&content, caret) else {
+            self.request_ghost_from_line();
+            self.status = if self.editor_engine.ghost.is_some() {
+                "Ghost accepted · next edit here".into()
+            } else {
+                "Ghost accepted".into()
+            };
+            return;
+        };
+        let Some(position) = crate::development::editor::text_position_at_offset(&content, offset)
+        else {
+            self.request_ghost_from_line();
+            self.status = "Ghost accepted".into();
+            return;
+        };
+        let path = self.focused_editor_path.clone();
+        self.editor_engine
+            .record_jump(&path, position.line, position.column);
+        let _ = self.set_editor_cursor(&path, position, false);
+        self.refresh_editor_projection();
+        self.request_ghost_from_line();
+        self.status = format!(
+            "Ghost accepted · next edit {}:{}",
+            position.line, position.column
+        );
+    }
+
+    pub fn request_ghost_from_line(&mut self) {
+        let path = self.focused_editor_path.clone();
+        let Some(offset) = crate::development::editor::text_position_offset(
+            &self.focused_editor_content,
+            crate::development::TextPosition {
+                line: self.focused_editor_line.max(1),
+                column: self.focused_editor_column.max(1),
+            },
+        ) else {
+            return;
+        };
+        if let Some(text) = local_fim(&self.focused_editor_content, offset) {
+            self.editor_engine.ghost = Some(GhostText { text });
+            return;
+        }
+        if self.take_ready_fim(&path, offset) {
+            return;
+        }
+        self.spawn_hosted_fim(&path, offset);
+        let line = self.focused_editor_line.saturating_sub(1);
+        let character = self.focused_editor_column.saturating_sub(1);
+        if let Some(text) = self.lsp_ghost_insert(&path, line, character) {
+            self.editor_engine.ghost = Some(GhostText { text });
+            return;
+        }
+        let line = self
+            .focused_editor_content
+            .lines()
+            .nth(self.focused_editor_line.saturating_sub(1) as usize)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if line.is_empty() {
+            return;
+        }
+        let ghost = if line.ends_with('{') {
+            "\n    \n}"
+        } else if line.contains("todo") || line.contains("TODO") {
+            " // implemented"
+        } else {
+            return;
+        };
+        self.editor_engine.ghost = Some(GhostText { text: ghost.into() });
+    }
+
+    pub fn tick_fim(&mut self) -> bool {
+        let path = self.focused_editor_path.clone();
+        let Some(offset) = crate::development::editor::text_position_offset(
+            &self.focused_editor_content,
+            crate::development::TextPosition {
+                line: self.focused_editor_line.max(1),
+                column: self.focused_editor_column.max(1),
+            },
+        ) else {
+            return false;
+        };
+        self.take_ready_fim(&path, offset)
+    }
+
+    fn take_ready_fim(&mut self, path: &str, offset: usize) -> bool {
+        let stale = self
+            .pending_fim
+            .as_ref()
+            .is_some_and(|pending| pending.path() != path || pending.offset() != offset);
+        if stale {
+            self.pending_fim = None;
+            return false;
+        }
+        let pi = match &self.pending_fim {
+            Some(PendingFim::Pi {
+                agent_id, since, ..
+            }) => Some((agent_id.clone(), *since)),
+            _ => None,
+        };
+        if let Some((agent_id, since)) = pi {
+            let text = self
+                .locked(|workspace| {
+                    workspace
+                        .agents()
+                        .history(since)
+                        .ok()?
+                        .into_iter()
+                        .rev()
+                        .find_map(|event| {
+                            if event.agent_id != agent_id {
+                                return None;
+                            }
+                            if event
+                                .payload
+                                .get("operation")
+                                .and_then(serde_json::Value::as_str)
+                                != Some("complete")
+                            {
+                                return None;
+                            }
+                            crate::fim::parse_fim_text(&event.payload)
+                        })
+                })
+                .flatten();
+            return match text {
+                Some(text) => {
+                    self.pending_fim = None;
+                    self.editor_engine.ghost = Some(GhostText { text });
+                    true
+                }
+                None => false,
+            };
+        }
+        let Some(PendingFim::Thread { rx, .. }) = self.pending_fim.as_mut() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(Some(text)) if !text.is_empty() => {
+                self.pending_fim = None;
+                self.editor_engine.ghost = Some(GhostText { text });
+                true
+            }
+            Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending_fim = None;
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+        }
+    }
+
+    fn spawn_hosted_fim(&mut self, path: &str, offset: usize) {
+        if self
+            .pending_fim
+            .as_ref()
+            .is_some_and(|pending| pending.path() == path && pending.offset() == offset)
+        {
+            return;
+        }
+        let Some(provider) = self.workspace.try_lock().ok().and_then(|workspace| {
+            crate::fim::FimProvider::from_editor(&workspace.customization().config().editor)
+        }) else {
+            return;
+        };
+        let prefix = self.focused_editor_content[..offset].to_string();
+        let suffix = self.focused_editor_content[offset..].to_string();
+        match provider.backend {
+            crate::fim::FimBackend::Stub => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let _ = std::thread::Builder::new()
+                    .name("glass-fim".into())
+                    .spawn(move || {
+                        let _ = tx.send(provider.complete(&prefix, &suffix).ok());
+                    });
+                self.pending_fim = Some(PendingFim::Thread {
+                    path: path.to_string(),
+                    offset,
+                    rx,
+                });
+            }
+            crate::fim::FimBackend::Pi => {
+                let selected = self.selected_agent.clone();
+                let queued = self
+                    .locked(|workspace| {
+                        let since = workspace
+                            .agents()
+                            .history(0)
+                            .ok()?
+                            .last()
+                            .map(|event| event.sequence)
+                            .unwrap_or(0);
+                        let snapshots = workspace.agents().list().ok()?;
+                        let id = selected
+                            .as_ref()
+                            .filter(|id| {
+                                snapshots.iter().any(|item| {
+                                    &item.id == *id && item.status == crate::AgentStatus::Idle
+                                })
+                            })
+                            .cloned()
+                            .or_else(|| {
+                                snapshots.into_iter().find_map(|item| {
+                                    (item.status == crate::AgentStatus::Idle).then_some(item.id)
+                                })
+                            })?;
+                        workspace
+                            .agents()
+                            .request(
+                                &id,
+                                crate::pi_runtime::PiSessionRequest::Complete { prefix, suffix },
+                            )
+                            .ok()?;
+                        Some((id, since))
+                    })
+                    .flatten();
+                if let Some((agent_id, since)) = queued {
+                    self.pending_fim = Some(PendingFim::Pi {
+                        path: path.to_string(),
+                        offset,
+                        agent_id,
+                        since,
+                    });
+                }
+            }
+        }
+    }
+
+    fn lsp_ghost_insert(&mut self, path: &str, line: u32, character: u32) -> Option<String> {
+        let response = self.locked(|workspace| {
+            let server = workspace
+                .language()
+                .names()
+                .next()
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::NotFound("language server".into())
+                })?
+                .to_string();
+            workspace
+                .language()
+                .completion(&server, "local", path, line, character)
+        })?;
+        parse_completion_insert(&response.ok()?.result)
     }
 
     fn move_editor_cursor(
@@ -2837,6 +6692,7 @@ impl DevTuiState {
         path: &str,
         text: &str,
     ) -> crate::development::DevelopmentResult<()> {
+        let extras = self.editor_engine.extra_selections.clone();
         let mut workspace = self.workspace.try_lock()?;
         let project = workspace.project_mut();
         let buffer = project.buffer(path).cloned().ok_or_else(|| {
@@ -2846,6 +6702,7 @@ impl DevTuiState {
             .selection
             .as_ref()
             .is_some_and(|selection| !selection.is_empty())
+            && extras.is_empty()
         {
             project.replace_buffer_selection(
                 path,
@@ -2854,24 +6711,58 @@ impl DevTuiState {
             )?;
             return Ok(());
         }
-        let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
-        let mut content = buffer.content;
-        content.insert_str(offset, text);
-        let cursor =
-            crate::development::editor::text_position_at_offset(&content, offset + text.len())
+        let primary = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
+        if extras.is_empty() {
+            let mut content = buffer.content;
+            content.insert_str(primary, text);
+            let cursor =
+                crate::development::editor::text_position_at_offset(&content, primary + text.len())
+                    .ok_or_else(|| {
+                        crate::development::DevelopmentError::InvalidInput(
+                            "inserted text ended at an invalid UTF-8 boundary".into(),
+                        )
+                    })?;
+            let actor = crate::development::Actor::local();
+            project.edit_buffer(path, content, actor.clone())?;
+            project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+            project.set_buffer_selection(path, None, actor)?;
+            return Ok(());
+        }
+        let mut sites = vec![primary];
+        for extra in &extras {
+            if let Some(offset) =
+                crate::development::editor::text_position_offset(&buffer.content, extra.active)
+            {
+                sites.push(offset);
+            }
+        }
+        let (content, carets) = multi_insert(&buffer.content, &sites, text);
+        let mut next_extras = Vec::new();
+        let mut primary_pos = crate::development::TextPosition { line: 1, column: 1 };
+        for (index, offset) in carets.into_iter().enumerate() {
+            let position = crate::development::editor::text_position_at_offset(&content, offset)
                 .ok_or_else(|| {
                     crate::development::DevelopmentError::InvalidInput(
                         "inserted text ended at an invalid UTF-8 boundary".into(),
                     )
                 })?;
+            if index == 0 {
+                primary_pos = position;
+            } else {
+                next_extras.push(TextSelection::collapsed(position));
+            }
+        }
         let actor = crate::development::Actor::local();
         project.edit_buffer(path, content, actor.clone())?;
-        project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+        project.set_buffer_cursor(path, primary_pos.line, primary_pos.column)?;
         project.set_buffer_selection(path, None, actor)?;
+        drop(workspace);
+        self.editor_engine.extra_selections = next_extras;
         Ok(())
     }
 
     fn backspace_editor(&mut self, path: &str) -> crate::development::DevelopmentResult<()> {
+        let extras = self.editor_engine.extra_selections.clone();
         let mut workspace = self.workspace.try_lock()?;
         let project = workspace.project_mut();
         let buffer = project.buffer(path).cloned().ok_or_else(|| {
@@ -2881,6 +6772,7 @@ impl DevTuiState {
             .selection
             .as_ref()
             .is_some_and(|selection| !selection.is_empty())
+            && extras.is_empty()
         {
             project.replace_buffer_selection(
                 path,
@@ -2889,27 +6781,71 @@ impl DevTuiState {
             )?;
             return Ok(());
         }
-        let offset = editor_offset(&buffer.content, buffer.cursor_line, buffer.cursor_column);
-        if offset == 0 {
+        let mut sites = vec![editor_offset(
+            &buffer.content,
+            buffer.cursor_line,
+            buffer.cursor_column,
+        )];
+        for extra in &extras {
+            if let Some(offset) =
+                crate::development::editor::text_position_offset(&buffer.content, extra.active)
+            {
+                sites.push(offset);
+            }
+        }
+        let mut ranges = Vec::new();
+        for offset in sites {
+            if offset == 0 {
+                continue;
+            }
+            let previous = buffer.content[..offset]
+                .char_indices()
+                .next_back()
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            ranges.push((previous, offset));
+        }
+        if ranges.is_empty() {
             return Ok(());
         }
-        let previous = buffer.content[..offset]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        let mut content = buffer.content;
-        content.drain(previous..offset);
-        let cursor = crate::development::editor::text_position_at_offset(&content, previous)
-            .ok_or_else(|| {
-                crate::development::DevelopmentError::InvalidInput(
-                    "backspace ended at an invalid UTF-8 boundary".into(),
-                )
-            })?;
+        if extras.is_empty() && ranges.len() == 1 {
+            let (previous, offset) = ranges[0];
+            let mut content = buffer.content;
+            content.drain(previous..offset);
+            let cursor = crate::development::editor::text_position_at_offset(&content, previous)
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::InvalidInput(
+                        "backspace ended at an invalid UTF-8 boundary".into(),
+                    )
+                })?;
+            let actor = crate::development::Actor::local();
+            project.edit_buffer(path, content, actor.clone())?;
+            project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+            project.set_buffer_selection(path, None, actor)?;
+            return Ok(());
+        }
+        let (content, carets) = multi_delete(&buffer.content, &ranges);
+        let mut next_extras = Vec::new();
+        let mut primary_pos = crate::development::TextPosition { line: 1, column: 1 };
+        for (index, offset) in carets.into_iter().enumerate() {
+            let position = crate::development::editor::text_position_at_offset(&content, offset)
+                .ok_or_else(|| {
+                    crate::development::DevelopmentError::InvalidInput(
+                        "backspace ended at an invalid UTF-8 boundary".into(),
+                    )
+                })?;
+            if index == 0 {
+                primary_pos = position;
+            } else {
+                next_extras.push(TextSelection::collapsed(position));
+            }
+        }
         let actor = crate::development::Actor::local();
         project.edit_buffer(path, content, actor.clone())?;
-        project.set_buffer_cursor(path, cursor.line, cursor.column)?;
+        project.set_buffer_cursor(path, primary_pos.line, primary_pos.column)?;
         project.set_buffer_selection(path, None, actor)?;
+        drop(workspace);
+        self.editor_engine.extra_selections = next_extras;
         Ok(())
     }
 
@@ -2926,8 +6862,7 @@ impl DevTuiState {
             .iter()
             .position(|surface| *surface == self.surface)
             .unwrap_or(0);
-        self.surface = surfaces[(index + surfaces.len() - 1) % surfaces.len()];
-        self.status = format!("{} selected", self.surface.label());
+        self.show_surface(surfaces[(index + surfaces.len() - 1) % surfaces.len()]);
     }
 
     /// Apply one background snapshot without touching UI-only fields.
@@ -2964,8 +6899,45 @@ impl DevTuiState {
             self.status = "Browser endpoint crashed · recovery choices below".into();
         }
         self.harnesses = snapshot.harnesses.clone();
+        if let Ok(list) = self.ws().map(|workspace| workspace.todos()) {
+            self.session_todos = list;
+            self.selected_todo = self
+                .selected_todo
+                .min(self.session_todos.items.len().saturating_sub(1));
+        }
         self.agents = snapshot.agents.clone();
         self.agent_conversation = snapshot.agent_conversation.clone();
+        self.conversation_items = snapshot.conversation_items.clone();
+        if let Some(chrome) = self
+            .selected_agent
+            .as_ref()
+            .and_then(|selected| {
+                snapshot
+                    .agent_chrome
+                    .iter()
+                    .find(|item| item.id == *selected)
+            })
+            .or_else(|| snapshot.agent_chrome.first())
+        {
+            if self.selected_agent.is_none() {
+                self.selected_agent = Some(chrome.id.clone());
+            }
+            self.agent_model = chrome.model.clone().unwrap_or_default();
+            self.agent_thinking = chrome.thinking.clone().unwrap_or_default();
+            if let Some(path) = chrome.session_file.as_deref() {
+                self.agent_session_name = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path)
+                    .to_string();
+            }
+        }
+        let entry_count = self.conversation_entries_view().len();
+        if entry_count == 0 {
+            self.transcript_selection = 0;
+        } else {
+            self.transcript_selection = self.transcript_selection.min(entry_count - 1);
+        }
         self.reconcile_pending_chat();
         if self.agent_send_job.is_none()
             && self.pending_chat_messages.is_empty()
@@ -2993,8 +6965,29 @@ impl DevTuiState {
         }
         self.lsp = snapshot.lsp.clone();
         self.processes = snapshot.processes.clone();
+        self.process_entries = snapshot.process_entries.clone();
+        if self.process_entries.is_empty() {
+            self.selected_process = 0;
+            self.process_urls.clear();
+        } else {
+            self.selected_process = self
+                .selected_process
+                .min(self.process_entries.len().saturating_sub(1));
+            self.process_urls = self
+                .process_entries
+                .iter()
+                .filter_map(|entry| entry.url.clone())
+                .collect();
+            self.process_urls.sort();
+            self.process_urls.dedup();
+        }
         self.git = snapshot.git.clone();
         self.git_entries = snapshot.git_entries.clone();
+        self.git_branch = snapshot.git_branch.clone();
+        self.git_dirty = snapshot.git_dirty;
+        self.git_ahead = snapshot.git_ahead;
+        self.git_behind = snapshot.git_behind;
+        self.git_conflicts = snapshot.git_conflicts.clone();
         self.github = snapshot.github.clone();
         self.github_review = snapshot.github_review.clone();
         if self.git_entries.is_empty() {
@@ -3003,10 +6996,38 @@ impl DevTuiState {
             self.selected_git_file = self
                 .selected_git_file
                 .min(self.git_entries.len().saturating_sub(1));
+            if self.surface == DevSurface::Git && !self.git_diff_requested {
+                let selected_path = self.selected_git_entry().map(|entry| entry.path.as_str());
+                if !self.git_diff_open || selected_path != self.git_diff_path.as_deref() {
+                    self.request_selected_git_diff();
+                }
+            }
         }
         self.tests = snapshot.tests.clone();
         self.kernels = snapshot.kernels.clone();
         self.debugger = snapshot.debugger.clone();
+        let previous_debug = self
+            .selected_debug_session()
+            .map(|session| session.name.clone());
+        self.debug_sessions = snapshot.debug_sessions.clone();
+        if self.debug_sessions.is_empty() {
+            self.selected_debug_session = 0;
+            self.debug_threads.clear();
+            self.debug_frames.clear();
+        } else {
+            self.selected_debug_session = self
+                .selected_debug_session
+                .min(self.debug_sessions.len().saturating_sub(1));
+            let current = self
+                .selected_debug_session()
+                .map(|session| session.name.clone());
+            if previous_debug != current {
+                self.debug_threads.clear();
+                self.debug_frames.clear();
+                self.selected_debug_thread = 0;
+                self.selected_debug_frame = 0;
+            }
+        }
         self.replay = snapshot.replay.clone();
         self.workflow = snapshot.workflow.clone();
         self.workspace_status = snapshot.workspace_status.clone();
@@ -3024,6 +7045,13 @@ impl DevTuiState {
             if !self.files.is_empty() {
                 self.selected_file = self.selected_file.min(self.files.len() - 1);
             }
+        }
+        if self.surface == DevSurface::Code
+            && !self.code_edit_mode
+            && self.pending_open_file.is_some()
+            && !self.files.is_empty()
+        {
+            self.flush_pending_open_file();
         }
     }
 
@@ -3051,6 +7079,9 @@ impl DevTuiState {
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(wake) = workspace.latest_crew_wake() {
+            self.last_crew_wake = Some(wake.render());
+        }
         if !self.files.is_empty() {
             self.selected_file = self.selected_file.min(self.files.len() - 1);
         }
@@ -3165,12 +7196,22 @@ impl DevTuiState {
                 .join("\n\n"),
             Err(error) => format!("Task scheduler failed: {error}"),
         };
-        self.processes = workspace
-            .project_mut()
-            .processes()
-            .list_checked()
-            .map(|items| {
-                if items.is_empty() {
+        match workspace.project_mut().processes().list_checked() {
+            Ok(items) => {
+                self.process_urls = items
+                    .iter()
+                    .flat_map(|item| item.detected_urls.iter().cloned())
+                    .collect();
+                self.process_urls.sort();
+                self.process_urls.dedup();
+                self.process_entries = items.iter().map(ProcessRow::from_snapshot).collect();
+                self.selected_process = if self.process_entries.is_empty() {
+                    0
+                } else {
+                    self.selected_process
+                        .min(self.process_entries.len().saturating_sub(1))
+                };
+                self.processes = if items.is_empty() {
                     "No managed terminals. Start the detected development command from More.".into()
                 } else {
                     items
@@ -3195,9 +7236,15 @@ impl DevTuiState {
                         })
                         .collect::<Vec<_>>()
                         .join("\n\n")
-                }
-            })
-            .unwrap_or_else(|error| format!("Process state failed: {error}"));
+                };
+            }
+            Err(error) => {
+                self.process_urls.clear();
+                self.process_entries.clear();
+                self.selected_process = 0;
+                self.processes = format!("Process state failed: {error}");
+            }
+        }
         let buffers = workspace.project().buffers().cloned().collect::<Vec<_>>();
         self.editor = if buffers.is_empty() {
             "No file open. Select a file below and press Enter to open the full-screen editor."
@@ -3266,7 +7313,17 @@ impl DevTuiState {
         let git_status = workspace.git().map(|git| git.status());
         self.git = match git_status {
             Some(Ok(status)) => {
-                self.git_entries = status.entries.clone();
+                self.git_entries = status.sorted_entries();
+                self.git_branch = status.branch.clone().unwrap_or_else(|| "detached".into());
+                self.git_ahead = status.ahead;
+                self.git_behind = status.behind;
+                self.git_conflicts = status.conflicts.clone();
+                self.git_dirty = !status.conflicts.is_empty()
+                    || status.ahead > 0
+                    || status.behind > 0
+                    || status.entries.iter().any(|entry| {
+                        entry.untracked || entry.index_status != ' ' || entry.worktree_status != ' '
+                    });
                 let header = format!(
                     "branch {} · ↑{} ↓{} · upstream {}",
                     status.branch.as_deref().unwrap_or("detached"),
@@ -3299,10 +7356,20 @@ impl DevTuiState {
             }
             Some(Err(error)) => {
                 self.git_entries.clear();
+                self.git_branch.clear();
+                self.git_ahead = 0;
+                self.git_behind = 0;
+                self.git_conflicts.clear();
+                self.git_dirty = false;
                 format!("Git state failed: {error}")
             }
             None => {
                 self.git_entries.clear();
+                self.git_branch.clear();
+                self.git_ahead = 0;
+                self.git_behind = 0;
+                self.git_conflicts.clear();
+                self.git_dirty = false;
                 "Not a Git repository".into()
             }
         };
@@ -3370,6 +7437,8 @@ impl DevTuiState {
             .map(str::to_string)
             .collect::<Vec<_>>();
         self.debugger = if debugger_names.is_empty() {
+            self.debug_sessions.clear();
+            self.selected_debug_session = 0;
             "No debugger sessions. :debug start NAME COMMAND [ARGS...]".into()
         } else {
             let snapshots: Result<Vec<_>, _> = debugger_names
@@ -3382,20 +7451,27 @@ impl DevTuiState {
                 })
                 .collect();
             match snapshots {
-                Ok(snapshots) => snapshots
+                Ok(snapshots) => {
+                    self.debug_sessions = snapshots
+                        .iter()
+                        .map(|(name, snapshot)| DebugSessionRow {
+                            name: name.clone(),
+                            state: snapshot.state,
+                            pid: snapshot.adapter_process_id,
+                            breakpoints: snapshot.breakpoints.values().map(Vec::len).sum::<usize>(),
+                            watches: snapshot.watches.len(),
+                        })
+                        .collect();
+                    self.selected_debug_session = self
+                        .selected_debug_session
+                        .min(self.debug_sessions.len().saturating_sub(1));
+                    snapshots
                     .iter()
                     .map(|(name, snapshot)| {
                         format!(
                             "● {} · {} · pid {} · {} breakpoints · {} watches · {} threads/processes",
                             name,
-                            match snapshot.state {
-                                crate::debugger::DebugSessionState::Starting => "starting",
-                                crate::debugger::DebugSessionState::Initialized => "initialized",
-                                crate::debugger::DebugSessionState::Running => "running",
-                                crate::debugger::DebugSessionState::Stopped => "stopped",
-                                crate::debugger::DebugSessionState::Terminated => "terminated",
-                                crate::debugger::DebugSessionState::Failed => "failed",
-                            },
+                            snapshot.state.label(),
                             snapshot.adapter_process_id,
                             snapshot.breakpoints.values().map(Vec::len).sum::<usize>(),
                             snapshot.watches.len(),
@@ -3403,7 +7479,8 @@ impl DevTuiState {
                         )
                     })
                     .collect::<Vec<_>>()
-                    .join("\n"),
+                    .join("\n")
+                }
                 Err(error) => format!("Debugger state failed: {error}"),
             }
         };
@@ -3604,6 +7681,12 @@ impl DevTuiState {
                         })
                         .collect();
                     self.browser_workspace.replace_entities(revision, entities);
+                    if let Some(entity) = self.pending_page_entity.clone()
+                        && self.select_page_entity(&entity)
+                    {
+                        self.pending_page_entity = None;
+                        self.status = format!("Page bound · {entity}");
+                    }
                 }
             }
             "glass.browser.targets" => {
@@ -4054,18 +8137,24 @@ impl DevTuiState {
             BrowserWorkspaceAction::Click {
                 target,
                 expected_revision,
-            } => (
-                "glass.browser.act",
-                serde_json::json!({"action":"click", "target": target, "browserRevision": expected_revision}),
-            ),
+            } => {
+                let _ = self.capture_workflow_click();
+                (
+                    "glass.browser.act",
+                    serde_json::json!({"action":"click", "target": target, "browserRevision": expected_revision}),
+                )
+            }
             BrowserWorkspaceAction::Type {
                 target,
                 text,
                 expected_revision,
-            } => (
-                "glass.browser.act",
-                serde_json::json!({"action":"type", "target": target, "text": text, "browserRevision": expected_revision}),
-            ),
+            } => {
+                self.capture_workflow_type_from_selection();
+                (
+                    "glass.browser.act",
+                    serde_json::json!({"action":"type", "target": target, "text": text, "browserRevision": expected_revision}),
+                )
+            }
             BrowserWorkspaceAction::Scroll {
                 dx,
                 dy,
@@ -4130,6 +8219,7 @@ impl DevTuiState {
                     actor: crate::development::Actor::local(),
                     allow_mutation: mutating,
                     confirmed: mutating,
+                    unrestricted: self.yolo_mode,
                 },
                 initiator: None,
                 expected_generation,
@@ -4218,6 +8308,52 @@ impl DevTuiState {
     }
 }
 
+fn diagnostic_matches_path(
+    diagnostic: &crate::development::LanguageDiagnostic,
+    path: &str,
+) -> bool {
+    path.is_empty()
+        || diagnostic.path == path
+        || diagnostic.path.ends_with(path)
+        || path.ends_with(&diagnostic.path)
+}
+
+fn truncate_note(text: &str) -> String {
+    let text = text.trim().replace('\n', " ");
+    if text.chars().count() <= 80 {
+        text
+    } else {
+        format!("{}…", text.chars().take(79).collect::<String>())
+    }
+}
+
+fn parse_editor_diagnostics(
+    value: &serde_json::Value,
+) -> Vec<crate::development::LanguageDiagnostic> {
+    if let Ok(list) =
+        serde_json::from_value::<Vec<crate::development::LanguageDiagnostic>>(value.clone())
+    {
+        return list;
+    }
+    value
+        .get("diagnostics")
+        .and_then(|item| {
+            serde_json::from_value::<Vec<crate::development::LanguageDiagnostic>>(item.clone()).ok()
+        })
+        .unwrap_or_default()
+}
+
+fn more_route_status(command: &str, message: &str) -> String {
+    match command {
+        "doctor" if message.contains("is ready") => {
+            "Doctor · Agent is ready · PI panel updated · 1 opens chat".into()
+        }
+        "doctor" => format!("Doctor · {message}"),
+        "harness list" => "Harness catalog listed in ROUTES".into(),
+        _ => message.to_string(),
+    }
+}
+
 fn format_editor_buffers(buffers: &[crate::development::EditorBuffer]) -> String {
     if buffers.is_empty() {
         return "No file open. Select a file below and press Enter to open the full-screen editor."
@@ -4261,6 +8397,187 @@ fn format_editor_buffers(buffers: &[crate::development::EditorBuffer]) -> String
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn parse_conversation_view(conversation: &str) -> Vec<super::projection::ConversationEntry> {
+    let mut entries = Vec::new();
+    for block in conversation.split("\n\n") {
+        let mut lines = block.lines();
+        let Some(first) = lines.next() else {
+            continue;
+        };
+        let body = lines.collect::<Vec<_>>().join("\n");
+        let (kind, text) = match first.trim() {
+            "YOU" => (super::projection::ConversationKind::User, body),
+            "GLASS AGENT" => (super::projection::ConversationKind::Assistant, body),
+            "ALERT" => (super::projection::ConversationKind::Alert, body),
+            "ERROR" => (super::projection::ConversationKind::Error, body),
+            "SYSTEM" => (super::projection::ConversationKind::System, body),
+            _ => continue,
+        };
+        entries.push(super::projection::ConversationEntry {
+            kind,
+            text,
+            streaming: false,
+            entry_id: None,
+            tool_name: None,
+        });
+    }
+    entries
+}
+
+fn parse_debug_threads(value: &serde_json::Value) -> Vec<DebugThreadRow> {
+    value
+        .get("threads")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|thread| {
+            Some(DebugThreadRow {
+                id: thread.get("id").and_then(serde_json::Value::as_i64)?,
+                name: thread
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("thread")
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+fn parse_debug_scopes(value: &serde_json::Value) -> Vec<DebugScopeRow> {
+    value
+        .get("scopes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|scope| DebugScopeRow {
+            name: scope
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("scope")
+                .to_string(),
+            variables_reference: scope
+                .get("variablesReference")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+        })
+        .collect()
+}
+
+fn parse_debug_variables(value: &serde_json::Value) -> Vec<DebugVariableRow> {
+    value
+        .get("variables")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|variable| {
+            Some(DebugVariableRow {
+                name: variable
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)?
+                    .to_string(),
+                value: variable
+                    .get("value")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect(),
+            })
+        })
+        .take(64)
+        .collect()
+}
+
+fn parse_debug_frames(value: &serde_json::Value) -> Vec<DebugFrameRow> {
+    value
+        .get("stackFrames")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|frame| {
+            Some(DebugFrameRow {
+                id: frame.get("id").and_then(serde_json::Value::as_i64)?,
+                name: frame
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("frame")
+                    .to_string(),
+                path: frame
+                    .pointer("/source/path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                line: frame.get("line").and_then(serde_json::Value::as_u64),
+            })
+        })
+        .collect()
+}
+
+fn parse_session_picker_items(value: &serde_json::Value) -> Vec<SessionPickerItem> {
+    let items = value
+        .as_array()
+        .or_else(|| value.get("sessions").and_then(serde_json::Value::as_array))
+        .cloned()
+        .unwrap_or_default();
+    items
+        .into_iter()
+        .filter_map(|item| {
+            if let Some(path) = item.as_str() {
+                return Some(SessionPickerItem {
+                    label: std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(path)
+                        .to_string(),
+                    path: path.to_string(),
+                });
+            }
+            let path = item
+                .get("path")
+                .or_else(|| item.get("file"))
+                .or_else(|| item.get("sessionFile"))
+                .and_then(serde_json::Value::as_str)?;
+            let label = item
+                .get("name")
+                .or_else(|| item.get("sessionName"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(path)
+                        .to_string()
+                });
+            Some(SessionPickerItem {
+                path: path.to_string(),
+                label,
+            })
+        })
+        .collect()
+}
+
+fn stats_summary(value: &serde_json::Value) -> String {
+    let input = value
+        .pointer("/inputTokens")
+        .or_else(|| value.pointer("/tokens/input"))
+        .or_else(|| value.get("input"))
+        .and_then(serde_json::Value::as_u64);
+    let output = value
+        .pointer("/outputTokens")
+        .or_else(|| value.pointer("/tokens/output"))
+        .or_else(|| value.get("output"))
+        .and_then(serde_json::Value::as_u64);
+    match (input, output) {
+        (Some(input), Some(output)) => format!("{input} in · {output} out"),
+        (Some(input), None) => format!("{input} tokens"),
+        _ => super::projection::first_meaningful(value)
+            .lines()
+            .next()
+            .unwrap_or("stats")
+            .to_string(),
+    }
 }
 
 fn format_pi_readiness(readiness: &crate::PiReadiness) -> String {
@@ -4419,6 +8736,150 @@ fn free_local_port() -> Option<u16> {
         .map(|address| address.port())
 }
 
+struct LspLocation {
+    path: String,
+    line: u32,
+    column: u32,
+}
+
+fn parse_completion_insert(value: &serde_json::Value) -> Option<String> {
+    let items = value
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| value.as_array())?;
+    let item = items.first()?;
+    item.pointer("/textEdit/newText")
+        .or_else(|| item.pointer("/textEdit/insert/newText"))
+        .or_else(|| item.get("insertText"))
+        .or_else(|| item.get("label"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .filter(|text| !text.is_empty())
+}
+
+fn format_lsp_locations(value: &serde_json::Value) -> String {
+    let items = value
+        .as_array()
+        .map(|items| items.as_slice())
+        .unwrap_or_else(|| std::slice::from_ref(value));
+    let mut lines = vec!["REFERENCES".to_string()];
+    for item in items.iter().take(32) {
+        if let Some(location) = parse_lsp_location(item) {
+            lines.push(format!(
+                "  {}:{}:{}",
+                location.path, location.line, location.column
+            ));
+        }
+    }
+    if lines.len() == 1 {
+        lines.push("  none".into());
+    }
+    lines.join("\n")
+}
+
+fn parse_lsp_location(value: &serde_json::Value) -> Option<LspLocation> {
+    let target = value
+        .as_array()
+        .and_then(|items| items.first())
+        .unwrap_or(value);
+    let uri = target
+        .get("uri")
+        .or_else(|| target.get("targetUri"))
+        .and_then(serde_json::Value::as_str)?;
+    let range = target
+        .get("range")
+        .or_else(|| target.get("targetRange"))
+        .or_else(|| target.get("targetSelectionRange"))?;
+    let line = range
+        .pointer("/start/line")
+        .and_then(serde_json::Value::as_u64)? as u32
+        + 1;
+    let column = range
+        .pointer("/start/character")
+        .and_then(serde_json::Value::as_u64)? as u32
+        + 1;
+    let path = uri
+        .rsplit("://")
+        .next()
+        .unwrap_or(uri)
+        .rsplit('/')
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("/");
+    Some(LspLocation {
+        path: path.trim_start_matches('/').to_string(),
+        line,
+        column,
+    })
+}
+
+fn parse_lsp_symbols(value: &serde_json::Value) -> Vec<(String, u32)> {
+    let mut symbols = Vec::new();
+    let items = value
+        .get("result")
+        .or(Some(value))
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for item in items {
+        let name = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("symbol")
+            .to_string();
+        let line = item
+            .pointer("/range/start/line")
+            .or_else(|| item.pointer("/location/range/start/line"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32
+            + 1;
+        symbols.push((name, line));
+    }
+    symbols
+}
+
+fn workflow_slug(name: &str) -> String {
+    let mut slug = String::new();
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if matches!(character, '-' | '_' | ' ' | '.')
+            && !slug.is_empty()
+            && !slug.ends_with('-')
+        {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "click-path".into()
+    } else {
+        slug
+    }
+}
+
+fn slug_input_name(name: &str) -> String {
+    workflow_slug(name).replace('-', "_")
+}
+
+fn selection_covers(
+    content: &str,
+    selection: &crate::development::TextSelection,
+    cursor: crate::development::TextPosition,
+) -> bool {
+    let Some(offset) = crate::development::editor::text_position_offset(content, cursor) else {
+        return false;
+    };
+    let Some((start, end)) = crate::development::editor::selection_offsets(content, selection)
+    else {
+        return false;
+    };
+    offset >= start && offset <= end
+}
+
 fn editor_offset(content: &str, line: u32, column: u32) -> usize {
     let mut offset = 0;
     for (index, value) in content.split_inclusive('\n').enumerate() {
@@ -4439,6 +8900,33 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_thread_and_frame_packets_parse_source_locations() {
+        let threads = parse_debug_threads(&serde_json::json!({
+            "threads": [{"id": 1, "name": "main"}, {"id": 2, "name": "worker"}]
+        }));
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[1].name, "worker");
+        let frames = parse_debug_frames(&serde_json::json!({
+            "stackFrames": [{
+                "id": 12,
+                "name": "checkout",
+                "line": 40,
+                "source": {"path": "src/main.rs"}
+            }]
+        }));
+        assert_eq!(frames[0].path.as_deref(), Some("src/main.rs"));
+        assert_eq!(frames[0].line, Some(40));
+        let scopes = parse_debug_scopes(&serde_json::json!({
+            "scopes": [{"name": "Locals", "variablesReference": 7}]
+        }));
+        assert_eq!(scopes[0].variables_reference, 7);
+        let variables = parse_debug_variables(&serde_json::json!({
+            "variables": [{"name": "x", "value": "1"}]
+        }));
+        assert_eq!(variables[0].name, "x");
+    }
 
     #[test]
     fn quit_confirmation_requires_explicit_follow_through() {
@@ -4640,6 +9128,26 @@ mod tests {
     }
 
     #[test]
+    fn typed_open_in_palette_runs_instead_of_fuzzy_action() {
+        let root = std::env::temp_dir().join(format!("glass-typed-open-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec!["src/lib.rs".into(), "Cargo.toml".into()];
+        state.open_palette();
+        state.command_input = "open".into();
+        state.command_cursor = 4;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_palette(&mut worker);
+        drop(worker);
+        assert!(
+            state.file_picker_open,
+            "typed :open must open the file picker, not a fuzzy action"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn colon_opens_palette_from_every_surface() {
         for surface in DevSurface::ALL {
             let root = std::env::temp_dir().join(format!(
@@ -4662,6 +9170,62 @@ mod tests {
             std::fs::remove_dir_all(root).expect("remove temporary workspace");
         }
     }
+
+    #[test]
+    fn file_picker_filters_and_opens_a_matching_path() {
+        let root = std::env::temp_dir().join(format!("glass-file-picker-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create temporary workspace");
+        std::fs::write(root.join("src/lib.rs"), "fn lib() {}\n").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec![
+            "src/lib.rs".into(),
+            "src/main.rs".into(),
+            "README.md".into(),
+        ];
+        state.open_file_picker();
+        assert!(state.file_picker_open);
+        for character in "main".chars() {
+            state.insert_file_picker_char(character);
+        }
+        let matches = state.file_picker_matches();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(state.files[matches[0]], "src/main.rs");
+        state.submit_file_picker();
+        assert!(!state.file_picker_open);
+        assert_eq!(state.focused_editor_path, "src/main.rs");
+        assert!(state.code_edit_mode);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_shift_enter_and_history_are_local_edits() {
+        let root =
+            std::env::temp_dir().join(format!("glass-composer-history-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.open_composer();
+        state.insert_composer_text("first");
+        state.remember_composer_history("first");
+        state.composer_input.clear();
+        state.composer_cursor = 0;
+        state.insert_composer_text("second");
+        state.navigate_composer_history(true);
+        assert_eq!(state.composer_input, "first");
+        state.navigate_composer_history(false);
+        assert_eq!(state.composer_input, "second");
+        state.insert_composer_newline();
+        assert_eq!(state.composer_input, "second\n");
+        state.navigate_composer_history(true);
+        assert!(
+            state.composer_cursor < state.composer_input.len(),
+            "Up on a wrapped draft should move to the previous line before history"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
     #[test]
     fn external_delegate_result_is_visible_in_tui_status() {
         let root =
@@ -4685,6 +9249,458 @@ mod tests {
         assert!(state.status.contains("REAL_RESULT"));
         assert_eq!(state.surface, DevSurface::Agent);
         assert!(state.running_tool_job.is_none());
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_tab_completes_file_mentions_and_submit_pins_the_path() {
+        let root =
+            std::env::temp_dir().join(format!("glass-composer-mention-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec!["src/main.rs".into(), "src/lib.rs".into()];
+        state.focused_editor_path = "src/main.rs".into();
+        state.open_composer();
+        state.insert_composer_text("inspect @fi");
+        state.complete_composer_mention();
+        assert_eq!(state.composer_input, "inspect @file");
+        state.complete_composer_mention();
+        assert_eq!(state.composer_input, "inspect @file:src/main.rs");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn editor_gutter_marks_open_comments_on_the_focused_buffer() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-editor-comment-gutter-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.focused_editor_path = "src/main.rs".into();
+        state
+            .editor_comments
+            .push(crate::development::EditorComment {
+                id: "comment-1".into(),
+                path: "src/main.rs".into(),
+                start_line: 4,
+                end_line: 4,
+                text: "simplify this".into(),
+                actor: crate::development::Actor::local(),
+                state: crate::development::EditorCommentState::Open,
+                created_revision: 1,
+                updated_revision: 1,
+            });
+        let marks = state.editor_gutter_marks();
+        assert!(marks.contains(&(4, native::GutterMark::Comment)));
+        let notes = state.editor_source_notes();
+        assert!(
+            notes
+                .iter()
+                .any(|(line, note)| *line == 4 && note.contains("simplify this"))
+        );
+        state.focused_editor_line = 4;
+        state.show_comment_thread();
+        assert!(
+            state
+                .editor_engine
+                .overlay
+                .as_deref()
+                .is_some_and(|overlay| overlay.contains("simplify this"))
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn gutter_marks_diagnostics_and_proof_on_source_lines() {
+        let root = std::env::temp_dir().join(format!("glass-gutter-proof-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\nfn extra() {}\n")
+            .expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.focused_editor_path = "src/main.rs".into();
+        state.focused_editor_line = 2;
+        state
+            .editor_diagnostics
+            .push(crate::development::LanguageDiagnostic {
+                path: "src/main.rs".into(),
+                start: crate::development::DiagnosticPosition {
+                    line: 0,
+                    character: 3,
+                },
+                end: crate::development::DiagnosticPosition {
+                    line: 0,
+                    character: 7,
+                },
+                severity: Some(1),
+                code: None,
+                source: Some("rustc".into()),
+                message: "unused variable".into(),
+            });
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .link_runtime_source(
+                "action.main",
+                "src/main.rs",
+                1,
+                1,
+                crate::development::LinkProvenance::ExplicitMarker,
+                "handler",
+                1.0,
+                crate::development::Actor::local(),
+            )
+            .expect("link");
+        state.last_proof_ok = Some(true);
+        let marks = state.editor_gutter_marks();
+        assert!(
+            marks.contains(&(1, native::GutterMark::Lsp)),
+            "diagnostic is on LSP line 0 → editor line 1: {marks:?}"
+        );
+        assert!(
+            marks.contains(&(1, native::GutterMark::Proof)),
+            "proof sits on the handler, not the cursor: {marks:?}"
+        );
+        assert!(!marks.contains(&(2, native::GutterMark::Proof)));
+        let notes = state.editor_source_notes();
+        assert!(
+            notes
+                .iter()
+                .any(|(line, note)| *line == 1 && note.contains("unused variable"))
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn page_gutter_marks_graph_linked_handlers() {
+        let root = std::env::temp_dir().join(format!("glass-page-gutter-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/button.tsx"), "export function Pay() {}\n")
+            .expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .link_runtime_source(
+                "action.checkout.submit",
+                "src/button.tsx",
+                1,
+                1,
+                crate::development::LinkProvenance::ExplicitMarker,
+                "test link",
+                1.0,
+                crate::development::Actor::local(),
+            )
+            .expect("link source");
+        state.focused_editor_path = "src/button.tsx".into();
+        let marks = state.editor_gutter_marks();
+        assert!(marks.contains(&(1, native::GutterMark::Page)));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn gp_navigates_to_the_inferred_app_route() {
+        let root = std::env::temp_dir().join(format!("glass-gp-app-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.focused_editor_path = "app/settings/page.tsx".into();
+        state.focused_editor_line = 1;
+        state.process_urls = vec!["http://localhost:3000/".into()];
+        state.jump_page_from_source();
+        assert_eq!(
+            state.pending_browser_navigation.as_deref(),
+            Some("http://localhost:3000/settings")
+        );
+        assert_eq!(state.surface, DevSurface::App);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn g_on_app_opens_the_linked_source() {
+        let root = std::env::temp_dir().join(format!("glass-app-source-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(
+            root.join("src/button.tsx"),
+            "<button data-glass-entity=\"action.checkout.submit\">Pay</button>\n",
+        )
+        .expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec!["src/button.tsx".into()];
+        state.browser_workspace.replace_entities(
+            1,
+            vec![BrowserWorkspaceEntity {
+                reference: "action.checkout.submit".into(),
+                role: "button".into(),
+                name: "Pay".into(),
+                actionable: true,
+                revision: 1,
+            }],
+        );
+        state.browser_workspace.state_mut().selected_entity = Some(0);
+        state.jump_source_from_page();
+        assert_eq!(state.focused_editor_path, "src/button.tsx");
+        assert_eq!(state.focused_editor_line, 1);
+        assert!(state.code_edit_mode);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn hosted_fim_stub_fills_an_empty_block() {
+        let root = std::env::temp_dir().join(format!("glass-fim-stub-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(
+            root.join("glass.toml"),
+            "[editor.fim]\nendpoint = \"stub://test\"\nmodel = \"stub\"\n",
+        )
+        .expect("write fim config");
+        std::fs::write(root.join("src/main.rs"), "fn main() {\n    \n}\n").expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open");
+        state.refresh_editor_projection();
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .set_buffer_cursor("src/main.rs", 2, 5)
+            .expect("cursor");
+        state.refresh_editor_projection();
+        state.request_ghost_from_line();
+        let mut attempts = 0;
+        while state.editor_engine.ghost.is_none() && attempts < 50 {
+            let _ = state.tick_fim();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            attempts += 1;
+        }
+        assert_eq!(
+            state
+                .editor_engine
+                .ghost
+                .as_ref()
+                .map(|ghost| ghost.text.as_str()),
+            Some("todo!()"),
+            "configured stub FIM should fill the empty block"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn ghost_tab_jumps_to_the_next_incomplete_ident() {
+        let root = std::env::temp_dir().join(format!("glass-ghost-next-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        let source = "fn hello_world() {}\nfn hello_\nfn greet_user() {}\nfn greet_\n";
+        std::fs::write(root.join("src/main.rs"), source).expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open buffer");
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+        let _ = state.set_editor_cursor(
+            "src/main.rs",
+            crate::development::TextPosition {
+                line: 2,
+                column: 10,
+            },
+            false,
+        );
+        state.refresh_editor_projection();
+        state.editor_engine.ghost = Some(GhostText {
+            text: "world".into(),
+        });
+        state.edit_code_key(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(
+            state.focused_editor_content.contains("fn hello_world\n"),
+            "tab should apply the ghost: {}",
+            state.focused_editor_content
+        );
+        assert_eq!(state.focused_editor_line, 4);
+        assert_eq!(
+            state
+                .editor_engine
+                .ghost
+                .as_ref()
+                .map(|ghost| ghost.text.as_str()),
+            Some("user")
+        );
+        assert!(state.status.contains("next edit"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn crew_tool_result_stores_the_wake_artifact() {
+        let root = std::env::temp_dir().join(format!("glass-crew-wake-tui-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.running_tool_job = Some(3);
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 3,
+            tool: "glass.task.crew".into(),
+            result: Ok(serde_json::json!({
+                "goal": "add settings toggle",
+                "wake": {
+                    "id": "add-settings-toggle",
+                    "goal": "add settings toggle",
+                    "worktree": "/tmp/worktree",
+                    "checkpoint": "before-crew:add settings toggle",
+                    "createdAtMs": 1,
+                    "tasks": [{"id":"task-0001","role":"architect","title":"architect: add settings toggle","state":"queued"}]
+                }
+            })),
+        });
+        let wake = state.last_crew_wake.expect("wake");
+        assert!(wake.contains("WAKE add-settings-toggle"));
+        assert!(wake.contains("architect task-0001 queued"));
+        assert_eq!(state.surface, DevSurface::Tasks);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn review_accept_applies_the_wake_proposal_pack() {
+        let root = std::env::temp_dir().join(format!("glass-review-pack-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open buffer");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .propose_editor_change(
+                "src/main.rs",
+                "fn main() {}\n".into(),
+                "fn main() { 1 }\n".into(),
+                "add one".into(),
+                crate::development::Actor::local(),
+            )
+            .expect("propose");
+        state.refresh_editor_projection();
+        let accepted = state.accept_review_pack().expect("accept pack");
+        assert!(accepted.contains("1 proposal"));
+        assert_eq!(
+            state.focused_editor_content, "fn main() { 1 }\n",
+            "pack accept must write the proposed buffer"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn gm_adds_structural_carets_and_inserts_at_each() {
+        let root = std::env::temp_dir().join(format!("glass-multi-cursor-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn foo() { foo(); foo }\n").expect("write");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open");
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+        state.handle_editor_escape();
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .set_buffer_cursor("src/main.rs", 1, 4)
+            .expect("cursor");
+        state.refresh_editor_projection();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('g'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('m'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        assert_eq!(
+            state.editor_engine.extra_selections.len(),
+            2,
+            "gm should add a caret on every other foo"
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('i'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('X'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        let content = state.focused_editor_content.clone();
+        assert_eq!(
+            content.matches('X').count(),
+            3,
+            "insert should hit every caret: {content}"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn app_enter_records_role_name_locators_into_a_workflow_draft() {
+        let root =
+            std::env::temp_dir().join(format!("glass-workflow-record-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.browser_workspace.replace_entities(
+            7,
+            vec![BrowserWorkspaceEntity {
+                reference: "r7:save".into(),
+                role: "button".into(),
+                name: "Save settings".into(),
+                actionable: true,
+                revision: 7,
+            }],
+        );
+        state
+            .start_workflow_recording("Save Settings")
+            .expect("start recording");
+        state.queue_browser_intent(BrowserWorkspaceIntent::ActivateSelected);
+        let draft = serde_json::to_string(
+            state
+                .workflow_recording
+                .as_ref()
+                .expect("recording")
+                .recorder
+                .draft(),
+        )
+        .expect("serialize draft");
+        assert!(draft.contains("role=button;name=Save settings"));
+        let stopped = state.stop_workflow_recording().expect("stop recording");
+        assert!(stopped.contains("1 step"));
+        let path = root.join(".glass/workflows/save-settings.draft.json");
+        let persisted = std::fs::read_to_string(&path).expect("read draft");
+        assert!(persisted.contains("role=button;name=Save settings"));
+        assert!(persisted.contains("\"reviewRequired\": true"));
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
@@ -4727,7 +9743,7 @@ mod tests {
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::ALT,
         );
-        assert_eq!(state.surface, DevSurface::Agent);
+        assert_eq!(state.surface, DevSurface::Code);
         assert!(state.composer_mode);
         assert!(!state.code_edit_mode);
         assert!(state.composer_input.contains("src/main.rs:1:1"));
@@ -4993,6 +10009,241 @@ mod tests {
         phone.next_surface();
         assert_eq!(phone.surface, DevSurface::Agent);
 
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_queues_follow_up_while_a_send_is_in_flight() {
+        let root = std::env::temp_dir().join(format!("glass-follow-up-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.surface = DevSurface::Agent;
+        state.snapshot_trust_label = "trusted".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.agent_send_job = Some(9);
+        state.open_composer();
+        state.composer_input = "keep going".into();
+        state.composer_cursor = state.composer_input.len();
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_composer(&mut worker);
+        assert_ne!(
+            state.status,
+            "Background operation running · message kept in composer"
+        );
+        assert!(
+            state.status.contains("Queued follow-up")
+                || state.status.contains("thinking")
+                || state.status.contains("retry")
+                || state.status.contains("Sent")
+        );
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_slash_compact_routes_to_pi_compact() {
+        let root = std::env::temp_dir().join(format!("glass-slash-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.surface = DevSurface::Agent;
+        state.snapshot_trust_label = "trusted".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.open_composer();
+        state.composer_input = "/compact keep the review".into();
+        state.composer_cursor = state.composer_input.len();
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_composer(&mut worker);
+        assert!(
+            state.status.contains("glass.agent.compact")
+                || state.status.contains("unavailable")
+                || state.status.contains("failed")
+        );
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn transcript_fork_uses_selected_entry_id() {
+        let root = std::env::temp_dir().join(format!("glass-fork-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.conversation_items = vec![super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::User,
+            text: "ship the review".into(),
+            streaming: false,
+            entry_id: Some("entry-7".into()),
+            tool_name: None,
+        }];
+        state.transcript_selection = 0;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.fork_selected_transcript(&mut worker);
+        assert!(
+            state.status.contains("entry-7")
+                || state.status.contains("glass.agent.fork")
+                || state.status.contains("branch")
+        );
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn agent_chrome_and_session_picker_and_context_chips() {
+        let root = std::env::temp_dir().join(format!("glass-chrome-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.agent_model = "xai/grok".into();
+        state.agent_thinking = "medium".into();
+        state.agent_session_name = "review".into();
+        state.agent_token_summary = "12 in · 40 out".into();
+        state.focused_editor_path = "src/lib.rs".into();
+        state.composer_steer = true;
+        let chrome = state.agent_chrome_line();
+        assert!(chrome.contains("xai/grok"));
+        assert!(chrome.contains("think medium"));
+        assert!(chrome.contains("review"));
+        assert!(chrome.contains("12 in"));
+        assert!(state.composer_context_chips().contains("@src/lib.rs"));
+        assert!(state.composer_context_chips().contains("steer"));
+        state.open_session_picker(&serde_json::json!([
+            {"path": "/tmp/alpha.jsonl", "name": "alpha"},
+            {"path": "/tmp/beta.jsonl"}
+        ]));
+        assert!(state.session_picker_open);
+        assert_eq!(state.session_picker_items[0].label, "alpha");
+        assert_eq!(state.session_picker_items[1].label, "beta.jsonl");
+        state.edit_last_user_message();
+        state.conversation_items = vec![super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::User,
+            text: "previous prompt\n· sending…".into(),
+            streaming: false,
+            entry_id: Some("entry-1".into()),
+            tool_name: None,
+        }];
+        state.edit_last_user_message();
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "previous prompt");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn chat_dock_stays_on_code_and_app() {
+        let root = std::env::temp_dir().join(format!("glass-dock-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.snapshot_trust_label = "trusted".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.surface = DevSurface::Code;
+        std::fs::create_dir_all(root.join("src")).expect("src");
+        std::fs::write(root.join("src/lib.rs"), "fn main() {}\n").expect("write");
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .open_buffer("src/lib.rs", crate::development::Actor::local())
+            .expect("open buffer");
+        state.refresh_editor_projection();
+        state.prepare_editor_agent_prompt();
+        assert_eq!(state.surface, DevSurface::Code);
+        assert!(state.composer_mode);
+        state.close_composer();
+        state.surface = DevSurface::App;
+        state.focus_composer_dock();
+        assert_eq!(state.surface, DevSurface::App);
+        assert!(state.composer_mode);
+        state.cycle_composer_run_mode();
+        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Ask);
+        state.cycle_composer_run_mode();
+        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Plan);
+        state.capture_plan_from_goal("ship the checkout");
+        state.pending_plan.as_mut().unwrap().body = "1. open App\n2. click Sign in".into();
+        assert!(!state.pending_plan.as_ref().unwrap().accepted);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn watching_agent_browser_act_enables_live_view() {
+        let root = std::env::temp_dir().join(format!("glass-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.watch_agent_on_app(
+            "glass.browser.act",
+            &serde_json::json!({"target": "Sign in"}),
+        );
+        assert!(state.browser_visual_live);
+        assert!(state.status.contains("Sign in"));
+        assert!(state.status.contains("watching"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn code_preview_queues_when_workspace_is_busy() {
+        let root = std::env::temp_dir().join(format!("glass-open-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        std::fs::write(root.join("notes.txt"), "hello\n").expect("write preview file");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec!["notes.txt".into()];
+        let workspace = state.workspace.clone();
+        let _guard = workspace.lock().expect("hold workspace lock");
+
+        state.show_surface(DevSurface::Code);
+        assert_eq!(state.pending_open_file.as_deref(), Some("notes.txt"));
+        assert!(state.status.contains("when the workspace is free"));
+        assert!(
+            !state.status.contains("Open failed"),
+            "busy preview must queue instead of failing: {}",
+            state.status
+        );
+
+        drop(_guard);
+        state.flush_pending_open_file();
+        assert!(state.pending_open_file.is_none());
+        assert_eq!(state.focused_editor_path, "notes.txt");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn more_doctor_stays_on_more_and_git_loads_the_selected_diff() {
+        let root = std::env::temp_dir().join(format!("glass-more-git-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
+            .expect("trust project");
+        state.snapshot_trust_label = "trusted-project".into();
+
+        state.show_surface(DevSurface::More);
+        state.selected_more = 0;
+        state.activate_more_selection();
+        assert_eq!(state.surface, DevSurface::More);
+        assert!(
+            state.status.to_ascii_lowercase().contains("doctor")
+                || state.status.contains("PI panel"),
+            "doctor should stay on More: {}",
+            state.status
+        );
+
+        state.git_entries = vec![crate::git::GitStatusEntry {
+            path: "notes.txt".into(),
+            original_path: None,
+            index_status: ' ',
+            worktree_status: 'M',
+            untracked: false,
+        }];
+        state.show_surface(DevSurface::Git);
+        assert!(state.git_diff_requested);
+        assert!(state.git_diff_open);
+        assert!(state.git_diff.contains("Loading"));
+        assert_eq!(state.git_diff_path.as_deref(), Some("notes.txt"));
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 }

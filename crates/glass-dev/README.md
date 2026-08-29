@@ -36,8 +36,9 @@ want that package to replace the shared `glass-browser` executable.
 The public Rust API is documented at [docs.rs/glass-dev](https://docs.rs/glass-dev);
 use the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md)
 for installed command behavior. This guide follows the current `0.3.13` source
-checkout; published `0.3.12` docs.rs pages describe released API artifacts and
-may not include the checkout's newest TUI surfaces.
+checkout. Published docs.rs pages match the crate version they were built from
+(`0.3.13` at last publication). Checkout-only TUI behavior can be newer than
+that published API page.
 
 
 Chrome or Chromium is needed only for browser-backed operations. Project
@@ -91,15 +92,20 @@ confirmation with `Enter`/`Y`, then use `:agent setup login` for Pi `/login`.
 status` report readiness. A setup/login failure leaves the workspace available
 for retry.
 
-The composer sends on `Enter` and stays open; `Esc` closes it. `Ctrl-D` toggles
-steer mode, while follow-up mode queues a message. Sent prompts remain as
-`YOU`, and `GLASS AGENT` streams replies and tool activity. A failed send
-restores the draft for edit-and-retry; busy background work retains new text.
-Mutations pause on a Glass approval card (`Enter`/`Y` approve once,
-`Esc`/`N` deny). `:actions` opens guided commands. `:process start dev` starts
-the detected suite (or use `:process start dev COMMAND`), `:task list/create/
-resume` manages tasks, and `:cockpit start` in More opens a tokenized
-loopback-only cockpit.
+Talk from any surface. `Ctrl-L` opens the shared composer dock (not a redraw).
+`Alt-A` docks from the editor. Default mode is Agent. `Ctrl-Shift-A` cycles
+Ask, Plan, and Agent; `/ask`, `/plan`, `/agent`, and `/todo` also set the mode.
+Ask and Plan are fail-closed for mutations. `Enter` sends and keeps the dock
+open; `Esc` closes it. `Ctrl-D` toggles steer mode; follow-up mode queues a
+message. Sent prompts remain as `YOU`, and `GLASS AGENT` streams replies and
+tool activity. A failed send restores the draft for edit-and-retry; busy
+background work retains new text. Mutations pause on a Glass approval card
+(`Enter`/`Y` approve once, `Esc`/`N` deny). Type in the dock to talk, `:` to
+search commands, and `a` to open this surface's actions. `:process start dev`
+starts the detected suite, Tasks owns the workspace-local Agent checklist
+(`.glass/todos/session.json`) plus the overnight DAG, and `:cockpit start` in
+More opens a tokenized loopback-only cockpit. Enter on
+More `doctor` stays on More and updates the PI panel.
 
 On the App surface, `:browser targets` opens a searchable picker; type a
 redacted title, URL, or target ID, use arrows, and press `Enter` to queue one
@@ -131,9 +137,15 @@ retain gutter alignment, and cursor/selection/highlighting stay synchronized.
 Off uses horizontal source-column scrolling. Arrows move, `Shift`+arrows
 select, `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo, and `Alt-A` sends the
 focused path, cursor, selection, and unsaved content to Pi with a do-not-edit
-prompt. `Esc` and `Ctrl-C` open the exit prompt: clean buffers accept
-`Enter`/`Q`/`Y`; unsaved buffers offer `S` save, `D` discard, `Q` discard and
-quit, or `Esc`/`N` stay.
+prompt. The editor starts in INSERT. `Esc` returns to NORMAL. `Esc` from
+NORMAL on a clean buffer leaves the editor. Unsaved work still asks: `S` save,
+`D` discard, `Q` discard and quit, or `Esc`/`N` stay. `Ctrl-C` opens Glass
+quit confirmation from editor input; an already-open unsaved-exit prompt keeps
+its save/discard/stay choices.
+
+The native editor also provides modal motions/operators, tree-sitter
+textobjects with lexical fallback, FIM ghosts, LSP navigation/inlays, gutter
+evidence marks, and bounded proposal hunk review.
 
 The `REVIEW` panel shows open comments, pending proposals, and checkpoints.
 Use `:editor comment-selection TEXT`, `:editor comment PATH START END TEXT`,

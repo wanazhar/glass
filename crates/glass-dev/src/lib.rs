@@ -84,6 +84,8 @@ pub mod pi_runtime;
 pub mod tasks;
 /// Test execution and result collection.
 pub mod testing;
+/// Session-scoped Agent todos (not the overnight task DAG).
+pub mod todos;
 /// Governed development-tool routing.
 pub mod tools;
 /// Workspace trust decisions and persistence.
@@ -125,6 +127,8 @@ pub use tasks::{
     TaskScheduler, TaskSnapshot, TaskSpec, TaskState, VerificationRequirement,
     load_latest_crew_wake, persist_crew_wake,
 };
+/// Session-scoped Agent todos (not the overnight task DAG).
+pub use todos::{SessionTodo, SessionTodoList, TodoStatus};
 /// Governed tool execution context and router.
 pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
 /// Workspace trust identities, decisions, and persistence.

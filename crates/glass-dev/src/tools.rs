@@ -675,6 +675,28 @@ impl DevelopmentToolRouter {
                 })?;
                 Ok(serde_json::json!({"pushed":true}))
             }
+            "glass.git.fetch" => {
+                git_mutation(workspace.git(), |git| {
+                    git.fetch(optional_string(call, "remote"))
+                })?;
+                Ok(serde_json::json!({"fetched":true}))
+            }
+            "glass.git.pull" => {
+                git_mutation(workspace.git(), |git| {
+                    git.pull(optional_string(call, "remote"), optional_string(call, "branch"))
+                })?;
+                Ok(serde_json::json!({"pulled":true}))
+            }
+            "glass.git.merge" => {
+                let branch = string("branch")?;
+                git_mutation(workspace.git(), |git| git.merge(branch))?;
+                Ok(serde_json::json!({"merged":branch}))
+            }
+            "glass.git.rebase" => {
+                let onto = string("onto")?;
+                git_mutation(workspace.git(), |git| git.rebase(onto))?;
+                Ok(serde_json::json!({"rebased":onto}))
+            }
             "glass.git.commit" => {
                 let message = string("message")?;
                 git_value(workspace.git(), |git| git.commit(message))
@@ -1305,6 +1327,19 @@ impl DevelopmentToolRouter {
                     name: string("name")?.into(),
                 },
             ),
+            "glass.todo.list" => Ok(serde_json::to_value(workspace.todos())?),
+            "glass.todo.write" => {
+                let items = call
+                    .arguments
+                    .get("items")
+                    .cloned()
+                    .ok_or_else(|| DevelopmentError::InvalidInput("todo write requires items".into()))?;
+                let items: Vec<crate::SessionTodo> = serde_json::from_value(items)?;
+                Ok(serde_json::to_value(workspace.write_todos(items)?)?)
+            }
+            "glass.todo.complete" => {
+                Ok(serde_json::to_value(workspace.complete_todo(string("id")?)?)?)
+            }
             "glass.task.create" => {
                 let spec = serde_json::from_value::<TaskSpec>(call.arguments.clone())?;
                 Ok(serde_json::to_value(workspace.create_task(spec)?)?)
@@ -1616,6 +1651,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.processes",
         "glass.debug.threads",
         "glass.graph.source",
+        "glass.todo.list",
         "glass.task.list",
         "glass.task.wake",
         "glass.task.get",
@@ -1661,7 +1697,13 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.git.stage",
         "glass.git.discard",
         "glass.git.push",
+        "glass.git.fetch",
+        "glass.git.pull",
+        "glass.git.merge",
+        "glass.git.rebase",
         "glass.git.commit",
+        "glass.todo.write",
+        "glass.todo.complete",
         "glass.git.branch.create",
         "glass.git.branch.switch",
         "glass.git.stash.push",
@@ -1847,6 +1889,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.process.ports"
             | "glass.workspace.trust.status"
             | "glass.workspace.trust.inspect"
+            | "glass.todo.list"
             | "glass.task.list"
             | "glass.task.wake"
             | "glass.task.get"
@@ -2888,6 +2931,9 @@ mod tests {
             "glass.agent.entries",
             "glass.agent.stats",
             "glass.agent.name",
+            "glass.todo.list",
+            "glass.todo.write",
+            "glass.todo.complete",
             "glass.task.create",
             "glass.task.crew",
             "glass.task.list",

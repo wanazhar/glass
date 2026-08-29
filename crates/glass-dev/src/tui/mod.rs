@@ -5,6 +5,7 @@ mod command;
 mod editor;
 mod file_view;
 mod parse;
+mod playbooks;
 mod pointer;
 mod projection;
 /// Rendering primitives and frame composition for the development TUI.
@@ -731,6 +732,22 @@ pub fn run(
                             (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
                                 state.queue_git_diff(&mut worker);
                             }
+                            (KeyCode::Char(' '), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.toggle_selected_git_stage();
+                            }
+                            (KeyCode::Char(' '), _)
+                                if state.surface == DevSurface::Terminal
+                                    && !state.composer_mode =>
+                            {
+                                state.restart_selected_process();
+                            }
+                            (KeyCode::Char(' '), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.continue_selected_debug();
+                            }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Agent => {
                                 state.start_agent_interaction();
                             }
@@ -746,6 +763,38 @@ pub fn run(
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Git => {
                                 state.queue_git_diff(&mut worker);
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Terminal =>
+                            {
+                                state.move_process_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Terminal =>
+                            {
+                                state.move_process_selection(1);
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::Terminal => {
+                                state.queue_selected_process_logs(&mut worker);
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Debug =>
+                            {
+                                state.move_debug_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Debug =>
+                            {
+                                state.move_debug_selection(1);
+                            }
+                            (KeyCode::Char(']'), _) if state.surface == DevSurface::Debug => {
+                                state.cycle_debug_pane(1);
+                            }
+                            (KeyCode::Char('['), _) if state.surface == DevSurface::Debug => {
+                                state.cycle_debug_pane(-1);
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::Debug => {
+                                state.activate_debug_selection(&mut worker);
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Code => {
                                 state.open_selected_file_for_edit();
@@ -937,6 +986,24 @@ pub fn run(
         if state.git_diff_requested {
             state.git_diff_requested = false;
             state.queue_git_diff(&mut worker);
+        }
+        if state.process_logs_requested {
+            state.process_logs_requested = false;
+            state.queue_selected_process_logs(&mut worker);
+        }
+        if state.debug_threads_requested {
+            state.debug_threads_requested = false;
+            state.queue_debug_threads(&mut worker);
+        }
+        if state.debug_stack_requested {
+            state.debug_stack_requested = false;
+            state.queue_debug_stack(&mut worker);
+        }
+        if state.queued_tool_request.is_some()
+            && state.pending_confirmation.is_none()
+            && !state.browser_target_picker_requested
+        {
+            state.submit_queued_tool(&mut worker);
         }
         if state.tick_pair_apply() {
             last_render = Instant::now()

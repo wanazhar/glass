@@ -104,6 +104,82 @@ pub struct SessionPickerItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessRow {
+    pub name: String,
+    pub command: String,
+    pub pid: Option<u32>,
+    pub health: crate::development::ProcessHealth,
+    pub url: Option<String>,
+}
+
+impl ProcessRow {
+    pub fn from_snapshot(item: &crate::development::ProcessSnapshot) -> Self {
+        Self {
+            name: item.name.clone(),
+            command: item.command.clone(),
+            pid: item.pid,
+            health: item.health.clone(),
+            url: item.detected_urls.first().cloned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugSessionRow {
+    pub name: String,
+    pub state: crate::debugger::DebugSessionState,
+    pub pid: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugThreadRow {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugFrameRow {
+    pub id: i64,
+    pub name: String,
+    pub path: Option<String>,
+    pub line: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugPane {
+    #[default]
+    Sessions,
+    Threads,
+    Frames,
+}
+
+impl DebugPane {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sessions => "sessions",
+            Self::Threads => "threads",
+            Self::Frames => "frames",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Sessions => Self::Threads,
+            Self::Threads => Self::Frames,
+            Self::Frames => Self::Sessions,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Sessions => Self::Frames,
+            Self::Threads => Self::Sessions,
+            Self::Frames => Self::Threads,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingChatMessage {
     pub text: String,
     pub state: ChatMessageState,
@@ -274,6 +350,7 @@ pub struct DevTuiState {
     pub composer_cursor: usize,
     pub composer_steer: bool,
     pub last_app_comment: Option<String>,
+    pub session_todos: crate::SessionTodoList,
     pub composer_history: Vec<String>,
     pub composer_history_index: Option<usize>,
     pub composer_history_draft: String,
@@ -364,6 +441,10 @@ pub struct DevTuiState {
     pub factory_split: bool,
     pub lsp: String,
     pub processes: String,
+    pub process_entries: Vec<ProcessRow>,
+    pub selected_process: usize,
+    pub process_logs: String,
+    pub process_logs_requested: bool,
     pub git: String,
     pub git_entries: Vec<crate::git::GitStatusEntry>,
     pub github: crate::github::GitHubStatus,
@@ -376,6 +457,15 @@ pub struct DevTuiState {
     pub tests: String,
     pub kernels: String,
     pub debugger: String,
+    pub debug_sessions: Vec<DebugSessionRow>,
+    pub selected_debug_session: usize,
+    pub debug_threads: Vec<DebugThreadRow>,
+    pub selected_debug_thread: usize,
+    pub debug_frames: Vec<DebugFrameRow>,
+    pub selected_debug_frame: usize,
+    pub debug_pane: DebugPane,
+    pub debug_threads_requested: bool,
+    pub debug_stack_requested: bool,
     pub replay: String,
     pub browser: String,
     pub browser_detail: String,
@@ -532,6 +622,7 @@ impl DevTuiState {
             composer_cursor: 0,
             composer_steer: false,
             last_app_comment: None,
+            session_todos: crate::SessionTodoList::default(),
             composer_history: Vec::new(),
             composer_history_index: None,
             composer_history_draft: String::new(),
@@ -614,6 +705,10 @@ impl DevTuiState {
             factory_split: true,
             lsp: String::new(),
             processes: String::new(),
+            process_entries: Vec::new(),
+            selected_process: 0,
+            process_logs: String::new(),
+            process_logs_requested: false,
             git: String::new(),
             git_entries: Vec::new(),
             github: crate::github::GitHubStatus::default(),
@@ -626,6 +721,15 @@ impl DevTuiState {
             tests: String::new(),
             kernels: String::new(),
             debugger: String::new(),
+            debug_sessions: Vec::new(),
+            selected_debug_session: 0,
+            debug_threads: Vec::new(),
+            selected_debug_thread: 0,
+            debug_frames: Vec::new(),
+            selected_debug_frame: 0,
+            debug_pane: DebugPane::Sessions,
+            debug_threads_requested: false,
+            debug_stack_requested: false,
             replay: String::new(),
             browser: String::new(),
             browser_detail: "No browser observation yet".into(),
@@ -1160,6 +1264,52 @@ impl DevTuiState {
                 self.command_mode = false;
                 self.request_detected_dev();
                 None
+            }
+            "debug threads SESSION" | "debug continue SESSION THREAD_ID" => {
+                if let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) {
+                    let action = action
+                        .command
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("threads");
+                    if action == "continue" {
+                        if let Some(thread) = self.selected_debug_thread() {
+                            self.open_palette_with(&format!(
+                                "debug continue {session} {}",
+                                thread.id
+                            ));
+                        } else {
+                            self.open_palette_with(&format!("debug continue {session} "));
+                        }
+                    } else {
+                        self.open_palette_with(&format!("debug threads {session}"));
+                    }
+                    None
+                } else {
+                    self.open_palette_with("debug threads ");
+                    None
+                }
+            }
+            "process logs NAME" | "process stop NAME" | "process restart NAME" => {
+                if let Some(name) = self
+                    .selected_process_entry()
+                    .map(|entry| entry.name.clone())
+                {
+                    let action = action.command.split_whitespace().nth(1).unwrap_or("logs");
+                    self.open_palette_with(&format!("process {action} {name}"));
+                    None
+                } else {
+                    self.open_palette_with(&format!(
+                        "{} ",
+                        action
+                            .command
+                            .split_whitespace()
+                            .take(2)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                    None
+                }
             }
             "git diff" if self.surface == DevSurface::Git => {
                 self.command_mode = false;
@@ -1909,6 +2059,33 @@ impl DevTuiState {
         self.status = format!("{} mode", mode.label());
     }
 
+    pub fn toggle_selected_git_stage(&mut self) {
+        let Some(entry) = self.selected_git_entry().cloned() else {
+            self.status = "Select a changed file · Space stages or unstages".into();
+            return;
+        };
+        let staged = entry.index_status != ' ' && !entry.untracked;
+        let tool = if staged {
+            "glass.git.unstage"
+        } else {
+            "glass.git.stage"
+        };
+        let arguments = serde_json::json!({"paths": [entry.path]});
+        match self.tool_request(tool, arguments, true) {
+            Ok((call, context)) => {
+                let summary = format!(
+                    "{} {}",
+                    if staged { "Unstage" } else { "Stage" },
+                    self.selected_git_entry()
+                        .map(|entry| entry.path.as_str())
+                        .unwrap_or("path")
+                );
+                let _ = self.queue_or_confirm(call, context, summary);
+            }
+            Err(error) => self.status = format!("Git stage unavailable: {error}"),
+        }
+    }
+
     pub fn jump_to_app_keep_dock(&mut self) {
         self.surface = DevSurface::App;
         self.status = if self.composer_mode {
@@ -1982,6 +2159,13 @@ impl DevTuiState {
         }
         plan.accepted = true;
         self.persist_plan(&plan);
+        if let Ok(list) = self.ws_mut().and_then(|mut workspace| {
+            workspace
+                .seed_todos_from_plan(&plan.goal, &plan.body)
+                .map_err(|error| error.to_string())
+        }) {
+            self.session_todos = list;
+        }
         self.pending_plan = Some(plan.clone());
         self.set_composer_run_mode(crate::AgentTurnMode::Agent);
         self.composer_input = format!(
@@ -2617,6 +2801,36 @@ impl DevTuiState {
         context["surface"] = serde_json::Value::String(self.surface.label().to_ascii_lowercase());
         context["runMode"] =
             serde_json::Value::String(self.composer_run_mode.label().to_ascii_lowercase());
+        context["playbook"] =
+            serde_json::Value::String(super::playbooks::playbook_name(self.surface).into());
+        context["playbookText"] =
+            serde_json::Value::String(super::playbooks::playbook(self.surface).into());
+        context["todos"] =
+            serde_json::to_value(&self.session_todos).unwrap_or(serde_json::json!({}));
+        if let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) {
+            context["git"] = serde_json::json!({
+                "branch": self.git_branch,
+                "selectedPath": path,
+            });
+        }
+        if let Some(process) = self.selected_process_entry() {
+            context["process"] = serde_json::json!({
+                "name": process.name,
+                "health": process.health.label(),
+                "pid": process.pid,
+                "url": process.url,
+            });
+        }
+        if let Some(session) = self.selected_debug_session() {
+            context["debug"] = serde_json::json!({
+                "session": session.name,
+                "state": session.state.label(),
+                "threadId": self.selected_debug_thread().map(|thread| thread.id),
+                "frameId": self.selected_debug_frame().map(|frame| frame.id),
+                "path": self.selected_debug_frame().and_then(|frame| frame.path.clone()),
+                "line": self.selected_debug_frame().and_then(|frame| frame.line),
+            });
+        }
         if let Some(plan) = &self.pending_plan {
             context["plan"] = serde_json::json!({
                 "id": plan.id,
@@ -2631,9 +2845,10 @@ impl DevTuiState {
             self.browser_workspace.state_mut().input_owner =
                 glass_browser::browser_workspace::BrowserInputOwner::Agent;
         }
+        let playbook = super::playbooks::playbook(self.surface);
         let prefixed = match self.composer_run_mode.instruction() {
-            "" => text.clone(),
-            instruction => format!("{instruction}\n\n{text}"),
+            "" => format!("{playbook}\n\n{text}"),
+            instruction => format!("{instruction}\n\n{playbook}\n\n{text}"),
         };
         let mut arguments = serde_json::json!({
             "text": prefixed,
@@ -2754,6 +2969,12 @@ impl DevTuiState {
             "stats" => ("glass.agent.stats", false),
             "sessions" => ("glass.agent.sessions", false),
             "tree" => ("glass.agent.tree", false),
+            "todo" => {
+                self.composer_input = self.session_todos.render();
+                self.composer_cursor = 0;
+                self.status = "Session todos · edit or Esc".into();
+                return;
+            }
             "ask" | "plan" | "agent" => {
                 let mode = match command {
                     "ask" => crate::AgentTurnMode::Ask,
@@ -3088,6 +3309,50 @@ impl DevTuiState {
                         self.browser_observe_pending = true;
                         self.watch_agent_on_app(&result.tool, &value);
                     }
+                } else if result.tool == "glass.process.logs" {
+                    self.process_logs = value
+                        .get("output")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .chars()
+                        .rev()
+                        .take(8 * 1024)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect();
+                    self.surface = DevSurface::Terminal;
+                    self.status = format!(
+                        "Logs · {}",
+                        value
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("process")
+                    );
+                } else if result.tool == "glass.debug.threads" {
+                    self.debug_threads = parse_debug_threads(&value);
+                    self.selected_debug_thread = self
+                        .selected_debug_thread
+                        .min(self.debug_threads.len().saturating_sub(1));
+                    self.debug_frames.clear();
+                    if !self.debug_threads.is_empty() {
+                        self.debug_pane = DebugPane::Threads;
+                        self.debug_stack_requested = true;
+                    }
+                    self.status = format!(
+                        "{} thread(s) · Enter stack · Space continue",
+                        self.debug_threads.len()
+                    );
+                } else if result.tool == "glass.debug.stack" {
+                    self.debug_frames = parse_debug_frames(&value);
+                    self.selected_debug_frame = 0;
+                    if !self.debug_frames.is_empty() {
+                        self.debug_pane = DebugPane::Frames;
+                    }
+                    self.status = format!(
+                        "{} frame(s) · Enter jumps to source",
+                        self.debug_frames.len()
+                    );
                 } else if result.tool == "glass.git.diff" {
                     let empty = value.as_str().is_none_or(|diff| diff.trim().is_empty());
                     self.git_diff = if empty {
@@ -3222,6 +3487,9 @@ impl DevTuiState {
                         | "glass.browser.verify"
                         | "glass.task.crew"
                         | "glass.task.wake"
+                        | "glass.process.logs"
+                        | "glass.debug.threads"
+                        | "glass.debug.stack"
                 ) {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
@@ -3540,6 +3808,285 @@ impl DevTuiState {
 
     pub fn selected_git_entry(&self) -> Option<&crate::git::GitStatusEntry> {
         self.git_entries.get(self.selected_git_file)
+    }
+
+    pub fn move_process_selection(&mut self, delta: i32) {
+        if self.process_entries.is_empty() {
+            self.selected_process = 0;
+            self.status = "No managed process selected".into();
+            return;
+        }
+        self.selected_process = (self.selected_process as i32 + delta)
+            .clamp(0, self.process_entries.len().saturating_sub(1) as i32)
+            as usize;
+        if let Some(entry) = self.selected_process_entry() {
+            self.status = format!(
+                "{} · {} · Enter logs · Space restart",
+                entry.name,
+                entry.health.label()
+            );
+        }
+    }
+
+    pub fn selected_process_entry(&self) -> Option<&ProcessRow> {
+        self.process_entries.get(self.selected_process)
+    }
+
+    pub fn queue_selected_process_logs(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(name) = self
+            .selected_process_entry()
+            .map(|entry| entry.name.clone())
+        else {
+            self.status = "Select a process · j/k then Enter logs".into();
+            return;
+        };
+        if self.background_action_running() {
+            self.status = "Process logs wait for the current background operation".into();
+            return;
+        }
+        let (call, context) = match self.tool_request(
+            "glass.process.logs",
+            serde_json::json!({"name": name}),
+            false,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Process logs unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Loading logs for {name}…");
+            }
+            Err(error) => self.status = format!("Process logs unavailable: {error}"),
+        }
+    }
+
+    pub fn restart_selected_process(&mut self) {
+        let Some(name) = self
+            .selected_process_entry()
+            .map(|entry| entry.name.clone())
+        else {
+            self.status = "Select a process · j/k then Space restarts".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.process.restart",
+            serde_json::json!({"name": name}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(call, context, format!("Restart {name}"));
+            }
+            Err(error) => self.status = format!("Process restart unavailable: {error}"),
+        }
+    }
+
+    pub fn cycle_debug_pane(&mut self, delta: i32) {
+        self.debug_pane = if delta < 0 {
+            self.debug_pane.previous()
+        } else {
+            self.debug_pane.next()
+        };
+        self.status = format!(
+            "Debug {} · j/k select · Enter · Space continue",
+            self.debug_pane.label()
+        );
+    }
+
+    pub fn move_debug_selection(&mut self, delta: i32) {
+        match self.debug_pane {
+            DebugPane::Sessions => {
+                if self.debug_sessions.is_empty() {
+                    self.selected_debug_session = 0;
+                    self.status = "No debugger session · :debug start NAME COMMAND".into();
+                    return;
+                }
+                self.selected_debug_session = (self.selected_debug_session as i32 + delta)
+                    .clamp(0, self.debug_sessions.len().saturating_sub(1) as i32)
+                    as usize;
+                if let Some(session) = self.selected_debug_session() {
+                    self.status = format!(
+                        "{} · {} · Enter threads",
+                        session.name,
+                        session.state.label()
+                    );
+                }
+            }
+            DebugPane::Threads => {
+                if self.debug_threads.is_empty() {
+                    self.status = "No threads · Enter on a session to refresh".into();
+                    return;
+                }
+                self.selected_debug_thread = (self.selected_debug_thread as i32 + delta)
+                    .clamp(0, self.debug_threads.len().saturating_sub(1) as i32)
+                    as usize;
+                if let Some(thread) = self.selected_debug_thread() {
+                    self.status = format!("{} · Enter stack · Space continue", thread.name);
+                }
+            }
+            DebugPane::Frames => {
+                if self.debug_frames.is_empty() {
+                    self.status = "No frames · Enter on a thread to load the stack".into();
+                    return;
+                }
+                self.selected_debug_frame = (self.selected_debug_frame as i32 + delta)
+                    .clamp(0, self.debug_frames.len().saturating_sub(1) as i32)
+                    as usize;
+                if let Some(frame) = self.selected_debug_frame() {
+                    self.status = format!(
+                        "{} · Enter jumps to {}",
+                        frame.name,
+                        frame.path.as_deref().unwrap_or("source")
+                    );
+                }
+            }
+        }
+    }
+
+    pub fn selected_debug_session(&self) -> Option<&DebugSessionRow> {
+        self.debug_sessions.get(self.selected_debug_session)
+    }
+
+    pub fn selected_debug_thread(&self) -> Option<&DebugThreadRow> {
+        self.debug_threads.get(self.selected_debug_thread)
+    }
+
+    pub fn selected_debug_frame(&self) -> Option<&DebugFrameRow> {
+        self.debug_frames.get(self.selected_debug_frame)
+    }
+
+    pub fn activate_debug_selection(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        match self.debug_pane {
+            DebugPane::Sessions => self.queue_debug_threads(worker),
+            DebugPane::Threads => self.queue_debug_stack(worker),
+            DebugPane::Frames => self.jump_selected_debug_frame(),
+        }
+    }
+
+    pub fn queue_debug_threads(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Start a debugger with :debug start NAME COMMAND".into();
+            return;
+        };
+        if self.background_action_running() {
+            self.status = "Debug threads wait for the current background operation".into();
+            return;
+        }
+        let (call, context) = match self.tool_request(
+            "glass.debug.threads",
+            serde_json::json!({"session": session}),
+            false,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Debug threads unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Loading threads for {session}…");
+            }
+            Err(error) => self.status = format!("Debug threads unavailable: {error}"),
+        }
+    }
+
+    pub fn queue_debug_stack(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Select a debugger session first".into();
+            return;
+        };
+        let Some(thread_id) = self.selected_debug_thread().map(|thread| thread.id) else {
+            self.status = "Select a thread · Enter on a session first".into();
+            return;
+        };
+        if self.background_action_running() {
+            self.status = "Debug stack waits for the current background operation".into();
+            return;
+        }
+        let (call, context) = match self.tool_request(
+            "glass.debug.stack",
+            serde_json::json!({"session": session, "threadId": thread_id}),
+            false,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Debug stack unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = format!("Loading stack for thread {thread_id}…");
+            }
+            Err(error) => self.status = format!("Debug stack unavailable: {error}"),
+        }
+    }
+
+    pub fn continue_selected_debug(&mut self) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Select a debugger session · Space continues".into();
+            return;
+        };
+        let Some(thread_id) = self.selected_debug_thread().map(|thread| thread.id) else {
+            self.status = "Refresh threads before continue".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.debug.continue",
+            serde_json::json!({"session": session, "threadId": thread_id}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(
+                    call,
+                    context,
+                    format!("Continue {session} thread {thread_id}"),
+                );
+            }
+            Err(error) => self.status = format!("Debug continue unavailable: {error}"),
+        }
+    }
+
+    pub fn jump_selected_debug_frame(&mut self) {
+        let Some(frame) = self.selected_debug_frame().cloned() else {
+            self.status = "Select a stack frame · Enter jumps to source".into();
+            return;
+        };
+        let Some(path) = frame.path.clone() else {
+            self.status = format!("{} has no source path", frame.name);
+            return;
+        };
+        match self.open_path(&path) {
+            Ok(_) => {
+                if let Some(line) = frame.line {
+                    let _ = self.set_editor_cursor(
+                        &self.focused_editor_path.clone(),
+                        crate::development::TextPosition {
+                            line: u32::try_from(line).unwrap_or(u32::MAX).max(1),
+                            column: 1,
+                        },
+                        false,
+                    );
+                    self.refresh_editor_projection();
+                }
+                self.status = format!(
+                    "Debug {} · {}{}",
+                    frame.name,
+                    path,
+                    frame
+                        .line
+                        .map(|line| format!(":{line}"))
+                        .unwrap_or_default()
+                );
+            }
+            Err(error) => self.status = format!("Could not open {path}: {error}"),
+        }
     }
 
     pub fn open_selected_file(&mut self) {
@@ -5886,6 +6433,9 @@ impl DevTuiState {
             self.status = "Browser endpoint crashed · recovery choices below".into();
         }
         self.harnesses = snapshot.harnesses.clone();
+        if let Ok(list) = self.ws().map(|workspace| workspace.todos()) {
+            self.session_todos = list;
+        }
         self.agents = snapshot.agents.clone();
         self.agent_conversation = snapshot.agent_conversation.clone();
         self.conversation_items = snapshot.conversation_items.clone();
@@ -5946,6 +6496,22 @@ impl DevTuiState {
         }
         self.lsp = snapshot.lsp.clone();
         self.processes = snapshot.processes.clone();
+        self.process_entries = snapshot.process_entries.clone();
+        if self.process_entries.is_empty() {
+            self.selected_process = 0;
+            self.process_urls.clear();
+        } else {
+            self.selected_process = self
+                .selected_process
+                .min(self.process_entries.len().saturating_sub(1));
+            self.process_urls = self
+                .process_entries
+                .iter()
+                .filter_map(|entry| entry.url.clone())
+                .collect();
+            self.process_urls.sort();
+            self.process_urls.dedup();
+        }
         self.git = snapshot.git.clone();
         self.git_entries = snapshot.git_entries.clone();
         self.git_branch = snapshot.git_branch.clone();
@@ -5962,6 +6528,28 @@ impl DevTuiState {
         self.tests = snapshot.tests.clone();
         self.kernels = snapshot.kernels.clone();
         self.debugger = snapshot.debugger.clone();
+        let previous_debug = self
+            .selected_debug_session()
+            .map(|session| session.name.clone());
+        self.debug_sessions = snapshot.debug_sessions.clone();
+        if self.debug_sessions.is_empty() {
+            self.selected_debug_session = 0;
+            self.debug_threads.clear();
+            self.debug_frames.clear();
+        } else {
+            self.selected_debug_session = self
+                .selected_debug_session
+                .min(self.debug_sessions.len().saturating_sub(1));
+            let current = self
+                .selected_debug_session()
+                .map(|session| session.name.clone());
+            if previous_debug != current {
+                self.debug_threads.clear();
+                self.debug_frames.clear();
+                self.selected_debug_thread = 0;
+                self.selected_debug_frame = 0;
+            }
+        }
         self.replay = snapshot.replay.clone();
         self.workflow = snapshot.workflow.clone();
         self.workspace_status = snapshot.workspace_status.clone();
@@ -6131,6 +6719,13 @@ impl DevTuiState {
                     .collect();
                 self.process_urls.sort();
                 self.process_urls.dedup();
+                self.process_entries = items.iter().map(ProcessRow::from_snapshot).collect();
+                self.selected_process = if self.process_entries.is_empty() {
+                    0
+                } else {
+                    self.selected_process
+                        .min(self.process_entries.len().saturating_sub(1))
+                };
                 self.processes = if items.is_empty() {
                     "No managed terminals. Start the detected development command from More.".into()
                 } else {
@@ -6160,6 +6755,8 @@ impl DevTuiState {
             }
             Err(error) => {
                 self.process_urls.clear();
+                self.process_entries.clear();
+                self.selected_process = 0;
                 self.processes = format!("Process state failed: {error}");
             }
         }
@@ -6346,6 +6943,8 @@ impl DevTuiState {
             .map(str::to_string)
             .collect::<Vec<_>>();
         self.debugger = if debugger_names.is_empty() {
+            self.debug_sessions.clear();
+            self.selected_debug_session = 0;
             "No debugger sessions. :debug start NAME COMMAND [ARGS...]".into()
         } else {
             let snapshots: Result<Vec<_>, _> = debugger_names
@@ -6358,20 +6957,25 @@ impl DevTuiState {
                 })
                 .collect();
             match snapshots {
-                Ok(snapshots) => snapshots
+                Ok(snapshots) => {
+                    self.debug_sessions = snapshots
+                        .iter()
+                        .map(|(name, snapshot)| DebugSessionRow {
+                            name: name.clone(),
+                            state: snapshot.state,
+                            pid: snapshot.adapter_process_id,
+                        })
+                        .collect();
+                    self.selected_debug_session = self
+                        .selected_debug_session
+                        .min(self.debug_sessions.len().saturating_sub(1));
+                    snapshots
                     .iter()
                     .map(|(name, snapshot)| {
                         format!(
                             "● {} · {} · pid {} · {} breakpoints · {} watches · {} threads/processes",
                             name,
-                            match snapshot.state {
-                                crate::debugger::DebugSessionState::Starting => "starting",
-                                crate::debugger::DebugSessionState::Initialized => "initialized",
-                                crate::debugger::DebugSessionState::Running => "running",
-                                crate::debugger::DebugSessionState::Stopped => "stopped",
-                                crate::debugger::DebugSessionState::Terminated => "terminated",
-                                crate::debugger::DebugSessionState::Failed => "failed",
-                            },
+                            snapshot.state.label(),
                             snapshot.adapter_process_id,
                             snapshot.breakpoints.values().map(Vec::len).sum::<usize>(),
                             snapshot.watches.len(),
@@ -6379,7 +6983,8 @@ impl DevTuiState {
                         )
                     })
                     .collect::<Vec<_>>()
-                    .join("\n"),
+                    .join("\n")
+                }
                 Err(error) => format!("Debugger state failed: {error}"),
             }
         };
@@ -7314,6 +7919,49 @@ fn parse_conversation_view(conversation: &str) -> Vec<super::projection::Convers
     entries
 }
 
+fn parse_debug_threads(value: &serde_json::Value) -> Vec<DebugThreadRow> {
+    value
+        .get("threads")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|thread| {
+            Some(DebugThreadRow {
+                id: thread.get("id").and_then(serde_json::Value::as_i64)?,
+                name: thread
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("thread")
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+fn parse_debug_frames(value: &serde_json::Value) -> Vec<DebugFrameRow> {
+    value
+        .get("stackFrames")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|frame| {
+            Some(DebugFrameRow {
+                id: frame.get("id").and_then(serde_json::Value::as_i64)?,
+                name: frame
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("frame")
+                    .to_string(),
+                path: frame
+                    .pointer("/source/path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                line: frame.get("line").and_then(serde_json::Value::as_u64),
+            })
+        })
+        .collect()
+}
+
 fn parse_session_picker_items(value: &serde_json::Value) -> Vec<SessionPickerItem> {
     let items = value
         .as_array()
@@ -7700,6 +8348,25 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_thread_and_frame_packets_parse_source_locations() {
+        let threads = parse_debug_threads(&serde_json::json!({
+            "threads": [{"id": 1, "name": "main"}, {"id": 2, "name": "worker"}]
+        }));
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[1].name, "worker");
+        let frames = parse_debug_frames(&serde_json::json!({
+            "stackFrames": [{
+                "id": 12,
+                "name": "checkout",
+                "line": 40,
+                "source": {"path": "src/main.rs"}
+            }]
+        }));
+        assert_eq!(frames[0].path.as_deref(), Some("src/main.rs"));
+        assert_eq!(frames[0].line, Some(40));
+    }
 
     #[test]
     fn quit_confirmation_requires_explicit_follow_through() {

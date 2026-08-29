@@ -225,6 +225,38 @@ impl DevelopmentWorkspace {
         &mut self.agents
     }
 
+    pub fn todos(&self) -> crate::SessionTodoList {
+        crate::SessionTodoList::load(&self.root)
+    }
+
+    pub fn write_todos(
+        &mut self,
+        items: Vec<crate::SessionTodo>,
+    ) -> crate::development::DevelopmentResult<crate::SessionTodoList> {
+        let mut list = self.todos();
+        list.write(items, &self.root)?;
+        Ok(list)
+    }
+
+    pub fn complete_todo(
+        &mut self,
+        id: &str,
+    ) -> crate::development::DevelopmentResult<crate::SessionTodo> {
+        let mut list = self.todos();
+        let item = list.complete(id, &self.root)?;
+        Ok(item)
+    }
+
+    pub fn seed_todos_from_plan(
+        &mut self,
+        goal: &str,
+        body: &str,
+    ) -> crate::development::DevelopmentResult<crate::SessionTodoList> {
+        let mut list = self.todos();
+        list.seed_from_plan(goal, body, &self.root)?;
+        Ok(list)
+    }
+
     pub fn create_task(&mut self, spec: TaskSpec) -> DevelopmentResult<TaskId> {
         if !self.trust.permits_project_execution() {
             return Err(crate::development::DevelopmentError::Conflict(

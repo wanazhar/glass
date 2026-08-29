@@ -188,6 +188,42 @@ impl GitService {
         Ok(())
     }
 
+    pub fn fetch(&self, remote: Option<&str>) -> GitResult<()> {
+        let mut arguments = vec!["fetch"];
+        if let Some(remote) = remote {
+            validate_ref(remote)?;
+            arguments.push(remote);
+        }
+        self.run(&arguments, "fetch")?;
+        Ok(())
+    }
+
+    pub fn pull(&self, remote: Option<&str>, branch: Option<&str>) -> GitResult<()> {
+        let mut arguments = vec!["pull"];
+        if let Some(remote) = remote {
+            validate_ref(remote)?;
+            arguments.push(remote);
+        }
+        if let Some(branch) = branch {
+            validate_ref(branch)?;
+            arguments.push(branch);
+        }
+        self.run(&arguments, "pull")?;
+        Ok(())
+    }
+
+    pub fn merge(&self, branch: &str) -> GitResult<()> {
+        validate_ref(branch)?;
+        self.run(&["merge", "--no-edit", branch], "merge")?;
+        Ok(())
+    }
+
+    pub fn rebase(&self, onto: &str) -> GitResult<()> {
+        validate_ref(onto)?;
+        self.run(&["rebase", onto], "rebase")?;
+        Ok(())
+    }
+
     pub fn push(&self, remote: Option<&str>, branch: Option<&str>) -> GitResult<()> {
         let mut arguments = vec!["push"];
         if let Some(remote) = remote {

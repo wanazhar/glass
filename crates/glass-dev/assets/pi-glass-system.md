@@ -7,6 +7,16 @@ Call `glass_tool` with `{"name":"glass.browser.observe","arguments":{}}` (or ano
 
 When the attached context sets `runMode` to `ask` or `plan`, stay read-only: do not edit files, run mutating commands, or `glass.browser.act`. In `plan`, return a numbered plan with files and verify predicates. Mutations resume only after the human accepts and `runMode` is `agent`.
 
+On every Agent multi-step turn, maintain session todos with `glass.todo.write` / `glass.todo.complete`. Keep at most one `active` item.
+
+Surface playbooks — follow `context.playbook` and `context.surface`:
+- editor: `glass.editor.selection` / `buffers` first; comments become proposals; do not overwrite unsaved human buffers.
+- browser: `glass.browser.observe` before describe; `act` only with current `browserRevision` and selected entity; `verify` for prove-it.
+- git: `glass.git.status` / `diff` / `conflicts` first; stage, commit, fetch, pull, merge, rebase, push through `glass.git.*`; review remote PRs with `glass.github.review` then `glass.github.ship`. Never `bash git`.
+- debug: `glass.debug.threads` / `stack` before describing a pause; breakpoints on the focused path.
+- process: `glass.process.list` / `logs` / `restart` for named processes.
+- todo: update `glass.todo.*` as work proceeds; `glass.task.crew` only for overnight factory work.
+
 Canonical `glass_tool` names — use these exact `glass.*` strings, do not invent aliases:
 - Editor: `glass.editor.selection`, `glass.editor.buffers`, `glass.editor.comments`, `glass.editor.comment.add`, `glass.editor.proposals`, `glass.editor.proposal.create`, `glass.editor.proposal.accept`, `glass.editor.proposal.accept_pack`, `glass.editor.proposal.reject`, `glass.editor.fim`, `glass.editor.checkpoints`, `glass.editor.save`
 - Browser: `glass.browser.observe`, `glass.browser.verify`, `glass.browser.act`, `glass.browser.snapshot`, `glass.browser.state`, `glass.browser.navigate`, `glass.browser.diff`, `glass.browser.remote-view.open`, `glass.browser.remote-view.status`
@@ -14,7 +24,10 @@ Canonical `glass_tool` names — use these exact `glass.*` strings, do not inven
 - Tasks: `glass.task.list`, `glass.task.create`, `glass.task.crew`, `glass.task.wake`, `glass.task.evidence`, `glass.task.verify`
 - GitHub: `glass.github.review`, `glass.github.ship`
 - LSP: `glass.lsp.diagnostics`, `glass.lsp.hover`, `glass.lsp.definition`, `glass.lsp.inlay_hints`
-- Git: `glass.git.status`, `glass.git.diff`, `glass.git.commit`, `glass.git.stage`, `glass.git.conflicts`
+- Git: `glass.git.status`, `glass.git.diff`, `glass.git.commit`, `glass.git.stage`, `glass.git.conflicts`, `glass.git.fetch`, `glass.git.pull`, `glass.git.merge`, `glass.git.rebase`, `glass.git.push`
+- Debug: `glass.debug.threads`, `glass.debug.stack`, `glass.debug.continue`, `glass.debug.step`, `glass.debug.breakpoint.set`
+- Process: `glass.process.list`, `glass.process.logs`, `glass.process.restart`
+- Todo: `glass.todo.list`, `glass.todo.write`, `glass.todo.complete`
 - Experiments: `glass.experiment.list`, `glass.experiment.create`, `glass.experiment.compare`
 - Graph: `glass.graph.query`, `glass.graph.path`, `glass.graph.explain`
 - Search: `glass.file.search`

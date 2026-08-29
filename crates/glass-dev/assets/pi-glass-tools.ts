@@ -491,6 +491,13 @@ export default function (pi: ExtensionAPI) {
   register("glass_git_stash_pop", "glass.git.stash.pop", "Restore a Git stash", Type.Object({ reference: Type.String() }), true);
   register("glass_git_discard", "glass.git.discard", "Discard unstaged Git paths", Type.Object({ paths: Type.Array(Type.String(), { minItems: 1, maxItems: 256 }) }), true);
   register("glass_git_push", "glass.git.push", "Push the current Git branch", Type.Object({ remote: Type.Optional(Type.String()), branch: Type.Optional(Type.String()) }), true);
+  register("glass_git_fetch", "glass.git.fetch", "Fetch from a remote", Type.Object({ remote: Type.Optional(Type.String()) }), true);
+  register("glass_git_pull", "glass.git.pull", "Pull a remote branch", Type.Object({ remote: Type.Optional(Type.String()), branch: Type.Optional(Type.String()) }), true);
+  register("glass_git_merge", "glass.git.merge", "Merge a branch into HEAD", Type.Object({ branch: Type.String() }), true);
+  register("glass_git_rebase", "glass.git.rebase", "Rebase HEAD onto a branch", Type.Object({ onto: Type.String() }), true);
+  register("glass_todo_list", "glass.todo.list", "List session todos for the current Agent conversation", Type.Object({}));
+  register("glass_todo_write", "glass.todo.write", "Replace the session todo list (at most one active item)", Type.Object({ items: Type.Array(Type.Object({ id: Type.String(), title: Type.String(), status: Type.Union([Type.Literal("pending"), Type.Literal("active"), Type.Literal("done")]), surface: Type.Optional(Type.String()) })) }), true);
+  register("glass_todo_complete", "glass.todo.complete", "Mark one session todo done", Type.Object({ id: Type.String() }), true);
   register("glass_eval_cancel", "glass.eval.cancel", "Cancel a persistent execution kernel", Type.Object({ name: Type.String() }), true);
   register("glass_debug_inspect", "glass.debug.inspect", "Inspect a resident debugger session", Type.Object({ session: Type.String() }));
   register("glass_debug_processes", "glass.debug.processes", "List debugger debuggee processes", Type.Object({ session: Type.String() }));

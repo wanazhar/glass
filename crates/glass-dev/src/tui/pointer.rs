@@ -13,6 +13,8 @@ pub enum HitRegion {
     Dock,
     File(usize),
     Git(usize),
+    Process(usize),
+    Debug(usize),
     Entity(usize),
     Menu(usize),
     Help,
@@ -145,6 +147,14 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
             let index = list_index(state, row, state.git_entries.len());
             HitRegion::Git(index)
         }
+        DevSurface::Terminal if !state.process_entries.is_empty() => {
+            let index = list_index(state, row, state.process_entries.len());
+            HitRegion::Process(index)
+        }
+        DevSurface::Debug if !state.debug_sessions.is_empty() => {
+            let index = list_index(state, row, state.debug_sessions.len());
+            HitRegion::Debug(index)
+        }
         DevSurface::App => {
             let count = state.browser_workspace.state().entities.len().max(1);
             HitRegion::Entity(list_index(state, row, count))
@@ -197,6 +207,13 @@ fn apply_select(state: &mut DevTuiState, hit: &HitRegion) {
         }
         HitRegion::Git(index) => {
             state.selected_git_file = *index;
+        }
+        HitRegion::Process(index) => {
+            state.selected_process = *index;
+        }
+        HitRegion::Debug(index) => {
+            state.selected_debug_session = *index;
+            state.debug_pane = super::state::DebugPane::Sessions;
         }
         HitRegion::Entity(index) => {
             let current = state.browser_workspace.state().selected_entity.unwrap_or(0) as i32;
@@ -253,6 +270,14 @@ fn apply_primary(state: &mut DevTuiState, hit: &HitRegion) -> bool {
         }
         HitRegion::Git(_) => {
             state.git_diff_requested = true;
+            true
+        }
+        HitRegion::Process(_) => {
+            state.process_logs_requested = true;
+            true
+        }
+        HitRegion::Debug(_) => {
+            state.debug_threads_requested = true;
             true
         }
         HitRegion::Entity(_) => {

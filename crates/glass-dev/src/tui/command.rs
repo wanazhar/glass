@@ -275,6 +275,12 @@ const TERMINAL_ACTIONS: &[SurfaceAction] = &[
         description: "inspect a managed process",
     },
     SurfaceAction {
+        label: "Restart process",
+        command: "process restart NAME",
+        key: ":",
+        description: "restart the selected managed process",
+    },
+    SurfaceAction {
         label: "Stop process",
         command: "process stop NAME",
         key: ":",
@@ -353,6 +359,30 @@ const GIT_ACTIONS: &[SurfaceAction] = &[
         description: "create a PR after one-use confirmation",
     },
     SurfaceAction {
+        label: "Fetch and pull",
+        command: "git pull",
+        key: ":",
+        description: "fetch/merge the upstream branch through Glass Git",
+    },
+    SurfaceAction {
+        label: "Push branch",
+        command: "git push",
+        key: ":",
+        description: "push the current branch through Glass Git",
+    },
+    SurfaceAction {
+        label: "Merge branch",
+        command: "git merge BRANCH",
+        key: ":",
+        description: "merge a branch into HEAD through Glass Git",
+    },
+    SurfaceAction {
+        label: "Rebase onto",
+        command: "git rebase ONTO",
+        key: ":",
+        description: "rebase HEAD onto another branch through Glass Git",
+    },
+    SurfaceAction {
         label: "Review object",
         command: "review",
         key: ":",
@@ -366,6 +396,24 @@ const DEBUG_ACTIONS: &[SurfaceAction] = &[
         command: "debug start NAME COMMAND",
         key: ":",
         description: "launch a configured debugger",
+    },
+    SurfaceAction {
+        label: "Refresh threads",
+        command: "debug threads SESSION",
+        key: ":",
+        description: "list DAP threads for the selected session",
+    },
+    SurfaceAction {
+        label: "Continue",
+        command: "debug continue SESSION THREAD_ID",
+        key: ":",
+        description: "continue the selected paused thread",
+    },
+    SurfaceAction {
+        label: "Step over",
+        command: "debug step SESSION THREAD_ID over",
+        key: ":",
+        description: "step over the selected thread",
     },
     SurfaceAction {
         label: "Run tests",
@@ -2671,6 +2719,22 @@ fn execute_git(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
             json!({"remote":parts.get(1),"branch":parts.get(2)}),
             true,
         ),
+        "fetch" => ("glass.git.fetch", json!({"remote":parts.get(1)}), true),
+        "pull" => (
+            "glass.git.pull",
+            json!({"remote":parts.get(1),"branch":parts.get(2)}),
+            true,
+        ),
+        "merge" => (
+            "glass.git.merge",
+            json!({"branch":parts.get(1).ok_or("git merge requires BRANCH")?}),
+            true,
+        ),
+        "rebase" => (
+            "glass.git.rebase",
+            json!({"onto":parts.get(1).ok_or("git rebase requires ONTO")?}),
+            true,
+        ),
         "commit" => (
             "glass.git.commit",
             json!({"message":parts.get(1..).unwrap_or_default().join(" ")}),
@@ -2684,7 +2748,7 @@ fn execute_git(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
         ),
         _ => {
             return Err(
-                "git actions: status, diff, stage, unstage, discard, commit, push, branches, switch".into(),
+                "git actions: status, diff, stage, unstage, discard, commit, push, fetch, pull, merge, rebase, branches, switch".into(),
             );
         }
     };

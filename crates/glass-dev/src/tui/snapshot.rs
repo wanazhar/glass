@@ -9,7 +9,7 @@
 //! without ever blocking on the workspace lock, and a latency budget keeps
 //! slow git repositories from freezing key handling.
 
-use crate::tui::state::DevTuiState;
+use crate::tui::state::{DebugSessionRow, DevTuiState, ProcessRow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -89,6 +89,7 @@ pub struct DisplaySnapshot {
     pub editor: String,
     pub lsp: String,
     pub processes: String,
+    pub process_entries: Vec<ProcessRow>,
     pub git: String,
     pub git_entries: Vec<crate::git::GitStatusEntry>,
     pub git_branch: String,
@@ -98,6 +99,7 @@ pub struct DisplaySnapshot {
     pub tests: String,
     pub kernels: String,
     pub debugger: String,
+    pub debug_sessions: Vec<DebugSessionRow>,
     pub replay: String,
     pub workflow: String,
     pub workspace_status: String,
@@ -638,12 +640,10 @@ fn compute_snapshot(
             .join("\n\n"),
         Err(error) => format!("Task scheduler failed: {error}"),
     };
-    snapshot.processes = locked
-        .project_mut()
-        .processes()
-        .list_checked()
-        .map(|items| {
-            if items.is_empty() {
+    match locked.project_mut().processes().list_checked() {
+        Ok(items) => {
+            snapshot.process_entries = items.iter().map(ProcessRow::from_snapshot).collect();
+            snapshot.processes = if items.is_empty() {
                 "No managed terminals. Start the detected development command from More.".into()
             } else {
                 items
@@ -667,9 +667,13 @@ fn compute_snapshot(
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n")
-            }
-        })
-        .unwrap_or_else(|error| format!("Process state failed: {error}"));
+            };
+        }
+        Err(error) => {
+            snapshot.process_entries.clear();
+            snapshot.processes = format!("Process state failed: {error}");
+        }
+    }
     snapshot.lsp = {
         let language = locked.language();
         let servers = language.names().collect::<Vec<_>>();
@@ -731,18 +735,29 @@ fn compute_snapshot(
         .debugger_names()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    snapshot.debugger = if debugger_names.is_empty() {
+    let debug_rows = debugger_names
+        .iter()
+        .filter_map(|name| {
+            locked
+                .debugger_mut(name)
+                .ok()
+                .and_then(|debugger| debugger.snapshot().ok())
+                .map(|value| (name.clone(), value))
+        })
+        .collect::<Vec<_>>();
+    snapshot.debug_sessions = debug_rows
+        .iter()
+        .map(|(name, value)| DebugSessionRow {
+            name: name.clone(),
+            state: value.state,
+            pid: value.adapter_process_id,
+        })
+        .collect();
+    snapshot.debugger = if debug_rows.is_empty() {
         "No debugger sessions. :debug start NAME COMMAND [ARGS...]".into()
     } else {
-        debugger_names
+        debug_rows
             .iter()
-            .filter_map(|name| {
-                locked
-                    .debugger_mut(name)
-                    .ok()
-                    .and_then(|debugger| debugger.snapshot().ok())
-                    .map(|value| (name, value))
-            })
             .map(|(name, value)| {
                 format!(
                     "● {} · {} · pid {} · {} breakpoints · {} watches · {} threads/processes",

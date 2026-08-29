@@ -2516,6 +2516,8 @@ mod tests {
             "glass_task_crew",
             "glass_github_ship",
             "glass_file_search",
+            "glass_todo_write",
+            "glass_git_merge",
             "glass_editor_checkpoint_create",
             "\"read\"",
             "\"write\"",

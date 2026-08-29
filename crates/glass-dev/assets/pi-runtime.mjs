@@ -100,7 +100,8 @@ const glassTool = {
   promptGuidelines: [
     "Use the familiar Glass-backed coding tools for local source work; use glass_tool for browser, Git, process, test, debugger, editor review, task, and evidence operations.",
     "Example: glass_tool({name: \"glass.browser.observe\", arguments: {}}).",
-    "Canonical glass_tool names include glass.browser.verify, glass.editor.fim, glass.editor.proposal.accept_pack, glass.task.crew, glass.github.ship, glass.lsp.inlay_hints, glass.file.search, and glass.workflow.record.",
+    "Canonical glass_tool names include glass.browser.verify, glass.editor.fim, glass.editor.proposal.accept_pack, glass.task.crew, glass.github.ship, glass.git.merge, glass.git.rebase, glass.git.push, glass.todo.write, glass.lsp.inlay_hints, glass.file.search, and glass.workflow.record.",
+    "Follow context.playbook: editor uses glass.editor.*; browser observe/act/verify; git uses glass.git.* and glass.github.review — never bash git.",
     "Do not claim a mutation succeeded until the Glass tool result confirms it.",
   ],
   parameters: Type.Object({

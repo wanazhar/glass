@@ -6,8 +6,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row,
-    Table, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 
 // GitHub/Druk-inspired neutrals keep the data readable while the accent colors
@@ -1838,12 +1837,20 @@ fn render_agent_workspace_context(frame: &mut Frame<'_>, state: &DevTuiState, ar
         rows[0],
         " WORKSPACE ",
         format!(
-            "BRANCH {branch}\n{} changed · rev {}\nGITHUB {}\n{}\n{}",
+            "BRANCH {branch}\n{} changed · rev {}\nGITHUB {}\n{}\n{}\n{}",
             state.git_entries.len(),
             state.snapshot_project_revision,
             state.github.summary(),
             activity_summary(state),
-            check
+            check,
+            state
+                .session_todos
+                .items
+                .iter()
+                .take(3)
+                .map(|item| format!("{} {}", item.status.label(), item.title))
+                .collect::<Vec<_>>()
+                .join(" · ")
         ),
         ACCENT_BRIGHT,
     );
@@ -2210,13 +2217,6 @@ fn render_app_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     render_panel(frame, rows[2], " WORKFLOW ", &state.workflow, PURPLE);
 }
 
-fn split_process_line(line: &str) -> (String, String, String) {
-    let mut parts = line.splitn(2, ' ');
-    let marker = parts.next().unwrap_or(" ");
-    let rest = parts.next().unwrap_or("");
-    let (name, detail) = rest.split_once(" · ").unwrap_or((rest, ""));
-    (marker.to_string(), name.to_string(), detail.to_string())
-}
 fn status_line_count(content: &str) -> usize {
     content
         .lines()
@@ -2230,83 +2230,103 @@ fn status_line_count(content: &str) -> usize {
 }
 
 fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let has_logs = !state.process_logs.trim().is_empty();
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(7)])
-        .split(area);
-    let process_lines = state
-        .processes
-        .lines()
-        .filter(|line| {
-            line.starts_with('●')
-                || line.starts_with('○')
-                || line.starts_with('×')
-                || line.starts_with('!')
+        .constraints(if has_logs {
+            vec![
+                Constraint::Length(3),
+                Constraint::Percentage(48),
+                Constraint::Min(6),
+            ]
+        } else {
+            vec![Constraint::Length(3), Constraint::Min(7)]
         })
-        .collect::<Vec<_>>();
-    let process_count = process_lines.len();
-    let healthy_count = process_lines
+        .split(area);
+    let process_count = state.process_entries.len();
+    let healthy_count = state
+        .process_entries
         .iter()
-        .filter(|line| line.starts_with('●'))
+        .filter(|entry| matches!(entry.health, crate::development::ProcessHealth::Healthy))
         .count();
-    let failed_count = process_lines
-        .iter()
-        .filter(|line| line.starts_with('×') || line.starts_with('!'))
-        .count();
+    let selected = state
+        .selected_process_entry()
+        .map(|entry| format!("selected {}", entry.name))
+        .unwrap_or_else(|| "j/k choose a process".into());
     render_panel(
         frame,
         rows[0],
         " TERMINAL ",
-        format!("{process_count} processes · {healthy_count} healthy · {failed_count} attention"),
+        format!("{process_count} processes · {healthy_count} healthy · {selected}"),
         ACCENT_BRIGHT,
     );
-    if process_lines.is_empty() {
-        let empty_state = if state.processes.trim().is_empty() {
+    if state.process_entries.is_empty() {
+        let empty_state = if state.processes.trim().is_empty()
+            || state.processes.contains("No managed terminals")
+        {
             "No managed processes yet\ns starts the detected suite · a opens actions\n:process start dev runs a custom command".to_string()
         } else {
             format!("No managed processes yet\n{}", state.processes.trim())
         };
         render_panel(frame, rows[1], " PROCESSES ", empty_state, ACCENT_BRIGHT);
     } else {
-        let table_rows = process_lines
-            .into_iter()
-            .map(|line| {
-                let (marker, name, detail) = split_process_line(line);
-                Row::new(vec![
-                    Cell::from(marker.clone()).style(Style::default().fg(status_color(&marker))),
-                    Cell::from(name),
-                    Cell::from(detail).style(Style::default().fg(MUTED)),
-                ])
+        let items = state
+            .process_entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let selected = index == state.selected_process;
+                let marker = if selected { "›" } else { " " };
+                let health = match entry.health {
+                    crate::development::ProcessHealth::Healthy => "●",
+                    crate::development::ProcessHealth::Failed => "×",
+                    _ => "○",
+                };
+                let pid = entry
+                    .pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "—".into());
+                let detail = entry.url.clone().unwrap_or_else(|| entry.command.clone());
+                let style = if selected {
+                    Style::default()
+                        .fg(ACCENT_BRIGHT)
+                        .bg(ACTIVE_BACKGROUND)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT)
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{marker} {health} "),
+                        Style::default().fg(status_color(health)),
+                    ),
+                    Span::styled(
+                        format!(
+                            "{} · {} · pid {pid} · {detail}",
+                            entry.name,
+                            entry.health.label()
+                        ),
+                        style,
+                    ),
+                ]))
+                .style(style)
             })
             .collect::<Vec<_>>();
-        let table_columns = if stack_for_phone(state, area) {
-            vec![
-                Constraint::Length(3),
-                Constraint::Length(14),
-                Constraint::Min(10),
-            ]
-        } else {
-            vec![
-                Constraint::Length(3),
-                Constraint::Percentage(32),
-                Constraint::Min(24),
-            ]
-        };
-        let table_header = if stack_for_phone(state, area) {
-            vec!["", "PROCESS", "HEALTH · PID"]
-        } else {
-            vec!["", "PROCESS", "HEALTH · PID · COMMAND"]
-        };
-        frame.render_widget(
-            Table::new(table_rows, table_columns)
-                .header(
-                    Row::new(table_header)
-                        .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD)),
-                )
-                .column_spacing(1)
-                .block(surface_block(" PROCESSES ", ACCENT_BRIGHT)),
+        let mut list_state = ListState::default();
+        list_state.select(Some(state.selected_process));
+        frame.render_stateful_widget(
+            List::new(items)
+                .style(Style::default().bg(PANEL_BACKGROUND))
+                .block(surface_block(
+                    format!(" PROCESSES · {} ", process_count),
+                    ACCENT_BRIGHT,
+                )),
             rows[1],
+            &mut list_state,
         );
+    }
+    if has_logs {
+        render_panel(frame, rows[2], " LOGS ", &state.process_logs, PURPLE);
     }
 }
 
@@ -2353,7 +2373,18 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
             .constraints([Constraint::Percentage(70), Constraint::Min(24)])
             .split(area)
     };
-    render_task_list(frame, state, rows[0]);
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(rows[0]);
+    render_panel(
+        frame,
+        split[0],
+        " TODOS ",
+        state.session_todos.render(),
+        ACCENT_BRIGHT,
+    );
+    render_task_list(frame, state, split[1]);
     let running = state
         .tasks
         .lines()
@@ -2556,28 +2587,167 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     let rows = if stack_for_phone(state, area) {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .constraints([
+                Constraint::Percentage(28),
+                Constraint::Percentage(24),
+                Constraint::Percentage(24),
+                Constraint::Percentage(24),
+            ])
             .split(area)
     } else {
         Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(56), Constraint::Min(28)])
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(72), Constraint::Min(6)])
             .split(area)
     };
-    let session_count = status_line_count(&state.debugger);
-    let test_status = state
-        .tests
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("No test runs");
-    render_status_list(
+    let session_count = state.debug_sessions.len();
+    if stack_for_phone(state, area) {
+        render_debug_list(
+            frame,
+            rows[0],
+            format!(" DEBUG · {session_count} "),
+            &debug_session_lines(state),
+            state.debug_pane == super::state::DebugPane::Sessions,
+        );
+        render_debug_list(
+            frame,
+            rows[1],
+            " THREADS ",
+            &debug_thread_lines(state),
+            state.debug_pane == super::state::DebugPane::Threads,
+        );
+        render_debug_list(
+            frame,
+            rows[2],
+            " FRAMES ",
+            &debug_frame_lines(state),
+            state.debug_pane == super::state::DebugPane::Frames,
+        );
+        render_status_list(frame, rows[3], " TESTS ", &state.tests, "No test runs");
+        return;
+    }
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(28),
+            Constraint::Percentage(28),
+            Constraint::Min(24),
+        ])
+        .split(rows[0]);
+    render_debug_list(
         frame,
-        rows[0],
+        columns[0],
         format!(" DEBUG · {session_count} "),
-        &state.debugger,
-        "No debugger sessions\nUse :actions to start a session",
+        &debug_session_lines(state),
+        state.debug_pane == super::state::DebugPane::Sessions,
     );
-    render_panel(frame, rows[1], " TESTS ", test_status, WARNING);
+    render_debug_list(
+        frame,
+        columns[1],
+        " THREADS ",
+        &debug_thread_lines(state),
+        state.debug_pane == super::state::DebugPane::Threads,
+    );
+    render_debug_list(
+        frame,
+        columns[2],
+        " FRAMES ",
+        &debug_frame_lines(state),
+        state.debug_pane == super::state::DebugPane::Frames,
+    );
+    render_status_list(frame, rows[1], " TESTS ", &state.tests, "No test runs");
+}
+
+fn debug_session_lines(state: &DevTuiState) -> Vec<String> {
+    if state.debug_sessions.is_empty() {
+        return vec![
+            "No debugger sessions".into(),
+            ":debug start NAME COMMAND".into(),
+        ];
+    }
+    state
+        .debug_sessions
+        .iter()
+        .enumerate()
+        .map(|(index, session)| {
+            let marker = if index == state.selected_debug_session {
+                "›"
+            } else {
+                " "
+            };
+            format!(
+                "{marker} {} · {} · pid {}",
+                session.name,
+                session.state.label(),
+                session.pid
+            )
+        })
+        .collect()
+}
+
+fn debug_thread_lines(state: &DevTuiState) -> Vec<String> {
+    if state.debug_threads.is_empty() {
+        return vec!["Enter a session to load threads".into()];
+    }
+    state
+        .debug_threads
+        .iter()
+        .enumerate()
+        .map(|(index, thread)| {
+            let marker = if index == state.selected_debug_thread {
+                "›"
+            } else {
+                " "
+            };
+            format!("{marker} {} · id {}", thread.name, thread.id)
+        })
+        .collect()
+}
+
+fn debug_frame_lines(state: &DevTuiState) -> Vec<String> {
+    if state.debug_frames.is_empty() {
+        return vec!["Enter a thread to load frames".into()];
+    }
+    state
+        .debug_frames
+        .iter()
+        .enumerate()
+        .map(|(index, frame)| {
+            let marker = if index == state.selected_debug_frame {
+                "›"
+            } else {
+                " "
+            };
+            format!(
+                "{marker} {}{}",
+                frame.name,
+                frame
+                    .path
+                    .as_deref()
+                    .map(|path| {
+                        format!(
+                            " · {path}{}",
+                            frame
+                                .line
+                                .map(|line| format!(":{line}"))
+                                .unwrap_or_default()
+                        )
+                    })
+                    .unwrap_or_default()
+            )
+        })
+        .collect()
+}
+
+fn render_debug_list(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: impl Into<String>,
+    lines: &[String],
+    focused: bool,
+) {
+    let color = if focused { ACCENT_BRIGHT } else { MUTED };
+    render_panel(frame, area, title, lines.join("\n"), color);
 }
 
 fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -3551,7 +3721,10 @@ mod tests {
         assert!(help.contains("DO THIS"));
         assert!(help.contains("CODE"));
         assert!(help.contains("Enter opens"));
-        assert!(help.contains("Ctrl-P"));
+        assert!(help.contains("Ctrl-L"));
+        assert!(help.contains("KEYS"));
+        assert!(help.contains("Tab surfaces"));
+        assert!(help.contains("/todo"));
         assert!(!help.contains("Alt-←/→"));
     }
 
@@ -3763,6 +3936,66 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn terminal_and_debug_surfaces_select_rows() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Terminal;
+        state.process_entries = vec![
+            crate::tui::state::ProcessRow {
+                name: "dev".into(),
+                command: "npm run dev".into(),
+                pid: Some(42),
+                health: crate::development::ProcessHealth::Healthy,
+                url: Some("http://127.0.0.1:5173/".into()),
+            },
+            crate::tui::state::ProcessRow {
+                name: "test".into(),
+                command: "cargo test".into(),
+                pid: Some(43),
+                health: crate::development::ProcessHealth::Starting,
+                url: None,
+            },
+        ];
+        let terminal = rendered(&state, 140, 40);
+        assert!(terminal.contains("PROCESSES · 2"));
+        assert!(terminal.contains("dev"));
+        state.move_process_selection(1);
+        assert_eq!(
+            state
+                .selected_process_entry()
+                .map(|entry| entry.name.as_str()),
+            Some("test")
+        );
+
+        state.surface = DevSurface::Debug;
+        state.debug_sessions = vec![crate::tui::state::DebugSessionRow {
+            name: "lldb".into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid: 9,
+        }];
+        state.debug_threads = vec![crate::tui::state::DebugThreadRow {
+            id: 1,
+            name: "main".into(),
+        }];
+        state.debug_frames = vec![crate::tui::state::DebugFrameRow {
+            id: 12,
+            name: "main".into(),
+            path: Some("src/main.rs".into()),
+            line: Some(40),
+        }];
+        let debug = rendered(&state, 140, 40);
+        assert!(debug.contains("DEBUG · 1"));
+        assert!(debug.contains("THREADS"));
+        assert!(debug.contains("FRAMES"));
+        assert!(debug.contains("src/main.rs:40"));
+        state.debug_pane = crate::tui::state::DebugPane::Frames;
+        state.move_debug_selection(0);
+        assert_eq!(
+            state.selected_debug_frame().and_then(|frame| frame.line),
+            Some(40)
+        );
+    }
+
     #[test]
     fn git_surface_selects_files_before_loading_focused_diff() {
         let mut state = state(TuiLayout::Desktop);

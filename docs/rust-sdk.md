@@ -25,10 +25,10 @@ runtime API is documented at
 
 docs.rs renders published Rust API artifacts. This guide follows the checked-in
 source, which is version `0.3.14` with current-source work. Published docs.rs
-pages match the crate version they were built from (`0.3.13` at last
-publication). Verify newer source-level surfaces, including `todos` and
-`AgentTurnMode`, against this checkout rather than assuming they were part of
-the last published API page. Some benchmark-style Cargo examples use
+pages currently match crate `0.3.14`. Verify newer source-level surfaces,
+including `todos` and `AgentTurnMode`, against this checkout rather than
+assuming they were part of the last published API page. Some benchmark-style
+Cargo examples use
 development-only dependencies and are not all listed in the docs.rs example
 index; the checked-in examples catalog remains the source-level inventory.
 

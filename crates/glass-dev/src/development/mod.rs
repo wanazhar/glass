@@ -116,7 +116,7 @@ pub const DEVELOPMENT_SCHEMA_VERSION: &str = "glass.development.v1";
 /// Version of serialized development timeline events.
 pub const DEVELOPMENT_EVENT_SCHEMA_VERSION: u32 = 1;
 /// Version of serialized cockpit snapshots.
-pub const DEVELOPMENT_COCKPIT_SCHEMA_VERSION: u32 = 1;
+pub const DEVELOPMENT_COCKPIT_SCHEMA_VERSION: u32 = 2;
 /// Maximum bytes read from one project file.
 pub const MAX_FILE_BYTES: usize = 512 * 1024;
 /// Maximum bytes retained in an editor or process buffer.

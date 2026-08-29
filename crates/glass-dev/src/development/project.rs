@@ -526,8 +526,10 @@ impl ProjectWorkspace {
                 proposal.state
             )));
         }
-        if self.current_editor_content(&proposal.path)? != proposal.original
-            || hash(&proposal.original) != proposal.base_hash
+        let current = self.current_editor_content(&proposal.path)?;
+        let already_applied = current == proposal.proposed;
+        if hash(&proposal.original) != proposal.base_hash
+            || (!already_applied && current != proposal.original)
         {
             let revision = self.bump_editor_revision();
             if let Some(stale) = self.proposals.get_mut(id) {
@@ -544,10 +546,15 @@ impl ProjectWorkspace {
                 proposal.path
             )));
         }
-        let buffer = self
-            .edit_buffer(&proposal.path, proposal.proposed.clone(), actor.clone())
-            .map(|_| self.buffer(&proposal.path).cloned())?
-            .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {}", proposal.path)))?;
+        let buffer = if already_applied {
+            self.buffer(&proposal.path)
+                .cloned()
+                .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {}", proposal.path)))?
+        } else {
+            self.edit_buffer(&proposal.path, proposal.proposed.clone(), actor.clone())
+                .map(|_| self.buffer(&proposal.path).cloned())?
+                .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {}", proposal.path)))?
+        };
         let revision = self.bump_editor_revision();
         if let Some(accepted) = self.proposals.get_mut(id) {
             accepted.state = super::EditorProposalState::Accepted;
@@ -559,6 +566,28 @@ impl ProjectWorkspace {
             serde_json::json!({"id": id, "path": proposal.path}),
         )?;
         Ok(buffer)
+    }
+
+    pub fn accept_pending_editor_proposals(
+        &mut self,
+        actor: Actor,
+    ) -> DevelopmentResult<Vec<super::EditorBuffer>> {
+        let ids = self
+            .proposals
+            .values()
+            .filter(|proposal| proposal.state == super::EditorProposalState::Pending)
+            .map(|proposal| proposal.id.clone())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Err(DevelopmentError::NotFound(
+                "no pending editor proposals".into(),
+            ));
+        }
+        let mut buffers = Vec::new();
+        for id in ids {
+            buffers.push(self.accept_editor_proposal(&id, actor.clone())?);
+        }
+        Ok(buffers)
     }
 
     pub fn reject_editor_proposal(
@@ -578,13 +607,24 @@ impl ProjectWorkspace {
             )));
         }
         let revision = self.bump_editor_revision();
-        let proposal = self
+        {
+            let proposal = self
+                .proposals
+                .get_mut(id)
+                .ok_or_else(|| DevelopmentError::NotFound(format!("proposal {id}")))?;
+            proposal.state = super::EditorProposalState::Rejected;
+            proposal.updated_revision = revision;
+        }
+        let result = self
             .proposals
-            .get_mut(id)
+            .get(id)
+            .cloned()
             .ok_or_else(|| DevelopmentError::NotFound(format!("proposal {id}")))?;
-        proposal.state = super::EditorProposalState::Rejected;
-        proposal.updated_revision = revision;
-        let result = proposal.clone();
+        if let Ok(current) = self.current_editor_content(&result.path)
+            && current != result.original
+        {
+            let _ = self.edit_buffer(&result.path, result.original.clone(), actor.clone());
+        }
         self.record_as(
             actor,
             DevelopmentEventKind::EditorProposalRejected,
@@ -690,10 +730,20 @@ impl ProjectWorkspace {
     }
 
     fn current_editor_content(&self, path: &str) -> DevelopmentResult<String> {
+        self.buffer_or_file_content(path)
+    }
+
+    pub(crate) fn buffer_or_file_content(&self, path: &str) -> DevelopmentResult<String> {
         if let Some(buffer) = self.buffers.get(path) {
             return Ok(buffer.content.clone());
         }
-        self.read_file_snapshot(path)
+        match self.read_file_snapshot(path) {
+            Ok(content) => Ok(content),
+            Err(DevelopmentError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(String::new())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn find_comment(&self, id: &str) -> DevelopmentResult<(String, usize)> {
@@ -2187,6 +2237,34 @@ mod tests {
             project.buffer("src/main.rs").unwrap().content,
             "fn main() { println!(\"ok\"); }\n"
         );
+        let second = project
+            .propose_editor_change(
+                "src/main.rs",
+                "fn main() { println!(\"ok\"); }\n".into(),
+                "fn main() { println!(\"pair\"); }\n".into(),
+                "Pair-apply already in buffer".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        project
+            .edit_buffer(
+                "src/main.rs",
+                "fn main() { println!(\"pair\"); }\n".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        project
+            .accept_editor_proposal(&second.id, Actor::local())
+            .unwrap();
+        assert_eq!(
+            project
+                .editor_proposals()
+                .into_iter()
+                .find(|item| item.id == second.id)
+                .unwrap()
+                .state,
+            crate::development::EditorProposalState::Accepted
+        );
         let resolved = project
             .resolve_editor_comment(&comment.id, Actor::local())
             .unwrap();
@@ -2239,6 +2317,56 @@ mod tests {
             project.editor_proposals()[0].state,
             crate::development::EditorProposalState::Stale
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accept_pending_editor_proposals_applies_the_pack() {
+        let root = fixture();
+        fs::write(root.join("src/lib.rs"), "pub fn old() {}\n").unwrap();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        project.open_buffer("src/lib.rs", Actor::local()).unwrap();
+        project
+            .propose_editor_change(
+                "src/main.rs",
+                "fn main() {}\n".into(),
+                "fn main() { println!(\"one\"); }\n".into(),
+                "first".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        project
+            .propose_editor_change(
+                "src/lib.rs",
+                "pub fn old() {}\n".into(),
+                "pub fn next() {}\n".into(),
+                "second".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        let buffers = project
+            .accept_pending_editor_proposals(Actor::local())
+            .unwrap();
+        assert_eq!(buffers.len(), 2);
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().content,
+            "fn main() { println!(\"one\"); }\n"
+        );
+        assert_eq!(
+            project.buffer("src/lib.rs").unwrap().content,
+            "pub fn next() {}\n"
+        );
+        assert!(
+            project
+                .editor_proposals()
+                .iter()
+                .all(|proposal| proposal.state == crate::development::EditorProposalState::Accepted)
+        );
+        assert!(matches!(
+            project.accept_pending_editor_proposals(Actor::local()),
+            Err(DevelopmentError::NotFound(_))
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

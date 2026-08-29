@@ -4,12 +4,12 @@ Status: Current 0.3.13 source behavior; release documentation is dated
 2026-08-27 and external publication evidence is tracked separately.
 
 These guides describe the complete Glass product in the current `0.3.13`
-source checkout. The `0.3.13` release notes and migration guide route the
-current source contract; the signed `v0.3.12` release and its migration record
-remain historical. The working-tree changelog keeps an empty `Unreleased`
-section for future changes followed by the 0.3.13 entries. `Local only` means
-a capability exists in the checkout but is not part of an external release
-record.
+source checkout. The `0.3.13` release notes and migration guide route the last
+published source contract; the signed `v0.3.12` release and its migration
+record remain historical. Published docs.rs pages match crate `0.3.13`. The
+working-tree changelog `Unreleased` section records checkout-only TUI, MCP, and
+composer changes after that publication. `Local only` means a capability
+exists in the checkout but is not part of an external release record.
 Platform certification remains separate from source availability; see
 [cross-platform feature parity](feature-parity.md).
 

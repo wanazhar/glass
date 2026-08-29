@@ -3305,6 +3305,15 @@ mod tests {
         let inferred = recorder.inferred_inputs();
         assert_eq!(inferred["email"].value_type, WorkflowValueType::String);
         assert_eq!(inferred["email"].sensitive, None);
+        recorder
+            .attach_expect_to_last(VerificationPredicate::TextContains {
+                value: "Checkout complete".into(),
+            })
+            .unwrap();
+        assert!(matches!(
+            recorder.draft().steps[1].expect,
+            Some(VerificationPredicate::TextContains { .. })
+        ));
     }
 
     #[test]

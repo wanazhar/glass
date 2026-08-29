@@ -328,6 +328,27 @@ impl LspClient {
         )
     }
 
+    pub fn inlay_hints(&mut self, path: &str) -> DevelopmentResult<LanguageResponse> {
+        let document = self.sync_document(path)?;
+        let uri = document.uri.clone();
+        let last_line = self
+            .documents
+            .values()
+            .find(|item| item.uri == uri)
+            .map(|item| item.text.split('\n').count().saturating_sub(1))
+            .unwrap_or(0);
+        self.request_result(
+            "textDocument/inlayHint",
+            serde_json::json!({
+                "textDocument":{"uri":uri},
+                "range":{
+                    "start":{"line":0,"character":0},
+                    "end":{"line":last_line,"character":0}
+                }
+            }),
+        )
+    }
+
     pub fn signature_help(
         &mut self,
         path: &str,

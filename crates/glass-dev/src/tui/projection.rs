@@ -411,34 +411,144 @@ fn stream_content_text(content: &Value) -> Option<&str> {
         .find_map(|item| item.get("text").and_then(Value::as_str))
 }
 
-pub fn conversation(events: &[crate::AgentEvent]) -> String {
+/// Visual role of one Agent-surface conversation bubble.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationKind {
+    User,
+    Assistant,
+    System,
+    Alert,
+    Error,
+}
+
+/// One rendered transcript bubble, optionally pinned to a Pi session entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationEntry {
+    pub kind: ConversationKind,
+    pub text: String,
+    pub streaming: bool,
+    pub entry_id: Option<String>,
+    pub tool_name: Option<String>,
+}
+
+impl ConversationEntry {
+    fn user(text: impl Into<String>, entry_id: Option<String>) -> Self {
+        Self {
+            kind: ConversationKind::User,
+            text: text.into(),
+            streaming: false,
+            entry_id,
+            tool_name: None,
+        }
+    }
+
+    fn assistant(text: impl Into<String>, streaming: bool, entry_id: Option<String>) -> Self {
+        Self {
+            kind: ConversationKind::Assistant,
+            text: text.into(),
+            streaming,
+            entry_id,
+            tool_name: None,
+        }
+    }
+
+    fn system(text: impl Into<String>, tool_name: Option<String>) -> Self {
+        Self {
+            kind: ConversationKind::System,
+            text: text.into(),
+            streaming: false,
+            entry_id: None,
+            tool_name,
+        }
+    }
+
+    fn alert(text: impl Into<String>, tool_name: Option<String>) -> Self {
+        Self {
+            kind: ConversationKind::Alert,
+            text: text.into(),
+            streaming: false,
+            entry_id: None,
+            tool_name,
+        }
+    }
+
+    fn error(text: impl Into<String>, tool_name: Option<String>) -> Self {
+        Self {
+            kind: ConversationKind::Error,
+            text: text.into(),
+            streaming: false,
+            entry_id: None,
+            tool_name,
+        }
+    }
+
+    /// Flatten one bubble to the Agent transcript heading format.
+    pub fn render(&self) -> String {
+        let body = trimmed_lines(&self.text, 24);
+        match self.kind {
+            ConversationKind::User => format!("YOU\n{body}"),
+            ConversationKind::Assistant if self.text.is_empty() => "GLASS AGENT\nThinking…".into(),
+            ConversationKind::Assistant if self.streaming => {
+                format!("GLASS AGENT\n{body}\n… streaming")
+            }
+            ConversationKind::Assistant => format!("GLASS AGENT\n{body}"),
+            ConversationKind::System => format!("SYSTEM\n{body}"),
+            ConversationKind::Alert => format!("ALERT\n{body}"),
+            ConversationKind::Error => format!("ERROR\n× {body}"),
+        }
+    }
+
+    /// Compact one-line card used while a tool bubble is collapsed.
+    pub fn card_line(&self) -> String {
+        if let Some(name) = &self.tool_name {
+            return match self.kind {
+                ConversationKind::Alert => format!("⚠ {name} · approval required"),
+                ConversationKind::Error => format!("× {name}"),
+                _ => self
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or(name.as_str())
+                    .to_string(),
+            };
+        }
+        self.text.lines().next().unwrap_or_default().to_string()
+    }
+}
+
+/// Project agent events into structured transcript bubbles.
+pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEntry> {
     let mut items = Vec::new();
     for event in events {
         if pi_user_message(event) {
             continue;
         }
+        let entry_id = event_entry_id(event);
         match event.kind.as_str() {
             "starting" | "ready" | "turn_start" | "turn_end" | "message_start"
             | "agent_settled" => {}
             "agent_end" => finish_streaming(&mut items),
             "requestStarted" | "agent_start" => {
-                push_thinking(&mut items);
+                push_thinking(&mut items, entry_id);
             }
             "message_update" => {
                 if let Some(delta) = message_delta(&event.payload) {
-                    push_assistant_delta(&mut items, delta);
+                    push_assistant_delta(&mut items, delta, entry_id);
                 }
             }
             "message_end" if hidden_custom_message(&event.payload) => {}
             "message_end" => {
                 if let Some(text) = event_text(event) {
-                    push_assistant_final(&mut items, text);
+                    push_assistant_final(&mut items, text, entry_id);
                 } else {
                     finish_streaming(&mut items);
                 }
             }
             "glass_browser_evidence" => {
-                items.push(ConversationItem::System(browser_evidence(&event.payload)));
+                items.push(ConversationEntry::system(
+                    browser_evidence(&event.payload),
+                    Some("glass.browser".into()),
+                ));
             }
             "glass_tool_evidence" => {
                 let name = tool_name(&event.payload);
@@ -448,16 +558,22 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
                 {
-                    items.push(ConversationItem::System(format!("✓ {name} · done")));
+                    items.push(ConversationEntry::system(
+                        format!("✓ {name} · done"),
+                        Some(name),
+                    ));
                 } else {
-                    items.push(ConversationItem::Error(format!(
-                        "{name} · {}",
-                        event
-                            .payload
-                            .get("error")
-                            .and_then(Value::as_str)
-                            .unwrap_or("tool failed")
-                    )));
+                    items.push(ConversationEntry::error(
+                        format!(
+                            "{name} · {}",
+                            event
+                                .payload
+                                .get("error")
+                                .and_then(Value::as_str)
+                                .unwrap_or("tool failed")
+                        ),
+                        Some(name),
+                    ));
                 }
             }
             "glass_tool_rejected" => {
@@ -466,31 +582,34 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                     .get("recoverable")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                items.push(ConversationItem::Error(format!(
-                    "{} · {}{}",
-                    tool_name(&event.payload),
-                    event
-                        .payload
-                        .get("reason")
-                        .and_then(Value::as_str)
-                        .unwrap_or("tool rejected"),
-                    if recoverable {
-                        " · retrying with registered Glass tools"
-                    } else {
-                        " · turn stopped"
-                    }
-                )));
+                let name = tool_name(&event.payload);
+                items.push(ConversationEntry::error(
+                    format!(
+                        "{} · {}{}",
+                        name,
+                        event
+                            .payload
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool rejected"),
+                        if recoverable {
+                            " · retrying with registered Glass tools"
+                        } else {
+                            " · turn stopped"
+                        }
+                    ),
+                    Some(name),
+                ));
             }
             "glass_tool_approval_request" => {
-                items.push(ConversationItem::Alert(format!(
-                    "⚠ {} · approval required · press Y/Enter to allow or N/Esc to deny\n  {}",
-                    tool_name(&event.payload),
-                    event
-                        .payload
-                        .get("arguments")
-                        .map(Value::to_string)
-                        .unwrap_or_else(|| "{}".into())
-                )));
+                let name = tool_name(&event.payload);
+                let summary = approval_argument_summary(event.payload.get("arguments"));
+                items.push(ConversationEntry::alert(
+                    format!(
+                        "⚠ {name} · approval required · press Y/Enter to allow or N/Esc to deny\n  {summary}"
+                    ),
+                    Some(name),
+                ));
             }
             "glass_tool_approval_resolved" => {
                 let approved = event
@@ -498,37 +617,43 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                     .get("approved")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                items.push(ConversationItem::System(format!(
-                    "{} {} · approval {}",
-                    if approved { "✓" } else { "×" },
-                    event
-                        .payload
-                        .get("toolName")
-                        .and_then(Value::as_str)
-                        .unwrap_or("tool"),
-                    if approved { "granted" } else { "denied" }
-                )));
+                let name = event
+                    .payload
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .to_string();
+                items.push(ConversationEntry::system(
+                    format!(
+                        "{} {name} · approval {}",
+                        if approved { "✓" } else { "×" },
+                        if approved { "granted" } else { "denied" }
+                    ),
+                    Some(name),
+                ));
             }
             "tool_execution_start" => {
-                items.push(ConversationItem::System(format!(
-                    "→ {} · running",
-                    tool_name(&event.payload)
-                )));
+                let name = tool_name(&event.payload);
+                items.push(ConversationEntry::system(
+                    format!("→ {name} · running"),
+                    Some(name),
+                ));
             }
             "tool_execution_end" => {
-                items.push(ConversationItem::System(format!(
-                    "✓ {} · done",
-                    tool_name(&event.payload)
-                )));
+                let name = tool_name(&event.payload);
+                items.push(ConversationEntry::system(
+                    format!("✓ {name} · done"),
+                    Some(name),
+                ));
             }
             "completed" => {
                 if let Some(text) = event_text(event) {
-                    push_assistant_final(&mut items, text);
+                    push_assistant_final(&mut items, text, entry_id);
                 } else {
-                    items.push(ConversationItem::System("✓ done".into()));
+                    items.push(ConversationEntry::system("✓ done", None));
                 }
             }
-            "failed" | "workerPanicked" | "budgetExceeded" => items.push(ConversationItem::Error(
+            "failed" | "workerPanicked" | "budgetExceeded" => items.push(ConversationEntry::error(
                 event_text(event)
                     .or_else(|| {
                         event
@@ -538,114 +663,149 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
                             .map(str::to_string)
                     })
                     .unwrap_or_else(|| "failed".into()),
+                None,
             )),
-            "cancelled" => items.push(ConversationItem::Error("cancelled".into())),
+            "cancelled" => items.push(ConversationEntry::error("cancelled", None)),
             "user" => {
                 if let Some(text) = event_text(event) {
-                    items.push(ConversationItem::User(text));
+                    items.push(ConversationEntry::user(text, entry_id));
                 }
             }
             "response" => {
                 if let Some(text) = event_text(event) {
-                    push_assistant_final(&mut items, text);
+                    push_assistant_final(&mut items, text, entry_id);
                 }
             }
             _ => {
                 if let Some(text) = event_text(event) {
-                    push_assistant_final(&mut items, text);
+                    push_assistant_final(&mut items, text, entry_id);
                 } else if !event.payload.is_null() {
-                    items.push(ConversationItem::System(format!("· {}", event.kind)));
+                    items.push(ConversationEntry::system(format!("· {}", event.kind), None));
                 }
             }
         }
     }
     items
+}
+
+pub fn conversation(events: &[crate::AgentEvent]) -> String {
+    conversation_entries(events)
         .into_iter()
-        .map(render_conversation_item)
+        .map(|item| item.render())
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 
-#[derive(Debug)]
-enum ConversationItem {
-    User(String),
-    Assistant { text: String, streaming: bool },
-    System(String),
-    Alert(String),
-    Error(String),
-}
-
-fn render_conversation_item(item: ConversationItem) -> String {
-    match item {
-        ConversationItem::User(text) => format!("YOU\n{}", trimmed_lines(&text, 24)),
-        ConversationItem::Assistant { text, streaming } => {
-            if text.is_empty() {
-                "GLASS AGENT\nThinking…".into()
-            } else if streaming {
-                format!("GLASS AGENT\n{}\n… streaming", trimmed_lines(&text, 24))
-            } else {
-                format!("GLASS AGENT\n{}", trimmed_lines(&text, 24))
-            }
+fn approval_argument_summary(arguments: Option<&Value>) -> String {
+    let Some(Value::Object(map)) = arguments else {
+        return "exact call once".into();
+    };
+    let mut parts = Vec::new();
+    for key in ["path", "name", "command", "url", "goal", "id"] {
+        if let Some(value) = map
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            let bounded: String = value.chars().take(48).collect();
+            parts.push(format!("{key} {bounded}"));
         }
-        ConversationItem::System(text) => format!("SYSTEM\n{}", trimmed_lines(&text, 24)),
-        ConversationItem::Alert(text) => format!("ALERT\n{}", trimmed_lines(&text, 24)),
-        ConversationItem::Error(text) => format!("ERROR\n× {}", trimmed_lines(&text, 24)),
+    }
+    if parts.is_empty() {
+        format!("{} field(s)", map.len())
+    } else {
+        parts.join(" · ")
     }
 }
 
-fn push_thinking(items: &mut Vec<ConversationItem>) {
+fn event_entry_id(event: &crate::AgentEvent) -> Option<String> {
+    [
+        "/entryId",
+        "/entry/id",
+        "/message/id",
+        "/id",
+        "/assistantMessageEvent/id",
+    ]
+    .iter()
+    .filter_map(|pointer| event.payload.pointer(pointer))
+    .find_map(Value::as_str)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+}
+
+fn push_thinking(items: &mut Vec<ConversationEntry>, entry_id: Option<String>) {
     if !matches!(
         items.last(),
-        Some(ConversationItem::Assistant {
+        Some(ConversationEntry {
+            kind: ConversationKind::Assistant,
             streaming: true,
             ..
         })
     ) {
-        items.push(ConversationItem::Assistant {
-            text: String::new(),
-            streaming: true,
-        });
+        items.push(ConversationEntry::assistant(String::new(), true, entry_id));
     }
 }
 
-fn push_assistant_delta(items: &mut Vec<ConversationItem>, delta: String) {
+fn push_assistant_delta(
+    items: &mut Vec<ConversationEntry>,
+    delta: String,
+    entry_id: Option<String>,
+) {
     if delta.is_empty() {
         return;
     }
-    if let Some(ConversationItem::Assistant { text, streaming }) = items.last_mut()
+    if let Some(ConversationEntry {
+        kind: ConversationKind::Assistant,
+        text,
+        streaming,
+        entry_id: current_id,
+        ..
+    }) = items.last_mut()
         && *streaming
     {
         text.push_str(&delta);
+        if current_id.is_none() {
+            *current_id = entry_id;
+        }
         return;
     }
-    items.push(ConversationItem::Assistant {
-        text: delta,
-        streaming: true,
-    });
+    items.push(ConversationEntry::assistant(delta, true, entry_id));
 }
 
-fn push_assistant_final(items: &mut Vec<ConversationItem>, text: String) {
+fn push_assistant_final(
+    items: &mut Vec<ConversationEntry>,
+    text: String,
+    entry_id: Option<String>,
+) {
     if text.is_empty() {
         return;
     }
-    if let Some(ConversationItem::Assistant {
+    if let Some(ConversationEntry {
+        kind: ConversationKind::Assistant,
         text: current,
         streaming,
+        entry_id: current_id,
+        ..
     }) = items.last_mut()
         && (*streaming || current.is_empty() || current == &text)
     {
         current.clone_from(&text);
         *streaming = false;
+        if current_id.is_none() {
+            *current_id = entry_id;
+        }
         return;
     }
-    items.push(ConversationItem::Assistant {
-        text,
-        streaming: false,
-    });
+    items.push(ConversationEntry::assistant(text, false, entry_id));
 }
 
-fn finish_streaming(items: &mut [ConversationItem]) {
-    if let Some(ConversationItem::Assistant { streaming, .. }) = items.last_mut() {
+fn finish_streaming(items: &mut [ConversationEntry]) {
+    if let Some(ConversationEntry {
+        kind: ConversationKind::Assistant,
+        streaming,
+        ..
+    }) = items.last_mut()
+    {
         *streaming = false;
     }
 }
@@ -901,6 +1061,53 @@ mod tests {
         assert!(!projected.contains("agent_end"));
         assert!(!projected.contains("… streaming"));
     }
+
+    #[test]
+    fn conversation_entries_keep_pi_entry_ids_and_redact_approval_json() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let events = vec![
+            crate::AgentEvent {
+                sequence: 1,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "user".into(),
+                payload: serde_json::json!({"text": "ship it", "entryId": "entry-user"}),
+            },
+            crate::AgentEvent {
+                sequence: 2,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "glass_tool_approval_request".into(),
+                payload: serde_json::json!({
+                    "toolName": "glass.file.write",
+                    "arguments": {"path": "src/lib.rs", "content": "secret-token-value"}
+                }),
+            },
+            crate::AgentEvent {
+                sequence: 3,
+                agent_id,
+                timestamp_ms: 0,
+                kind: "message_end".into(),
+                payload: serde_json::json!({
+                    "message": {
+                        "id": "entry-assistant",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "queued"}]
+                    }
+                }),
+            },
+        ];
+        let entries = conversation_entries(&events);
+        assert_eq!(entries[0].entry_id.as_deref(), Some("entry-user"));
+        assert_eq!(entries[1].tool_name.as_deref(), Some("glass.file.write"));
+        assert!(entries[1].text.contains("path src/lib.rs"));
+        assert!(!entries[1].text.contains("secret-token-value"));
+        assert_eq!(
+            entries.last().and_then(|entry| entry.entry_id.as_deref()),
+            Some("entry-assistant")
+        );
+    }
+
     #[test]
     fn conversation_ignores_pi_user_message_echo() {
         let agent_id = crate::AgentId::parse("agent-0001").unwrap();

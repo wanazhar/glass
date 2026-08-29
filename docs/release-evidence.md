@@ -544,6 +544,6 @@ Publication verification:
 The native evidence remains limited to the recorded Linux ARM64 environment;
 other declared targets are not certified by this release.
 
-The `glass-browser` `0.3.0` crate remains the latest published registry version
-until `v0.3.1` is approved and pushed. Its matching GitHub Release entry has no
-native binary assets, as expected for the crates-only distribution boundary.
+The current published release is recorded in the `0.3.13` section at the top of
+this file. Records below that heading are historical and must not be used as
+current registry or GitHub Release state.

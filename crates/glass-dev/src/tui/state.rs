@@ -4445,17 +4445,18 @@ impl DevTuiState {
 
     pub fn activate_more_selection(&mut self) {
         let command = Self::MORE_ROUTES[self.selected_more.min(Self::MORE_ROUTES.len() - 1)];
-        let prefill = if command.split_whitespace().any(|token| {
-            token
-                .chars()
-                .all(|character| character.is_ascii_uppercase() || character == '_')
-        }) {
-            format!("{command} ")
-        } else {
-            command.to_string()
-        };
-        self.open_palette_with(&prefill);
-        self.status = format!("{command} · Enter runs");
+        if command == "kernel start" {
+            self.open_palette_with("kernel start ");
+            self.status = "kernel start · NAME KIND, then Enter".into();
+            return;
+        }
+        match super::command::execute(self, command) {
+            Ok(message) => self.status = message,
+            Err(error) => {
+                self.open_palette_with(command);
+                self.status = format!("{command} · {error}");
+            }
+        }
     }
 
     pub fn open_selected_file(&mut self) {

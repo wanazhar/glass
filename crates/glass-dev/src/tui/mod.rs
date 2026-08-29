@@ -456,11 +456,16 @@ pub fn run(
                     } else if state.git_diff_open && state.surface == DevSurface::Git {
                         match key.code {
                             KeyCode::Esc => state.close_git_diff(),
-                            KeyCode::Up | KeyCode::Char('k') => state.scroll_surface(-1),
-                            KeyCode::Down | KeyCode::Char('j') => state.scroll_surface(1),
+                            KeyCode::Up | KeyCode::Char('k') => state.move_git_selection(-1),
+                            KeyCode::Down | KeyCode::Char('j') => state.move_git_selection(1),
                             KeyCode::Enter | KeyCode::Char('d') => {
                                 state.queue_git_diff(&mut worker)
                             }
+                            KeyCode::Char(' ') => state.toggle_selected_git_stage(),
+                            KeyCode::Char('c') => state.compose_git_commit(),
+                            KeyCode::Char('o') => state.open_selected_git_file(),
+                            KeyCode::Char('x') => state.discard_selected_git_file(),
+                            KeyCode::Char('r') => state.queue_github_review(&mut worker),
                             KeyCode::PageUp => state.scroll_surface(-10),
                             KeyCode::PageDown => state.scroll_surface(10),
                             KeyCode::Home => state.scroll_home(),

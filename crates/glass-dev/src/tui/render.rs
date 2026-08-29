@@ -67,6 +67,7 @@ fn panel_text(content: &str) -> Text<'static> {
 
 fn is_panel_heading(line: &str) -> bool {
     !line.is_empty()
+        && !line.starts_with(' ')
         && line
             .chars()
             .any(|character| character.is_ascii_alphabetic())
@@ -1721,7 +1722,7 @@ fn agent_conversation_text(state: &DevTuiState, landing: &str, width: u16) -> Te
     if !state.composer_mode {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Enter to chat · j/k bubbles · f fork · r rewind · e edit last",
+            "Enter chat · j/k bubbles · f fork · r rewind · e last",
             Style::default().fg(MUTED),
         )));
     } else {
@@ -2188,7 +2189,7 @@ fn render_app_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(6),
-            Constraint::Length(2),
+            Constraint::Length(4),
         ])
         .split(area);
     let address = if browser.url.is_empty() {
@@ -2547,21 +2548,28 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
             .style(Style::default().bg(PANEL_BACKGROUND))
             .block(surface_block(
                 {
+                    let mut title = format!(" CHANGES · {} ", state.git_entries.len());
                     let conflicts = state.git_conflicts.len();
-                    let staged = state
-                        .git_entries
-                        .iter()
-                        .filter(|entry| entry.index_status != ' ' && !entry.untracked)
-                        .count();
                     let unstaged = state
                         .git_entries
                         .iter()
                         .filter(|entry| entry.worktree_status != ' ' && !entry.untracked)
                         .count();
-                    format!(
-                        " CHANGES · {} · {conflicts}! · {unstaged} · {staged}✓ ",
-                        state.git_entries.len()
-                    )
+                    let untracked = state
+                        .git_entries
+                        .iter()
+                        .filter(|entry| entry.untracked)
+                        .count();
+                    if conflicts > 0 {
+                        title.push_str(&format!("· {conflicts} conflict "));
+                    }
+                    if unstaged > 0 {
+                        title.push_str(&format!("· {unstaged} unstaged "));
+                    }
+                    if untracked > 0 {
+                        title.push_str(&format!("· {untracked} untracked "));
+                    }
+                    title
                 },
                 ACCENT_BRIGHT,
             )),
@@ -2592,7 +2600,7 @@ fn render_git_diff_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
             frame,
             area,
             " DIFF ",
-            "Choose a file with ↑/↓\nEnter actions · d opens its diff",
+            "j/k choose a file\nEnter/d diff · Space stage · c commit · o open",
             PURPLE,
         );
         return;
@@ -2601,38 +2609,41 @@ fn render_git_diff_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
         frame,
         area,
         " DIFF ",
-        format!("{path}\nEnter actions · d opens its diff"),
+        format!("{path}\nEnter/d loads the diff · Space stages"),
         PURPLE,
     );
 }
 
 fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let branch = state.git.lines().next().unwrap_or("branch unavailable");
+    let branch = state.git_branch.as_str();
     let change_count = state.git_entries.len();
     let review = state
         .github_review
         .lines()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" · ");
+        .next()
+        .unwrap_or("no GitHub review");
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(4), Constraint::Min(5)])
         .split(area);
+    let conflicts = if state.git_conflicts.is_empty() {
+        String::new()
+    } else {
+        format!(" · {} conflict(s)", state.git_conflicts.len())
+    };
     render_panel(
         frame,
         rows[0],
-        format!(" GIT · {branch} "),
         format!(
-            "↑{} ↓{} · {} conflict(s) · {change_count} changed · {}\nGH {}",
-            state.git_ahead,
-            state.git_behind,
-            state.git_conflicts.len(),
+            " GIT · {branch} ↑{} ↓{} ",
+            state.git_ahead, state.git_behind
+        ),
+        format!(
+            "{change_count} changed{conflicts} · {}\n{review}",
             state
                 .selected_git_entry()
                 .map(|entry| format!("selected {}", entry.path))
                 .unwrap_or_else(|| "j/k choose · c commit · o open · x discard".into()),
-            review
         ),
         PURPLE,
     );
@@ -2946,9 +2957,9 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     render_panel(frame, columns[0], " PI ", pi_content, PURPLE);
     let experiments_content = compact_multiline(
         &format!(
-            "{}\n{}",
+            "{}\nreplay {}",
             state.experiments.lines().next().unwrap_or("No experiments"),
-            state.replay.lines().next().unwrap_or("No replay"),
+            state.replay.lines().next().unwrap_or("idle"),
         ),
         columns[1].width.saturating_sub(4),
     );
@@ -3413,27 +3424,21 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 .map(|entry| entry.path.clone())
                 .unwrap_or_else(|| "no changed files".into()),
         ),
-        DevSurface::Debug => (
-            "DEBUG",
-            state
-                .debugger
-                .lines()
-                .next()
-                .unwrap_or("no sessions")
-                .to_string(),
-        ),
         DevSurface::More => (
             "SERVICES",
             format!(
                 "{} skills · {} tools · {} kernels",
                 state.snapshot_skills_count,
                 state.snapshot_tools_count,
-                state
-                    .kernels
-                    .lines()
-                    .filter(|line| !line.is_empty())
-                    .count()
+                status_line_count(&state.kernels)
             ),
+        ),
+        DevSurface::Debug => (
+            "DEBUG",
+            state
+                .selected_debug_session()
+                .map(|session| format!("{} · {}", session.name, session.state.label()))
+                .unwrap_or_else(|| "no session · a starts".into()),
         ),
     };
     frame.render_widget(
@@ -3848,6 +3853,8 @@ mod tests {
         assert!(help.contains("KEYS"));
         assert!(help.contains("Tab surfaces"));
         assert!(help.contains("/todo"));
+        assert!(help.contains("Agent · Code"));
+        assert!(!help.contains("▎   AGENT"));
         assert!(!help.contains("Alt-←/→"));
     }
 
@@ -4149,7 +4156,8 @@ mod tests {
         assert!(output.contains("src/main.rs"));
         assert!(output.contains("tests/agent.rs"));
         assert!(output.contains("src/main.rs"));
-        assert!(output.contains("Enter actions"));
+        assert!(output.contains("Space stages"));
+        assert!(!output.contains("0!"));
 
         state.move_git_selection(1);
         assert_eq!(
@@ -4164,7 +4172,7 @@ mod tests {
         state.toggle_help();
         let help = rendered(&state, 48, 18);
         assert!(help.contains("DO THIS"));
-        assert!(help.contains("APP"));
+        assert!(help.contains("App"));
         state.scroll_help(16);
         assert!(state.help_scroll <= 16);
 

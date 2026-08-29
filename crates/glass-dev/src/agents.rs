@@ -112,6 +112,8 @@ pub struct AgentSpec {
     pub thinking: Option<String>,
     /// Optional existing worktree path.
     pub worktree: Option<PathBuf>,
+    /// Optional architect session to fork as a Pi subagent.
+    pub fork_from: Option<PathBuf>,
     /// Whether governed tool restrictions are disabled.
     #[serde(default)]
     pub unrestricted: bool,
@@ -131,6 +133,7 @@ impl AgentSpec {
             model: None,
             thinking: None,
             worktree: None,
+            fork_from: None,
             unrestricted: false,
             max_runtime_seconds: Some(3_600),
             max_events: Some(10_000),
@@ -158,6 +161,9 @@ pub struct AgentSnapshot {
     pub thinking: Option<String>,
     /// Canonical worktree used by the worker.
     pub worktree: PathBuf,
+    /// Persisted Pi session file, when the runtime has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_file: Option<String>,
     /// Whether unrestricted tools were enabled.
     pub unrestricted: bool,
     /// Creation timestamp in Unix milliseconds.
@@ -221,6 +227,7 @@ struct AgentRecord {
 
 struct WorkerRuntime {
     worktree: PathBuf,
+    fork_from: Option<PathBuf>,
     local_tool_executor: Option<PiToolExecutor>,
     sessions_dir: PathBuf,
     broker: Option<ResidentAgentBroker>,
@@ -388,6 +395,7 @@ impl AgentRegistry {
                     model: spec.model.clone(),
                     thinking: spec.thinking.clone(),
                     worktree,
+                    session_file: None,
                     unrestricted: spec.unrestricted,
                     created_at_ms: now,
                     started_at_ms: None,
@@ -679,6 +687,7 @@ impl AgentRegistry {
         let dropped_events = Arc::clone(&record.dropped_events);
         let spec = record.spec.clone();
         let worktree = record.snapshot.worktree.clone();
+        let fork_from = record.spec.fork_from.clone();
         let worker_id = id.clone();
         let (commands_tx, commands_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         record.command = Some(commands_tx);
@@ -694,6 +703,7 @@ impl AgentRegistry {
                     WorkerRuntime {
                         local_tool_executor,
                         worktree,
+                        fork_from,
                         sessions_dir,
                         broker,
                         additional_system_prompt,
@@ -827,6 +837,15 @@ impl AgentRegistry {
             }
             WorkerEvent::Pi(id, value) => {
                 if let Some(record) = self.records.get_mut(&id) {
+                    if let Some(file) = value
+                        .pointer("/result/sessionFile")
+                        .or_else(|| value.pointer("/state/sessionFile"))
+                        .or_else(|| value.get("sessionFile"))
+                        .and_then(Value::as_str)
+                        .filter(|file| !file.is_empty())
+                    {
+                        record.snapshot.session_file = Some(file.into());
+                    }
                     let event_type = value.get("type").and_then(Value::as_str);
                     if event_type == Some("agent_settled") && !record.snapshot.status.terminal() {
                         record.awaiting_agent_settle = false;
@@ -1007,6 +1026,7 @@ fn run_worker(
         local_tool_executor: runtime.local_tool_executor,
         additional_system_prompt: runtime.additional_system_prompt,
         resume: false,
+        fork_from: runtime.fork_from,
     };
     let mut harness = match GlassPiRuntime::spawn(&runtime.worktree, options) {
         Ok(harness) => harness,
@@ -1022,7 +1042,9 @@ fn run_worker(
                 Ok(WorkerCommand::Request(request)) => {
                     let waits_for_agent = matches!(
                         request,
-                        PiSessionRequest::Prompt { .. } | PiSessionRequest::FollowUp { .. }
+                        PiSessionRequest::Prompt { .. }
+                            | PiSessionRequest::FollowUp { .. }
+                            | PiSessionRequest::Complete { .. }
                     );
                     match harness.start_request(request) {
                         Ok(request_id) => send_critical_worker_event(
@@ -1126,6 +1148,12 @@ fn validate_spec(
             return Err(DevelopmentError::PathOutsideWorkspace(worktree));
         }
     }
+    if let Some(path) = &spec.fork_from {
+        let path = std::fs::canonicalize(path)?;
+        if path == Path::new("/") || !path.starts_with(root) {
+            return Err(DevelopmentError::PathOutsideWorkspace(path));
+        }
+    }
     if spec.max_runtime_seconds == Some(0) || spec.max_events == Some(0) {
         return Err(DevelopmentError::InvalidInput(
             "agent budgets must be greater than zero".into(),
@@ -1221,6 +1249,7 @@ mod tests {
                     model: None,
                     thinking: None,
                     worktree: registry.root.clone(),
+                    session_file: None,
                     unrestricted: false,
                     created_at_ms: now,
                     started_at_ms: Some(now),

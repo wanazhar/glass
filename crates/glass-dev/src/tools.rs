@@ -345,15 +345,43 @@ impl DevelopmentToolRouter {
                     &workspace.customization().config().editor,
                 )
                 .ok_or_else(|| {
-                    DevelopmentError::NotFound(
-                        "no FIM provider configured · set editor.fim.endpoint or GLASS_FIM_ENDPOINT"
-                            .into(),
-                    )
+                    DevelopmentError::NotFound("FIM is disabled".into())
                 })?;
-                let text = provider
-                    .complete(string("prefix")?, optional_string(call, "suffix").unwrap_or(""))
-                    .map_err(DevelopmentError::InvalidInput)?;
-                Ok(serde_json::json!({"text": text, "model": provider.model}))
+                match provider.backend {
+                    crate::fim::FimBackend::Stub => {
+                        let text = provider.complete(
+                            string("prefix")?,
+                            optional_string(call, "suffix").unwrap_or(""),
+                        )
+                        .map_err(DevelopmentError::InvalidInput)?;
+                        Ok(serde_json::json!({"text": text, "backend": "stub"}))
+                    }
+                    crate::fim::FimBackend::Pi => {
+                        let prefix = string("prefix")?.to_string();
+                        let suffix = optional_string(call, "suffix")
+                            .unwrap_or("")
+                            .to_string();
+                        let snapshots = workspace.agents().list()?;
+                        let id = snapshots
+                            .into_iter()
+                            .find(|item| item.status == crate::AgentStatus::Idle)
+                            .map(|item| item.id)
+                            .ok_or_else(|| {
+                                DevelopmentError::NotFound(
+                                    "no idle Pi session for FIM; start an agent first".into(),
+                                )
+                            })?;
+                        workspace.agents().request(
+                            &id,
+                            crate::pi_runtime::PiSessionRequest::Complete { prefix, suffix },
+                        )?;
+                        Ok(serde_json::json!({
+                            "queued": true,
+                            "backend": "pi",
+                            "agentId": id.as_str(),
+                        }))
+                    }
+                }
             },
             "glass.editor.checkpoints" => Ok(serde_json::to_value(
                 workspace.project().editor_checkpoints(),

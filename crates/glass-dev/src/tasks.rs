@@ -221,9 +221,32 @@ fn implementer_prompt(goal: &str, index: usize, total: usize, worktree: &Path) -
         "tests, types, and remaining files from the architect plan"
     };
     format!(
-        "You are implementer {index} of {total} for: {goal}\nYou work only in this isolated worktree: {}\nDo not edit other implementers' trees. Own {slice}. Follow the architect plan. Default file writes are editor proposals; do not write through unless unrestricted mode is on. Keep the change minimal.",
+        "You are implementer {index} of {total} for: {goal}\nYou work only in this isolated worktree: {}\nYou continue from a forked Pi session of the architect when one exists. Do not edit other implementers' trees. Own {slice}. Follow the architect plan. Default file writes are editor proposals; do not write through unless unrestricted mode is on. Keep the change minimal.",
         worktree.display()
     )
+}
+
+fn architect_session_file<B: TaskAgentBackend>(
+    scheduler: &TaskScheduler,
+    agents: &mut B,
+    snapshot: &TaskSnapshot,
+) -> Option<PathBuf> {
+    if snapshot.role != "implementer" {
+        return None;
+    }
+    let architect = snapshot.dependencies.iter().find_map(|dep| {
+        let task = scheduler.tasks.get(dep)?;
+        (task.snapshot.role == "architect")
+            .then(|| task.snapshot.assigned_agent.clone())
+            .flatten()
+    })?;
+    agents
+        .agent_snapshots()
+        .ok()?
+        .into_iter()
+        .find(|item| item.id == architect)?
+        .session_file
+        .map(PathBuf::from)
 }
 
 fn tester_prompt(goal: &str, worktree: &Path) -> String {
@@ -809,17 +832,18 @@ impl TaskScheduler {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in ready {
-            let record = self.record(&id)?;
+            let snapshot = self.record(&id)?.snapshot.clone();
             let mut spec = AgentSpec::new(
-                record.snapshot.role.clone(),
-                format!("task {}: {}", id.as_str(), record.snapshot.title),
+                snapshot.role.clone(),
+                format!("task {}: {}", id.as_str(), snapshot.title),
             );
-            spec.model.clone_from(&record.snapshot.model);
-            spec.thinking.clone_from(&record.snapshot.thinking);
-            spec.worktree = Some(record.snapshot.worktree.clone());
-            spec.unrestricted = record.snapshot.unrestricted;
-            spec.max_runtime_seconds = Some(record.snapshot.budget.max_runtime_seconds);
-            spec.max_events = Some(record.snapshot.budget.max_events);
+            spec.model.clone_from(&snapshot.model);
+            spec.thinking.clone_from(&snapshot.thinking);
+            spec.worktree = Some(snapshot.worktree.clone());
+            spec.fork_from = architect_session_file(self, agents, &snapshot);
+            spec.unrestricted = snapshot.unrestricted;
+            spec.max_runtime_seconds = Some(snapshot.budget.max_runtime_seconds);
+            spec.max_events = Some(snapshot.budget.max_events);
             let agent = agents.create_agent(spec)?;
             let record = self.record_mut(&id)?;
             record.snapshot.assigned_agent = Some(agent);
@@ -1436,6 +1460,7 @@ mod tests {
                 model: spec.model,
                 thinking: spec.thinking,
                 worktree: spec.worktree.unwrap(),
+                session_file: None,
                 unrestricted: spec.unrestricted,
                 created_at_ms: now_ms(),
                 started_at_ms: Some(now_ms()),

@@ -46,10 +46,32 @@ impl TuiWorkflowRecording {
     }
 }
 
-struct PendingFim {
-    path: String,
-    offset: usize,
-    rx: std::sync::mpsc::Receiver<Option<String>>,
+enum PendingFim {
+    Thread {
+        path: String,
+        offset: usize,
+        rx: std::sync::mpsc::Receiver<Option<String>>,
+    },
+    Pi {
+        path: String,
+        offset: usize,
+        agent_id: crate::AgentId,
+        since: u64,
+    },
+}
+
+impl PendingFim {
+    fn path(&self) -> &str {
+        match self {
+            Self::Thread { path, .. } | Self::Pi { path, .. } => path,
+        }
+    }
+
+    fn offset(&self) -> usize {
+        match self {
+            Self::Thread { offset, .. } | Self::Pi { offset, .. } => *offset,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4890,13 +4912,59 @@ impl DevTuiState {
     }
 
     fn take_ready_fim(&mut self, path: &str, offset: usize) -> bool {
-        let Some(pending) = self.pending_fim.as_mut() else {
+        let stale = self
+            .pending_fim
+            .as_ref()
+            .is_some_and(|pending| pending.path() != path || pending.offset() != offset);
+        if stale {
+            self.pending_fim = None;
+            return false;
+        }
+        let pi = match &self.pending_fim {
+            Some(PendingFim::Pi {
+                agent_id, since, ..
+            }) => Some((agent_id.clone(), *since)),
+            _ => None,
+        };
+        if let Some((agent_id, since)) = pi {
+            let text = self
+                .locked(|workspace| {
+                    workspace
+                        .agents()
+                        .history(since)
+                        .ok()?
+                        .into_iter()
+                        .rev()
+                        .find_map(|event| {
+                            if event.agent_id != agent_id {
+                                return None;
+                            }
+                            if event
+                                .payload
+                                .get("operation")
+                                .and_then(serde_json::Value::as_str)
+                                != Some("complete")
+                            {
+                                return None;
+                            }
+                            crate::fim::parse_fim_text(&event.payload)
+                        })
+                })
+                .flatten();
+            return match text {
+                Some(text) => {
+                    self.pending_fim = None;
+                    self.editor_engine.ghost = Some(GhostText { text });
+                    true
+                }
+                None => false,
+            };
+        }
+        let Some(PendingFim::Thread { rx, .. }) = self.pending_fim.as_mut() else {
             return false;
         };
-        match pending.rx.try_recv() {
-            Ok(Some(text))
-                if pending.path == path && pending.offset == offset && !text.is_empty() =>
-            {
+        match rx.try_recv() {
+            Ok(Some(text)) if !text.is_empty() => {
                 self.pending_fim = None;
                 self.editor_engine.ghost = Some(GhostText { text });
                 true
@@ -4905,12 +4973,7 @@ impl DevTuiState {
                 self.pending_fim = None;
                 false
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                if pending.path != path || pending.offset != offset {
-                    self.pending_fim = None;
-                }
-                false
-            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
         }
     }
 
@@ -4918,7 +4981,7 @@ impl DevTuiState {
         if self
             .pending_fim
             .as_ref()
-            .is_some_and(|pending| pending.path == path && pending.offset == offset)
+            .is_some_and(|pending| pending.path() == path && pending.offset() == offset)
         {
             return;
         }
@@ -4929,17 +4992,65 @@ impl DevTuiState {
         };
         let prefix = self.focused_editor_content[..offset].to_string();
         let suffix = self.focused_editor_content[offset..].to_string();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _ = std::thread::Builder::new()
-            .name("glass-fim".into())
-            .spawn(move || {
-                let _ = tx.send(provider.complete(&prefix, &suffix).ok());
-            });
-        self.pending_fim = Some(PendingFim {
-            path: path.to_string(),
-            offset,
-            rx,
-        });
+        match provider.backend {
+            crate::fim::FimBackend::Stub => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let _ = std::thread::Builder::new()
+                    .name("glass-fim".into())
+                    .spawn(move || {
+                        let _ = tx.send(provider.complete(&prefix, &suffix).ok());
+                    });
+                self.pending_fim = Some(PendingFim::Thread {
+                    path: path.to_string(),
+                    offset,
+                    rx,
+                });
+            }
+            crate::fim::FimBackend::Pi => {
+                let selected = self.selected_agent.clone();
+                let queued = self
+                    .locked(|workspace| {
+                        let since = workspace
+                            .agents()
+                            .history(0)
+                            .ok()?
+                            .last()
+                            .map(|event| event.sequence)
+                            .unwrap_or(0);
+                        let snapshots = workspace.agents().list().ok()?;
+                        let id = selected
+                            .as_ref()
+                            .filter(|id| {
+                                snapshots.iter().any(|item| {
+                                    &item.id == *id && item.status == crate::AgentStatus::Idle
+                                })
+                            })
+                            .cloned()
+                            .or_else(|| {
+                                snapshots.into_iter().find_map(|item| {
+                                    (item.status == crate::AgentStatus::Idle).then_some(item.id)
+                                })
+                            })?;
+                        workspace
+                            .agents()
+                            .request(
+                                &id,
+                                crate::pi_runtime::PiSessionRequest::Complete { prefix, suffix },
+                            )
+                            .ok()?;
+                        Some((id, since))
+                    })
+                    .flatten();
+                if let Some((agent_id, since)) = queued {
+                    self.pending_fim = Some(PendingFim::Pi {
+                        path: path.to_string(),
+                        offset,
+                        agent_id,
+                        since,
+                    });
+                }
+            }
+        }
     }
 
     fn lsp_ghost_insert(&mut self, path: &str, line: u32, character: u32) -> Option<String> {

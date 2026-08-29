@@ -1,27 +1,30 @@
-//! Configured fill-in-the-middle completions for editor ghosts.
+//! Fill-in-the-middle ghosts served by a resident Pi AgentSession.
 //!
-//! Local identifier/LSP/`TODO` fallbacks stay available. A provider is used
-//! only when `editor.fim` or `GLASS_FIM_ENDPOINT` is set. `stub://` is for
-//! tests and never opens a socket.
+//! Local identifier/LSP/`TODO` fallbacks stay available. A `stub://` endpoint
+//! is for tests and never starts Pi. Otherwise Glass queues `complete` on a
+//! resident Pi session so ghosts use the same SDK, auth, and model as the
+//! factory — not a second HTTP client.
 
 use crate::customization::EditorConfig;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::env;
-use std::time::Duration;
 
 const MAX_PREFIX_BYTES: usize = 6 * 1024;
 const MAX_SUFFIX_BYTES: usize = 2 * 1024;
 const MAX_GHOST_BYTES: usize = 256;
-const DEFAULT_MAX_TOKENS: u32 = 64;
-const REQUEST_TIMEOUT: Duration = Duration::from_millis(800);
 
-/// Resolved FIM provider. Clone so a worker thread can own a copy.
+/// Who supplies the ghost fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FimBackend {
+    Stub,
+    Pi,
+}
+
+/// Resolved FIM provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FimProvider {
-    pub endpoint: String,
-    pub model: String,
-    pub api_key: Option<String>,
-    pub max_tokens: u32,
+    pub backend: FimBackend,
+    pub model: Option<String>,
 }
 
 impl FimProvider {
@@ -33,94 +36,59 @@ impl FimProvider {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .or_else(|| env_nonempty("GLASS_FIM_ENDPOINT"))?;
-        let model = editor
-            .fim
-            .model
+            .or_else(|| env_nonempty("GLASS_FIM_ENDPOINT"));
+        if endpoint
             .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .or_else(|| env_nonempty("GLASS_FIM_MODEL"))
-            .unwrap_or_else(|| "fim".into());
-        let key_env = editor
-            .fim
-            .api_key_env
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("GLASS_FIM_API_KEY");
-        let api_key = env_nonempty(key_env)
-            .or_else(|| env_nonempty("GLASS_FIM_API_KEY"))
-            .or_else(|| env_nonempty("XAI_API_KEY"))
-            .or_else(|| env_nonempty("OPENAI_API_KEY"));
-        if !endpoint.starts_with("stub:") && api_key.is_none() {
+            .is_some_and(|value| matches!(value, "off" | "none" | "disable"))
+        {
             return None;
         }
+        if endpoint
+            .as_deref()
+            .is_some_and(|value| value.starts_with("stub:"))
+        {
+            return Some(Self {
+                backend: FimBackend::Stub,
+                model: None,
+            });
+        }
         Some(Self {
-            endpoint,
-            model,
-            api_key,
-            max_tokens: editor
+            backend: FimBackend::Pi,
+            model: editor
                 .fim
-                .max_tokens
-                .unwrap_or(DEFAULT_MAX_TOKENS)
-                .clamp(8, 256),
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| env_nonempty("GLASS_FIM_MODEL")),
         })
     }
 
     pub fn complete(&self, prefix: &str, suffix: &str) -> Result<String, String> {
         let prefix = trim_prefix(prefix);
         let suffix = trim_suffix(suffix);
-        if self.endpoint.starts_with("stub:") {
-            return Ok(bound_ghost(&stub_complete(prefix, suffix)));
+        match self.backend {
+            FimBackend::Stub => Ok(bound_ghost(&stub_complete(prefix, suffix))),
+            FimBackend::Pi => {
+                Err("Pi FIM is served by a resident AgentSession complete operation".into())
+            }
         }
-        let body = json!({
-            "model": self.model,
-            "prompt": prefix,
-            "suffix": suffix,
-            "max_tokens": self.max_tokens,
-            "temperature": 0.0,
-            "stop": ["\n\n"],
-        });
-        let mut request = reqwest::blocking::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|error| error.to_string())?
-            .post(&self.endpoint)
-            .header("content-type", "application/json");
-        if let Some(key) = &self.api_key {
-            request = request.bearer_auth(key);
-        }
-        let response = request
-            .json(&body)
-            .send()
-            .map_err(|error| error.to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("FIM provider returned {}", response.status()));
-        }
-        let value = response
-            .json::<Value>()
-            .map_err(|error| error.to_string())?;
-        let text = parse_fim_text(&value).ok_or_else(|| "FIM response had no text".to_string())?;
-        Ok(bound_ghost(&text))
     }
 }
 
 pub fn parse_fim_text(value: &Value) -> Option<String> {
-    let choice = value
-        .pointer("/choices/0")
-        .or_else(|| value.get("choices").and_then(Value::as_array)?.first())?;
-    let text = choice
-        .get("text")
+    let text = value
+        .pointer("/result/text")
         .and_then(Value::as_str)
-        .or_else(|| choice.pointer("/message/content").and_then(Value::as_str))
-        .or_else(|| value.get("content").and_then(Value::as_str))?;
+        .or_else(|| value.get("text").and_then(Value::as_str))
+        .or_else(|| value.pointer("/choices/0/text").and_then(Value::as_str))?;
     let text = text.trim_end_matches('\0').to_string();
     (!text.trim().is_empty()).then_some(text)
 }
 
 fn stub_complete(prefix: &str, suffix: &str) -> String {
+    let _ = suffix;
     let line = prefix.rsplit('\n').next().unwrap_or(prefix);
     let trimmed = line.trim_end();
     if trimmed.ends_with('(') {
@@ -131,9 +99,6 @@ fn stub_complete(prefix: &str, suffix: &str) -> String {
         || trimmed.ends_with('{')
         || line.chars().all(|character| character.is_whitespace())
     {
-        if suffix.trim_start().starts_with('}') {
-            return "todo!()".into();
-        }
         return "todo!()".into();
     }
     "todo!()".into()
@@ -182,14 +147,13 @@ fn env_nonempty(name: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::customization::{EditorConfig, FimConfig};
+    use serde_json::json;
 
     #[test]
     fn stub_provider_fills_an_empty_block() {
         let provider = FimProvider {
-            endpoint: "stub://local".into(),
-            model: "test".into(),
-            api_key: None,
-            max_tokens: 32,
+            backend: FimBackend::Stub,
+            model: None,
         };
         let text = provider
             .complete("fn main() {\n    ", "\n}\n")
@@ -202,20 +166,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_fim_text_reads_openai_and_chat_shapes() {
+    fn parse_fim_text_reads_pi_complete_and_legacy_shapes() {
         assert_eq!(
-            parse_fim_text(&json!({"choices":[{"text":" hello"}]})).as_deref(),
+            parse_fim_text(&json!({"result":{"text":" hello"}})).as_deref(),
             Some(" hello")
         );
         assert_eq!(
-            parse_fim_text(&json!({"choices":[{"message":{"content":"world"}}]})).as_deref(),
+            parse_fim_text(&json!({"choices":[{"text":"world"}]})).as_deref(),
             Some("world")
         );
-        assert!(parse_fim_text(&json!({"choices":[{"text":"   "}]})).is_none());
+        assert!(parse_fim_text(&json!({"result":{"text":"   "}})).is_none());
     }
 
     #[test]
-    fn from_editor_accepts_stub_without_a_key() {
+    fn from_editor_uses_stub_or_resident_pi() {
         let stub = EditorConfig {
             fim: FimConfig {
                 endpoint: Some("stub://unit".into()),
@@ -225,8 +189,21 @@ mod tests {
             ..EditorConfig::default()
         };
         assert_eq!(
-            FimProvider::from_editor(&stub).map(|provider| provider.endpoint),
-            Some("stub://unit".into())
+            FimProvider::from_editor(&stub).map(|provider| provider.backend),
+            Some(FimBackend::Stub)
         );
+        let pi = EditorConfig::default();
+        assert_eq!(
+            FimProvider::from_editor(&pi).map(|provider| provider.backend),
+            Some(FimBackend::Pi)
+        );
+        let off = EditorConfig {
+            fim: FimConfig {
+                endpoint: Some("off".into()),
+                ..FimConfig::default()
+            },
+            ..EditorConfig::default()
+        };
+        assert!(FimProvider::from_editor(&off).is_none());
     }
 }

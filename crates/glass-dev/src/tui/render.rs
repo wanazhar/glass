@@ -253,6 +253,7 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     if state.factory_split
         && state.composer_mode
         && !state.focused_editor_path.is_empty()
+        && matches!(state.surface, DevSurface::Agent | DevSurface::Code)
         && !matches!(
             state.responsive_class(area.width, area.height),
             ResponsiveClass::Phone
@@ -282,7 +283,11 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         .constraints([
             Constraint::Length(2),
             Constraint::Min(4),
-            Constraint::Length(4),
+            Constraint::Length(if state.composer_mode {
+                footer_height(state).max(4)
+            } else {
+                4
+            }),
         ])
         .split(area);
     let content = state.focused_editor_content.as_str();
@@ -421,35 +426,39 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         )
     } else {
         (
-            "Esc normal · hjkl · dif/dia · gd ]c · i insert · Ctrl-S save · Alt-A ask",
+            "Esc normal · hjkl · dif/dia · gd ]c · i insert · Ctrl-S save · Alt-A / Ctrl-L ask",
             "Esc exit editor · exit prompt protects unsaved work",
         )
     };
-    let footer = vec![
-        Line::from(Span::styled(
-            compact_line(&state.status, area.width.saturating_sub(2)),
-            status_style(state),
-        )),
-        Line::from(Span::styled(editor_help, Style::default().fg(MUTED))),
-        Line::from(Span::styled(
-            exit_help,
-            Style::default()
-                .fg(ACCENT_BRIGHT)
-                .add_modifier(Modifier::BOLD),
-        )),
-    ];
-    frame.render_widget(
-        Paragraph::new(footer)
-            .style(Style::default().bg(PANEL_BACKGROUND))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(PANEL_BORDER))
-                    .padding(Padding::horizontal(1)),
-            )
-            .wrap(Wrap { trim: true }),
-        rows[2],
-    );
+    if state.composer_mode {
+        render_status(frame, state, rows[2]);
+    } else {
+        let footer = vec![
+            Line::from(Span::styled(
+                compact_line(&state.status, area.width.saturating_sub(2)),
+                status_style(state),
+            )),
+            Line::from(Span::styled(editor_help, Style::default().fg(MUTED))),
+            Line::from(Span::styled(
+                exit_help,
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(footer)
+                .style(Style::default().bg(PANEL_BACKGROUND))
+                .block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(PANEL_BORDER))
+                        .padding(Padding::horizontal(1)),
+                )
+                .wrap(Wrap { trim: true }),
+            rows[2],
+        );
+    }
 
     if let Some(prompt) = state.editor_exit_prompt {
         render_editor_exit_prompt(frame, area, prompt);
@@ -973,7 +982,7 @@ fn palette_action_hint(command: &str) -> String {
 }
 
 fn help_content(surface: DevSurface) -> String {
-    let global = "KEYS\n  Ctrl-P   open file\n  Ctrl-K   command palette\n  :        command palette\n  Ctrl-Shift-P  command palette\n  Tab      next surface\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Esc      back\n  ?        help\n  Ctrl-C   quit confirmation";
+    let global = "KEYS\n  Ctrl-P   open file · Ctrl-L chat dock\n  Ctrl-K   command palette\n  :        command palette\n  Ctrl-Shift-P  command palette\n  Tab      next surface\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Esc      back\n  ?        help\n  Ctrl-C   quit confirmation";
     let current = match surface {
         DevSurface::Agent | DevSurface::Trust => {
             "AGENT\n  Enter    start or continue a conversation\n  Shift-Enter  newline · Tab @mention\n  ↑        previous prompt\n  Ctrl-D   steer the active turn\n  Ctrl-X   abort the selected agent\n  :agent setup / doctor / new\n  :review  show/accept/ship · :task crew GOAL\n  :harness list / start NAME"
@@ -1043,7 +1052,16 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(42), Constraint::Min(36)])
         .split(rows[1]);
-    render_surface(frame, state, columns[0]);
+    if state.surface == DevSurface::Code {
+        render_agent_conversation_panel(
+            frame,
+            state,
+            "Ask from Code · Ctrl-L dock · comments stay on this buffer",
+            columns[0],
+        );
+    } else {
+        render_surface(frame, state, columns[0]);
+    }
     let marks = editor_mark_glyphs(state);
     let notes = state.editor_source_notes();
     let decorations = file_view::EditorDecorations {
@@ -1549,10 +1567,11 @@ fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
             format!("APP (optional) · {summary}")
         });
     let chrome = state.agent_chrome_line();
+    let mode = state.composer_run_mode.label();
     let second = if chrome.is_empty() {
-        app_summary
+        format!("{mode} · Ctrl-L · {app_summary}")
     } else {
-        format!("{chrome} · {app_summary}")
+        format!("{mode} · {chrome} · {app_summary}")
     };
     format!(
         "{}\n{}",
@@ -2992,6 +3011,29 @@ fn draw_ansi_pane(
         }
     }
 }
+fn last_conversation_preview(state: &DevTuiState) -> String {
+    state
+        .conversation_entries_view()
+        .into_iter()
+        .rev()
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|entry| {
+            let label = match entry.kind {
+                super::projection::ConversationKind::User => "YOU",
+                super::projection::ConversationKind::Assistant => "AGENT",
+                super::projection::ConversationKind::Alert => "ALERT",
+                super::projection::ConversationKind::Error => "ERR",
+                super::projection::ConversationKind::System => "SYS",
+            };
+            format!("{label} {}", entry.text.lines().next().unwrap_or_default())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     if state.surface == DevSurface::Agent {
         render_agent_workspace_context(frame, state, area);
@@ -3014,18 +3056,28 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         }
         DevSurface::Agent => ("WORKSPACE", "Use the workspace".into()),
         DevSurface::Code => {
+            let chat = if state.composer_mode {
+                last_conversation_preview(state)
+            } else {
+                String::new()
+            };
             let content = if state.focused_editor_path.is_empty() {
-                format!("{} files", state.files.len())
+                format!("{} files\nCtrl-L ask", state.files.len())
             } else {
                 format!(
-                    "{}{}\nline {}",
+                    "{}{}\nline {}\nCtrl-L ask{}",
                     if state.focused_editor_dirty {
                         "● "
                     } else {
                         ""
                     },
                     state.focused_editor_path,
-                    state.focused_editor_line
+                    state.focused_editor_line,
+                    if chat.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n{chat}")
+                    }
                 )
             };
             ("CODE", content)
@@ -3047,7 +3099,7 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             (
                 "BROWSER",
                 format!(
-                    "{}\n{}\n{}",
+                    "{}\n{}\n{}\nCtrl-L ask · C comment",
                     selected.unwrap_or_else(|| "no selection".into()),
                     browser.connection_label(),
                     browser.focus_label()
@@ -3233,7 +3285,15 @@ fn composer_input_lines(state: &DevTuiState, width: u16) -> Vec<Line<'static>> {
         .skip(window_start)
         .take(visible)
         .map(|(index, part)| {
-            let prefix = if index == window_start { "> " } else { "  " };
+            let prefix = if index == window_start {
+                match state.composer_run_mode {
+                    crate::AgentTurnMode::Ask => "? ",
+                    crate::AgentTurnMode::Plan => "P ",
+                    crate::AgentTurnMode::Agent => "> ",
+                }
+            } else {
+                "  "
+            };
             if index == cursor_line {
                 Line::from(input_spans(
                     prefix,

@@ -122,6 +122,12 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
         description: "hand this terminal to an installed coding harness",
     },
     SurfaceAction {
+        label: "Plan mode",
+        command: "plan mode",
+        key: ":",
+        description: "inspect-only plan, then accept to implement",
+    },
+    SurfaceAction {
         label: "Delegate to external harness",
         command: "harness delegate NAME PROMPT",
         key: ":",
@@ -713,6 +719,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         "workspace" | "daemon" => execute_workspace(state, command, parts.collect()),
         "project" => execute_project(state, parts.collect()),
         "agent" => execute_agent(state, parts.collect()),
+        "plan" => execute_plan(state, parts.collect()),
         "task" | "tasks" => execute_task(state, parts.collect()),
         "editor" => execute_editor(state, parts.collect()),
         "lsp" => execute_lsp(state, parts.collect()),
@@ -1563,6 +1570,58 @@ fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             Ok(format!("Workspace trust is now {}", trust.label()))
         }
         _ => Err("trust actions: status, inspect, untrusted, once, project".into()),
+    }
+}
+
+fn execute_plan(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    require_trusted(state)?;
+    match parts.first().copied().unwrap_or("show") {
+        "ask" => {
+            state.set_composer_run_mode(crate::AgentTurnMode::Ask);
+            Ok("Ask mode · read-only".into())
+        }
+        "plan" | "mode" => {
+            state.set_composer_run_mode(crate::AgentTurnMode::Plan);
+            state.focus_composer_dock();
+            Ok("Plan mode · describe a goal, then Enter".into())
+        }
+        "agent" => {
+            state.set_composer_run_mode(crate::AgentTurnMode::Agent);
+            Ok("Agent mode · proposals unless unrestricted".into())
+        }
+        "show" | "status" => Ok(match &state.pending_plan {
+            Some(plan) => format!(
+                "PLAN {}\n{}\n{}\n{}",
+                plan.id,
+                plan.goal,
+                if plan.accepted { "accepted" } else { "draft" },
+                plan.body
+            ),
+            None => "No plan yet · :plan mode then send a goal".into(),
+        }),
+        "accept" => {
+            // Worker is not in this command path; stash an implement prompt.
+            let Some(plan) = state.pending_plan.clone() else {
+                return Err("no plan to accept".into());
+            };
+            state.pending_plan = Some(super::state::WorkspacePlan {
+                accepted: true,
+                ..plan.clone()
+            });
+            state.set_composer_run_mode(crate::AgentTurnMode::Agent);
+            state.composer_input = format!(
+                "Implement this accepted plan. Stay in proposals unless I say otherwise.\n\nGoal: {}\n\n{}",
+                plan.goal, plan.body
+            );
+            state.composer_cursor = state.composer_input.len();
+            state.open_composer();
+            Ok(format!("Plan {} ready · Enter implements", plan.id))
+        }
+        "reject" => {
+            state.reject_pending_plan();
+            Ok(state.status.clone())
+        }
+        _ => Err("plan actions: show, accept, reject, ask, plan, agent".into()),
     }
 }
 

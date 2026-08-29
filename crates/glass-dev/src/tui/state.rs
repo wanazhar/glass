@@ -89,6 +89,14 @@ pub enum ChatMessageState {
     Failed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WorkspacePlan {
+    pub id: String,
+    pub goal: String,
+    pub body: String,
+    pub accepted: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionPickerItem {
     pub path: String,
@@ -260,9 +268,12 @@ pub struct DevTuiState {
     pub help_open: bool,
     pub help_scroll: u16,
     pub composer_mode: bool,
+    pub composer_run_mode: crate::AgentTurnMode,
+    pub pending_plan: Option<WorkspacePlan>,
     pub composer_input: String,
     pub composer_cursor: usize,
     pub composer_steer: bool,
+    pub last_app_comment: Option<String>,
     pub composer_history: Vec<String>,
     pub composer_history_index: Option<usize>,
     pub composer_history_draft: String,
@@ -515,9 +526,12 @@ impl DevTuiState {
             help_open: false,
             help_scroll: 0,
             composer_mode: false,
+            composer_run_mode: crate::AgentTurnMode::Agent,
+            pending_plan: None,
             composer_input: String::new(),
             composer_cursor: 0,
             composer_steer: false,
+            last_app_comment: None,
             composer_history: Vec::new(),
             composer_history_index: None,
             composer_history_draft: String::new(),
@@ -1852,10 +1866,156 @@ impl DevTuiState {
         self.close_file_picker();
         self.composer_mode = true;
         self.composer_cursor = self.composer_input.len();
-        self.status =
-            "Agent composer · Enter sends · Tab @mention · Shift-Enter newline · ↑ history · Esc cancel"
-                .into();
+        self.status = format!(
+            "{} dock on {} · Enter sends · Tab @mention · Shift-Enter newline · Ctrl-Shift-A mode · Esc back",
+            self.composer_run_mode.label(),
+            self.surface.label()
+        );
     }
+
+    /// Focus the shared chat dock without changing the active surface.
+    pub fn focus_composer_dock(&mut self) {
+        if self.snapshot_trust_label == "untrusted" {
+            self.surface = DevSurface::Trust;
+            self.status = "Trust this workspace before chatting · T or 1".into();
+            return;
+        }
+        if !self.agent_readiness.starts_with("✓ Ready") {
+            self.start_agent_interaction();
+            return;
+        }
+        self.open_composer();
+    }
+
+    pub fn cycle_composer_run_mode(&mut self) {
+        self.composer_run_mode = self.composer_run_mode.next();
+        let _ = self.ws_mut().map(|mut workspace| {
+            workspace.set_agent_turn_mode(self.composer_run_mode);
+        });
+        self.status = format!(
+            "{} mode · Ask is read-only · Plan writes a reviewable plan · Agent proposes",
+            self.composer_run_mode.label()
+        );
+        if self.composer_mode {
+            self.open_composer();
+        }
+    }
+
+    pub fn set_composer_run_mode(&mut self, mode: crate::AgentTurnMode) {
+        self.composer_run_mode = mode;
+        let _ = self.ws_mut().map(|mut workspace| {
+            workspace.set_agent_turn_mode(mode);
+        });
+        self.status = format!("{} mode", mode.label());
+    }
+
+    pub fn jump_to_app_keep_dock(&mut self) {
+        self.surface = DevSurface::App;
+        self.status = if self.composer_mode {
+            "App · dock stays open · watch the agent or type a follow-up".into()
+        } else {
+            "App selected · Ctrl-L talks about this page".into()
+        };
+    }
+
+    pub fn watch_agent_on_app(&mut self, tool: &str, value: &serde_json::Value) {
+        self.browser_workspace.state_mut().input_owner =
+            glass_browser::browser_workspace::BrowserInputOwner::Agent;
+        if !self.browser_visual_live {
+            self.browser_visual_live = true;
+        }
+        let target = value
+            .get("target")
+            .or_else(|| value.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("page");
+        let action = tool.rsplit('.').next().unwrap_or("act");
+        self.status = format!("Agent {action} {target} · watching · Ctrl-L to steer");
+    }
+
+    pub fn comment_selected_app_entity(&mut self) {
+        let Some(entity) = self.browser_workspace.state().selected().cloned() else {
+            self.status = "No App entity selected · ↑/↓ then C comments".into();
+            return;
+        };
+        self.last_app_comment = Some(format!("{} ({})", entity.name, entity.role));
+        self.composer_input = format!(
+            "About the selected App control [{}] {}: ",
+            entity.role, entity.name
+        );
+        self.composer_cursor = self.composer_input.len();
+        self.focus_composer_dock();
+        self.status = format!(
+            "App comment on {} · finish the note, then Enter",
+            entity.name
+        );
+    }
+
+    pub fn capture_plan_from_goal(&mut self, goal: &str) {
+        self.pending_plan = Some(WorkspacePlan {
+            id: format!(
+                "plan-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis())
+                    .unwrap_or(0)
+            ),
+            goal: goal.chars().take(240).collect(),
+            body: String::new(),
+            accepted: false,
+        });
+    }
+
+    pub fn accept_pending_plan(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(mut plan) = self.pending_plan.clone() else {
+            self.status = "No plan to accept · switch to Plan and send a goal".into();
+            return;
+        };
+        if plan.body.is_empty()
+            && let Some(entry) = self
+                .conversation_entries_view()
+                .into_iter()
+                .rev()
+                .find(|entry| entry.kind == super::projection::ConversationKind::Assistant)
+        {
+            plan.body = entry.text;
+        }
+        plan.accepted = true;
+        self.persist_plan(&plan);
+        self.pending_plan = Some(plan.clone());
+        self.set_composer_run_mode(crate::AgentTurnMode::Agent);
+        self.composer_input = format!(
+            "Implement this accepted plan. Stay in proposals unless I say otherwise.\n\nGoal: {}\n\n{}",
+            plan.goal, plan.body
+        );
+        self.composer_cursor = self.composer_input.len();
+        self.open_composer();
+        self.submit_composer(worker);
+        self.status = format!("Plan {} accepted · Agent implementing", plan.id);
+    }
+
+    pub fn reject_pending_plan(&mut self) {
+        if let Some(plan) = self.pending_plan.as_mut() {
+            plan.accepted = false;
+            self.status = format!("Plan {} rejected · stay in Plan and revise", plan.id);
+        } else {
+            self.status = "No plan to reject".into();
+        }
+        self.set_composer_run_mode(crate::AgentTurnMode::Plan);
+    }
+
+    fn persist_plan(&self, plan: &WorkspacePlan) {
+        let Ok(workspace) = self.ws() else {
+            return;
+        };
+        let dir = workspace.root().join(".glass/plans");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(
+            dir.join("latest.json"),
+            serde_json::to_vec_pretty(plan).unwrap_or_default(),
+        );
+    }
+
     /// Move from the native editor into the shared agent conversation with
     /// the focused buffer attached as unsaved, bounded context.
     pub fn prepare_editor_agent_prompt(&mut self) {
@@ -1878,10 +2038,9 @@ impl DevTuiState {
         self.composer_steer = false;
         self.code_edit_mode = false;
         self.editor_exit_prompt = None;
-        self.surface = DevSurface::Agent;
         self.open_composer();
         self.status = format!(
-            "Editor context attached · {}:{} · review the prompt, then press Enter",
+            "Editor context attached · stay on Code · {}:{} · Enter sends",
             buffer.path, buffer.cursor_line
         );
     }
@@ -2441,20 +2600,43 @@ impl DevTuiState {
         let display_text = expand_mentions(&self.composer_input, file);
         let text = expand_mentions(&std::mem::take(&mut self.composer_input), file);
         self.remember_composer_history(&text);
+        if self.composer_run_mode == crate::AgentTurnMode::Plan {
+            self.capture_plan_from_goal(&text);
+        }
         let prove = compile_prove_it(&text);
         let steer = self.composer_steer;
         let queued_follow_up = self.agent_send_job.is_some();
         self.composer_cursor = 0;
         self.composer_steer = false;
         self.composer_mode = true;
+        let _ = self.ws_mut().map(|mut workspace| {
+            workspace.set_agent_turn_mode(self.composer_run_mode);
+        });
         let mut context = self.agent_browser_context();
         context["editor"] = self.agent_editor_context();
+        context["surface"] = serde_json::Value::String(self.surface.label().to_ascii_lowercase());
+        context["runMode"] =
+            serde_json::Value::String(self.composer_run_mode.label().to_ascii_lowercase());
+        if let Some(plan) = &self.pending_plan {
+            context["plan"] = serde_json::json!({
+                "id": plan.id,
+                "goal": plan.goal,
+                "accepted": plan.accepted,
+            });
+        }
+        if let Some(comment) = &self.last_app_comment {
+            context["appComment"] = serde_json::Value::String(comment.clone());
+        }
         if context["browser"]["selectedEntity"].is_object() {
             self.browser_workspace.state_mut().input_owner =
                 glass_browser::browser_workspace::BrowserInputOwner::Agent;
         }
+        let prefixed = match self.composer_run_mode.instruction() {
+            "" => text.clone(),
+            instruction => format!("{instruction}\n\n{text}"),
+        };
         let mut arguments = serde_json::json!({
-            "text": text,
+            "text": prefixed,
             "mode": if steer { "steer" } else { "follow-up" },
             "context": context,
         });
@@ -2499,10 +2681,12 @@ impl DevTuiState {
                 });
                 self.status = if steer {
                     "Sent · steering Glass Agent…".into()
+                } else if self.composer_run_mode == crate::AgentTurnMode::Plan {
+                    "Plan turn · inspect only · :plan accept when ready".into()
                 } else if queued_follow_up {
                     "Queued follow-up · Glass Agent will continue".into()
                 } else {
-                    "Sent · Glass Agent is thinking…".into()
+                    format!("Sent · {} is thinking…", self.composer_run_mode.label())
                 };
                 worker.request_conversation();
             }
@@ -2570,6 +2754,22 @@ impl DevTuiState {
             "stats" => ("glass.agent.stats", false),
             "sessions" => ("glass.agent.sessions", false),
             "tree" => ("glass.agent.tree", false),
+            "ask" | "plan" | "agent" => {
+                let mode = match command {
+                    "ask" => crate::AgentTurnMode::Ask,
+                    "plan" => crate::AgentTurnMode::Plan,
+                    _ => crate::AgentTurnMode::Agent,
+                };
+                self.set_composer_run_mode(mode);
+                self.remember_composer_history(&raw);
+                self.composer_input = rest.join(" ");
+                self.composer_cursor = self.composer_input.len();
+                if self.composer_input.trim().is_empty() {
+                    return;
+                }
+                self.submit_composer(worker);
+                return;
+            }
             _ => {
                 self.status = format!("Unknown slash command /{command}");
                 return;
@@ -2886,6 +3086,7 @@ impl DevTuiState {
                     if result.tool == "glass.browser.act" || result.tool == "glass.browser.navigate"
                     {
                         self.browser_observe_pending = true;
+                        self.watch_agent_on_app(&result.tool, &value);
                     }
                 } else if result.tool == "glass.git.diff" {
                     let empty = value.as_str().is_none_or(|diff| diff.trim().is_empty());
@@ -8315,7 +8516,7 @@ mod tests {
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::ALT,
         );
-        assert_eq!(state.surface, DevSurface::Agent);
+        assert_eq!(state.surface, DevSurface::Code);
         assert!(state.composer_mode);
         assert!(!state.code_edit_mode);
         assert!(state.composer_input.contains("src/main.rs:1:1"));
@@ -8698,6 +8899,58 @@ mod tests {
         state.edit_last_user_message();
         assert!(state.composer_mode);
         assert_eq!(state.composer_input, "previous prompt");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn chat_dock_stays_on_code_and_app() {
+        let root = std::env::temp_dir().join(format!("glass-dock-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.snapshot_trust_label = "trusted".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.surface = DevSurface::Code;
+        std::fs::create_dir_all(root.join("src")).expect("src");
+        std::fs::write(root.join("src/lib.rs"), "fn main() {}\n").expect("write");
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .open_buffer("src/lib.rs", crate::development::Actor::local())
+            .expect("open buffer");
+        state.refresh_editor_projection();
+        state.prepare_editor_agent_prompt();
+        assert_eq!(state.surface, DevSurface::Code);
+        assert!(state.composer_mode);
+        state.close_composer();
+        state.surface = DevSurface::App;
+        state.focus_composer_dock();
+        assert_eq!(state.surface, DevSurface::App);
+        assert!(state.composer_mode);
+        state.cycle_composer_run_mode();
+        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Ask);
+        state.cycle_composer_run_mode();
+        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Plan);
+        state.capture_plan_from_goal("ship the checkout");
+        state.pending_plan.as_mut().unwrap().body = "1. open App\n2. click Sign in".into();
+        assert!(!state.pending_plan.as_ref().unwrap().accepted);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn watching_agent_browser_act_enables_live_view() {
+        let root = std::env::temp_dir().join(format!("glass-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.watch_agent_on_app(
+            "glass.browser.act",
+            &serde_json::json!({"target": "Sign in"}),
+        );
+        assert!(state.browser_visual_live);
+        assert!(state.status.contains("Sign in"));
+        assert!(state.status.contains("watching"));
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 }

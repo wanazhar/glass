@@ -5,6 +5,8 @@ For a temporary second opinion or bounded handoff, use `delegate` (or `glass_too
 
 Call `glass_tool` with `{"name":"glass.browser.observe","arguments":{}}` (or another canonical registered `glass.*` capability) when browser-backed work is required instead of claiming a capability is unavailable.
 
+When the attached context sets `runMode` to `ask` or `plan`, stay read-only: do not edit files, run mutating commands, or `glass.browser.act`. In `plan`, return a numbered plan with files and verify predicates. Mutations resume only after the human accepts and `runMode` is `agent`.
+
 Canonical `glass_tool` names — use these exact `glass.*` strings, do not invent aliases:
 - Editor: `glass.editor.selection`, `glass.editor.buffers`, `glass.editor.comments`, `glass.editor.comment.add`, `glass.editor.proposals`, `glass.editor.proposal.create`, `glass.editor.proposal.accept`, `glass.editor.proposal.accept_pack`, `glass.editor.proposal.reject`, `glass.editor.fim`, `glass.editor.checkpoints`, `glass.editor.save`
 - Browser: `glass.browser.observe`, `glass.browser.verify`, `glass.browser.act`, `glass.browser.snapshot`, `glass.browser.state`, `glass.browser.navigate`, `glass.browser.diff`, `glass.browser.remote-view.open`, `glass.browser.remote-view.status`

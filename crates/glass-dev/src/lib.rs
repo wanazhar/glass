@@ -129,8 +129,8 @@ pub use tasks::{
 pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
 /// Workspace trust identities, decisions, and persistence.
 pub use trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
-/// Workspace owners and thread-safe handles.
-pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
+/// Shared workspace handle and per-turn Ask/Plan/Agent mode.
+pub use workspace::{AgentTurnMode, DevelopmentWorkspace, SharedDevelopmentWorkspace};
 
 /// Dispatch the full Glass Development Environment.
 ///

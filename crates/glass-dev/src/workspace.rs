@@ -53,6 +53,51 @@ pub struct DevelopmentWorkspace {
     trust_store: WorkspaceTrustStore,
     trusted_configuration_active: bool,
     generation: u64,
+    agent_turn_mode: AgentTurnMode,
+}
+
+/// Per-turn composer personality. Ask and Plan are fail-closed for mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTurnMode {
+    Ask,
+    Plan,
+    #[default]
+    Agent,
+}
+
+impl AgentTurnMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask",
+            Self::Plan => "Plan",
+            Self::Agent => "Agent",
+        }
+    }
+
+    pub fn allows_mutation(self) -> bool {
+        matches!(self, Self::Agent)
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Ask => Self::Plan,
+            Self::Plan => Self::Agent,
+            Self::Agent => Self::Ask,
+        }
+    }
+
+    pub fn instruction(self) -> &'static str {
+        match self {
+            Self::Ask => {
+                "[Glass Ask mode: read-only. Inspect evidence only. Do not edit files, run mutating commands, or act in the browser.]"
+            }
+            Self::Plan => {
+                "[Glass Plan mode: inspect only. Write a bounded numbered plan with files, risks, and verify predicates. Do not edit, click, or deploy until the human accepts.]"
+            }
+            Self::Agent => "",
+        }
+    }
 }
 
 impl DevelopmentWorkspace {
@@ -148,6 +193,7 @@ impl DevelopmentWorkspace {
             trust_store,
             trusted_configuration_active: false,
             generation: 1,
+            agent_turn_mode: AgentTurnMode::Agent,
         };
         if trust.permits_project_execution() {
             workspace.activate_trusted_configuration()?;
@@ -722,8 +768,35 @@ impl DevelopmentWorkspace {
         call: &crate::development::ToolCall,
         context: &DevelopmentToolContext,
     ) -> DevelopmentResult<serde_json::Value> {
+        let mutating = crate::tools::tool_requires_mutation(&call.name)
+            || self
+                .tools
+                .descriptors()
+                .iter()
+                .any(|descriptor| descriptor.name == call.name && descriptor.mutating);
+        if !self.agent_turn_mode.allows_mutation()
+            && matches!(
+                context.authorization.actor.kind,
+                crate::development::ActorKind::EmbeddedAgent
+            )
+            && mutating
+        {
+            return Err(crate::development::DevelopmentError::Conflict(format!(
+                "{} mode blocks {} until you switch to Agent",
+                self.agent_turn_mode.label(),
+                call.name
+            )));
+        }
         let router = self.tools.clone();
         router.execute(self, call, context)
+    }
+
+    pub fn agent_turn_mode(&self) -> AgentTurnMode {
+        self.agent_turn_mode
+    }
+
+    pub fn set_agent_turn_mode(&mut self, mode: AgentTurnMode) {
+        self.agent_turn_mode = mode;
     }
 
     /// Return task-loop state while allowing the scheduler to refresh its
@@ -1278,6 +1351,57 @@ command = '''{command}'''
             testers[0].worktree.as_deref(),
             testers[1].worktree.as_deref()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ask_mode_blocks_embedded_mutations() {
+        let root = test_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='ask-mode'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn ok() {}\n").unwrap();
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
+        workspace
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
+            .unwrap();
+        workspace.set_agent_turn_mode(AgentTurnMode::Ask);
+        let context = DevelopmentToolContext {
+            authorization: ToolAuthorization {
+                actor: Actor::embedded(),
+                allow_mutation: true,
+                confirmed: true,
+                unrestricted: false,
+            },
+            initiator: None,
+            expected_generation: workspace.generation(),
+            expected_project_revision: workspace.project().revision(),
+        };
+        let error = workspace
+            .execute_tool(
+                &ToolCall {
+                    id: "ask-write".into(),
+                    name: "glass.file.write".into(),
+                    arguments: serde_json::json!({"path":"src/lib.rs","content":"nope\n"}),
+                },
+                &context,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Ask mode blocks"));
+        workspace.set_agent_turn_mode(AgentTurnMode::Agent);
+        workspace
+            .execute_tool(
+                &ToolCall {
+                    id: "agent-write".into(),
+                    name: "glass.file.write".into(),
+                    arguments: serde_json::json!({"path":"src/lib.rs","content":"pub fn ok() {}\n"}),
+                },
+                &context,
+            )
+            .unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

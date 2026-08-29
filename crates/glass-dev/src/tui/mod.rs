@@ -483,9 +483,19 @@ pub fn run(
                             }
                             _ => {}
                         }
-                    } else if state.code_edit_mode {
-                        match key.code {
-                            KeyCode::Esc => state.handle_editor_escape(),
+                    } else if state.code_edit_mode && !state.composer_mode {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Char('l'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.focus_composer_dock();
+                            }
+                            (KeyCode::Char('g'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.jump_to_app_keep_dock();
+                            }
+                            (KeyCode::Esc, _) => state.handle_editor_escape(),
                             _ => state.edit_code_key(key.code, key.modifiers),
                         }
                     } else if state.file_picker_open {
@@ -580,6 +590,17 @@ pub fn run(
                             {
                                 state.toggle_composer_steer();
                             }
+                            (KeyCode::Char('a'), value)
+                                if value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.cycle_composer_run_mode();
+                            }
+                            (KeyCode::Char('g'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.jump_to_app_keep_dock();
+                            }
                             (KeyCode::Left, _) => state.move_composer_cursor(false),
                             (KeyCode::Right, _) => state.move_composer_cursor(true),
                             (KeyCode::Home, _) => state.composer_cursor = 0,
@@ -653,6 +674,22 @@ pub fn run(
                         }
                     } else {
                         match (key.code, key.modifiers) {
+                            (KeyCode::Char('l'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.focus_composer_dock();
+                            }
+                            (KeyCode::Char('a'), value)
+                                if value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.cycle_composer_run_mode();
+                            }
+                            (KeyCode::Char('g'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.jump_to_app_keep_dock();
+                            }
                             (KeyCode::Char('p'), value)
                                 if value.contains(KeyModifiers::CONTROL)
                                     && value.contains(KeyModifiers::SHIFT) =>
@@ -724,6 +761,9 @@ pub fn run(
                             }
                             (KeyCode::Char('T' | 't'), _) if state.surface == DevSurface::App => {
                                 state.queue_browser_targets(&mut worker);
+                            }
+                            (KeyCode::Char('C'), _) if state.surface == DevSurface::App => {
+                                state.comment_selected_app_entity();
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::App => {
                                 state.queue_browser_intent(BrowserWorkspaceIntent::ActivateSelected)

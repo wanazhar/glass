@@ -487,31 +487,10 @@ pub fn local_fim(content: &str, offset: usize) -> Option<String> {
     if !content.is_char_boundary(offset) {
         return None;
     }
-    let prefix = &content[..offset];
-    let token: String = prefix
-        .chars()
-        .rev()
-        .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    if token.len() >= 2 {
-        let mut best: Option<&str> = None;
-        for candidate in
-            content.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-        {
-            if candidate.starts_with(&token) && candidate.len() > token.len() {
-                let rest = &candidate[token.len()..];
-                if best.is_none_or(|current| rest.len() > current.len()) {
-                    best = Some(rest);
-                }
-            }
-        }
-        if let Some(rest) = best.filter(|rest| !rest.is_empty()) {
-            return Some(rest.to_string());
-        }
+    if let Some(rest) = local_fim_ident(content, offset) {
+        return Some(rest);
     }
+    let prefix = &content[..offset];
     let line_start = prefix.rfind('\n').map(|index| index + 1).unwrap_or(0);
     let line_prefix = content[line_start..offset].trim_start();
     if line_prefix.len() >= 4 {
@@ -524,6 +503,123 @@ pub fn local_fim(content: &str, offset: usize) -> Option<String> {
                 }
             }
         }
+    }
+    None
+}
+
+fn local_fim_ident(content: &str, offset: usize) -> Option<String> {
+    let prefix = &content[..offset];
+    let token: String = prefix
+        .chars()
+        .rev()
+        .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if token.len() < 2 {
+        return None;
+    }
+    let mut best: Option<&str> = None;
+    for candidate in
+        content.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+    {
+        if candidate.starts_with(&token) && candidate.len() > token.len() {
+            let rest = &candidate[token.len()..];
+            if best.is_none_or(|current| rest.len() > current.len()) {
+                best = Some(rest);
+            }
+        }
+    }
+    best.filter(|rest| !rest.is_empty()).map(str::to_string)
+}
+
+/// First word of a ghost and the remainder, for Ctrl-Right accept.
+pub fn split_ghost_word(text: &str) -> Option<(&str, &str)> {
+    if text.is_empty() {
+        return None;
+    }
+    if let Some(rest) = text.strip_prefix('\n') {
+        let end = rest
+            .find('\n')
+            .map(|index| index + 1)
+            .unwrap_or(text.len())
+            .max(1);
+        return Some((&text[..end], &text[end..]));
+    }
+    let mut end = 0;
+    for (index, character) in text.char_indices() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            end = index + character.len_utf8();
+        } else if end == 0 {
+            end = index + character.len_utf8();
+            break;
+        } else {
+            break;
+        }
+    }
+    (end > 0).then_some((&text[..end], &text[end..]))
+}
+
+/// Next incomplete site after a ghost was applied at `from`.
+pub fn next_edit_after_accept(content: &str, from: usize) -> Option<usize> {
+    let from = skip_ident(content, from.min(content.len()));
+    next_incomplete_ident(content, from)
+        .or_else(|| next_todo(content, from))
+        .or_else(|| next_open_brace(content, from))
+}
+
+fn skip_ident(content: &str, mut offset: usize) -> usize {
+    while offset < content.len() {
+        let Some(character) = content[offset..].chars().next() else {
+            break;
+        };
+        if character.is_ascii_alphanumeric() || character == '_' {
+            offset += character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    offset
+}
+
+fn next_incomplete_ident(content: &str, from: usize) -> Option<usize> {
+    let mut offset = from;
+    while offset < content.len() {
+        let Some(character) = content[offset..].chars().next() else {
+            break;
+        };
+        if character.is_ascii_alphanumeric() || character == '_' {
+            let end = skip_ident(content, offset);
+            if local_fim_ident(content, end).is_some() {
+                return Some(end);
+            }
+            offset = end;
+        } else {
+            offset += character.len_utf8();
+        }
+    }
+    None
+}
+
+fn next_todo(content: &str, from: usize) -> Option<usize> {
+    let rest = content.get(from..)?;
+    ["TODO", "FIXME", "todo!", "unimplemented!", "todo"]
+        .into_iter()
+        .filter_map(|needle| rest.find(needle).map(|index| from + index))
+        .min()
+}
+
+fn next_open_brace(content: &str, from: usize) -> Option<usize> {
+    let mut offset = from;
+    while let Some(relative) = content.get(offset..)?.find('{') {
+        let after = offset + relative + 1;
+        let rest = content.get(after..).unwrap_or("");
+        let line_tail = rest.split('\n').next().unwrap_or("");
+        if line_tail.trim().is_empty() {
+            return Some(after);
+        }
+        offset = after;
     }
     None
 }
@@ -1401,6 +1497,20 @@ mod tests {
         let source = "fn hello_world() {}\nfn hello_";
         let ghost = local_fim(source, source.len()).expect("fim");
         assert_eq!(ghost, "world");
+        assert_eq!(split_ghost_word("world() {}"), Some(("world", "() {}")));
+        let after = "fn hello_world() {}\nfn hello_world\nfn greet_user() {}\nfn greet_";
+        let caret = "fn hello_world() {}\nfn hello_world".len();
+        let next = next_edit_after_accept(after, caret).expect("next incomplete ident");
+        assert_eq!(local_fim_ident(after, next).as_deref(), Some("user"));
+        let braced = "fn done() {}\nfn main() {\n";
+        assert_eq!(
+            next_edit_after_accept(braced, "fn done() {}\n".len()),
+            Some(braced.len() - 1)
+        );
+        assert_eq!(
+            next_edit_after_accept("fn main() {}\n    TODO handle", "fn main() {}\n".len()),
+            Some("fn main() {}\n    ".len())
+        );
     }
 
     #[test]

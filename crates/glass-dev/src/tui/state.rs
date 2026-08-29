@@ -2,8 +2,9 @@ use super::command;
 use super::editor::{
     self as native, EditorEngine, EditorMode, GhostText, Motion, Operator, TextObject,
     apply_motion, compile_prove_it, complete_mention, evidence_card, expand_mentions,
-    inferred_app_path, join_app_url, line_hunks, local_fim, pair_apply_caret, pair_apply_step,
-    parse_inlay_hints, textobject_from_key, textobject_selection,
+    inferred_app_path, join_app_url, line_hunks, local_fim, next_edit_after_accept,
+    pair_apply_caret, pair_apply_step, parse_inlay_hints, split_ghost_word, textobject_from_key,
+    textobject_selection,
 };
 use super::parse::IncrementalSyntax;
 use crate::development::TextSelection;
@@ -3374,9 +3375,17 @@ impl DevTuiState {
         if code == crossterm::event::KeyCode::Tab
             && let Some(ghost) = self.editor_engine.ghost.take()
         {
-            let _ = self.insert_editor_text(&path, &ghost.text);
-            self.refresh_editor_projection();
-            self.status = "Ghost accepted · next-edit ready".into();
+            self.accept_ghost_text(&path, &ghost.text);
+            return;
+        }
+        if matches!(
+            code,
+            crossterm::event::KeyCode::Right | crossterm::event::KeyCode::Char('f')
+        ) && modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+            && !modifiers.contains(crossterm::event::KeyModifiers::SHIFT)
+            && self.editor_engine.ghost.is_some()
+        {
+            self.accept_ghost_word(&path);
             return;
         }
         let result = match (code, modifiers) {
@@ -4356,6 +4365,67 @@ impl DevTuiState {
             }
             Err(error) => self.status = format!("Source jump failed: {error}"),
         }
+    }
+
+    fn accept_ghost_text(&mut self, path: &str, text: &str) {
+        let _ = self.insert_editor_text(path, text);
+        self.refresh_editor_projection();
+        self.advance_next_edit();
+    }
+
+    fn accept_ghost_word(&mut self, path: &str) {
+        let Some(ghost) = self.editor_engine.ghost.take() else {
+            return;
+        };
+        match split_ghost_word(&ghost.text) {
+            Some((word, rest)) if !rest.is_empty() => {
+                let _ = self.insert_editor_text(path, word);
+                self.refresh_editor_projection();
+                self.editor_engine.ghost = Some(GhostText {
+                    text: rest.to_string(),
+                });
+                self.status = "Ghost word accepted · Tab rest · Ctrl-Right another word".into();
+            }
+            Some((word, _)) => self.accept_ghost_text(path, word),
+            None => self.accept_ghost_text(path, &ghost.text),
+        }
+    }
+
+    fn advance_next_edit(&mut self) {
+        let content = self.focused_editor_content.clone();
+        let caret = crate::development::editor::text_position_offset(
+            &content,
+            crate::development::TextPosition {
+                line: self.focused_editor_line.max(1),
+                column: self.focused_editor_column.max(1),
+            },
+        )
+        .unwrap_or(content.len());
+        let Some(offset) = next_edit_after_accept(&content, caret) else {
+            self.request_ghost_from_line();
+            self.status = if self.editor_engine.ghost.is_some() {
+                "Ghost accepted · next edit here".into()
+            } else {
+                "Ghost accepted".into()
+            };
+            return;
+        };
+        let Some(position) = crate::development::editor::text_position_at_offset(&content, offset)
+        else {
+            self.request_ghost_from_line();
+            self.status = "Ghost accepted".into();
+            return;
+        };
+        let path = self.focused_editor_path.clone();
+        self.editor_engine
+            .record_jump(&path, position.line, position.column);
+        let _ = self.set_editor_cursor(&path, position, false);
+        self.refresh_editor_projection();
+        self.request_ghost_from_line();
+        self.status = format!(
+            "Ghost accepted · next edit {}:{}",
+            position.line, position.column
+        );
     }
 
     pub fn request_ghost_from_line(&mut self) {
@@ -6655,6 +6725,56 @@ mod tests {
         assert_eq!(state.focused_editor_path, "src/button.tsx");
         assert_eq!(state.focused_editor_line, 1);
         assert!(state.code_edit_mode);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn ghost_tab_jumps_to_the_next_incomplete_ident() {
+        let root = std::env::temp_dir().join(format!("glass-ghost-next-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        let source = "fn hello_world() {}\nfn hello_\nfn greet_user() {}\nfn greet_\n";
+        std::fs::write(root.join("src/main.rs"), source).expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open buffer");
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+        let _ = state.set_editor_cursor(
+            "src/main.rs",
+            crate::development::TextPosition {
+                line: 2,
+                column: 10,
+            },
+            false,
+        );
+        state.refresh_editor_projection();
+        state.editor_engine.ghost = Some(GhostText {
+            text: "world".into(),
+        });
+        state.edit_code_key(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(
+            state.focused_editor_content.contains("fn hello_world\n"),
+            "tab should apply the ghost: {}",
+            state.focused_editor_content
+        );
+        assert_eq!(state.focused_editor_line, 4);
+        assert_eq!(
+            state
+                .editor_engine
+                .ghost
+                .as_ref()
+                .map(|ghost| ghost.text.as_str()),
+            Some("user")
+        );
+        assert!(state.status.contains("next edit"));
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

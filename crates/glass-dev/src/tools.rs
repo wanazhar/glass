@@ -13,7 +13,8 @@ use crate::tasks::{TaskId, TaskSpec};
 use crate::workspace::DevelopmentWorkspace;
 use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput, WorkspaceTrust};
 use glass_browser::browser::session::{
-    SemanticObservationLevel, WorkflowRecordingSession, record_semantic_events,
+    SemanticObservationLevel, VerificationPredicate, WorkflowRecordingSession,
+    record_semantic_events,
 };
 use glass_browser::workspace::{WorkspaceId, WorkspaceStore};
 use serde_json::Value;
@@ -339,6 +340,49 @@ impl DevelopmentToolRouter {
             "glass.editor.proposals" => Ok(serde_json::to_value(
                 workspace.project().editor_proposals(),
             )?),
+            "glass.editor.fim" => {
+                let provider = crate::fim::FimProvider::from_editor(
+                    &workspace.customization().config().editor,
+                )
+                .ok_or_else(|| {
+                    DevelopmentError::NotFound("FIM is disabled".into())
+                })?;
+                match provider.backend {
+                    crate::fim::FimBackend::Stub => {
+                        let text = provider.complete(
+                            string("prefix")?,
+                            optional_string(call, "suffix").unwrap_or(""),
+                        )
+                        .map_err(DevelopmentError::InvalidInput)?;
+                        Ok(serde_json::json!({"text": text, "backend": "stub"}))
+                    }
+                    crate::fim::FimBackend::Pi => {
+                        let prefix = string("prefix")?.to_string();
+                        let suffix = optional_string(call, "suffix")
+                            .unwrap_or("")
+                            .to_string();
+                        let snapshots = workspace.agents().list()?;
+                        let id = snapshots
+                            .into_iter()
+                            .find(|item| item.status == crate::AgentStatus::Idle)
+                            .map(|item| item.id)
+                            .ok_or_else(|| {
+                                DevelopmentError::NotFound(
+                                    "no idle Pi session for FIM; start an agent first".into(),
+                                )
+                            })?;
+                        workspace.agents().request(
+                            &id,
+                            crate::pi_runtime::PiSessionRequest::Complete { prefix, suffix },
+                        )?;
+                        Ok(serde_json::json!({
+                            "queued": true,
+                            "backend": "pi",
+                            "agentId": id.as_str(),
+                        }))
+                    }
+                }
+            },
             "glass.editor.checkpoints" => Ok(serde_json::to_value(
                 workspace.project().editor_checkpoints(),
             )?),
@@ -367,6 +411,11 @@ impl DevelopmentToolRouter {
                 workspace
                     .project_mut()
                     .accept_editor_proposal(string("id")?, context.authorization.actor.clone()),
+            ),
+            "glass.editor.proposal.accept_pack" => map_service(
+                workspace
+                    .project_mut()
+                    .accept_pending_editor_proposals(context.authorization.actor.clone()),
             ),
             "glass.editor.proposal.reject" => map_service(
                 workspace
@@ -465,6 +514,18 @@ impl DevelopmentToolRouter {
             "glass.browser.reconnect" => workspace.browser().reconnect(),
             "glass.browser.state" => workspace.browser().state(),
             "glass.browser.observe" => workspace.browser().observe(),
+            "glass.browser.verify" => {
+                let predicate: VerificationPredicate = serde_json::from_value(
+                    required_value(call, "predicate")?.clone(),
+                )
+                .map_err(|error| {
+                    DevelopmentError::InvalidInput(format!(
+                        "glass.browser.verify predicate is invalid: {error}"
+                    ))
+                })?;
+                let timeout = timeout(call, 30)?.unwrap_or(Duration::from_secs(8));
+                workspace.browser().verify_predicate(predicate, timeout)
+            }
             "glass.browser.snapshot" => workspace.browser().snapshot(),
             "glass.browser.semantic" => workspace.browser().semantic(match optional_string(call, "level").unwrap_or("structured") {
                 "summary" => SemanticObservationLevel::Summary,
@@ -613,6 +674,28 @@ impl DevelopmentToolRouter {
                     git.push(optional_string(call, "remote"), optional_string(call, "branch"))
                 })?;
                 Ok(serde_json::json!({"pushed":true}))
+            }
+            "glass.git.fetch" => {
+                git_mutation(workspace.git(), |git| {
+                    git.fetch(optional_string(call, "remote"))
+                })?;
+                Ok(serde_json::json!({"fetched":true}))
+            }
+            "glass.git.pull" => {
+                git_mutation(workspace.git(), |git| {
+                    git.pull(optional_string(call, "remote"), optional_string(call, "branch"))
+                })?;
+                Ok(serde_json::json!({"pulled":true}))
+            }
+            "glass.git.merge" => {
+                let branch = string("branch")?;
+                git_mutation(workspace.git(), |git| git.merge(branch))?;
+                Ok(serde_json::json!({"merged":branch}))
+            }
+            "glass.git.rebase" => {
+                let onto = string("onto")?;
+                git_mutation(workspace.git(), |git| git.rebase(onto))?;
+                Ok(serde_json::json!({"rebased":onto}))
             }
             "glass.git.commit" => {
                 let message = string("message")?;
@@ -849,6 +932,11 @@ impl DevelopmentToolRouter {
                 string("server")?,
                 &actor,
                 string("query")?,
+            )),
+            "glass.lsp.inlay_hints" => map_service(workspace.language().inlay_hints(
+                string("server")?,
+                &actor,
+                string("path")?,
             )),
             "glass.lsp.signature_help" => map_service(workspace.language().signature_help(
                 string("server")?,
@@ -1239,11 +1327,35 @@ impl DevelopmentToolRouter {
                     name: string("name")?.into(),
                 },
             ),
+            "glass.todo.list" => Ok(serde_json::to_value(workspace.todos())?),
+            "glass.todo.write" => {
+                let items = call
+                    .arguments
+                    .get("items")
+                    .cloned()
+                    .ok_or_else(|| DevelopmentError::InvalidInput("todo write requires items".into()))?;
+                let items: Vec<crate::SessionTodo> = serde_json::from_value(items)?;
+                Ok(serde_json::to_value(workspace.write_todos(items)?)?)
+            }
+            "glass.todo.complete" => {
+                Ok(serde_json::to_value(workspace.complete_todo(string("id")?)?)?)
+            }
             "glass.task.create" => {
                 let spec = serde_json::from_value::<TaskSpec>(call.arguments.clone())?;
                 Ok(serde_json::to_value(workspace.create_task(spec)?)?)
             }
+            "glass.task.crew" => {
+                let goal = string("goal")?;
+                let wake = workspace.create_crew(goal)?;
+                let crew = wake.tasks.clone();
+                Ok(serde_json::json!({
+                    "goal": goal,
+                    "wake": wake,
+                    "crew": crew,
+                }))
+            }
             "glass.task.list" => Ok(serde_json::to_value(workspace.tasks()?)?),
+            "glass.task.wake" => Ok(serde_json::to_value(workspace.latest_crew_wake())?),
             "glass.task.get" | "glass.task.inspect" => {
                 let id = TaskId::parse(string("taskId")?)?;
                 Ok(serde_json::to_value(workspace.task(&id)?)?)
@@ -1497,6 +1609,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.editor.buffers",
         "glass.editor.comments",
         "glass.editor.proposals",
+        "glass.editor.fim",
         "glass.editor.checkpoints",
         "glass.eval.list",
         "glass.lsp.diagnostics",
@@ -1520,6 +1633,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.lsp.references",
         "glass.lsp.document_symbols",
         "glass.lsp.workspace_symbols",
+        "glass.lsp.inlay_hints",
         "glass.lsp.signature_help",
         "glass.lsp.code_actions",
         "glass.lsp.formatting",
@@ -1537,7 +1651,9 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.processes",
         "glass.debug.threads",
         "glass.graph.source",
+        "glass.todo.list",
         "glass.task.list",
+        "glass.task.wake",
         "glass.task.get",
         "glass.task.inspect",
         "glass.test.results",
@@ -1554,6 +1670,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.process.ports",
         "glass.browser.state",
         "glass.browser.observe",
+        "glass.browser.verify",
         "glass.browser.snapshot",
         "glass.browser.semantic",
         "glass.browser.web_ir",
@@ -1580,7 +1697,13 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.git.stage",
         "glass.git.discard",
         "glass.git.push",
+        "glass.git.fetch",
+        "glass.git.pull",
+        "glass.git.merge",
+        "glass.git.rebase",
         "glass.git.commit",
+        "glass.todo.write",
+        "glass.todo.complete",
         "glass.git.branch.create",
         "glass.git.branch.switch",
         "glass.git.stash.push",
@@ -1632,6 +1755,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.switch-session",
         "glass.agent.name",
         "glass.task.create",
+        "glass.task.crew",
         "glass.task.pause",
         "glass.task.resume",
         "glass.task.cancel",
@@ -1652,6 +1776,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.editor.comment.resolve",
         "glass.editor.proposal.create",
         "glass.editor.proposal.accept",
+        "glass.editor.proposal.accept_pack",
         "glass.editor.proposal.reject",
         "glass.editor.checkpoint.create",
         "glass.editor.checkpoint.restore",
@@ -1714,6 +1839,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.browser.stop"
             | "glass.browser.state"
             | "glass.browser.observe"
+            | "glass.browser.verify"
             | "glass.browser.snapshot"
             | "glass.browser.semantic"
             | "glass.browser.web_ir"
@@ -1742,6 +1868,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.editor.buffers"
             | "glass.editor.comments"
             | "glass.editor.proposals"
+            | "glass.editor.fim"
             | "glass.editor.checkpoints"
             | "glass.daemon.logs"
             | "glass.neovim.probe"
@@ -1762,7 +1889,9 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.process.ports"
             | "glass.workspace.trust.status"
             | "glass.workspace.trust.inspect"
+            | "glass.todo.list"
             | "glass.task.list"
+            | "glass.task.wake"
             | "glass.task.get"
             | "glass.task.inspect"
     )
@@ -2420,6 +2549,7 @@ mod tests {
                 actor: Actor::embedded(),
                 allow_mutation: mutate,
                 confirmed: mutate,
+                unrestricted: mutate,
             },
             initiator: None,
             expected_generation: workspace.generation(),
@@ -2723,11 +2853,13 @@ mod tests {
             "glass.editor.save",
             "glass.editor.comments",
             "glass.editor.proposals",
+            "glass.editor.fim",
             "glass.editor.checkpoints",
             "glass.editor.comment.add",
             "glass.editor.comment.resolve",
             "glass.editor.proposal.create",
             "glass.editor.proposal.accept",
+            "glass.editor.proposal.accept_pack",
             "glass.editor.proposal.reject",
             "glass.editor.checkpoint.create",
             "glass.editor.checkpoint.restore",
@@ -2739,6 +2871,7 @@ mod tests {
             "glass.process.stop",
             "glass.process.restart",
             "glass.browser.observe",
+            "glass.browser.verify",
             "glass.browser.snapshot",
             "glass.browser.attach",
             "glass.browser.reconnect",
@@ -2770,6 +2903,7 @@ mod tests {
             "glass.lsp.references",
             "glass.lsp.document_symbols",
             "glass.lsp.workspace_symbols",
+            "glass.lsp.inlay_hints",
             "glass.lsp.signature_help",
             "glass.lsp.code_actions",
             "glass.lsp.formatting",
@@ -2797,8 +2931,13 @@ mod tests {
             "glass.agent.entries",
             "glass.agent.stats",
             "glass.agent.name",
+            "glass.todo.list",
+            "glass.todo.write",
+            "glass.todo.complete",
             "glass.task.create",
+            "glass.task.crew",
             "glass.task.list",
+            "glass.task.wake",
             "glass.task.get",
             "glass.task.inspect",
             "glass.task.pause",
@@ -3147,5 +3286,89 @@ mod tests {
             json!(["read-only", "workspace-write"])
         );
         assert!(tool_requires_mutation("glass.agent.delegate"));
+    }
+
+    const AGENT_HIDDEN_TOOLS: &[&str] = &[
+        "glass.workspace.list",
+        "glass.workspace.inspect",
+        "glass.workspace.suspend",
+        "glass.workspace.resume",
+        "glass.workspace.delete",
+        "glass.daemon.start",
+        "glass.daemon.stop",
+        "glass.daemon.status",
+        "glass.daemon.doctor",
+        "glass.daemon.logs",
+        "glass.workspace.trust.status",
+        "glass.workspace.trust.inspect",
+        "glass.project.attach",
+        "glass.agent.setup",
+    ];
+
+    #[test]
+    fn pi_named_catalog_covers_agent_visible_glass_tools() {
+        let tools = include_str!("../assets/pi-glass-tools.ts");
+        let prompt = include_str!("../assets/pi-glass-system.md");
+        let runtime = include_str!("../assets/pi-runtime.mjs");
+        for required in [
+            "glass.browser.verify",
+            "glass.editor.fim",
+            "glass.editor.proposal.accept_pack",
+            "glass.task.crew",
+            "glass.github.ship",
+            "glass.file.search",
+            "glass.lsp.inlay_hints",
+        ] {
+            assert!(
+                tools.contains(&format!("\"{required}\"")),
+                "Pi named catalog missing {required}"
+            );
+            assert!(
+                prompt.contains(required),
+                "system prompt missing {required}"
+            );
+        }
+        assert!(runtime.contains("glass.browser.verify"));
+        assert!(runtime.contains("glass.task.crew"));
+        let registered = registered_glass_names(tools);
+        for descriptor in service_descriptors() {
+            if AGENT_HIDDEN_TOOLS.contains(&descriptor.name.as_str()) {
+                continue;
+            }
+            assert!(
+                registered.contains(&descriptor.name),
+                "Pi named catalog missing agent-visible {}",
+                descriptor.name
+            );
+        }
+    }
+
+    fn registered_glass_names(source: &str) -> std::collections::BTreeSet<String> {
+        let mut names = std::collections::BTreeSet::new();
+        let mut rest = source;
+        while let Some(start) = rest.find("register(") {
+            rest = &rest[start + 9..];
+            let Some(first) = quoted_string(rest) else {
+                continue;
+            };
+            let after_first = rest
+                .find(&format!("\"{first}\""))
+                .map(|index| index + first.len() + 2)
+                .unwrap_or(0);
+            let Some(glass) = quoted_string(&rest[after_first..]) else {
+                continue;
+            };
+            if glass.starts_with("glass.") {
+                names.insert(glass);
+            }
+        }
+        names
+    }
+
+    fn quoted_string(source: &str) -> Option<String> {
+        let start = source.find('"')?;
+        let rest = &source[start + 1..];
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
     }
 }

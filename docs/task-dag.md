@@ -31,7 +31,29 @@ glass.task.create          glass.task.list
  glass.task.cancel         glass.task.retry
  glass.task.reassign       glass.task.override-blocked
  glass.task.evidence       glass.task.verify
+ glass.task.crew           glass.task.wake
 ```
+
+## Overnight factory crew and wake packs
+
+`glass.task.crew` queues a bounded architect, isolated implementer/tester
+pair(s), reviewer, and browser-verification DAG. The workspace records a
+`before-crew:<goal>` editor checkpoint and prepares paths below
+`.glass/worktrees`; Git worktrees are used when available and confined
+directories are used as the fallback. The crew is project-execution and
+confirmation gated.
+
+The scheduler's task records remain in memory, but the crew summary is durable:
+Glass writes `.glass/crew/<crew-id>.json` and replaces
+`.glass/crew/latest.json` with the latest `CrewWake` record. `glass.task.wake`
+is read-only and returns that latest record. A wake refresh folds member states,
+bounded Git diff and test output, plus live verify, page, and proposal-accept
+evidence into the persisted summary. The TUI exposes the same operations as
+`:task crew GOAL` and `:task wake`.
+
+Crew wakes are distinct from `glass.todo.*`: the workspace-local Agent
+checklist is persisted at `.glass/todos/session.json`, while a crew is an
+overnight factory orchestration record.
 
 There is no standalone `glass task ...` scheduling CLI family in the current command parser. `glass task validate/compile` is a separate browser-free Task Protocol feature and does not create scheduler records. Use the TUI or a trusted router client:
 

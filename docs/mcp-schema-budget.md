@@ -12,9 +12,9 @@ On the current checkout, `target/debug/glass` reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 330 |
-| Serialized `tools` array | 164,206 UTF-8 bytes |
-| Four-bytes-per-token estimate | 41,052 tokens (rounded up) |
+| Negotiated tools | 343 |
+| Serialized `tools` array | 171,405 UTF-8 bytes |
+| Four-bytes-per-token estimate | 42,852 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -54,12 +54,13 @@ workspace catalog. This is a regression alarm, not permission to consume the
 remaining space. Any increase must include the before/after scoreboard and
 explain why a new public tool is preferable to an existing typed verb or a
 namespaced resource.
-The measured full-product catalog is 366 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
+The measured full-product catalog is 7,565 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
 
 The increase from the published 0.3.4 measurement of 129,444 bytes to the
-current 164,206-byte development inventory covers explicit trust, autonomous
+current 171,405-byte development inventory covers explicit trust, autonomous
 task, measured experiment, debugger inspection, governed-kernel operations,
-and the governed Agent composer/runtime setup routes.
+the governed Agent composer/runtime setup routes, workspace-local Agent todos, and Git
+fetch/pull/merge/rebase.
 `glass` exposes the same typed resident services used by Pi, the TUI, CLI, and
 daemon, while `glass-browser` remains the compact browser-only product. A future
 capability-scoped discovery protocol can reduce per-client context without
@@ -119,7 +120,7 @@ effective agreement. Inspect `glassAgreement`, then use `tools/list` and
 capability/schema checks for optional behavior. A reconnect creates a new
 agreement and requires fresh discovery.
 
-The current `glass` executable advertises the 330-tool merged catalog in the
+The current `glass` executable advertises the 343-tool merged catalog in the
 reproducible scoreboard; `glass-browser` retains its independently measured
 browser catalog. The effective capability
 agreement determines which optional operations are usable. Context reduction

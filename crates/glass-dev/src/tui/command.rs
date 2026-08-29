@@ -59,13 +59,19 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
         label: "List Pi sessions",
         command: "agent sessions",
         key: ":",
-        description: "discover resumable conversations",
+        description: "pick a persisted conversation",
     },
     SurfaceAction {
         label: "Inspect Pi session tree",
         command: "agent tree",
         key: ":",
         description: "inspect branchable conversation entries",
+    },
+    SurfaceAction {
+        label: "Compact conversation",
+        command: "agent compact",
+        key: ":",
+        description: "summarize the selected Pi session in place",
     },
     SurfaceAction {
         label: "Rewind Pi session",
@@ -101,7 +107,7 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
         label: "Review workspace changes",
         command: "review",
         key: ":",
-        description: "prepare an evidence-aware agent review",
+        description: "open the shippable review object",
     },
     SurfaceAction {
         label: "List external harnesses",
@@ -114,6 +120,12 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
         command: "harness start NAME",
         key: ":",
         description: "hand this terminal to an installed coding harness",
+    },
+    SurfaceAction {
+        label: "Plan mode",
+        command: "plan mode",
+        key: ":",
+        description: "inspect-only plan, then accept to implement",
     },
     SurfaceAction {
         label: "Delegate to external harness",
@@ -153,6 +165,12 @@ const CODE_ACTIONS: &[SurfaceAction] = &[
         command: "Ctrl-S",
         key: "Ctrl-S",
         description: "write the focused buffer",
+    },
+    SurfaceAction {
+        label: "Jump to App",
+        command: "app page",
+        key: ":",
+        description: "open the detected app at this handler",
     },
     SurfaceAction {
         label: "Propose edit",
@@ -217,6 +235,24 @@ const APP_ACTIONS: &[SurfaceAction] = &[
         key: ":",
         description: "request native or ANSI browser pixels",
     },
+    SurfaceAction {
+        label: "Jump to source",
+        command: "app source",
+        key: ":",
+        description: "open the selected entity's handler",
+    },
+    SurfaceAction {
+        label: "Open detected app",
+        command: "app open",
+        key: ":",
+        description: "navigate to the detected loopback URL",
+    },
+    SurfaceAction {
+        label: "Record click path",
+        command: "workflow record start",
+        key: ":",
+        description: "capture App activations as a reviewable workflow draft",
+    },
 ];
 
 const TERMINAL_ACTIONS: &[SurfaceAction] = &[
@@ -239,10 +275,22 @@ const TERMINAL_ACTIONS: &[SurfaceAction] = &[
         description: "inspect a managed process",
     },
     SurfaceAction {
+        label: "Restart process",
+        command: "process restart NAME",
+        key: ":",
+        description: "restart the selected managed process",
+    },
+    SurfaceAction {
         label: "Stop process",
         command: "process stop NAME",
         key: ":",
         description: "stop a managed process",
+    },
+    SurfaceAction {
+        label: "Attach detected URL",
+        command: "app open",
+        key: ":",
+        description: "open the process loopback URL in App",
     },
 ];
 
@@ -252,6 +300,12 @@ const TASK_ACTIONS: &[SurfaceAction] = &[
         command: "task create TITLE PROMPT",
         key: ":",
         description: "queue a verified task",
+    },
+    SurfaceAction {
+        label: "Overnight crew",
+        command: "task crew GOAL",
+        key: ":",
+        description: "queue architect, isolated implementers, testers, reviewer, and browser",
     },
     SurfaceAction {
         label: "Cancel task",
@@ -304,6 +358,36 @@ const GIT_ACTIONS: &[SurfaceAction] = &[
         key: ":",
         description: "create a PR after one-use confirmation",
     },
+    SurfaceAction {
+        label: "Fetch and pull",
+        command: "git pull",
+        key: ":",
+        description: "fetch/merge the upstream branch through Glass Git",
+    },
+    SurfaceAction {
+        label: "Push branch",
+        command: "git push",
+        key: ":",
+        description: "push the current branch through Glass Git",
+    },
+    SurfaceAction {
+        label: "Merge branch",
+        command: "git merge BRANCH",
+        key: ":",
+        description: "merge a branch into HEAD through Glass Git",
+    },
+    SurfaceAction {
+        label: "Rebase onto",
+        command: "git rebase ONTO",
+        key: ":",
+        description: "rebase HEAD onto another branch through Glass Git",
+    },
+    SurfaceAction {
+        label: "Review object",
+        command: "review",
+        key: ":",
+        description: "proposals, last verify, and ship",
+    },
 ];
 
 const DEBUG_ACTIONS: &[SurfaceAction] = &[
@@ -312,6 +396,36 @@ const DEBUG_ACTIONS: &[SurfaceAction] = &[
         command: "debug start NAME COMMAND",
         key: ":",
         description: "launch a configured debugger",
+    },
+    SurfaceAction {
+        label: "Refresh threads",
+        command: "debug threads SESSION",
+        key: ":",
+        description: "list DAP threads for the selected session",
+    },
+    SurfaceAction {
+        label: "Continue",
+        command: "debug continue SESSION THREAD_ID",
+        key: ":",
+        description: "continue the selected paused thread",
+    },
+    SurfaceAction {
+        label: "Step over",
+        command: "debug step SESSION THREAD_ID over",
+        key: ":",
+        description: "step over the selected thread",
+    },
+    SurfaceAction {
+        label: "Pause",
+        command: "debug pause SESSION THREAD_ID",
+        key: ":",
+        description: "pause the selected thread",
+    },
+    SurfaceAction {
+        label: "Breakpoint on cursor",
+        command: "debug break SESSION PATH LINES",
+        key: ":",
+        description: "set a source breakpoint on the focused editor line",
     },
     SurfaceAction {
         label: "Run tests",
@@ -351,6 +465,12 @@ const MORE_ACTIONS: &[SurfaceAction] = &[
         command: "workspace",
         key: ":",
         description: "inspect resident workspace services",
+    },
+    SurfaceAction {
+        label: "Doctor",
+        command: "doctor",
+        key: ":",
+        description: "inspect host and workspace health",
     },
     SurfaceAction {
         label: "Start private cockpit",
@@ -609,6 +729,23 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         return Ok("Command palette closed".into());
     };
     match command {
+        "search" => {
+            let mut args = vec!["search"];
+            args.extend(parts);
+            execute_project(state, args)
+        }
+        "open" => match parts.next() {
+            Some(path) => state.open_path(path),
+            None => {
+                state.open_file_picker();
+                Ok("File picker opened · type to filter · Enter open".into())
+            }
+        },
+        "doctor" => execute_agent(state, {
+            let mut args = vec!["doctor"];
+            args.extend(parts);
+            args
+        }),
         "help" | "?" => {
             let project_commands = state
                 .ws()?
@@ -648,10 +785,12 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         "workspace" | "daemon" => execute_workspace(state, command, parts.collect()),
         "project" => execute_project(state, parts.collect()),
         "agent" => execute_agent(state, parts.collect()),
+        "plan" => execute_plan(state, parts.collect()),
         "task" | "tasks" => execute_task(state, parts.collect()),
         "editor" => execute_editor(state, parts.collect()),
         "lsp" => execute_lsp(state, parts.collect()),
         "process" => execute_process(state, parts.collect()),
+        "app" => execute_app(state, parts.collect()),
         "browser" | "workflow" => execute_browser(state, command, parts.collect()),
         "github" | "gh" => execute_github(state, parts.collect()),
         "harness" => execute_harness(state, parts.collect()),
@@ -698,6 +837,30 @@ fn execute_cockpit(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
     }
 }
 
+fn execute_workflow_record(state: &mut DevTuiState, parts: &[&str]) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("status") {
+        "start" => {
+            let name = if parts.len() > 1 {
+                parts[1..].join("-")
+            } else {
+                "click-path".into()
+            };
+            state.start_workflow_recording(&name)
+        }
+        "type" => {
+            let input = parts
+                .get(1)
+                .copied()
+                .ok_or("workflow record type requires INPUT_NAME")?;
+            state.record_workflow_type(input)
+        }
+        "verify" => state.record_workflow_verify(),
+        "stop" | "save" => state.stop_workflow_recording(),
+        "status" | "show" => Ok(state.workflow_recording_status()),
+        _ => Err("workflow record actions: start [NAME], type INPUT, verify, stop, status".into()),
+    }
+}
+
 fn execute_github(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     match parts.first().copied().unwrap_or("status") {
         "status" => Ok(format!(
@@ -735,13 +898,54 @@ fn execute_github(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
 }
 
 fn execute_review(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    if parts.iter().any(|part| *part != "changes") {
-        return Err("review accepts no arguments (or the alias `review changes`)".into());
+    match parts.first().copied().unwrap_or("show") {
+        "show" | "changes" => {
+            state.surface = DevSurface::Git;
+            state.refresh_review_object();
+            Ok("Review object ready · accept the pack · reject ID · ship TITLE · ask".into())
+        }
+        "ask" => {
+            require_trusted(state)?;
+            state.surface = DevSurface::Agent;
+            state.prepare_review_prompt();
+            Ok("Review prompt prepared in the Agent composer".into())
+        }
+        "accept" => {
+            require_trusted(state)?;
+            match parts.get(1).copied() {
+                Some(id) => state.accept_review_proposal(Some(id)),
+                None => state.accept_review_pack(),
+            }
+        }
+        "reject" => {
+            require_trusted(state)?;
+            state.reject_review_proposal(parts.get(1).copied())
+        }
+        "ship" => {
+            require_trusted(state)?;
+            let mut title_parts = parts.get(1..).unwrap_or_default().to_vec();
+            let draft = title_parts.last().copied() == Some("--draft");
+            if draft {
+                title_parts.pop();
+            }
+            let title = title_parts.join(" ");
+            if title.is_empty() {
+                return Err("review ship requires TITLE; append --draft for a draft PR".into());
+            }
+            let body = state.review_object_text();
+            let result = run_tool(
+                state,
+                "glass.github.ship",
+                json!({"title":title,"body":body,"draft":draft}),
+                true,
+            )?;
+            state.surface = DevSurface::Git;
+            Ok(compact_result("glass.github.ship", &result))
+        }
+        _ => {
+            Err("review actions: show, accept [ID], reject [ID], ship TITLE [--draft], ask".into())
+        }
     }
-    require_trusted(state)?;
-    state.surface = DevSurface::Agent;
-    state.prepare_review_prompt();
-    Ok("Review prompt prepared in the Agent composer".into())
 }
 
 fn execute_harness(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
@@ -1435,6 +1639,58 @@ fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
     }
 }
 
+fn execute_plan(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    require_trusted(state)?;
+    match parts.first().copied().unwrap_or("show") {
+        "ask" => {
+            state.set_composer_run_mode(crate::AgentTurnMode::Ask);
+            Ok("Ask mode · read-only".into())
+        }
+        "plan" | "mode" => {
+            state.set_composer_run_mode(crate::AgentTurnMode::Plan);
+            state.focus_composer_dock();
+            Ok("Plan mode · describe a goal, then Enter".into())
+        }
+        "agent" => {
+            state.set_composer_run_mode(crate::AgentTurnMode::Agent);
+            Ok("Agent mode · proposals unless unrestricted".into())
+        }
+        "show" | "status" => Ok(match &state.pending_plan {
+            Some(plan) => format!(
+                "PLAN {}\n{}\n{}\n{}",
+                plan.id,
+                plan.goal,
+                if plan.accepted { "accepted" } else { "draft" },
+                plan.body
+            ),
+            None => "No plan yet · :plan mode then send a goal".into(),
+        }),
+        "accept" => {
+            // Worker is not in this command path; stash an implement prompt.
+            let Some(plan) = state.pending_plan.clone() else {
+                return Err("no plan to accept".into());
+            };
+            state.pending_plan = Some(super::state::WorkspacePlan {
+                accepted: true,
+                ..plan.clone()
+            });
+            state.set_composer_run_mode(crate::AgentTurnMode::Agent);
+            state.composer_input = format!(
+                "Implement this accepted plan. Stay in proposals unless I say otherwise.\n\nGoal: {}\n\n{}",
+                plan.goal, plan.body
+            );
+            state.composer_cursor = state.composer_input.len();
+            state.open_composer();
+            Ok(format!("Plan {} ready · Enter implements", plan.id))
+        }
+        "reject" => {
+            state.reject_pending_plan();
+            Ok(state.status.clone())
+        }
+        _ => Err("plan actions: show, accept, reject, ask, plan, agent".into()),
+    }
+}
+
 fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
         state.surface = DevSurface::Agent;
@@ -1637,6 +1893,17 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             }
             let result = run_tool(state, tool, arguments, false)?;
             state.surface = DevSurface::Agent;
+            if matches!(action, "sessions" | "list-sessions") {
+                state.open_session_picker(&result);
+                return Ok(state.status.clone());
+            }
+            if action == "stats" {
+                state.agent_token_summary = super::projection::first_meaningful(&result)
+                    .lines()
+                    .next()
+                    .unwrap_or("stats")
+                    .to_string();
+            }
             Ok(compact_result(tool, &result))
         }
         _ => Err("agent actions: doctor, status, setup [login], hello, models, spawn, prompt, steer, follow-up, cancel, abort, compact, model, set-model, thinking, set-thinking, new, new-session, clone, clone-session, rewind, fork, switch, sessions, tree, messages, entries, stats".into()),
@@ -1703,6 +1970,13 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             false,
             DevSurface::Tasks,
         ),
+        "wake" => execute_named_tool(
+            state,
+            "glass.task.wake",
+            json!({}),
+            false,
+            DevSurface::Tasks,
+        ),
         "get" | "inspect" => execute_named_tool(
             state,
             "glass.task.inspect",
@@ -1710,6 +1984,20 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             false,
             DevSurface::Tasks,
         ),
+        "crew" => {
+            require_trusted(state)?;
+            let goal = parts.get(1..).unwrap_or_default().join(" ");
+            if goal.is_empty() {
+                return Err("task crew requires GOAL".into());
+            }
+            execute_named_tool(
+                state,
+                "glass.task.crew",
+                json!({"goal": goal}),
+                true,
+                DevSurface::Tasks,
+            )
+        }
         "create" | "create-after" => {
             require_trusted(state)?;
             let offset = usize::from(action == "create-after");
@@ -1795,7 +2083,7 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
                 DevSurface::Tasks,
             )
         }
-        _ => Err("task actions: list, get, inspect, create, create-after, pause, resume, cancel, retry, reassign, override, evidence, verify".into()),
+        _ => Err("task actions: list, get, inspect, create, create-after, crew, wake, pause, resume, cancel, retry, reassign, override, evidence, verify".into()),
     }
 }
 
@@ -2044,12 +2332,13 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
         "stop" => ("glass.lsp.stop", json!({"server":server.ok_or("lsp stop requires SERVER")?}), true),
         "list" => ("glass.lsp.list", json!({}), false),
         "events" => ("glass.lsp.events", json!({"since":parts.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(0)}), false),
-        "diagnostics" | "symbols" | "format" | "tokens" => {
+        "diagnostics" | "symbols" | "format" | "tokens" | "inlay" | "inlays" => {
             let path = parts.get(2).ok_or("lsp action requires SERVER PATH")?;
             let tool = match action {
                 "diagnostics" => "glass.lsp.diagnostics",
                 "symbols" => "glass.lsp.document_symbols",
                 "format" => "glass.lsp.formatting",
+                "inlay" | "inlays" => "glass.lsp.inlay_hints",
                 _ => "glass.lsp.semantic_tokens",
             };
             (tool, json!({"server":server.ok_or("missing SERVER")?,"path":path}), false)
@@ -2068,7 +2357,7 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
             (tool, json!({"server":server.ok_or("lsp position action requires SERVER PATH LINE CHARACTER")?,"path":parts.get(2).ok_or("missing PATH")?,"line":parse_u64(parts.get(3), "LINE")?,"character":parse_u64(parts.get(4), "CHARACTER")?}), false)
         }
         "rename" => ("glass.lsp.rename", json!({"server":server.ok_or("lsp rename requires SERVER PATH LINE CHARACTER NAME")?,"path":parts.get(2).ok_or("missing PATH")?,"line":parse_u64(parts.get(3), "LINE")?,"character":parse_u64(parts.get(4), "CHARACTER")?,"newName":parts.get(5).ok_or("missing NAME")?}), false),
-        _ => return Err("lsp actions: start, stop, list, events, diagnostics, hover, complete, definition, declaration, implementation, references, symbols, workspace-symbols, signature, format, tokens, rename".into()),
+        _ => return Err("lsp actions: start, stop, list, events, diagnostics, hover, complete, definition, declaration, implementation, references, symbols, workspace-symbols, inlay, signature, format, tokens, rename".into()),
     };
     let result = run_tool(state, tool, arguments, mutating)?;
     state.editor = if tool == "glass.lsp.diagnostics" {
@@ -2151,6 +2440,21 @@ fn execute_process(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
     execute_named_tool(state, tool, arguments, mutating, DevSurface::Terminal)
 }
 
+fn execute_app(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("open") {
+        "open" | "attach" => state.attach_detected_app(),
+        "source" => {
+            state.jump_source_from_page();
+            Ok(state.status.clone())
+        }
+        "page" => {
+            state.jump_page_from_source();
+            Ok(state.status.clone())
+        }
+        _ => Err("app actions: open, attach, source, page".into()),
+    }
+}
+
 fn execute_browser(
     state: &mut DevTuiState,
     command: &str,
@@ -2161,6 +2465,9 @@ fn execute_browser(
         return Ok(format!("Opened resident {command}"));
     };
     let (tool, arguments, mutating) = if command == "workflow" {
+        if action == "record" {
+            return execute_workflow_record(state, &parts[1..]);
+        }
         match action {
             "run" => ("glass.workflow.run", json!({"definition":read_project_json(state, parts.get(1).ok_or("workflow run requires DEFINITION.json")?)?,"inputs":parse_inline_json(parts.get(2), json!({}))?}), true),
             "pause" => ("glass.workflow.pause", json!({}), true),
@@ -2168,7 +2475,7 @@ fn execute_browser(
             "list" => ("glass.workflow.list", json!({}), false),
             "cancel" => ("glass.workflow.cancel", json!({}), true),
             "verify" => ("glass.workflow.verify", json!({}), false),
-            _ => return Err("workflow actions: list, run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON], cancel, verify".into()),
+            _ => return Err("workflow actions: list, run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON], cancel, verify, record start [NAME]".into()),
         }
     } else {
         if matches!(action, "human" | "takeover") {
@@ -2240,15 +2547,26 @@ fn execute_browser(
             "navigate" => ("glass.browser.navigate", json!({"url":parts.get(1).ok_or("browser navigate requires URL")?,"browserRevision":visible_revision}), true),
             "back" | "forward" | "reload" | "stop-loading" => ("glass.browser.act", json!({"action":if action == "stop-loading" { "stopLoading" } else { action },"browserRevision":visible_revision}), true),
             "click" => {
-                let selected = state.browser_workspace.state().selected();
-                let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser click requires a target or semantic selection")?;
-                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
+                let (target, revision) = {
+                    let selected = state.browser_workspace.state().selected();
+                    let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser click requires a target or semantic selection")?;
+                    let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
+                    (target.to_string(), revision)
+                };
+                let _ = state.capture_workflow_click();
                 ("glass.browser.act", json!({"action":"click","target":target,"browserRevision":revision}), true)
             },
             "type" => {
-                let selected = state.browser_workspace.state().selected();
-                let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser type requires a target or semantic selection")?;
-                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
+                let (target, revision, input_name) = {
+                    let selected = state.browser_workspace.state().selected();
+                    let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser type requires a target or semantic selection")?;
+                    let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
+                    let input_name = selected.map(|entity| entity.name.clone());
+                    (target.to_string(), revision, input_name)
+                };
+                if state.workflow_recording.is_some() {
+                    let _ = state.record_workflow_type(input_name.as_deref().unwrap_or("value"));
+                }
                 ("glass.browser.act", json!({"action":"type","target":target,"browserRevision":revision,"text":parts.get(2..).unwrap_or_default().join(" ")}), true)
             },
             "scroll" => ("glass.browser.act", json!({"action":"scroll","dx":parts.get(1).and_then(|value| value.parse::<f64>().ok()).unwrap_or(0.0),"dy":parts.get(2).and_then(|value| value.parse::<f64>().ok()).unwrap_or(600.0),"browserRevision":visible_revision}), true),
@@ -2419,6 +2737,22 @@ fn execute_git(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
             json!({"remote":parts.get(1),"branch":parts.get(2)}),
             true,
         ),
+        "fetch" => ("glass.git.fetch", json!({"remote":parts.get(1)}), true),
+        "pull" => (
+            "glass.git.pull",
+            json!({"remote":parts.get(1),"branch":parts.get(2)}),
+            true,
+        ),
+        "merge" => (
+            "glass.git.merge",
+            json!({"branch":parts.get(1).ok_or("git merge requires BRANCH")?}),
+            true,
+        ),
+        "rebase" => (
+            "glass.git.rebase",
+            json!({"onto":parts.get(1).ok_or("git rebase requires ONTO")?}),
+            true,
+        ),
         "commit" => (
             "glass.git.commit",
             json!({"message":parts.get(1..).unwrap_or_default().join(" ")}),
@@ -2432,7 +2766,7 @@ fn execute_git(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
         ),
         _ => {
             return Err(
-                "git actions: status, diff, stage, unstage, discard, commit, push, branches, switch".into(),
+                "git actions: status, diff, stage, unstage, discard, commit, push, fetch, pull, merge, rebase, branches, switch".into(),
             );
         }
     };
@@ -2555,6 +2889,7 @@ fn run_tool(
             actor: Actor::local(),
             allow_mutation: mutating,
             confirmed: mutating,
+            unrestricted: state.yolo_mode,
         },
         initiator: None,
         expected_generation,
@@ -2731,6 +3066,27 @@ mod tests {
     }
 
     #[test]
+    fn search_open_and_doctor_are_first_class_palette_routes() {
+        let (mut state, root) = test_state("cli-parity");
+        state.files = vec!["src/lib.rs".into()];
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn lib() {}\n").unwrap();
+
+        execute(&mut state, "open").expect("open without path opens picker");
+        assert!(state.file_picker_open);
+        state.close_file_picker();
+
+        execute(&mut state, "open src/lib.rs").expect("open PATH");
+        assert_eq!(state.focused_editor_path, "src/lib.rs");
+
+        let error = execute(&mut state, "search").expect_err("search needs a query");
+        assert!(error.contains("project search requires QUERY"));
+
+        execute(&mut state, "doctor").expect("doctor aliases agent doctor");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn help_explains_the_guided_command_center() {
         let (mut state, root) = test_state("help");
         let output = execute(&mut state, "help").expect("help route");
@@ -2835,8 +3191,8 @@ mod tests {
         assert_eq!(state.surface, DevSurface::Agent);
         state.surface = DevSurface::Code;
         execute(&mut state, "review").expect("review route");
-        assert_eq!(state.surface, DevSurface::Agent);
-        assert!(state.composer_mode);
+        assert_eq!(state.surface, DevSurface::Git);
+        assert!(state.git_diff.starts_with("REVIEW"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2871,9 +3227,104 @@ mod tests {
     fn review_route_prefills_evidence_aware_agent_prompt() {
         let (mut state, root) = test_state("review");
         let output = execute(&mut state, "review").expect("review route");
-        assert!(output.contains("Review prompt prepared"));
+        assert!(output.contains("Review object ready"));
+        assert!(state.git_diff.starts_with("REVIEW"));
+        assert!(state.git_diff.contains("PROPOSALS"));
+        assert_eq!(state.surface, DevSurface::Git);
+        let asked = execute(&mut state, "review ask").expect("review ask");
+        assert!(asked.contains("Review prompt prepared"));
         assert!(state.composer_mode);
         assert!(state.composer_input.contains("Git diff"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn review_ship_attaches_the_review_object_body() {
+        let (mut state, root) = test_state("review-ship");
+        execute(&mut state, "review").expect("open review");
+        execute(&mut state, "review ship overnight-crew").expect("queue review ship");
+        let ship = state
+            .pending_confirmation
+            .take()
+            .expect("ship confirmation");
+        assert_eq!(ship.call.name, "glass.github.ship");
+        assert_eq!(ship.call.arguments["title"], "overnight-crew");
+        assert!(
+            ship.call.arguments["body"]
+                .as_str()
+                .expect("ship body")
+                .contains("PROPOSALS")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_crew_queues_the_factory_loop() {
+        let (mut state, root) = test_state("task-crew");
+        execute(&mut state, "task crew add settings toggle").expect("queue crew");
+        let call = state
+            .pending_confirmation
+            .as_ref()
+            .map(|item| &item.call)
+            .or_else(|| state.queued_tool_request.as_ref().map(|(call, _)| call))
+            .expect("crew request");
+        assert_eq!(call.name, "glass.task.crew");
+        assert_eq!(call.arguments["goal"], "add settings toggle");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn review_object_includes_a_persisted_crew_wake() {
+        let (mut state, root) = test_state("review-wake");
+        state.last_crew_wake = Some("WAKE crew-1\n  goal add settings toggle".into());
+        execute(&mut state, "review").expect("open review");
+        assert!(state.git_diff.contains("WAKE crew-1"));
+        assert!(state.git_diff.contains("goal add settings toggle"));
+        state.last_crew_wake = Some(
+            "WAKE crew-1\n  goal add settings toggle\n  accept proposal-1\n\nVERIFY\n  PROOF ✓"
+                .into(),
+        );
+        execute(&mut state, "review").expect("open packed review");
+        assert!(state.git_diff.contains("VERIFY"));
+        assert!(state.git_diff.contains("accept proposal-1"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn app_open_attaches_the_detected_loopback_url() {
+        let (mut state, root) = test_state("app-open");
+        state.process_urls = vec!["http://localhost:3000/".into()];
+        execute(&mut state, "app open").expect("queue app open");
+        assert_eq!(
+            state.pending_browser_navigation.as_deref(),
+            Some("http://localhost:3000")
+        );
+        assert_eq!(state.surface, DevSurface::App);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn app_page_uses_the_handler_route() {
+        let (mut state, root) = test_state("app-page");
+        state.focused_editor_path = "app/settings/page.tsx".into();
+        state.focused_editor_line = 1;
+        state.process_urls = vec!["http://127.0.0.1:5173/".into()];
+        execute(&mut state, "app page").expect("jump to page");
+        assert_eq!(
+            state.pending_browser_navigation.as_deref(),
+            Some("http://127.0.0.1:5173/settings")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lsp_inlay_routes_to_the_resident_tool() {
+        let (mut state, root) = test_state("lsp-inlay");
+        execute(&mut state, "lsp inlay rust-analyzer src/lib.rs").expect("queue inlay");
+        let (call, _) = state.queued_tool_request.take().expect("inlay request");
+        assert_eq!(call.name, "glass.lsp.inlay_hints");
+        assert_eq!(call.arguments["server"], "rust-analyzer");
+        assert_eq!(call.arguments["path"], "src/lib.rs");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2936,6 +3387,33 @@ mod tests {
         execute(&mut state, "cockpit stop").expect("stop cockpit");
         assert!(state.private_cockpit.is_none());
         assert!(state.private_cockpit_status().contains("not running"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_record_start_stop_writes_a_locator_draft() {
+        let (mut state, root) = test_state("workflow-record");
+        state.browser_workspace.replace_entities(
+            3,
+            vec![glass_browser::browser_workspace::BrowserWorkspaceEntity {
+                reference: "r3:continue".into(),
+                role: "button".into(),
+                name: "Continue".into(),
+                actionable: true,
+                revision: 3,
+            }],
+        );
+        let started = execute(&mut state, "workflow record start checkout").expect("start");
+        assert!(started.contains("Recording checkout"));
+        assert_eq!(state.surface, DevSurface::App);
+        state.queue_browser_intent(
+            glass_browser::browser_workspace::BrowserWorkspaceIntent::ActivateSelected,
+        );
+        let stopped = execute(&mut state, "workflow record stop").expect("stop");
+        assert!(stopped.contains("1 step"));
+        let draft =
+            fs::read_to_string(root.join(".glass/workflows/checkout.draft.json")).expect("draft");
+        assert!(draft.contains("role=button;name=Continue"));
         let _ = fs::remove_dir_all(root);
     }
     #[test]

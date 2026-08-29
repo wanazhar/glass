@@ -186,6 +186,76 @@ fn default_role() -> String {
     "developer".into()
 }
 
+fn crew_spec(role: &str, title: impl Into<String>, goal: &str, prompt: String) -> TaskSpec {
+    let mut spec = TaskSpec::new(title, prompt);
+    spec.role = role.to_string();
+    spec.goal = goal.to_string();
+    spec
+}
+
+fn crew_prompt(role: &str, goal: &str) -> String {
+    match role {
+        "architect" => format!(
+            "You are the architect for: {goal}\nWrite a bounded plan, file-level proposals, and UI verify predicates. Do not implement production code."
+        ),
+        "implementer" => format!(
+            "You are the implementer for: {goal}\nFollow the architect plan. Default file writes are editor proposals; do not write through unless unrestricted mode is on. Keep the change minimal."
+        ),
+        "tester" => format!(
+            "You are the tester for: {goal}\nRun the detected project suite. Do not edit production code. Record failing tests as evidence."
+        ),
+        "reviewer" => format!(
+            "You are the reviewer for: {goal}\nYou cannot write, patch, or save files. Inspect each implementer's proposals in their isolated worktrees and return accept or reject with file-level reasons."
+        ),
+        "browser" => format!(
+            "You are the browser operator for: {goal}\nDrive the running app. Do not touch src/. Prove the UI with causal verify predicates and attach evidence."
+        ),
+        other => format!("You are {other} for: {goal}"),
+    }
+}
+
+fn implementer_prompt(goal: &str, index: usize, total: usize, worktree: &Path) -> String {
+    let slice = if index == 1 {
+        "production source from the architect plan"
+    } else {
+        "tests, types, and remaining files from the architect plan"
+    };
+    format!(
+        "You are implementer {index} of {total} for: {goal}\nYou work only in this isolated worktree: {}\nYou continue from a forked Pi session of the architect when one exists. Do not edit other implementers' trees. Own {slice}. Follow the architect plan. Default file writes are editor proposals; do not write through unless unrestricted mode is on. Keep the change minimal.",
+        worktree.display()
+    )
+}
+
+fn architect_session_file<B: TaskAgentBackend>(
+    scheduler: &TaskScheduler,
+    agents: &mut B,
+    snapshot: &TaskSnapshot,
+) -> Option<PathBuf> {
+    if snapshot.role != "implementer" {
+        return None;
+    }
+    let architect = snapshot.dependencies.iter().find_map(|dep| {
+        let task = scheduler.tasks.get(dep)?;
+        (task.snapshot.role == "architect")
+            .then(|| task.snapshot.assigned_agent.clone())
+            .flatten()
+    })?;
+    agents
+        .agent_snapshots()
+        .ok()?
+        .into_iter()
+        .find(|item| item.id == architect)?
+        .session_file
+        .map(PathBuf::from)
+}
+
+fn tester_prompt(goal: &str, worktree: &Path) -> String {
+    format!(
+        "You are the tester for: {goal}\nRun the detected project suite in this isolated worktree: {}\nDo not edit production code. Record failing tests as evidence.",
+        worktree.display()
+    )
+}
+
 impl TaskSpec {
     pub fn new(title: impl Into<String>, prompt: impl Into<String>) -> Self {
         let title = title.into();
@@ -233,6 +303,115 @@ pub struct TaskSnapshot {
     pub last_error: Option<String>,
     pub evidence: Vec<TaskEvidence>,
     pub blocked_override: bool,
+}
+
+/// Durable overnight-crew artifact written under `{root}/.glass/crew`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CrewWake {
+    pub id: String,
+    pub goal: String,
+    pub worktree: Option<String>,
+    pub checkpoint: String,
+    pub created_at_ms: u128,
+    pub tasks: Vec<CrewWakeMember>,
+    #[serde(default)]
+    pub diff: String,
+    #[serde(default)]
+    pub tests: String,
+    #[serde(default)]
+    pub verify: String,
+    #[serde(default)]
+    pub page: String,
+    #[serde(default)]
+    pub accept: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CrewWakeMember {
+    pub id: String,
+    pub role: String,
+    pub title: String,
+    pub state: String,
+    #[serde(default)]
+    pub worktree: Option<String>,
+}
+
+/// Live TUI evidence folded into a crew wake on review.
+#[derive(Debug, Clone, Default)]
+pub struct CrewWakeLiveEvidence {
+    pub verify: Option<String>,
+    pub page: Option<String>,
+    pub accept: Option<String>,
+}
+
+impl CrewWake {
+    pub fn render(&self) -> String {
+        let mut lines = vec![
+            format!("WAKE {}", self.id),
+            format!("  goal {}", self.goal),
+            format!("  worktree {}", self.worktree.as_deref().unwrap_or("—")),
+            format!("  checkpoint {}", self.checkpoint),
+            format!(
+                "  accept {}",
+                if self.accept.is_empty() {
+                    "none"
+                } else {
+                    self.accept.as_str()
+                }
+            ),
+        ];
+        append_wake_section(&mut lines, "VERIFY", &self.verify, 12);
+        append_wake_section(&mut lines, "TESTS", &self.tests, 16);
+        append_wake_section(&mut lines, "PAGE", &self.page, 8);
+        append_wake_section(&mut lines, "DIFF", &self.diff, 40);
+        lines.push(String::new());
+        lines.push("CREW".into());
+        if self.tasks.is_empty() {
+            lines.push("  none queued".into());
+        } else {
+            for task in &self.tasks {
+                match task.worktree.as_deref() {
+                    Some(worktree) if !worktree.is_empty() => {
+                        lines.push(format!(
+                            "  {} {} {} · {worktree}",
+                            task.role, task.id, task.state
+                        ));
+                    }
+                    _ => lines.push(format!("  {} {} {}", task.role, task.id, task.state)),
+                }
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+fn append_wake_section(lines: &mut Vec<String>, title: &str, body: &str, limit: usize) {
+    if body.trim().is_empty() {
+        return;
+    }
+    lines.push(String::new());
+    lines.push(title.into());
+    for line in body.lines().take(limit) {
+        lines.push(format!("  {line}"));
+    }
+}
+
+/// Persist a crew wake object and replace `{root}/.glass/crew/latest.json`.
+pub fn persist_crew_wake(root: &Path, wake: &CrewWake) -> DevelopmentResult<()> {
+    let dir = root.join(".glass").join("crew");
+    std::fs::create_dir_all(&dir)?;
+    let encoded = serde_json::to_vec_pretty(wake)?;
+    std::fs::write(dir.join(format!("{}.json", wake.id)), &encoded)?;
+    std::fs::write(dir.join("latest.json"), encoded)?;
+    Ok(())
+}
+
+/// Load the most recently queued overnight crew, if one exists.
+pub fn load_latest_crew_wake(root: &Path) -> Option<CrewWake> {
+    let path = root.join(".glass").join("crew").join("latest.json");
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
 struct TaskRecord {
@@ -353,6 +532,97 @@ impl TaskScheduler {
         );
         self.schedule_ready(agents)?;
         Ok(id)
+    }
+
+    /// Queue the overnight factory crew with isolated implementer worktrees.
+    pub fn create_crew<B: TaskAgentBackend>(
+        &mut self,
+        agents: &mut B,
+        goal: &str,
+        shared: Option<PathBuf>,
+        implementer_trees: Vec<PathBuf>,
+        unrestricted: bool,
+    ) -> DevelopmentResult<Vec<TaskId>> {
+        validate_text("crew goal", goal)?;
+        let trees = if implementer_trees.is_empty() {
+            vec![shared.clone().unwrap_or_else(|| self.root.clone())]
+        } else {
+            implementer_trees
+        };
+        let mut architect = crew_spec(
+            "architect",
+            format!("architect: {goal}"),
+            goal,
+            crew_prompt("architect", goal),
+        );
+        architect.worktree = shared.clone();
+        architect.verification = VerificationRequirement::Settled;
+        let architect = self.create(agents, architect)?;
+        let mut implementers = Vec::new();
+        let mut testers = Vec::new();
+        let total = trees.len();
+        for (index, tree) in trees.into_iter().enumerate() {
+            let label = if total == 1 {
+                "implementer".into()
+            } else {
+                format!("implementer-{}", (b'a' + index as u8) as char)
+            };
+            let mut implementer = crew_spec(
+                "implementer",
+                format!("{label}: {goal}"),
+                goal,
+                implementer_prompt(goal, index + 1, total, &tree),
+            );
+            implementer.worktree = Some(tree.clone());
+            implementer.unrestricted = unrestricted;
+            implementer.verification = VerificationRequirement::Inferred;
+            implementer.dependencies = vec![architect.clone()];
+            let implementer = self.create(agents, implementer)?;
+            let tester_label = if total == 1 {
+                "tester".into()
+            } else {
+                format!("tester-{}", (b'a' + index as u8) as char)
+            };
+            let mut tester = crew_spec(
+                "tester",
+                format!("{tester_label}: {goal}"),
+                goal,
+                tester_prompt(goal, &tree),
+            );
+            tester.worktree = Some(tree);
+            tester.verification = VerificationRequirement::Inferred;
+            tester.dependencies = vec![implementer.clone()];
+            let tester = self.create(agents, tester)?;
+            implementers.push(implementer);
+            testers.push(tester);
+        }
+        let mut reviewer = crew_spec(
+            "reviewer",
+            format!("reviewer: {goal}"),
+            goal,
+            crew_prompt("reviewer", goal),
+        );
+        reviewer.worktree = shared;
+        reviewer.verification = VerificationRequirement::Settled;
+        reviewer.dependencies = implementers.clone();
+        let reviewer = self.create(agents, reviewer)?;
+        let mut browser = crew_spec(
+            "browser",
+            format!("browser: {goal}"),
+            goal,
+            crew_prompt("browser", goal),
+        );
+        browser.verification = VerificationRequirement::BrowserWorkflow {
+            assertion: goal.to_string(),
+        };
+        browser.dependencies = testers.clone();
+        let browser = self.create(agents, browser)?;
+        let mut ids = vec![architect];
+        ids.extend(implementers);
+        ids.extend(testers);
+        ids.push(reviewer);
+        ids.push(browser);
+        Ok(ids)
     }
 
     pub fn refresh<B: TaskAgentBackend>(&mut self, agents: &mut B) -> DevelopmentResult<()> {
@@ -562,17 +832,18 @@ impl TaskScheduler {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in ready {
-            let record = self.record(&id)?;
+            let snapshot = self.record(&id)?.snapshot.clone();
             let mut spec = AgentSpec::new(
-                record.snapshot.role.clone(),
-                format!("task {}: {}", id.as_str(), record.snapshot.title),
+                snapshot.role.clone(),
+                format!("task {}: {}", id.as_str(), snapshot.title),
             );
-            spec.model.clone_from(&record.snapshot.model);
-            spec.thinking.clone_from(&record.snapshot.thinking);
-            spec.worktree = Some(record.snapshot.worktree.clone());
-            spec.unrestricted = record.snapshot.unrestricted;
-            spec.max_runtime_seconds = Some(record.snapshot.budget.max_runtime_seconds);
-            spec.max_events = Some(record.snapshot.budget.max_events);
+            spec.model.clone_from(&snapshot.model);
+            spec.thinking.clone_from(&snapshot.thinking);
+            spec.worktree = Some(snapshot.worktree.clone());
+            spec.fork_from = architect_session_file(self, agents, &snapshot);
+            spec.unrestricted = snapshot.unrestricted;
+            spec.max_runtime_seconds = Some(snapshot.budget.max_runtime_seconds);
+            spec.max_events = Some(snapshot.budget.max_events);
             let agent = agents.create_agent(spec)?;
             let record = self.record_mut(&id)?;
             record.snapshot.assigned_agent = Some(agent);
@@ -1189,6 +1460,7 @@ mod tests {
                 model: spec.model,
                 thinking: spec.thinking,
                 worktree: spec.worktree.unwrap(),
+                session_file: None,
                 unrestricted: spec.unrestricted,
                 created_at_ms: now_ms(),
                 started_at_ms: Some(now_ms()),
@@ -1421,6 +1693,121 @@ mod tests {
             scheduler.tasks[&research].snapshot.verification,
             VerificationRequirement::Settled
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn factory_crew_queues_architect_implementer_tester_reviewer_and_browser() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let tree_a = root.join("impl-a");
+        let tree_b = root.join("impl-b");
+        std::fs::create_dir_all(&tree_a).unwrap();
+        std::fs::create_dir_all(&tree_b).unwrap();
+        let ids = scheduler
+            .create_crew(
+                &mut agents,
+                "add settings toggle",
+                Some(root.clone()),
+                vec![tree_a.clone(), tree_b.clone()],
+                false,
+            )
+            .unwrap();
+        assert_eq!(ids.len(), 7);
+        let snapshots = ids
+            .iter()
+            .map(|id| scheduler.snapshot(&mut agents, id).unwrap())
+            .collect::<Vec<_>>();
+        let roles = snapshots
+            .iter()
+            .map(|snapshot| snapshot.role.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            [
+                "architect",
+                "implementer",
+                "implementer",
+                "tester",
+                "tester",
+                "reviewer",
+                "browser"
+            ]
+        );
+        assert_eq!(snapshots[1].worktree, tree_a);
+        assert_eq!(snapshots[2].worktree, tree_b);
+        assert_eq!(snapshots[3].worktree, tree_a);
+        assert_eq!(snapshots[4].worktree, tree_b);
+        assert!(snapshots[1].dependencies.contains(&ids[0]));
+        assert!(snapshots[2].dependencies.contains(&ids[0]));
+        assert!(snapshots[3].dependencies.contains(&ids[1]));
+        assert!(snapshots[4].dependencies.contains(&ids[2]));
+        assert!(snapshots[5].dependencies.contains(&ids[1]));
+        assert!(snapshots[5].dependencies.contains(&ids[2]));
+        assert!(snapshots[6].dependencies.contains(&ids[3]));
+        assert!(snapshots[6].dependencies.contains(&ids[4]));
+        assert!(snapshots[1].prompt.contains("isolated worktree"));
+        assert!(snapshots[1].prompt.contains("1 of 2"));
+        assert!(snapshots[2].prompt.contains("2 of 2"));
+        assert!(!snapshots[5].unrestricted);
+        assert!(snapshots[0].prompt.contains("Do not implement"));
+        assert!(snapshots[5].prompt.contains("cannot write"));
+        assert!(matches!(
+            snapshots[6].verification,
+            VerificationRequirement::BrowserWorkflow { .. }
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn crew_wake_persists_and_reloads_from_glass_crew() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-crew-wake-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let wake = CrewWake {
+            id: "add-settings-toggle".into(),
+            goal: "add settings toggle".into(),
+            worktree: Some(
+                root.join(".glass/worktrees/add-settings-toggle")
+                    .display()
+                    .to_string(),
+            ),
+            checkpoint: "before-crew:add settings toggle".into(),
+            created_at_ms: 1,
+            tasks: vec![CrewWakeMember {
+                id: "task-0001".into(),
+                role: "architect".into(),
+                title: "architect: add settings toggle".into(),
+                state: "queued".into(),
+                worktree: None,
+            }],
+            verify: "PROOF ✓\n  url /settings".into(),
+            tests: "cargo passed · 12 ms · exit 0".into(),
+            page: "url http://localhost:3000".into(),
+            diff: "diff --git a/src/lib.rs b/src/lib.rs".into(),
+            accept: "proposal-1".into(),
+        };
+        persist_crew_wake(&root, &wake).unwrap();
+        let loaded = load_latest_crew_wake(&root).expect("latest wake");
+        assert_eq!(loaded, wake);
+        let rendered = loaded.render();
+        assert!(rendered.contains("WAKE add-settings-toggle"));
+        assert!(rendered.contains("VERIFY"));
+        assert!(rendered.contains("TESTS"));
+        assert!(rendered.contains("PAGE"));
+        assert!(rendered.contains("DIFF"));
+        assert!(rendered.contains("accept proposal-1"));
+        let legacy = serde_json::from_str::<CrewWake>(
+            r#"{"id":"legacy","goal":"g","checkpoint":"c","createdAtMs":1,"tasks":[]}"#,
+        )
+        .unwrap();
+        assert!(legacy.diff.is_empty());
+        assert_eq!(legacy.accept, "");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

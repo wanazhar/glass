@@ -4,8 +4,8 @@ use crate::development::{DevelopmentError, DevelopmentResult};
 use crate::development::{RemoteFrame, RemoteInput, RemoteView};
 use glass_browser::browser::policy::{BrowserPolicy, PolicyPreset};
 use glass_browser::browser::session::{
-    BrowserSession, SemanticObservationLevel, SessionOptions, WorkflowCheckpoint,
-    WorkflowDefinition, WorkflowRunResult,
+    BrowserSession, SemanticObservationLevel, SessionOptions, VerificationPredicate,
+    WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
 };
 use glass_browser::extraction::ExtractionRequest;
 use glass_browser::protocol::WebIrInspectionResult;
@@ -129,6 +129,10 @@ enum BrowserCommand {
     ListWorkflows,
     CancelWorkflow,
     VerifyWorkflow,
+    VerifyPredicate {
+        predicate: VerificationPredicate,
+        timeout: Duration,
+    },
     RemoteViewOpen,
     RemoteViewStatus,
     RemoteViewRevoke,
@@ -350,6 +354,15 @@ impl BrowserService {
     /// Verify the active workflow's completion conditions.
     pub fn verify_workflow(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::VerifyWorkflow)
+    }
+
+    /// Evaluate a causal verification predicate against the live page.
+    pub fn verify_predicate(
+        &self,
+        predicate: VerificationPredicate,
+        timeout: Duration,
+    ) -> DevelopmentResult<Value> {
+        self.call(BrowserCommand::VerifyPredicate { predicate, timeout })
     }
 
     /// Open a remote-view capability for the connected browser.
@@ -728,6 +741,14 @@ impl BrowserWorker {
                 self.workflow_state = "cancelled".into();
                 self.active_workflow = None;
                 Ok(serde_json::json!({"cancelled":true,"previousState":previous}))
+            }
+            BrowserCommand::VerifyPredicate { predicate, timeout } => {
+                let outcome = self
+                    .session()?
+                    .verify(predicate, timeout)
+                    .await
+                    .map_err(browser_error)?;
+                serde_json::to_value(outcome).map_err(Into::into)
             }
             BrowserCommand::VerifyWorkflow => {
                 let (definition, result) = self.last_workflow.as_ref().ok_or_else(|| {

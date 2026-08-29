@@ -92,10 +92,11 @@ Auto layout selects Phone below 72 columns **or** 22 rows, Compact below 118
 columns **or** 32 rows, and Desktop otherwise. `--tui-layout desktop`,
 `compact`, or `mobile` forces a class. Phone is geometry-responsive, not a
 separate touch authority. Desktop and Compact expose the same state with
-fewer columns; Compact removes the context column. In active surfaces, panels
-stack below 84 columns (and always on Phone); content is bounded and truncated
-rather than allowed to grow the terminal. Each `DevSurface` has independent
-scroll.
+fewer columns; Compact removes the context column. Phone always stacks inner
+workbench panes. Compact stacks them only when the surface pane is narrower
+than 70 columns. Desktop keeps workbenches side-by-side. Content is bounded
+and truncated rather than allowed to grow the terminal. Each `DevSurface` has
+independent scroll.
 
 ### Responsive footer guidance
 
@@ -116,18 +117,20 @@ a second keybinding or state owner.
 | Code | bounded files, focused buffer, cursor/dirty state, review comments/proposals/checkpoints, LSP | no files/file open messages direct to selection and Enter; no diagnostics is a valid state |
 | App | embedded `BrowserWorkspaceController`: connection, target, semantic entities, workflow, visual path | detached/no page/loading/failed/recovery/semantic-only states stay visible |
 | Terminal | managed process rows with health, PID, command and detected URL | `s` starts the detected suite; `a` opens actions; no process is an empty state |
-| Tasks | bounded task rows and status summary | no tasks directs to `a` or `:task create TITLE PROMPT` |
-| Git | branch/change rows, selected file and inline diff | clean tree is explicit; diff loading is visible and off-thread |
-| Debug | debugger sessions and test evidence | no sessions directs to `:actions` |
-| More | Pi/readiness, kernels, experiments/replay, harnesses and routes | service counts and unavailable subsystems remain explicit |
+| Tasks | workspace-local Agent checklist plus overnight DAG rows | empty todos direct to Plan accept or `glass.todo.write`; empty DAG directs to `a` or `:task create TITLE PROMPT` |
+| Git | branch/change rows, selected file and inline diff | opening Git loads the selected diff; loading is visible and off-thread |
+| Debug | debugger sessions and test evidence | no sessions is one start panel (`:debug start NAME COMMAND`) |
+| More | Pi/readiness, kernels, experiments/replay, harnesses and routes | Enter runs the selected route; `doctor` stays on More |
 
 ## Navigation and modal routing
 
 The event loop routes the strongest guard first: quit confirmation, editor exit
-prompt, Ctrl-C/editor handling, help, command-center menu, browser target
-picker/recovery, Git diff, agent approval, mutation confirmation, full-screen
-editor, composer, command palette, then ordinary surface input. `Esc` closes
-the active modal/overlay; it does not cancel a running worker job.
+prompt, Ctrl-C, help, command-center menu, browser target picker/recovery,
+agent approval, mutation confirmation, full-screen editor, file/session
+pickers, composer dock, command palette, then ordinary surface input including
+Git workbench keys. `Esc` closes the active modal/overlay; it does not cancel a
+running worker job. Git keys stay live while a diff is open, but they do not
+trap confirm or palette input.
 
 | Input | Route and behavior |
 |---|---|
@@ -138,19 +141,23 @@ the active modal/overlay; it does not cancel a running worker job.
 | Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
 | PageUp/PageDown, Home/End | surface scroll/page or bounds |
 | `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
+| `Ctrl-L` | open the shared composer dock on the current surface |
+| `Ctrl-Shift-A` | cycle Ask, Plan, and Agent; default Agent; Ask/Plan fail closed for mutations |
 | `?` | help; `j`/`k`, PageUp/PageDown and Home/End scroll; `?`/Esc closes |
 | `Enter` on Agent | start/continue the agent interaction; with text focus, submit composer |
-| `Enter` on Code | open selected file; in the Code preview, enter full-screen editor |
+| `Enter` on Code | open the selected file for full-screen edit; preview queues if the workspace is busy |
 | `[` / `]` | cycle Agent session or Code buffer |
 | `T` on App | queue browser target picker; App Enter activates selected semantic entity |
 | `Alt-Left` / `Alt-Right` on App | guarded browser Back/Forward |
 | `Ctrl-R` on App | guarded browser reload |
-| `d` on Git | queue selected/full diff in the worker; inline diff opens when ready |
+| `d` / Git enter | queue selected/full diff in the worker; opening Git loads the selected file |
+| Space on Git | stage or unstage the selected file |
+| `c` on Git | open `git commit` in the palette |
 | `s` on Terminal | queue the project-detected development suite |
 | `Y`/Enter or `N`/Esc | approve/deny the one frozen mutation confirmation or agent approval |
-| `Ctrl-C` | outside editor opens quit confirmation; in editor opens editor-exit choices; confirmed quit restores terminal |
-| `Esc` | close current modal, palette, diff, recovery, or editor prompt; running work remains bounded |
-| mouse left-click | select a navigation tab when no modal/editor is active; wheel scrolls the focused surface |
+| `Ctrl-C` | open Glass quit confirmation, including from the editor; confirmed quit restores terminal |
+| `Esc` | close current modal, palette, diff, recovery, or return INSERT→NORMAL then leave a clean editor |
+| mouse left-click | select a navigation tab or the dock; double-click opens; right-click/long-press opens actions; wheel scrolls |
 | paste/focus/resize | accepted while terminal modes are enabled; focus loss closes browser overlays |
 
 The command center lists actions for the current surface plus Search commands and
@@ -170,17 +177,22 @@ The `:actions` routes are `agent setup`, `agent update`, `agent setup login`, an
 `--yolo` is process-scoped unrestricted development mode and is shown in the
 header; it does not create a second workspace.
 
-The Agent composer is a local draft with a character cursor. `i`, Enter on the
-Agent surface, or typing a non-digit Agent character opens it. `Enter` submits
-immediately and keeps the composer open; submitted text is rendered
-optimistically, while the worker/event stream appends assistant deltas and tool
-activity. `Ctrl-D` toggles steer mode for an active turn; `Ctrl-X` aborts the
-selected agent. `Ctrl-A/E/U/W` move to start/end, clear, or delete a word;
-Left/Right and Backspace edit the draft. Bracketed paste is inserted as one
-bounded edit. A send is a governed background request and never executes from
-the input loop. If another job is active, the draft is retained and the send
-waits; a failed transport marks the pending message failed and restores its
-draft for edit-and-retry.
+The shared composer dock is a local draft with a character cursor. `Ctrl-L`
+opens it on any surface. `i`, Enter on the Agent surface, or typing a
+non-digit Agent character also opens it. Default mode is Agent. `Ctrl-Shift-A`
+cycles Ask, Plan, and Agent; `/ask`, `/plan`, `/agent`, and `/todo` also set
+the mode. Ask inspects only. Plan writes a bounded numbered plan. Only Agent
+may mutate. `Enter` submits immediately and keeps the composer open; submitted
+text is rendered optimistically, while the worker/event stream appends
+assistant deltas and tool activity. `Ctrl-D` toggles steer mode for an active
+turn; `Ctrl-X` aborts the selected agent. `Ctrl-A/E/U/W` move to start/end,
+clear, or delete a word; Left/Right and Backspace edit the draft. Bracketed
+paste is inserted as one bounded edit. A send is a governed background request
+and never executes from the input loop. If another job is active, the draft is
+retained and the send waits; a failed transport marks the pending message
+failed and restores its draft for edit-and-retry. Workspace-local todos
+(`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
+checklist shown on Agent and Tasks; they are not the overnight task DAG.
 
 ## Code projection and editor
 
@@ -225,10 +237,38 @@ Changing modes resets scroll and re-runs cursor visibility. Cursor visibility
 is kept synchronized after edits, movement, resize, projection refresh and
 selection changes.
 
-`Esc` never silently loses work. A clean buffer opens an exit prompt where
-Enter/`Q` leaves or Esc stays. An unsaved buffer offers `S` save and leave, `D`
-discard and leave, `Q` discard and quit Glass, or Esc stay. Save/discard errors
-remain in the prompt with retry guidance.
+### Native editor physics and proof
+
+The full-screen editor has `Normal`, `Insert`, `Select`, and `Agent` modes;
+new buffers start in `Insert`. Normal mode supplies `hjkl`, word and line
+motions, `%`, `gg`/`G`, find/till motions, operators (`d`, `c`, `y`), and
+structural textobjects. An incremental tree-sitter cache supplies supported
+function, class, pair, argument, parameter, field, string, and comment ranges;
+lexical word/pair selection remains the fallback when parsing is unavailable.
+`gm`/`gn` can add matching structural selections.
+
+The editor can show a local or configured resident-Pi fill-in-the-middle ghost.
+`Tab` accepts the full ghost and `Ctrl-Right` accepts its next word; acceptance
+advances to the next incomplete site when one exists. Agent pair-apply streams
+a bounded proposal over the buffer: `Enter` accepts, `n` rejects, `Esc` yields,
+and typing yields back to Insert. Hunk navigation uses `[`/`]`; `Enter` accepts
+the selected hunk and `n` rejects it.
+
+Resident LSP hover (`K`), definition (`gd`), references (`gr`), symbols (`o`),
+and inlay hints stay attached to the focused buffer. Gutter marks distinguish
+LSP diagnostics, Git hunks, Agent carets, source-page links, proof results, and
+open comments. A composer request containing a supported prove/verify/expect
+clause attaches a browser predicate to `glass.agent.send`; the resulting live
+`glass.browser.verify` evidence drives the proof card and gutter mark. Text
+that merely contains those words is not proof until the browser result passes.
+
+The editor starts in INSERT. `Esc` returns to NORMAL. `Esc` from NORMAL on a
+clean buffer leaves the editor. An unsaved buffer offers `S` save and leave,
+`D` discard and leave, `Q` discard and quit Glass, or Esc stay. Save/discard
+errors remain in the prompt with retry guidance. `Ctrl-C` does not take the
+editor-exit path when editor input is active; it opens Glass quit confirmation.
+If the unsaved-exit prompt is already open, its save/discard/stay choices retain
+priority.
 
 ## Browser visual plane and dev-suite actions
 
@@ -288,7 +328,10 @@ The implementation contracts are in
 [`tui/mod.rs`](../../crates/glass-dev/src/tui/mod.rs),
 [`tui/render.rs`](../../crates/glass-dev/src/tui/render.rs),
 [`tui/snapshot.rs`](../../crates/glass-dev/src/tui/snapshot.rs),
-[`tui/file_view.rs`](../../crates/glass-dev/src/tui/file_view.rs), and
+[`tui/file_view.rs`](../../crates/glass-dev/src/tui/file_view.rs),
+[`tui/editor.rs`](../../crates/glass-dev/src/tui/editor.rs),
+[`tui/parse.rs`](../../crates/glass-dev/src/tui/parse.rs),
+[`fim.rs`](../../crates/glass-dev/src/fim.rs), and
 [`development/editor.rs`](../../crates/glass-dev/src/development/editor.rs).
 The shared browser contract is
 [`browser_workspace/mod.rs`](../../crates/glass-browser/src/browser_workspace/mod.rs).

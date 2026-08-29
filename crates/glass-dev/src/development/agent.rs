@@ -1,4 +1,6 @@
-use super::{Actor, DevelopmentError, DevelopmentEventKind, DevelopmentResult, ProjectWorkspace};
+use super::{
+    Actor, ActorKind, DevelopmentError, DevelopmentEventKind, DevelopmentResult, ProjectWorkspace,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -120,10 +122,21 @@ pub fn resolve_context_with_browser(
             "@page" | "@browser" => browser.map(serde_json::to_value).transpose()?.unwrap_or_else(|| serde_json::json!({
                 "status": "requires-attached-browser-workspace", "defaultObservation": "structured"
             })),
-            "@selection" => browser
+            "@selection" | "@entity" => browser
                 .and_then(|value| value.selected_entity.clone())
                 .unwrap_or_else(|| serde_json::json!({"status": "not-selected"})),
-            "@file" | "@symbol" => serde_json::json!({"status": "not-selected"}),
+            "@file" | "@symbol" => workspace
+                .buffers()
+                .next()
+                .map(|buffer| {
+                    serde_json::json!({
+                        "path": buffer.path,
+                        "bytes": buffer.content.len(),
+                        "dirty": buffer.dirty,
+                        "sha256": prompt_evidence(&buffer.content)["sha256"],
+                    })
+                })
+                .unwrap_or_else(|| serde_json::json!({"status": "not-selected"})),
             value if value.starts_with("@entity:") => {
                 serde_json::to_value(workspace.graph().links_for(&value[8..]))?
             }
@@ -189,6 +202,9 @@ pub struct ToolAuthorization {
     pub actor: Actor,
     pub allow_mutation: bool,
     pub confirmed: bool,
+    /// When true, agent file tools write through to disk. The default agent
+    /// write path is a pending editor proposal.
+    pub unrestricted: bool,
 }
 
 impl ToolAuthorization {
@@ -197,7 +213,16 @@ impl ToolAuthorization {
             actor,
             allow_mutation: false,
             confirmed: false,
+            unrestricted: false,
         }
+    }
+
+    pub fn agent_writes_to_disk(&self) -> bool {
+        self.unrestricted
+            || matches!(
+                self.actor.kind,
+                ActorKind::Human | ActorKind::System | ActorKind::Observer
+            )
     }
 }
 
@@ -308,7 +333,7 @@ impl AgentToolGateway {
         } else {
             self.execute_attached(call).unwrap_or_else(|| {
                 self.registry
-                    .execute_unchecked(workspace, call, authorization.actor.clone())
+                    .execute_unchecked(workspace, call, authorization)
             })
         };
         let (ok, bytes) = match &result {
@@ -624,8 +649,9 @@ impl ToolRegistry {
         &self,
         workspace: &mut ProjectWorkspace,
         call: &ToolCall,
-        actor: Actor,
+        authorization: &ToolAuthorization,
     ) -> DevelopmentResult<Value> {
+        let actor = authorization.actor.clone();
         let string = |name: &str| {
             call.arguments
                 .get(name)
@@ -646,25 +672,54 @@ impl ToolRegistry {
             "glass.file.grep" => grep_tool_files(workspace, call, string("pattern")?),
             "glass.file.find" => find_tool_files(workspace, call, string("pattern")?),
             "glass.file.patch" => {
-                let count = workspace.replace_in_buffer(
-                    string("path")?,
-                    string("search")?,
-                    string("replace")?,
-                    actor,
-                )?;
+                let path = string("path")?.to_string();
+                let search = string("search")?.to_string();
+                let replace = string("replace")?.to_string();
+                if !authorization.agent_writes_to_disk() {
+                    let original = workspace.buffer_or_file_content(&path)?;
+                    let count = original.matches(&search).count();
+                    if count == 0 {
+                        return Err(DevelopmentError::Conflict(
+                            "patch search text was not found".into(),
+                        ));
+                    }
+                    let proposed = original.replace(&search, &replace);
+                    return propose_agent_file(
+                        workspace,
+                        &path,
+                        original,
+                        proposed,
+                        format!("patch {count} replacement(s) in {path}"),
+                        actor,
+                    );
+                }
+                let count = workspace.replace_in_buffer(&path, &search, &replace, actor)?;
                 if count == 0 {
                     return Err(DevelopmentError::Conflict(
                         "patch search text was not found".into(),
                     ));
                 }
-                let path = string("path")?.to_string();
                 let buffer = workspace.save_buffer(&path)?;
                 Ok(serde_json::json!({"path": path, "replacements": count, "dirty": buffer.dirty}))
             }
-            "glass.file.edit" => execute_atomic_edits(workspace, call, actor),
+            "glass.file.edit" => {
+                execute_atomic_edits(workspace, call, actor, authorization.agent_writes_to_disk())
+            }
             "glass.file.write" => {
                 let path = string("path")?.to_string();
-                workspace.write_file(&path, string("content")?, actor)?;
+                let content = string("content")?.to_string();
+                if !authorization.agent_writes_to_disk() {
+                    let original = workspace.buffer_or_file_content(&path).unwrap_or_default();
+                    return propose_agent_file(
+                        workspace,
+                        &path,
+                        original,
+                        content,
+                        format!("write {path}"),
+                        actor,
+                    );
+                }
+                workspace.write_file(&path, &content, actor)?;
                 Ok(serde_json::json!({"path":path,"written":true}))
             }
             "glass.file.mkdir" => {
@@ -1122,10 +1177,36 @@ fn wildcard_matches(pattern: &str, value: &str) -> bool {
     pattern_index == pattern.len()
 }
 
+fn propose_agent_file(
+    workspace: &mut ProjectWorkspace,
+    path: &str,
+    original: String,
+    proposed: String,
+    summary: String,
+    actor: Actor,
+) -> DevelopmentResult<Value> {
+    let already_open = workspace.buffer(path).is_some();
+    let _ = workspace.create_editor_checkpoint(format!("before-proposal:{path}"), actor.clone());
+    if workspace.buffer(path).is_none() && workspace.open_buffer(path, actor.clone()).is_err() {
+        workspace.edit_buffer(path, original.clone(), actor.clone())?;
+    }
+    let pair_apply = already_open && original != proposed;
+    let proposal = workspace.propose_editor_change(path, original, proposed, summary, actor)?;
+    Ok(serde_json::json!({
+        "path": path,
+        "written": false,
+        "proposed": true,
+        "pairApply": pair_apply,
+        "proposalId": proposal.id,
+        "state": "pending",
+    }))
+}
+
 fn execute_atomic_edits(
     workspace: &mut ProjectWorkspace,
     call: &ToolCall,
     actor: Actor,
+    write_through: bool,
 ) -> DevelopmentResult<Value> {
     let path = call.arguments["path"]
         .as_str()
@@ -1166,9 +1247,19 @@ fn execute_atomic_edits(
             "glass.file.edit replacements overlap".into(),
         ));
     }
-    let mut content = original;
+    let mut content = original.clone();
     for (start, end, new_text) in replacements.iter().rev() {
         content.replace_range(*start..*end, new_text);
+    }
+    if !write_through {
+        return propose_agent_file(
+            workspace,
+            path,
+            original,
+            content,
+            format!("edit {} replacement(s) in {path}", replacements.len()),
+            actor,
+        );
     }
     workspace.edit_buffer(path, content, actor)?;
     let buffer = workspace.save_buffer(path)?;
@@ -1779,6 +1870,7 @@ impl PiHarness {
                     "glass_lsp_references",
                     "glass_lsp_document_symbols",
                     "glass_lsp_workspace_symbols",
+                    "glass_lsp_inlay_hints",
                     "glass_lsp_signature_help",
                     "glass_lsp_code_actions",
                     "glass_lsp_formatting",
@@ -2396,6 +2488,8 @@ mod tests {
         assert!(prompt.contains("Structured browser observation is the default"));
         assert!(prompt.contains("per-call approval"));
         assert!(prompt.contains("glass.editor.proposal.create"));
+        assert!(prompt.contains("glass.browser.verify"));
+        assert!(prompt.contains("glass.task.crew"));
         assert!(prompt.contains("stale proposal"));
         assert!(prompt.contains("queued, running, indeterminate, stale, or background"));
         assert!(prompt.contains("300 seconds"));
@@ -2416,6 +2510,14 @@ mod tests {
             "glass_editor_comments",
             "glass_editor_proposal_create",
             "glass_editor_proposal_accept",
+            "glass_editor_proposal_accept_pack",
+            "glass_editor_fim",
+            "glass_browser_verify",
+            "glass_task_crew",
+            "glass_github_ship",
+            "glass_file_search",
+            "glass_todo_write",
+            "glass_git_merge",
             "glass_editor_checkpoint_create",
             "\"read\"",
             "\"write\"",
@@ -2515,6 +2617,7 @@ mod tests {
                     actor: Actor::embedded(),
                     allow_mutation: true,
                     confirmed: true,
+                    unrestricted: true,
                 },
             )
             .unwrap();
@@ -2593,6 +2696,71 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_agent_file_write_creates_a_proposal_unless_unrestricted() {
+        let root =
+            std::env::temp_dir().join(format!("glass-proposal-write-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("note.txt"), "before\n").unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let gateway = AgentToolGateway::default();
+        let confirmed = ToolAuthorization {
+            actor: Actor::embedded(),
+            allow_mutation: true,
+            confirmed: true,
+            unrestricted: false,
+        };
+        let result = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "propose-1".into(),
+                    name: "glass.file.write".into(),
+                    arguments: serde_json::json!({
+                        "path":"note.txt",
+                        "content":"after\n"
+                    }),
+                },
+                &confirmed,
+            )
+            .unwrap();
+        assert_eq!(result["proposed"], true);
+        assert_eq!(result["written"], false);
+        assert_eq!(result["pairApply"], false);
+        assert_eq!(
+            fs::read_to_string(root.join("note.txt")).unwrap(),
+            "before\n"
+        );
+        let proposal = workspace
+            .editor_proposals()
+            .into_iter()
+            .find(|item| item.path == "note.txt")
+            .expect("proposal");
+        assert_eq!(proposal.original, "before\n");
+        assert_eq!(proposal.proposed, "after\n");
+        workspace
+            .accept_editor_proposal(&proposal.id, Actor::local())
+            .unwrap();
+        assert_eq!(workspace.buffer("note.txt").unwrap().content, "after\n");
+        let pair = gateway
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "propose-2".into(),
+                    name: "glass.file.write".into(),
+                    arguments: serde_json::json!({
+                        "path":"note.txt",
+                        "content":"streamed\n"
+                    }),
+                },
+                &confirmed,
+            )
+            .unwrap();
+        assert_eq!(pair["pairApply"], true);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn coding_gateway_writes_and_applies_atomic_multi_edits() {
         let root = std::env::temp_dir().join(format!("glass-coding-tools-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -2603,6 +2771,7 @@ mod tests {
             actor: Actor::external("pi"),
             allow_mutation: true,
             confirmed: true,
+            unrestricted: true,
         };
         gateway
             .execute(
@@ -2941,5 +3110,45 @@ mod tests {
         let serialized = serde_json::to_string(&packet).unwrap();
         assert!(!serialized.contains("do not inline this source"));
         assert_eq!(packet.references.len(), 2);
+    }
+
+    #[test]
+    fn semantic_context_resolves_bare_file_and_entity_mentions() {
+        let root =
+            std::env::temp_dir().join(format!("glass-context-mentions-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("secret.txt"), "do not inline this source").unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        workspace
+            .open_buffer("secret.txt", crate::development::Actor::local())
+            .unwrap();
+        let packet = resolve_context(&mut workspace, "Inspect @file").unwrap();
+        assert_eq!(packet.resolved["@file"]["path"], "secret.txt");
+        assert!(
+            !serde_json::to_string(&packet)
+                .unwrap()
+                .contains("do not inline this source")
+        );
+
+        let browser = BrowserAgentContext {
+            connected: true,
+            target_id: Some("page-1".into()),
+            origin: None,
+            url: "https://example.com".into(),
+            title: "Example".into(),
+            browser_revision: 4,
+            semantic_summary: "button".into(),
+            semantic_entity_count: 1,
+            selected_entity: Some(serde_json::json!({"id":"e1","role":"button"})),
+            workflow_state: "idle".into(),
+            input_owner: "human".into(),
+            freshness: "fresh".into(),
+            memory_scope: "session".into(),
+        };
+        let packet =
+            resolve_context_with_browser(&mut workspace, "click @entity", Some(&browser)).unwrap();
+        assert_eq!(packet.resolved["@entity"]["id"], "e1");
+        let _ = fs::remove_dir_all(root);
     }
 }

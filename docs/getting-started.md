@@ -170,19 +170,21 @@ blocked. On `Agent`, type a prompt or press `Enter`. If Pi is not ready,
 terminal to Pi `/login` and exit Pi to return. `:agent update` refreshes the
 pinned runtime; `:agent doctor` and `:agent status` report readiness.
 
-When ready, `Enter` sends the composer draft and leaves it open for the next
-prompt; `Esc` closes it. `Ctrl-D` toggles steer mode; default follow-up mode
-queues the next message. Sent prompts stay as `YOU`, and `GLASS AGENT` streams
-the reply and tool activity. A failed send restores the draft for editing and
-retry; background work retains newly typed text. Mutating calls pause for
-one-use approval (`Enter`/`Y` approve, `Esc`/`N` deny).
+Talk from any surface with `Ctrl-L`. Default composer mode is Agent.
+`Ctrl-Shift-A` cycles Ask, Plan, and Agent; Ask and Plan do not mutate. When
+ready, `Enter` sends the draft and leaves the dock open for the next prompt;
+`Esc` closes it. `Ctrl-D` toggles steer mode; default follow-up mode queues the
+next message. Sent prompts stay as `YOU`, and `GLASS AGENT` streams the reply
+and tool activity. A failed send restores the draft for editing and retry;
+background work retains newly typed text. Mutating calls pause for one-use
+approval (`Enter`/`Y` approve, `Esc`/`N` deny).
 
 Desktop uses `1`–`8` for Agent, Code, App, Terminal, Tasks, Git, Debug, and
 More. Phone uses `1`–`5` for Agent, Code, App, Tasks, and More. Auto chooses
 phone below 72 columns or 22 rows, compact below 118 columns or 32 rows, and
 desktop otherwise; override with `--tui-layout mobile|compact|desktop`.
-`Tab`/`Shift-Tab` cycle surfaces, `:` opens filtered command discovery, `a`
-opens the current surface action menu, and `?` opens help.
+`Tab`/`Shift-Tab` cycle surfaces. Type in the dock to talk, `:` to search
+commands, `a` to open this surface's actions, and `?` to open help.
 
 Use these first routes:
 
@@ -201,9 +203,12 @@ preserving syntax highlighting. In the editor, `Alt-W` toggles soft wrap
 gutters and synchronized cursor/selection/highlighting. Off horizontally
 scrolls source columns. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo, and
 `Alt-A` asks Pi with focused path/cursor/selection and unsaved content attached,
-with an explicit do-not-edit request. `Esc` and `Ctrl-C` open the exit prompt:
-clean buffers leave with `Enter`/`Q`/`Y`; unsaved buffers offer `S` save,
-`D` discard, `Q` discard-and-quit, or `Esc`/`N` stay.
+with an explicit do-not-edit request. The editor starts in INSERT. `Esc`
+returns to NORMAL. `Esc` from NORMAL on a clean buffer leaves the editor.
+Unsaved buffers still ask: `S` save, `D` discard, `Q` discard-and-quit, or
+`Esc`/`N` stay. `Ctrl-C` opens Glass quit confirmation from editor input; if
+the unsaved-exit prompt is already open, its save/discard/stay choices take
+priority.
 
 The Code `REVIEW` panel exposes anchored comments, proposals, and checkpoints.
 Use `:editor comment-selection TEXT`, `:editor comment PATH START END TEXT`,

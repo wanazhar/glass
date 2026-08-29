@@ -43,9 +43,10 @@ There are two checked-in version facts:
 
 The current `0.3.13` source and package metadata are aligned on `0.84.3`.
 Do not describe `0.84.3` as part of the immutable `0.3.12` release; keep the
-published `0.3.12` SDK fact scoped to its historical release record. Treat
-the `0.3.13` details as current-source/release-record information until
-publication evidence is available.
+published `0.3.12` SDK fact scoped to its historical release record. The
+published `0.3.13` crate and docs.rs pages use `0.84.3`. Checkout-only TUI
+playbooks and workspace-local todo behavior can be newer than that published
+API page.
 
 `setup --login` opens the selected Pi CLI with `PI_CODING_AGENT_DIR` set to the selected agent directory. Run Pi `/login`, then exit Pi. Glass does not impersonate a provider or copy credentials. `--login` requires the Pi CLI to be available either in the managed installation or on `PATH`; a non-zero Pi exit is an explicit setup error.
 
@@ -76,6 +77,13 @@ The daemon-backed resident workspace retains the registry while the workspace ac
 The adapter sends `hello`, `prompt`, `steer`, `followUp`, `abort`, `state`, `models`, `setModel`, `setThinking`, `newSession`, `compact`, `cloneSession`, `rewind`, `fork`, `switchSession`, `listSessions`, `entries`, `tree`, `messages`, `stats`, and `setName` operations. Events are forwarded to the worker as structured Pi events. `message_update` token noise is not required for the TUI display; the display consumes bounded evidence and settled state.
 
 The adapter starts `createAgentSession` with `DefaultResourceLoader` and disables Pi built-in tools, extensions, skills, prompt templates, themes, and context files. The allowed native tools are Glass `glass_tool`, `delegate`, `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`. `glass_tool` accepts an exact `glass.*` capability name and JSON arguments. Familiar file and shell names are normalized to Glass names before execution.
+
+On Agent multi-step turns, Pi must keep the workspace-local Agent checklist at
+`.glass/todos/session.json` current with `glass.todo.write` and
+`glass.todo.complete`. Keep at most one `active` item. `glass.task.crew`
+is only for overnight factory work. Surface playbooks name the Glass tools
+for Code, App, Git (including fetch/pull/merge/rebase/push), Debug, and
+Terminal so the model uses those surfaces instead of shell workarounds.
 
 All tool execution returns through the authoritative workspace router. The router checks trust, actor attribution, expected generation and project revision, path confinement, mutation authority, browser policy and leases, and result bounds. Browser tools are unavailable without an attached healthy Browser Workspace. A browser result includes bounded evidence such as redacted URL, title, target, workflow state, and revision; query strings and fragments are removed.
 

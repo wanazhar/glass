@@ -48,8 +48,9 @@ The packages intentionally share the `glass-browser` executable name and
 cannot own it in the same Cargo installation root. Follow the tested
 [installation and ownership-transition guide](docs/installation.md).
 The command and feature notes below describe the current `0.3.13` source
-checkout. Published `0.3.12` docs.rs pages are released Rust API artifacts;
-they are not a substitute for checking this checkout's TUI and CLI behavior.
+checkout. Published docs.rs pages match the crate version they were built from
+(`0.3.13` at last publication). They are not a substitute for checking this
+checkout's TUI and CLI behavior.
 
 
 ## Install
@@ -160,22 +161,26 @@ to hand this terminal to Pi's `/login`; exit Pi to return to Glass. `:agent
 update` refreshes the pinned runtime. `:agent doctor` and `:agent status` show
 readiness without secrets.
 
-When the composer is open, `Enter` sends the draft and leaves the composer
-available for the next prompt; `Esc` closes it. `Ctrl-D` toggles steer mode,
-which interrupts a running turn, while the default follow-up mode queues the
-next message. Sent prompts remain visible as `YOU` messages while the resident
-agent streams `GLASS AGENT` text and tool activity. A send failure restores the
-draft with an edit-and-retry message; a busy background operation keeps new
-text in the composer. Every Pi mutation pauses on a Glass approval card:
-`Enter`/`Y` approves that serialized call once and `Esc`/`N` denies it.
+Talk from any surface. `Ctrl-L` opens the shared composer dock. `Alt-A` docks
+from the editor. Default mode is Agent. `Ctrl-Shift-A` cycles Ask, Plan, and
+Agent. Ask and Plan are fail-closed for mutations. When the dock is open,
+`Enter` sends the draft and leaves it available for the next prompt; `Esc`
+closes it. `Ctrl-D` toggles steer mode, which interrupts a running turn, while
+the default follow-up mode queues the next message. Sent prompts remain visible
+as `YOU` messages while the resident agent streams `GLASS AGENT` text and tool
+activity. A send failure restores the draft with an edit-and-retry message; a
+busy background operation keeps new text in the composer. Every Pi mutation
+pauses on a Glass approval card: `Enter`/`Y` approves that serialized call once
+and `Esc`/`N` denies it.
 
-Use `:actions` for the current surface's guided command center. The Terminal
-surface starts the detected development suite with `:process start dev`; its
-action menu also exposes logs, input, stop, and health. The Agent surface owns
-`:task list`, `:task create TITLE PROMPT`, and `:task resume TASK_ID`. The More
-surface starts the private cockpit with `:cockpit start`; it returns a
-tokenized loopback URL and stops with Glass. Git offers read-only `:github
-review` and confirmation-gated `:github ship TITLE`.
+Type in the dock to talk, `:` to search commands, and `a` to open this
+surface's actions. The Terminal surface starts the detected development suite
+with `:process start dev`; its action menu also exposes logs, input, stop, and
+health. Tasks shows the workspace-local Agent checklist (persisted at
+`.glass/todos/session.json`) and the overnight DAG. The More surface starts the private cockpit with `:cockpit
+start`; Enter on `doctor` stays on More. Git loads the selected file's diff on
+open, stages with Space, and commits with `c`. Git also offers read-only
+`:github review` and confirmation-gated `:github ship TITLE`.
 
 The resident workspace keeps project, process, editor, agent, browser, revision,
 and attention state while Glass is alive. A browser failure enters recovery; it
@@ -216,10 +221,11 @@ Phone:   [header]
 | `8` | More | - |
 
 `Tab`/`Shift-Tab` move between available surfaces. `?` opens scrollable help,
-`:` opens surface-filtered command discovery, `a` opens the surface action menu,
-and `Ctrl-L` redraws. `Enter` activates the selected file/browser entity or
-starts Agent interaction. Mouse is optional; printable navigation works over
-SSH/Mosh.
+`:` opens surface-filtered command discovery, `a` opens the surface action
+menu, and `Ctrl-L` opens the chat dock. `Enter` activates the selected
+file/browser entity or starts Agent interaction. Mouse is optional: click the
+dock to chat, double-click to open, and right-click or long-press for actions.
+Printable navigation works over SSH/Mosh.
 
 On Code, the file list and editor preview are read-only until full-screen edit:
 long preview lines wrap to the pane width on narrow terminals while retaining
@@ -229,10 +235,16 @@ when on, source lines wrap at whitespace where possible, continuation rows keep
 their gutter alignment, and cursor, selection, and syntax highlighting remain
 aligned. When off, horizontal scrolling follows source columns. In either
 mode, arrows move, `Shift`+arrows select, `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y`
-undo/redo, `Alt-A` asks Pi with the unsaved buffer attached, and `Esc` opens
-the exit guard. `Ctrl-C` also opens the editor exit prompt (it does not
-immediately quit). Clean files require `Enter`/`Q`/`Y` to leave; unsaved files
-offer `S` save, `D` discard, `Q` discard-and-quit, or `Esc`/`N` stay.
+undo/redo, and `Alt-A` asks Pi with the unsaved buffer attached. The editor
+starts in INSERT. `Esc` returns to NORMAL. `Esc` from NORMAL on a clean buffer
+leaves the editor. Unsaved files still ask: `S` save, `D` discard, `Q`
+discard-and-quit, or `Esc`/`N` stay. `Ctrl-C` opens Glass quit confirmation
+from editor input; if the unsaved-exit prompt is already open, its
+save/discard/stay choices take priority.
+
+The native editor also provides modal motions/operators, tree-sitter
+textobjects with lexical fallback, FIM ghosts, LSP navigation/inlays, gutter
+evidence marks, and bounded proposal hunk review.
 
 The Code `REVIEW` panel shows open anchored comments, pending proposals, and
 checkpoints. Use `:editor comment-selection TEXT`, `:editor comment PATH START
@@ -540,8 +552,8 @@ the external browser.
 Read the [Rust SDK guide](docs/rust-sdk.md), [runnable example
 catalog](docs/examples.md), [glass-browser docs.rs](https://docs.rs/glass-browser),
 and [glass-dev docs.rs](https://docs.rs/glass-dev). Those docs.rs pages describe
-published Rust packages; this repository checkout can contain newer source
-surfaces and TUI behavior than the published `0.3.12` API pages.
+published Rust packages. Published `0.3.13` pages match that crate version;
+this repository checkout can contain newer TUI and MCP surfaces.
 
 ## TypeScript and Python clients
 

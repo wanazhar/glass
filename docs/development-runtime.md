@@ -72,7 +72,14 @@ The tree skips generated/vendor roots such as `.git`, `target`, `node_modules`, 
 
 Opening a file creates an in-memory `EditorBuffer` with content, disk `originalHash`, dirty flag, one-based cursor, optional selection, and actor. Buffers are not automatically persisted. `Ctrl-S` or `glass.editor.save` compares the current disk hash with `originalHash` and then writes atomically through the project actor. Undo and redo retain at most 256 content entries per path. A save never overwrites an external change.
 
-The native editor supports arrows, text insertion, `Enter`, `Backspace`, `Shift` plus arrows for a selection, `Ctrl-S`, `Ctrl-Z`, `Ctrl-Y`, `Alt-A` to prepare an agent prompt, and `Esc` to open the editor-exit prompt. The exit prompt protects unsaved content; `Ctrl-C` follows the modal quit path rather than silently discarding it. `Tab` remains product navigation outside editor mode. `Delete` has no editor mutation binding.
+The native editor supports arrows, text insertion, `Enter`, `Backspace`, `Shift` plus arrows for a selection, `Ctrl-S`, `Ctrl-Z`, `Ctrl-Y`, and `Alt-A` to prepare an agent prompt. The editor starts in INSERT. `Esc` returns to NORMAL. `Esc` from NORMAL on a clean buffer leaves the editor. Unsaved content still opens the exit prompt (`S` save, `D` discard, `Q` discard and quit, `Esc`/`N` stay). `Ctrl-C` opens Glass quit confirmation from editor input; if the unsaved-exit prompt is already open, its save/discard/stay choices take priority. `Tab` remains product navigation outside editor mode. `Delete` has no editor mutation binding.
+
+The editor's native layer also supports modal motions, operators and tree-sitter
+textobjects with lexical fallback, local or resident-Pi FIM ghosts, LSP hover,
+definition, references, symbols and inlay hints, Git/Agent/Page/Proof/comment
+gutter marks, and bounded proposal hunk review. Agent pair-apply streams a
+proposal until the human accepts, rejects, or yields it; prove-it predicates
+only become evidence after a live browser verification passes.
 
 `Alt-W` toggles soft wrapping. With wrapping enabled, source lines reflow to the available editor width, the horizontal scroll resets, and cursor visibility is calculated from the visual wrapped row. With wrapping disabled, source lines remain one row each and horizontal scrolling follows source columns. The renderer measures terminal cell width, preserves syntax and selection backgrounds, pads continuation rows under the line-number gutter, and renders a cursor cell even at end-of-line. This is presentation state only; the buffer cursor and selection remain one-based source positions.
 

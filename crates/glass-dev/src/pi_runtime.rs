@@ -76,6 +76,10 @@ pub enum PiSessionRequest {
         text: String,
         context: Option<Value>,
     },
+    Complete {
+        prefix: String,
+        suffix: String,
+    },
     Abort,
     State,
     Models,
@@ -126,6 +130,7 @@ pub struct PiRuntimeOptions {
     pub local_tool_executor: Option<PiToolExecutor>,
     pub additional_system_prompt: Option<String>,
     pub resume: bool,
+    pub fork_from: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for PiRuntimeOptions {
@@ -144,6 +149,7 @@ impl std::fmt::Debug for PiRuntimeOptions {
             )
             .field("additional_system_prompt", &self.additional_system_prompt)
             .field("resume", &self.resume)
+            .field("fork_from", &self.fork_from)
             .finish()
     }
 }
@@ -214,6 +220,9 @@ impl GlassPiRuntime {
         }
         if options.resume {
             command.env("GLASS_PI_RESUME", "1");
+        }
+        if let Some(path) = &options.fork_from {
+            command.env("GLASS_PI_FORK_FROM", path);
         }
 
         let mut child = command.spawn().map_err(|error| {
@@ -661,6 +670,9 @@ fn request_parts(request: PiSessionRequest) -> (&'static str, Value) {
         }
         PiSessionRequest::FollowUp { text, context } => {
             ("followUp", json!({"text": text, "context": context}))
+        }
+        PiSessionRequest::Complete { prefix, suffix } => {
+            ("complete", json!({"prefix": prefix, "suffix": suffix}))
         }
         PiSessionRequest::Abort => ("abort", Value::Null),
         PiSessionRequest::State => ("state", Value::Null),
@@ -1315,6 +1327,14 @@ mod tests {
         });
         assert_eq!(params["context"]["browser"]["browserRevision"], 7);
         assert_eq!(request_parts(PiSessionRequest::SessionStats).0, "stats");
+        assert_eq!(
+            request_parts(PiSessionRequest::Complete {
+                prefix: "fn main() {".into(),
+                suffix: "}".into(),
+            })
+            .0,
+            "complete"
+        );
     }
 
     #[test]
@@ -1323,6 +1343,8 @@ mod tests {
         assert!(!RUNTIME_SOURCE.contains("--mode rpc"));
         assert!(RUNTIME_SOURCE.contains("createAgentSession"));
         assert!(RUNTIME_SOURCE.contains("SessionManager"));
+        assert!(RUNTIME_SOURCE.contains("completeFill"));
+        assert!(RUNTIME_SOURCE.contains("GLASS_PI_FORK_FROM"));
     }
 
     #[test]

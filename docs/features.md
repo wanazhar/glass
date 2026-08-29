@@ -10,9 +10,9 @@ checked-in source checkout. Checkout-only TUI/editor/collaboration behavior is
 current source, not an immutable published-release claim.
 
 
-Published `0.3.12` docs.rs pages are released Rust API artifacts and may not
-include newer checkout-only TUI or CLI surfaces; they are not a substitute for
-this source-behavior reference.
+Published docs.rs pages match the crate version they were built from (`0.3.13`
+at last publication). They are not a substitute for this source-behavior
+reference.
 
 
 ## Interfaces
@@ -159,22 +159,35 @@ uses phone below 72 columns or 22 rows, compact below 118 columns or 32 rows,
 and desktop otherwise; `--tui-layout` can force a mode.
 
 First-run Agent onboarding is in the TUI. Trust-required projects first show
-`I` inspect, `O` open untrusted, `1` trust once, and `T` trust project. Agent
-typing or `Enter` opens the composer when Pi is ready; otherwise `:agent setup`
+`I` inspect, `O` open untrusted, `1` trust once, and `T` trust project. `T` may
+queue while a snapshot refresh holds the workspace lock. Agent typing or
+`Enter` opens the composer when Pi is ready; otherwise `:agent setup`
 installs/repairs the pinned runtime, `:agent setup login` opens Pi `/login`,
-and `:agent update` refreshes it. Composer `Enter` sends and stays open;
-`Esc` closes; failed sends keep the draft for retry. Mutations use one-use
-approval cards.
+and `:agent update` refreshes it. `Ctrl-L` opens the shared composer dock on
+every surface. Default mode is Agent; `Ctrl-Shift-A` cycles Ask, Plan, and
+Agent. Composer `Enter` sends and stays open; `Esc` closes; failed sends keep
+the draft for retry. Mutations use one-use approval cards.
 
 The Code file preview is read-only and wraps long lines on narrow terminals.
+Switching to Code queues the selected-file preview if the workspace is busy.
 `Enter` or `i` enters full-screen editing. `Alt-W` toggles soft wrap off by
 default; wrapped source uses whitespace-aware reflow and continuation gutters,
 keeping cursor, selection, and syntax highlighting synchronized. Off uses
 horizontal source-column scrolling. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo,
-`Alt-A` attaches focused path/cursor/selection and unsaved content to a
-do-not-edit Pi prompt, and `Esc`/`Ctrl-C` opens the exit guard. Clean buffers
-accept `Enter`/`Q`/`Y`; unsaved buffers offer `S` save, `D` discard,
-`Q` discard-and-quit, or `Esc`/`N` stay.
+and `Alt-A` attaches focused path/cursor/selection and unsaved content to a
+do-not-edit Pi prompt. The editor starts in INSERT. `Esc` returns to NORMAL.
+`Esc` from NORMAL on a clean buffer leaves the editor. Unsaved buffers offer
+`S` save, `D` discard, `Q` discard-and-quit, or `Esc`/`N` stay. `Ctrl-C` opens
+Glass quit confirmation from editor input; an already-open unsaved-exit prompt
+keeps its save/discard/stay choices.
+
+The native editor adds modal motions, operators, tree-sitter structural
+textobjects with lexical fallback, local or resident-Pi FIM ghosts, and LSP
+hover, definition, references, symbols, and inlay hints. Gutter marks expose
+diagnostics, Git hunks, Agent carets, source-page links, proof results, and
+comments. Bounded Agent pair-apply proposals stream into the buffer for
+accept/reject/yield, while prove-it text attaches a predicate to the agent
+request and becomes evidence only after live browser verification passes.
 
 The `REVIEW` panel summarizes open anchored comments, pending exact-base
 proposals, and checkpoints. Collaboration routes include `:editor

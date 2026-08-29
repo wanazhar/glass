@@ -74,6 +74,34 @@ pub struct GitStatusEntry {
     pub untracked: bool,
 }
 
+impl GitStatus {
+    /// Conflicts first, then unstaged, staged, untracked.
+    pub fn sorted_entries(&self) -> Vec<GitStatusEntry> {
+        let mut entries = self.entries.clone();
+        entries.sort_by(|left, right| {
+            entry_rank(left, &self.conflicts)
+                .cmp(&entry_rank(right, &self.conflicts))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        entries
+    }
+}
+
+fn entry_rank(entry: &GitStatusEntry, conflicts: &[String]) -> u8 {
+    if conflicts.iter().any(|path| path == &entry.path)
+        || entry.index_status == 'U'
+        || entry.worktree_status == 'U'
+    {
+        0
+    } else if entry.untracked {
+        3
+    } else if entry.worktree_status != ' ' {
+        1
+    } else {
+        2
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitBranch {
@@ -185,6 +213,42 @@ impl GitService {
         let mut arguments = vec!["restore", "--"];
         arguments.extend(paths.iter().map(String::as_str));
         self.run(&arguments, "discard working-tree changes")?;
+        Ok(())
+    }
+
+    pub fn fetch(&self, remote: Option<&str>) -> GitResult<()> {
+        let mut arguments = vec!["fetch"];
+        if let Some(remote) = remote {
+            validate_ref(remote)?;
+            arguments.push(remote);
+        }
+        self.run(&arguments, "fetch")?;
+        Ok(())
+    }
+
+    pub fn pull(&self, remote: Option<&str>, branch: Option<&str>) -> GitResult<()> {
+        let mut arguments = vec!["pull"];
+        if let Some(remote) = remote {
+            validate_ref(remote)?;
+            arguments.push(remote);
+        }
+        if let Some(branch) = branch {
+            validate_ref(branch)?;
+            arguments.push(branch);
+        }
+        self.run(&arguments, "pull")?;
+        Ok(())
+    }
+
+    pub fn merge(&self, branch: &str) -> GitResult<()> {
+        validate_ref(branch)?;
+        self.run(&["merge", "--no-edit", branch], "merge")?;
+        Ok(())
+    }
+
+    pub fn rebase(&self, onto: &str) -> GitResult<()> {
+        validate_ref(onto)?;
+        self.run(&["rebase", onto], "rebase")?;
         Ok(())
     }
 
@@ -546,8 +610,8 @@ fn parse_status(output: &str) -> GitResult<GitStatus> {
             let entry = GitStatusEntry {
                 path: fields[8].to_string(),
                 original_path: None,
-                index_status: xy.first().copied().unwrap_or(b'.') as char,
-                worktree_status: xy.get(1).copied().unwrap_or(b'.') as char,
+                index_status: porcelain_flag(xy.first().copied()),
+                worktree_status: porcelain_flag(xy.get(1).copied()),
                 untracked: false,
             };
             if record.starts_with("u ") {
@@ -568,13 +632,20 @@ fn parse_status(output: &str) -> GitResult<GitStatus> {
             status.entries.push(GitStatusEntry {
                 path: fields[9].to_string(),
                 original_path: Some(original_path),
-                index_status: xy.first().copied().unwrap_or(b'.') as char,
-                worktree_status: xy.get(1).copied().unwrap_or(b'.') as char,
+                index_status: porcelain_flag(xy.first().copied()),
+                worktree_status: porcelain_flag(xy.get(1).copied()),
                 untracked: false,
             });
         }
     }
     Ok(status)
+}
+
+fn porcelain_flag(flag: Option<u8>) -> char {
+    match flag.unwrap_or(b'.') {
+        b'.' => ' ',
+        other => other as char,
+    }
 }
 
 fn parse_worktrees(output: &str) -> GitResult<Vec<GitWorktree>> {
@@ -692,6 +763,67 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_REPOSITORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn porcelain_v2_dot_means_unstaged_not_staged() {
+        let status = parse_status(
+            "# branch.head main\x001 .M N... 100644 100644 100644 0 0 notes.txt\x00? extra.rs\x00",
+        )
+        .unwrap();
+        assert_eq!(status.entries[0].index_status, ' ');
+        assert_eq!(status.entries[0].worktree_status, 'M');
+        assert!(!status.entries[0].untracked);
+    }
+
+    #[test]
+    fn sorted_entries_rank_conflicts_before_unstaged_and_untracked() {
+        let status = GitStatus {
+            branch: Some("main".into()),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            entries: vec![
+                GitStatusEntry {
+                    path: "new.rs".into(),
+                    original_path: None,
+                    index_status: '?',
+                    worktree_status: '?',
+                    untracked: true,
+                },
+                GitStatusEntry {
+                    path: "staged.rs".into(),
+                    original_path: None,
+                    index_status: 'M',
+                    worktree_status: ' ',
+                    untracked: false,
+                },
+                GitStatusEntry {
+                    path: "conflict.rs".into(),
+                    original_path: None,
+                    index_status: 'U',
+                    worktree_status: 'U',
+                    untracked: false,
+                },
+                GitStatusEntry {
+                    path: "unstaged.rs".into(),
+                    original_path: None,
+                    index_status: ' ',
+                    worktree_status: 'M',
+                    untracked: false,
+                },
+            ],
+            conflicts: vec!["conflict.rs".into()],
+        };
+        let order = status
+            .sorted_entries()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec!["conflict.rs", "unstaged.rs", "staged.rs", "new.rs"]
+        );
+    }
 
     fn repository() -> PathBuf {
         let sequence = NEXT_REPOSITORY.fetch_add(1, Ordering::Relaxed);

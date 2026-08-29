@@ -1833,6 +1833,7 @@ fn request_tool_context(
             actor,
             allow_mutation: request.allow_mutation,
             confirmed: request.confirmed,
+            unrestricted: false,
         },
         initiator: None,
         expected_generation: request
@@ -2080,6 +2081,7 @@ mod tests {
                 actor: Actor::external("daemon-concurrency-test"),
                 allow_mutation: true,
                 confirmed: true,
+                unrestricted: false,
             },
             initiator: None,
             expected_generation: 1,

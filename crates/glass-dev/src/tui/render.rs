@@ -2230,18 +2230,13 @@ fn status_line_count(content: &str) -> usize {
 }
 
 fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let has_logs = !state.process_logs.trim().is_empty();
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if has_logs {
-            vec![
-                Constraint::Length(3),
-                Constraint::Percentage(48),
-                Constraint::Min(6),
-            ]
-        } else {
-            vec![Constraint::Length(3), Constraint::Min(7)]
-        })
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Percentage(48),
+            Constraint::Min(6),
+        ])
         .split(area);
     let process_count = state.process_entries.len();
     let healthy_count = state
@@ -2325,9 +2320,13 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
             &mut list_state,
         );
     }
-    if has_logs {
-        render_panel(frame, rows[2], " LOGS ", &state.process_logs, PURPLE);
-    }
+    let logs = if state.process_logs.trim().is_empty() {
+        "Logs follow the selected process · Enter refreshes · Space restart · u App · x stop"
+            .to_string()
+    } else {
+        state.process_logs.clone()
+    };
+    render_panel(frame, rows[2], " LOGS ", logs, PURPLE);
 }
 
 fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -2377,13 +2376,7 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(rows[0]);
-    render_panel(
-        frame,
-        split[0],
-        " TODOS ",
-        state.session_todos.render(),
-        ACCENT_BRIGHT,
-    );
+    render_todo_list(frame, state, split[0]);
     render_task_list(frame, state, split[1]);
     let running = state
         .tasks
@@ -2400,12 +2393,68 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         .lines()
         .filter(|line| line.starts_with("×"))
         .count();
+    let wake = state
+        .last_crew_wake
+        .as_deref()
+        .and_then(|wake| wake.lines().next())
+        .unwrap_or("no crew wake");
     render_panel(
         frame,
         rows[1],
         " SUMMARY ",
-        format!("{running} running · {queued} queued · {failed} failed"),
+        format!("{running} running · {queued} queued · {failed} failed\n{wake}"),
         PURPLE,
+    );
+}
+
+fn render_todo_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let items = if state.session_todos.items.is_empty() {
+        vec![ListItem::new(panel_text(
+            "No session todos\nPlan accept or glass.todo.write",
+        ))]
+    } else {
+        state
+            .session_todos
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let selected = index == state.selected_todo;
+                let mark = match item.status {
+                    crate::TodoStatus::Done => "✓",
+                    crate::TodoStatus::Active => "●",
+                    crate::TodoStatus::Pending => "○",
+                };
+                let marker = if selected { "›" } else { " " };
+                let style = if selected {
+                    Style::default()
+                        .fg(ACCENT_BRIGHT)
+                        .bg(ACTIVE_BACKGROUND)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT)
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{marker} {mark} "),
+                        Style::default().fg(status_color(mark)),
+                    ),
+                    Span::styled(format!("{}  {}", item.id, item.title), style),
+                ]))
+                .style(style)
+            })
+            .collect()
+    };
+    let mut list_state = ListState::default();
+    if !state.session_todos.items.is_empty() {
+        list_state.select(Some(state.selected_todo));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .style(Style::default().bg(PANEL_BACKGROUND))
+            .block(surface_block(" TODOS ", ACCENT_BRIGHT)),
+        area,
+        &mut list_state,
     );
 }
 
@@ -2497,7 +2546,23 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
             .block(surface_block(
-                format!(" CHANGES · {} ", state.git_entries.len()),
+                {
+                    let conflicts = state.git_conflicts.len();
+                    let staged = state
+                        .git_entries
+                        .iter()
+                        .filter(|entry| entry.index_status != ' ' && !entry.untracked)
+                        .count();
+                    let unstaged = state
+                        .git_entries
+                        .iter()
+                        .filter(|entry| entry.worktree_status != ' ' && !entry.untracked)
+                        .count();
+                    format!(
+                        " CHANGES · {} · {conflicts}! · {unstaged} · {staged}✓ ",
+                        state.git_entries.len()
+                    )
+                },
                 ACCENT_BRIGHT,
             )),
         area,
@@ -2559,11 +2624,14 @@ fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         rows[0],
         format!(" GIT · {branch} "),
         format!(
-            "{change_count} changed · {}\nGH {}",
+            "↑{} ↓{} · {} conflict(s) · {change_count} changed · {}\nGH {}",
+            state.git_ahead,
+            state.git_behind,
+            state.git_conflicts.len(),
             state
                 .selected_git_entry()
                 .map(|entry| format!("selected {}", entry.path))
-                .unwrap_or_else(|| "↑/↓ choose a file".into()),
+                .unwrap_or_else(|| "j/k choose · c commit · o open · x discard".into()),
             review
         ),
         PURPLE,
@@ -2588,10 +2656,11 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(28),
-                Constraint::Percentage(24),
-                Constraint::Percentage(24),
-                Constraint::Percentage(24),
+                Constraint::Percentage(22),
+                Constraint::Percentage(18),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
             ])
             .split(area)
     } else {
@@ -2623,7 +2692,14 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
             &debug_frame_lines(state),
             state.debug_pane == super::state::DebugPane::Frames,
         );
-        render_status_list(frame, rows[3], " TESTS ", &state.tests, "No test runs");
+        render_panel(
+            frame,
+            rows[3],
+            " VARIABLES ",
+            debug_variable_lines(state).join("\n"),
+            ACCENT_BRIGHT,
+        );
+        render_status_list(frame, rows[4], " TESTS ", &state.tests, "No test runs");
         return;
     }
     let columns = Layout::default()
@@ -2655,7 +2731,39 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         &debug_frame_lines(state),
         state.debug_pane == super::state::DebugPane::Frames,
     );
-    render_status_list(frame, rows[1], " TESTS ", &state.tests, "No test runs");
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Min(18)])
+        .split(rows[1]);
+    render_panel(
+        frame,
+        bottom[0],
+        " VARIABLES ",
+        debug_variable_lines(state).join("\n"),
+        ACCENT_BRIGHT,
+    );
+    render_status_list(frame, bottom[1], " TESTS ", &state.tests, "No test runs");
+}
+
+fn debug_variable_lines(state: &DevTuiState) -> Vec<String> {
+    if state.debug_variables.is_empty() {
+        if state.debug_scopes.is_empty() {
+            vec!["Enter a frame to load scopes".into()]
+        } else {
+            state
+                .debug_scopes
+                .iter()
+                .map(|scope| format!("◆ {}", scope.name))
+                .collect()
+        }
+    } else {
+        state
+            .debug_variables
+            .iter()
+            .take(24)
+            .map(|variable| format!("{} = {}", variable.name, variable.value))
+            .collect()
+    }
 }
 
 fn debug_session_lines(state: &DevTuiState) -> Vec<String> {
@@ -2676,10 +2784,12 @@ fn debug_session_lines(state: &DevTuiState) -> Vec<String> {
                 " "
             };
             format!(
-                "{marker} {} · {} · pid {}",
+                "{marker} {} · {} · pid {} · {} bp · {} watch",
                 session.name,
                 session.state.label(),
-                session.pid
+                session.pid,
+                session.breakpoints,
+                session.watches
             )
         })
         .collect()
@@ -2796,7 +2906,7 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         );
         render_panel(frame, columns[0], " PI · WORKSPACE ", pi_content, PURPLE);
         let route_content = compact_multiline(
-            "workspace · experiments\nkernels · replay\n:harness list\n:harness start NAME",
+            &more_route_lines(state).join("\n"),
             columns[1].width.saturating_sub(4),
         );
         render_panel(frame, columns[1], " ROUTES ", route_content, WARNING);
@@ -2856,20 +2966,33 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .take(4)
         .collect::<Vec<_>>()
         .join("\n");
-    let routes = if narrow {
-        "workspace · experiments · kernels · replay\n:harness list\n:harness start NAME".to_string()
-    } else {
-        format!(
-            "workspace · experiments · kernels · replay\n\nHARNESS CATALOG\n{}\n\n:harness list\n:harness start NAME",
-            if installed_harnesses.is_empty() {
-                "none detected"
-            } else {
-                &installed_harnesses
-            }
-        )
-    };
-    let routes_content = compact_multiline(&routes, columns[2].width.saturating_sub(4));
+    let mut routes = more_route_lines(state);
+    if !narrow {
+        routes.push(String::new());
+        routes.push("HARNESS CATALOG".into());
+        routes.push(if installed_harnesses.is_empty() {
+            "none detected".into()
+        } else {
+            installed_harnesses
+        });
+    }
+    let routes_content = compact_multiline(&routes.join("\n"), columns[2].width.saturating_sub(4));
     render_panel(frame, columns[2], " ROUTES ", routes_content, WARNING);
+}
+
+fn more_route_lines(state: &DevTuiState) -> Vec<String> {
+    crate::tui::state::DevTuiState::MORE_ROUTES
+        .iter()
+        .enumerate()
+        .map(|(index, route)| {
+            let marker = if index == state.selected_more {
+                "›"
+            } else {
+                " "
+            };
+            format!("{marker} {route}")
+        })
+        .collect()
 }
 
 fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -3972,6 +4095,8 @@ mod tests {
             name: "lldb".into(),
             state: crate::debugger::DebugSessionState::Stopped,
             pid: 9,
+            breakpoints: 1,
+            watches: 0,
         }];
         state.debug_threads = vec![crate::tui::state::DebugThreadRow {
             id: 1,
@@ -3988,6 +4113,7 @@ mod tests {
         assert!(debug.contains("THREADS"));
         assert!(debug.contains("FRAMES"));
         assert!(debug.contains("src/main.rs:40"));
+        assert!(debug.contains("VARIABLES"));
         state.debug_pane = crate::tui::state::DebugPane::Frames;
         state.move_debug_selection(0);
         assert_eq!(

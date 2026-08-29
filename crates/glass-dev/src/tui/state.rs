@@ -129,6 +129,20 @@ pub struct DebugSessionRow {
     pub name: String,
     pub state: crate::debugger::DebugSessionState,
     pub pid: u32,
+    pub breakpoints: usize,
+    pub watches: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugScopeRow {
+    pub name: String,
+    pub variables_reference: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugVariableRow {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -370,6 +384,10 @@ pub struct DevTuiState {
     pub agent_token_summary: String,
     pub git_branch: String,
     pub git_dirty: bool,
+    pub git_ahead: u64,
+    pub git_behind: u64,
+    pub git_conflicts: Vec<String>,
+    pub github_review_requested: bool,
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
@@ -466,6 +484,13 @@ pub struct DevTuiState {
     pub debug_pane: DebugPane,
     pub debug_threads_requested: bool,
     pub debug_stack_requested: bool,
+    pub debug_scopes: Vec<DebugScopeRow>,
+    pub selected_debug_scope: usize,
+    pub debug_variables: Vec<DebugVariableRow>,
+    pub debug_scopes_requested: bool,
+    pub debug_variables_requested: bool,
+    pub selected_todo: usize,
+    pub selected_more: usize,
     pub replay: String,
     pub browser: String,
     pub browser_detail: String,
@@ -642,6 +667,10 @@ impl DevTuiState {
             agent_token_summary: String::new(),
             git_branch: String::new(),
             git_dirty: false,
+            git_ahead: 0,
+            git_behind: 0,
+            git_conflicts: Vec::new(),
+            github_review_requested: false,
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
             selected_agent: None,
@@ -730,6 +759,13 @@ impl DevTuiState {
             debug_pane: DebugPane::Sessions,
             debug_threads_requested: false,
             debug_stack_requested: false,
+            debug_scopes: Vec::new(),
+            selected_debug_scope: 0,
+            debug_variables: Vec::new(),
+            debug_scopes_requested: false,
+            debug_variables_requested: false,
+            selected_todo: 0,
+            selected_more: 0,
             replay: String::new(),
             browser: String::new(),
             browser_detail: "No browser observation yet".into(),
@@ -3348,11 +3384,23 @@ impl DevTuiState {
                     self.selected_debug_frame = 0;
                     if !self.debug_frames.is_empty() {
                         self.debug_pane = DebugPane::Frames;
+                        self.debug_scopes_requested = true;
                     }
                     self.status = format!(
                         "{} frame(s) · Enter jumps to source",
                         self.debug_frames.len()
                     );
+                } else if result.tool == "glass.debug.scopes" {
+                    self.debug_scopes = parse_debug_scopes(&value);
+                    self.selected_debug_scope = 0;
+                    self.debug_variables.clear();
+                    if !self.debug_scopes.is_empty() {
+                        self.debug_variables_requested = true;
+                    }
+                    self.status = format!("{} scope(s)", self.debug_scopes.len());
+                } else if result.tool == "glass.debug.variables" {
+                    self.debug_variables = parse_debug_variables(&value);
+                    self.status = format!("{} variable(s)", self.debug_variables.len());
                 } else if result.tool == "glass.git.diff" {
                     let empty = value.as_str().is_none_or(|diff| diff.trim().is_empty());
                     self.git_diff = if empty {
@@ -3490,6 +3538,8 @@ impl DevTuiState {
                         | "glass.process.logs"
                         | "glass.debug.threads"
                         | "glass.debug.stack"
+                        | "glass.debug.scopes"
+                        | "glass.debug.variables"
                 ) {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
@@ -3802,12 +3852,71 @@ impl DevTuiState {
             .clamp(0, self.git_entries.len().saturating_sub(1) as i32)
             as usize;
         if let Some(entry) = self.git_entries.get(self.selected_git_file) {
-            self.status = format!("{} · Enter diff", entry.path);
+            self.status = format!(
+                "{} · Enter diff · Space stage · c commit · o open",
+                entry.path
+            );
+            self.git_diff_requested = true;
         }
     }
 
     pub fn selected_git_entry(&self) -> Option<&crate::git::GitStatusEntry> {
         self.git_entries.get(self.selected_git_file)
+    }
+
+    pub fn open_selected_git_file(&mut self) {
+        let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) else {
+            self.status = "Select a changed file · o opens it in Code".into();
+            return;
+        };
+        match self.open_path(&path) {
+            Ok(_) => self.status = format!("Opened {path} in Code"),
+            Err(error) => self.status = format!("Could not open {path}: {error}"),
+        }
+    }
+
+    pub fn compose_git_commit(&mut self) {
+        self.open_palette_with("git commit ");
+        self.status = "Commit · type a message, then Enter".into();
+    }
+
+    pub fn discard_selected_git_file(&mut self) {
+        let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) else {
+            self.status = "Select a changed file · x discards working-tree changes".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.git.discard",
+            serde_json::json!({"paths": [path.clone()]}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(call, context, format!("Discard {path}"));
+            }
+            Err(error) => self.status = format!("Git discard unavailable: {error}"),
+        }
+    }
+
+    pub fn queue_github_review(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if self.background_action_running() {
+            self.status = "GitHub review waits for the current background operation".into();
+            return;
+        }
+        let (call, context) =
+            match self.tool_request("glass.github.review", serde_json::json!({}), false) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.status = format!("GitHub review unavailable: {error}");
+                    return;
+                }
+            };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.status = "Loading pull-request review…".into();
+            }
+            Err(error) => self.status = format!("GitHub review unavailable: {error}"),
+        }
     }
 
     pub fn move_process_selection(&mut self, delta: i32) {
@@ -3821,10 +3930,11 @@ impl DevTuiState {
             as usize;
         if let Some(entry) = self.selected_process_entry() {
             self.status = format!(
-                "{} · {} · Enter logs · Space restart",
+                "{} · {} · Enter logs · Space restart · u App · x stop",
                 entry.name,
                 entry.health.label()
             );
+            self.process_logs_requested = true;
         }
     }
 
@@ -3882,6 +3992,38 @@ impl DevTuiState {
             }
             Err(error) => self.status = format!("Process restart unavailable: {error}"),
         }
+    }
+
+    pub fn stop_selected_process(&mut self) {
+        let Some(name) = self
+            .selected_process_entry()
+            .map(|entry| entry.name.clone())
+        else {
+            self.status = "Select a process · x stops it".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.process.stop",
+            serde_json::json!({"name": name}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(call, context, format!("Stop {name}"));
+            }
+            Err(error) => self.status = format!("Process stop unavailable: {error}"),
+        }
+    }
+
+    pub fn attach_selected_process_url(&mut self) -> Result<String, String> {
+        let url = self
+            .selected_process_entry()
+            .and_then(|entry| entry.url.clone())
+            .or_else(|| self.resolved_app_url())
+            .ok_or_else(|| {
+                "No URL on the selected process · start a suite that prints one".to_string()
+            })?;
+        self.auto_checkpoint("before-app-attach");
+        self.prepare_browser_navigation(&url)
     }
 
     pub fn cycle_debug_pane(&mut self, delta: i32) {
@@ -4053,6 +4195,132 @@ impl DevTuiState {
         }
     }
 
+    pub fn step_selected_debug(&mut self, kind: &str) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Select a debugger session · n over · i in · o out".into();
+            return;
+        };
+        let Some(thread_id) = self.selected_debug_thread().map(|thread| thread.id) else {
+            self.status = "Refresh threads before stepping".into();
+            return;
+        };
+        match self.tool_request(
+            "glass.debug.step",
+            serde_json::json!({"session": session, "threadId": thread_id, "kind": kind}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(
+                    call,
+                    context,
+                    format!("Step {kind} {session} thread {thread_id}"),
+                );
+            }
+            Err(error) => self.status = format!("Debug step unavailable: {error}"),
+        }
+    }
+
+    pub fn pause_selected_debug(&mut self) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Select a debugger session · p pauses".into();
+            return;
+        };
+        let thread_id = self
+            .selected_debug_thread()
+            .map(|thread| thread.id)
+            .unwrap_or(1);
+        match self.tool_request(
+            "glass.debug.pause",
+            serde_json::json!({"session": session, "threadId": thread_id}),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(call, context, format!("Pause {session}"));
+            }
+            Err(error) => self.status = format!("Debug pause unavailable: {error}"),
+        }
+    }
+
+    pub fn breakpoint_focused_line(&mut self) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.status = "Start a debugger before setting breakpoints".into();
+            return;
+        };
+        if self.focused_editor_path.is_empty() {
+            self.status = "Open a file in Code · b sets a breakpoint on the cursor line".into();
+            return;
+        }
+        let line = u64::from(self.focused_editor_line.max(1));
+        match self.tool_request(
+            "glass.debug.breakpoint.set",
+            serde_json::json!({
+                "session": session,
+                "path": self.focused_editor_path,
+                "lines": [line],
+            }),
+            true,
+        ) {
+            Ok((call, context)) => {
+                let _ = self.queue_or_confirm(
+                    call,
+                    context,
+                    format!("Breakpoint {}:{}", self.focused_editor_path, line),
+                );
+            }
+            Err(error) => self.status = format!("Breakpoint unavailable: {error}"),
+        }
+    }
+
+    pub fn queue_debug_scopes(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            return;
+        };
+        let Some(frame_id) = self.selected_debug_frame().map(|frame| frame.id) else {
+            return;
+        };
+        if self.background_action_running() {
+            return;
+        }
+        let Ok((call, context)) = self.tool_request(
+            "glass.debug.scopes",
+            serde_json::json!({"session": session, "frameId": frame_id}),
+            false,
+        ) else {
+            return;
+        };
+        if let Ok(id) = worker.submit_tool(call, context) {
+            self.running_tool_job = Some(id);
+            self.status = "Loading scopes…".into();
+        }
+    }
+
+    pub fn queue_debug_variables(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            return;
+        };
+        let Some(reference) = self
+            .debug_scopes
+            .get(self.selected_debug_scope)
+            .map(|scope| scope.variables_reference)
+        else {
+            return;
+        };
+        if reference <= 0 || self.background_action_running() {
+            return;
+        }
+        let Ok((call, context)) = self.tool_request(
+            "glass.debug.variables",
+            serde_json::json!({"session": session, "variablesReference": reference}),
+            false,
+        ) else {
+            return;
+        };
+        if let Ok(id) = worker.submit_tool(call, context) {
+            self.running_tool_job = Some(id);
+            self.status = "Loading variables…".into();
+        }
+    }
+
     pub fn jump_selected_debug_frame(&mut self) {
         let Some(frame) = self.selected_debug_frame().cloned() else {
             self.status = "Select a stack frame · Enter jumps to source".into();
@@ -4084,9 +4352,110 @@ impl DevTuiState {
                         .map(|line| format!(":{line}"))
                         .unwrap_or_default()
                 );
+                self.debug_scopes_requested = true;
             }
             Err(error) => self.status = format!("Could not open {path}: {error}"),
         }
+    }
+
+    pub fn move_todo_selection(&mut self, delta: i32) {
+        if self.session_todos.items.is_empty() {
+            self.selected_todo = 0;
+            self.status = "No session todos · Plan accept or glass.todo.write".into();
+            return;
+        }
+        self.selected_todo = (self.selected_todo as i32 + delta)
+            .clamp(0, self.session_todos.items.len().saturating_sub(1) as i32)
+            as usize;
+        if let Some(item) = self.session_todos.items.get(self.selected_todo) {
+            self.status = format!(
+                "{} · {} · Enter complete · Space activate",
+                item.id,
+                item.status.label()
+            );
+        }
+    }
+
+    pub fn complete_selected_todo(&mut self) {
+        let Some(id) = self
+            .session_todos
+            .items
+            .get(self.selected_todo)
+            .map(|item| item.id.clone())
+        else {
+            self.status = "Select a session todo · Enter marks it done".into();
+            return;
+        };
+        match self.ws_mut().and_then(|mut workspace| {
+            workspace
+                .complete_todo(&id)
+                .map_err(|error| error.to_string())
+        }) {
+            Ok(item) => {
+                if let Ok(list) = self.ws().map(|workspace| workspace.todos()) {
+                    self.session_todos = list;
+                    self.selected_todo = self
+                        .selected_todo
+                        .min(self.session_todos.items.len().saturating_sub(1));
+                }
+                self.status = format!("Todo {} done · {}", item.id, item.title);
+            }
+            Err(error) => self.status = format!("Todo complete unavailable: {error}"),
+        }
+    }
+
+    pub fn activate_selected_todo(&mut self) {
+        let Some(id) = self
+            .session_todos
+            .items
+            .get(self.selected_todo)
+            .map(|item| item.id.clone())
+        else {
+            self.status = "Select a session todo · Space makes it active".into();
+            return;
+        };
+        match self.ws_mut().and_then(|mut workspace| {
+            workspace
+                .activate_todo(&id)
+                .map_err(|error| error.to_string())
+        }) {
+            Ok(item) => {
+                if let Ok(list) = self.ws().map(|workspace| workspace.todos()) {
+                    self.session_todos = list;
+                }
+                self.status = format!("Todo {} active · {}", item.id, item.title);
+            }
+            Err(error) => self.status = format!("Todo activate unavailable: {error}"),
+        }
+    }
+
+    pub const MORE_ROUTES: [&'static str; 5] = [
+        "doctor",
+        "cockpit start",
+        "kernel start",
+        "experiment",
+        "harness list",
+    ];
+
+    pub fn move_more_selection(&mut self, delta: i32) {
+        let last = Self::MORE_ROUTES.len().saturating_sub(1) as i32;
+        self.selected_more = (self.selected_more as i32 + delta).clamp(0, last) as usize;
+        self.status = format!("{} · Enter runs", Self::MORE_ROUTES[self.selected_more]);
+    }
+
+    pub fn activate_more_selection(&mut self) {
+        let command = Self::MORE_ROUTES[self.selected_more.min(Self::MORE_ROUTES.len() - 1)];
+        let prefill = if command.split_whitespace().any(|token| {
+            token
+                .chars()
+                .all(|character| character.is_ascii_uppercase() || character == '_')
+        }) {
+            format!("{command} ")
+        } else {
+            command.to_string()
+        };
+        self.open_palette_with(&prefill);
+        self.status = format!("{command} · Enter runs");
     }
 
     pub fn open_selected_file(&mut self) {
@@ -6435,6 +6804,9 @@ impl DevTuiState {
         self.harnesses = snapshot.harnesses.clone();
         if let Ok(list) = self.ws().map(|workspace| workspace.todos()) {
             self.session_todos = list;
+            self.selected_todo = self
+                .selected_todo
+                .min(self.session_todos.items.len().saturating_sub(1));
         }
         self.agents = snapshot.agents.clone();
         self.agent_conversation = snapshot.agent_conversation.clone();
@@ -6516,6 +6888,9 @@ impl DevTuiState {
         self.git_entries = snapshot.git_entries.clone();
         self.git_branch = snapshot.git_branch.clone();
         self.git_dirty = snapshot.git_dirty;
+        self.git_ahead = snapshot.git_ahead;
+        self.git_behind = snapshot.git_behind;
+        self.git_conflicts = snapshot.git_conflicts.clone();
         self.github = snapshot.github.clone();
         self.github_review = snapshot.github_review.clone();
         if self.git_entries.is_empty() {
@@ -6828,8 +7203,11 @@ impl DevTuiState {
         let git_status = workspace.git().map(|git| git.status());
         self.git = match git_status {
             Some(Ok(status)) => {
-                self.git_entries = status.entries.clone();
+                self.git_entries = status.sorted_entries();
                 self.git_branch = status.branch.clone().unwrap_or_else(|| "detached".into());
+                self.git_ahead = status.ahead;
+                self.git_behind = status.behind;
+                self.git_conflicts = status.conflicts.clone();
                 self.git_dirty = !status.conflicts.is_empty()
                     || status.ahead > 0
                     || status.behind > 0
@@ -6869,12 +7247,18 @@ impl DevTuiState {
             Some(Err(error)) => {
                 self.git_entries.clear();
                 self.git_branch.clear();
+                self.git_ahead = 0;
+                self.git_behind = 0;
+                self.git_conflicts.clear();
                 self.git_dirty = false;
                 format!("Git state failed: {error}")
             }
             None => {
                 self.git_entries.clear();
                 self.git_branch.clear();
+                self.git_ahead = 0;
+                self.git_behind = 0;
+                self.git_conflicts.clear();
                 self.git_dirty = false;
                 "Not a Git repository".into()
             }
@@ -6964,6 +7348,8 @@ impl DevTuiState {
                             name: name.clone(),
                             state: snapshot.state,
                             pid: snapshot.adapter_process_id,
+                            breakpoints: snapshot.breakpoints.values().map(Vec::len).sum::<usize>(),
+                            watches: snapshot.watches.len(),
                         })
                         .collect();
                     self.selected_debug_session = self
@@ -7938,6 +8324,51 @@ fn parse_debug_threads(value: &serde_json::Value) -> Vec<DebugThreadRow> {
         .collect()
 }
 
+fn parse_debug_scopes(value: &serde_json::Value) -> Vec<DebugScopeRow> {
+    value
+        .get("scopes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|scope| DebugScopeRow {
+            name: scope
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("scope")
+                .to_string(),
+            variables_reference: scope
+                .get("variablesReference")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+        })
+        .collect()
+}
+
+fn parse_debug_variables(value: &serde_json::Value) -> Vec<DebugVariableRow> {
+    value
+        .get("variables")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|variable| {
+            Some(DebugVariableRow {
+                name: variable
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)?
+                    .to_string(),
+                value: variable
+                    .get("value")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect(),
+            })
+        })
+        .take(64)
+        .collect()
+}
+
 fn parse_debug_frames(value: &serde_json::Value) -> Vec<DebugFrameRow> {
     value
         .get("stackFrames")
@@ -8366,6 +8797,14 @@ mod tests {
         }));
         assert_eq!(frames[0].path.as_deref(), Some("src/main.rs"));
         assert_eq!(frames[0].line, Some(40));
+        let scopes = parse_debug_scopes(&serde_json::json!({
+            "scopes": [{"name": "Locals", "variablesReference": 7}]
+        }));
+        assert_eq!(scopes[0].variables_reference, 7);
+        let variables = parse_debug_variables(&serde_json::json!({
+            "variables": [{"name": "x", "value": "1"}]
+        }));
+        assert_eq!(variables[0].name, "x");
     }
 
     #[test]

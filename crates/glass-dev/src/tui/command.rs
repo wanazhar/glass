@@ -416,6 +416,18 @@ const DEBUG_ACTIONS: &[SurfaceAction] = &[
         description: "step over the selected thread",
     },
     SurfaceAction {
+        label: "Pause",
+        command: "debug pause SESSION THREAD_ID",
+        key: ":",
+        description: "pause the selected thread",
+    },
+    SurfaceAction {
+        label: "Breakpoint on cursor",
+        command: "debug break SESSION PATH LINES",
+        key: ":",
+        description: "set a source breakpoint on the focused editor line",
+    },
+    SurfaceAction {
         label: "Run tests",
         command: "test run RUN_ID SUITE_ID",
         key: ":",
@@ -453,6 +465,12 @@ const MORE_ACTIONS: &[SurfaceAction] = &[
         command: "workspace",
         key: ":",
         description: "inspect resident workspace services",
+    },
+    SurfaceAction {
+        label: "Doctor",
+        command: "doctor",
+        key: ":",
+        description: "inspect host and workspace health",
     },
     SurfaceAction {
         label: "Start private cockpit",

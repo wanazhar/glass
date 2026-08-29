@@ -719,10 +719,16 @@ pub fn run(
                                 state.request_detected_dev();
                             }
                             (KeyCode::Char('u'), _) if state.surface == DevSurface::Terminal => {
-                                match state.attach_detected_app() {
+                                match state.attach_selected_process_url() {
                                     Ok(message) => state.status = message,
                                     Err(error) => state.status = error,
                                 }
+                            }
+                            (KeyCode::Char('x'), _)
+                                if state.surface == DevSurface::Terminal
+                                    && !state.composer_mode =>
+                            {
+                                state.stop_selected_process();
                             }
                             (KeyCode::Char('g'), _)
                                 if state.surface == DevSurface::App && !state.code_edit_mode =>
@@ -731,6 +737,26 @@ pub fn run(
                             }
                             (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
                                 state.queue_git_diff(&mut worker);
+                            }
+                            (KeyCode::Char('c'), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.compose_git_commit();
+                            }
+                            (KeyCode::Char('o'), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.open_selected_git_file();
+                            }
+                            (KeyCode::Char('x'), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.discard_selected_git_file();
+                            }
+                            (KeyCode::Char('r'), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.queue_github_review(&mut worker);
                             }
                             (KeyCode::Char(' '), _)
                                 if state.surface == DevSurface::Git && !state.composer_mode =>
@@ -795,6 +821,62 @@ pub fn run(
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Debug => {
                                 state.activate_debug_selection(&mut worker);
+                            }
+                            (KeyCode::Char('n'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.step_selected_debug("over");
+                            }
+                            (KeyCode::Char('i'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.step_selected_debug("in");
+                            }
+                            (KeyCode::Char('o'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.step_selected_debug("out");
+                            }
+                            (KeyCode::Char('p'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.pause_selected_debug();
+                            }
+                            (KeyCode::Char('b'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.breakpoint_focused_line();
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Tasks =>
+                            {
+                                state.move_todo_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Tasks =>
+                            {
+                                state.move_todo_selection(1);
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::Tasks => {
+                                state.complete_selected_todo();
+                            }
+                            (KeyCode::Char(' '), _)
+                                if state.surface == DevSurface::Tasks && !state.composer_mode =>
+                            {
+                                state.activate_selected_todo();
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::More =>
+                            {
+                                state.move_more_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::More =>
+                            {
+                                state.move_more_selection(1);
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::More => {
+                                state.activate_more_selection();
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Code => {
                                 state.open_selected_file_for_edit();
@@ -998,6 +1080,18 @@ pub fn run(
         if state.debug_stack_requested {
             state.debug_stack_requested = false;
             state.queue_debug_stack(&mut worker);
+        }
+        if state.debug_scopes_requested {
+            state.debug_scopes_requested = false;
+            state.queue_debug_scopes(&mut worker);
+        }
+        if state.debug_variables_requested {
+            state.debug_variables_requested = false;
+            state.queue_debug_variables(&mut worker);
+        }
+        if state.github_review_requested {
+            state.github_review_requested = false;
+            state.queue_github_review(&mut worker);
         }
         if state.queued_tool_request.is_some()
             && state.pending_confirmation.is_none()

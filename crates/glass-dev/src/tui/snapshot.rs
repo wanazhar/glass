@@ -94,6 +94,9 @@ pub struct DisplaySnapshot {
     pub git_entries: Vec<crate::git::GitStatusEntry>,
     pub git_branch: String,
     pub git_dirty: bool,
+    pub git_ahead: u64,
+    pub git_behind: u64,
+    pub git_conflicts: Vec<String>,
     pub github: crate::github::GitHubStatus,
     pub github_review: String,
     pub tests: String,
@@ -751,6 +754,8 @@ fn compute_snapshot(
             name: name.clone(),
             state: value.state,
             pid: value.adapter_process_id,
+            breakpoints: value.breakpoints.values().map(Vec::len).sum::<usize>(),
+            watches: value.watches.len(),
         })
         .collect();
     snapshot.debugger = if debug_rows.is_empty() {
@@ -827,11 +832,14 @@ fn compute_snapshot(
             }
         })
         .unwrap_or_else(|error| format!("Browser state failed: {error}"));
-    let (git, git_entries, git_branch, git_dirty) = git_projection(&mut locked);
-    snapshot.git = git;
-    snapshot.git_entries = git_entries;
-    snapshot.git_branch = git_branch;
-    snapshot.git_dirty = git_dirty;
+    let git = git_projection(&mut locked);
+    snapshot.git = git.text;
+    snapshot.git_entries = git.entries;
+    snapshot.git_branch = git.branch;
+    snapshot.git_dirty = git.dirty;
+    snapshot.git_ahead = git.ahead;
+    snapshot.git_behind = git.behind;
+    snapshot.git_conflicts = git.conflicts;
     snapshot.workspace_status = workspace_status_projection(&mut locked);
     snapshot.trust_label = locked.trust().label().into();
     snapshot.trust_inspection = locked.trust_inspection();
@@ -847,14 +855,22 @@ fn compute_snapshot(
     snapshot
 }
 
-fn git_projection(
-    workspace: &mut crate::DevelopmentWorkspace,
-) -> (String, Vec<crate::git::GitStatusEntry>, String, bool) {
+struct GitProjection {
+    text: String,
+    entries: Vec<crate::git::GitStatusEntry>,
+    branch: String,
+    dirty: bool,
+    ahead: u64,
+    behind: u64,
+    conflicts: Vec<String>,
+}
+
+fn git_projection(workspace: &mut crate::DevelopmentWorkspace) -> GitProjection {
     workspace
         .git()
         .map(|git| match git.status() {
             Ok(status) => {
-                let entries = status.entries.clone();
+                let entries = status.sorted_entries();
                 let header = format!(
                     "branch {} · ↑{} ↓{} · upstream {}",
                     status.branch.as_deref().unwrap_or("detached"),
@@ -862,8 +878,7 @@ fn git_projection(
                     status.behind,
                     status.upstream.as_deref().unwrap_or("none")
                 );
-                let lines = status
-                    .entries
+                let lines = entries
                     .iter()
                     .map(|entry| {
                         format!(
@@ -884,11 +899,11 @@ fn git_projection(
                 } else {
                     format!("{header}\n{}", lines.join("\n"))
                 };
-                (
+                GitProjection {
                     text,
                     entries,
-                    status.branch.unwrap_or_else(|| "detached".into()),
-                    !status.conflicts.is_empty()
+                    branch: status.branch.unwrap_or_else(|| "detached".into()),
+                    dirty: !status.conflicts.is_empty()
                         || status.ahead > 0
                         || status.behind > 0
                         || status.entries.iter().any(|entry| {
@@ -896,22 +911,29 @@ fn git_projection(
                                 || entry.index_status != ' '
                                 || entry.worktree_status != ' '
                         }),
-                )
+                    ahead: status.ahead,
+                    behind: status.behind,
+                    conflicts: status.conflicts,
+                }
             }
-            Err(error) => (
-                format!("Git state failed: {error}"),
-                Vec::new(),
-                String::new(),
-                false,
-            ),
+            Err(error) => GitProjection {
+                text: format!("Git state failed: {error}"),
+                entries: Vec::new(),
+                branch: String::new(),
+                dirty: false,
+                ahead: 0,
+                behind: 0,
+                conflicts: Vec::new(),
+            },
         })
-        .unwrap_or_else(|| {
-            (
-                "Not a Git repository".into(),
-                Vec::new(),
-                String::new(),
-                false,
-            )
+        .unwrap_or(GitProjection {
+            text: "Not a Git repository".into(),
+            entries: Vec::new(),
+            branch: String::new(),
+            dirty: false,
+            ahead: 0,
+            behind: 0,
+            conflicts: Vec::new(),
         })
 }
 

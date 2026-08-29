@@ -43,12 +43,16 @@ pub fn curriculum_help(surface: DevSurface) -> String {
         DevSurface::Code => "CODE\n  Enter opens · i inserts · gc comments",
         DevSurface::App => "APP\n  Enter activates · g source · C comment",
         DevSurface::Terminal => {
-            "TERMINAL\n  j/k select · Enter logs · Space restart · s start suite"
+            "TERMINAL\n  j/k select · Enter logs · Space restart · u App · x stop"
         }
-        DevSurface::Git => "GIT\n  Enter/d diff · Space stage/unstage · :git merge|rebase|push",
-        DevSurface::Tasks => "TASKS\n  session todos on top · crew below",
-        DevSurface::Debug => "DEBUG\n  j/k select · [ ] pane · Enter jump · Space continue",
-        DevSurface::More => "MORE\n  :doctor · :cockpit start",
+        DevSurface::Git => {
+            "GIT\n  Enter/d diff · Space stage · c commit · o open · x discard · r review"
+        }
+        DevSurface::Tasks => "TASKS\n  j/k todos · Enter complete · Space activate",
+        DevSurface::Debug => {
+            "DEBUG\n  j/k select · [ ] pane · Enter jump · Space continue · n/i/o step"
+        }
+        DevSurface::More => "MORE\n  j/k routes · Enter runs doctor/cockpit/kernels",
     };
     format!(
         "DO THIS\n  type in the dock   talk to Glass\n  :                  search commands\n  a                  this surface's actions\n  Enter              do the highlighted thing\n  Esc                back\n  ?                  close help\n\n{surface_lines}\n\nMORE\n  AGENT · CODE · APP · TERMINAL · TASKS · GIT · DEBUG · MORE\n\nKEYS\n  Ctrl-L  dock · Alt-A dock from editor\n  Ctrl-P  file · Ctrl-K / Ctrl-Shift-P palette\n  Ctrl-Shift-A  Ask/Plan/Agent · /ask /plan /agent /todo\n  Ctrl-G  App · Tab surfaces · Ctrl-O back · Ctrl-D steer · Ctrl-X abort\n  click dock · double-click open · right-click / long-press = a"

@@ -25,16 +25,16 @@ pub fn playbook(surface: DevSurface) -> &'static str {
             "App playbook: glass.browser.observe before describing the page. glass.browser.act only with the current browserRevision and selected entity. glass.browser.verify for prove-it. Never invent selectors or claim a click without a Glass result."
         }
         DevSurface::Git => {
-            "Git playbook: glass.git.status, glass.git.diff, and glass.git.conflicts before mutations. Stage/unstage/commit/push/merge/rebase/pull through glass.git.* and glass.github.review / glass.github.ship. Do not bash git. Review remote PRs with glass.github.review before merge or push."
+            "Git playbook: glass.git.status, glass.git.diff, and glass.git.conflicts before mutations. Prefer context.git.selectedPath. Stage/unstage/commit/push/merge/rebase/pull/discard through glass.git.* and glass.github.review / glass.github.ship. Do not bash git. Review remote PRs with glass.github.review before merge or push."
         }
         DevSurface::Debug => {
-            "Debug playbook: glass.debug.threads and glass.debug.stack before describing a pause. Use context.debug.session / threadId / frameId. Set breakpoints with glass.debug.breakpoint.set on the focused path. glass.debug.continue / step only after a stopped DAP event. Jump the human to a frame by reading its source path; do not claim continue/step without a DAP event."
+            "Debug playbook: glass.debug.threads and glass.debug.stack before describing a pause. Use context.debug.session / threadId / frameId. Load glass.debug.scopes / variables for the selected frame. Set breakpoints with glass.debug.breakpoint.set on the focused path. glass.debug.continue / step / pause only after a DAP event. Jump the human to a frame by reading its source path."
         }
         DevSurface::Terminal => {
             "Process playbook: glass.process.list / logs / restart for named resident processes. Prefer context.process.name. Use bash only for one-shot commands, never to replace process.start."
         }
         DevSurface::Tasks => {
-            "Todo playbook: update glass.todo.write on every multi-step Agent turn. Keep at most one active item. glass.task.crew only when the human asks for overnight work."
+            "Todo playbook: update glass.todo.write on every multi-step Agent turn. Keep at most one active item. glass.todo.complete when a step is done. glass.task.crew only when the human asks for overnight work."
         }
         DevSurface::More => {
             "Workspace playbook: glass.daemon.doctor and cockpit tools for host health. Kernels and experiments stay named glass.eval.* / glass.experiment.*."
@@ -66,5 +66,6 @@ mod tests {
         assert!(playbook(DevSurface::Debug).contains("glass.debug.threads"));
         assert!(playbook(DevSurface::Terminal).contains("glass.process.list"));
         assert!(playbook(DevSurface::Tasks).contains("glass.todo.write"));
+        assert!(playbook(DevSurface::Debug).contains("glass.debug.scopes"));
     }
 }

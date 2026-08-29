@@ -104,6 +104,25 @@ impl SessionTodoList {
         Ok(done)
     }
 
+    pub fn activate(&mut self, id: &str, root: &Path) -> DevelopmentResult<SessionTodo> {
+        if !self.items.iter().any(|item| item.id == id) {
+            return Err(DevelopmentError::NotFound(format!("todo {id}")));
+        }
+        for item in &mut self.items {
+            if item.id == id {
+                item.status = TodoStatus::Active;
+            } else if item.status == TodoStatus::Active {
+                item.status = TodoStatus::Pending;
+            }
+        }
+        self.persist(root)?;
+        self.items
+            .iter()
+            .find(|item| item.id == id)
+            .cloned()
+            .ok_or_else(|| DevelopmentError::NotFound(format!("todo {id}")))
+    }
+
     pub fn seed_from_plan(&mut self, goal: &str, body: &str, root: &Path) -> DevelopmentResult<()> {
         let mut items = vec![SessionTodo {
             id: "todo-goal".into(),
@@ -194,6 +213,10 @@ mod tests {
             .unwrap();
         assert_eq!(list.items[0].status, TodoStatus::Active);
         assert_eq!(list.items.len(), 4);
+        list.complete("todo-1", &root).unwrap();
+        list.activate("todo-2", &root).unwrap();
+        assert_eq!(list.items[0].status, TodoStatus::Pending);
+        assert_eq!(list.items[2].status, TodoStatus::Active);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

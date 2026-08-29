@@ -247,6 +247,15 @@ impl DevelopmentWorkspace {
         Ok(item)
     }
 
+    pub fn activate_todo(
+        &mut self,
+        id: &str,
+    ) -> crate::development::DevelopmentResult<crate::SessionTodo> {
+        let mut list = self.todos();
+        let item = list.activate(id, &self.root)?;
+        Ok(item)
+    }
+
     pub fn seed_todos_from_plan(
         &mut self,
         goal: &str,

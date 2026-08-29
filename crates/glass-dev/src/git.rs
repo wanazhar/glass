@@ -74,6 +74,34 @@ pub struct GitStatusEntry {
     pub untracked: bool,
 }
 
+impl GitStatus {
+    /// Conflicts first, then unstaged, staged, untracked.
+    pub fn sorted_entries(&self) -> Vec<GitStatusEntry> {
+        let mut entries = self.entries.clone();
+        entries.sort_by(|left, right| {
+            entry_rank(left, &self.conflicts)
+                .cmp(&entry_rank(right, &self.conflicts))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        entries
+    }
+}
+
+fn entry_rank(entry: &GitStatusEntry, conflicts: &[String]) -> u8 {
+    if conflicts.iter().any(|path| path == &entry.path)
+        || entry.index_status == 'U'
+        || entry.worktree_status == 'U'
+    {
+        0
+    } else if entry.untracked {
+        3
+    } else if entry.worktree_status != ' ' {
+        1
+    } else {
+        2
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitBranch {
@@ -728,6 +756,56 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_REPOSITORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn sorted_entries_rank_conflicts_before_unstaged_and_untracked() {
+        let status = GitStatus {
+            branch: Some("main".into()),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            entries: vec![
+                GitStatusEntry {
+                    path: "new.rs".into(),
+                    original_path: None,
+                    index_status: '?',
+                    worktree_status: '?',
+                    untracked: true,
+                },
+                GitStatusEntry {
+                    path: "staged.rs".into(),
+                    original_path: None,
+                    index_status: 'M',
+                    worktree_status: ' ',
+                    untracked: false,
+                },
+                GitStatusEntry {
+                    path: "conflict.rs".into(),
+                    original_path: None,
+                    index_status: 'U',
+                    worktree_status: 'U',
+                    untracked: false,
+                },
+                GitStatusEntry {
+                    path: "unstaged.rs".into(),
+                    original_path: None,
+                    index_status: ' ',
+                    worktree_status: 'M',
+                    untracked: false,
+                },
+            ],
+            conflicts: vec!["conflict.rs".into()],
+        };
+        let order = status
+            .sorted_entries()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec!["conflict.rs", "unstaged.rs", "staged.rs", "new.rs"]
+        );
+    }
 
     fn repository() -> PathBuf {
         let sequence = NEXT_REPOSITORY.fetch_add(1, Ordering::Relaxed);

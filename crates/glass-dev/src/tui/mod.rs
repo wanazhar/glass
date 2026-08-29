@@ -523,6 +523,7 @@ pub fn run(
                                 state.insert_composer_newline();
                             }
                             (KeyCode::Enter, _) => state.submit_composer(&mut worker),
+                            (KeyCode::Tab, _) => state.complete_composer_mention(),
                             (KeyCode::Backspace, _) => state.composer_backspace(),
                             (KeyCode::Up, _) => state.navigate_composer_history(true),
                             (KeyCode::Down, _) => state.navigate_composer_history(false),

@@ -119,8 +119,9 @@ pub use pi_runtime::{
 };
 /// Task scheduling, retry, evidence, and verification types.
 pub use tasks::{
-    RetryPolicy, TaskBudget, TaskEvidence, TaskId, TaskScheduler, TaskSnapshot, TaskSpec,
-    TaskState, VerificationRequirement,
+    CrewWake, CrewWakeMember, RetryPolicy, TaskBudget, TaskEvidence, TaskId, TaskScheduler,
+    TaskSnapshot, TaskSpec, TaskState, VerificationRequirement, load_latest_crew_wake,
+    persist_crew_wake,
 };
 /// Governed tool execution context and router.
 pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};

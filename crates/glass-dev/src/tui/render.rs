@@ -334,6 +334,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
                         super::editor::GutterMark::Agent,
                         super::editor::GutterMark::Page,
                         super::editor::GutterMark::Proof,
+                        super::editor::GutterMark::Comment,
                     ]
                     .into_iter()
                     .map(super::editor::GutterMark::glyph)
@@ -352,6 +353,10 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
     let editor_block = surface_block(" SOURCE ", ACCENT_BRIGHT);
     let editor_inner = editor_block.inner(rows[1]);
     let marks = editor_mark_glyphs(state);
+    let decorations = file_view::EditorDecorations {
+        marks: &marks,
+        inlays: &state.editor_inlays,
+    };
     let wrapped_cursor = if state.editor_soft_wrap {
         let wrapped = file_view::render_editable_source_wrapped(
             &state.focused_editor_path,
@@ -360,7 +365,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
             state.focused_editor_column,
             state.focused_editor_selection.as_ref(),
             editor_inner.width.max(1),
-            &marks,
+            &decorations,
         );
         let cursor = wrapped.cursor;
         frame.render_widget(
@@ -378,7 +383,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
             state.focused_editor_line,
             state.focused_editor_column,
             state.focused_editor_selection.as_ref(),
-            &marks,
+            &decorations,
         );
         if let Some(ghost) = &state.editor_engine.ghost {
             let index = state.focused_editor_line.saturating_sub(1) as usize;
@@ -893,7 +898,7 @@ fn help_content(surface: DevSurface) -> String {
     let global = "KEYS\n  Ctrl-P   open file\n  Ctrl-K   command palette\n  :        command palette\n  Ctrl-Shift-P  command palette\n  Tab      next surface\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Esc      back\n  ?        help\n  Ctrl-C   quit confirmation";
     let current = match surface {
         DevSurface::Agent | DevSurface::Trust => {
-            "AGENT\n  Enter    start or continue a conversation\n  Shift-Enter  newline in composer\n  ↑        previous prompt\n  Ctrl-D   steer the active turn\n  Ctrl-X   abort the selected agent\n  :agent setup / doctor / new\n  :review  show/accept/ship · :task crew GOAL\n  :harness list / start NAME"
+            "AGENT\n  Enter    start or continue a conversation\n  Shift-Enter  newline · Tab @mention\n  ↑        previous prompt\n  Ctrl-D   steer the active turn\n  Ctrl-X   abort the selected agent\n  :agent setup / doctor / new\n  :review  show/accept/ship · :task crew GOAL\n  :harness list / start NAME"
         }
         DevSurface::Code => {
             "CODE\n  Ctrl-P   fuzzy-open a file\n  ↑/↓      select a file\n  Enter    open full-screen editor\n  i        edit the focused buffer\n  [ / ]    cycle buffers\n  Ctrl-S   save · Ctrl-Z/Y undo/redo\n  Alt-A    ask Pi with this buffer\n  :open PATH · :project search QUERY"
@@ -962,6 +967,10 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .split(rows[1]);
     render_surface(frame, state, columns[0]);
     let marks = editor_mark_glyphs(state);
+    let decorations = file_view::EditorDecorations {
+        marks: &marks,
+        inlays: &state.editor_inlays,
+    };
     let source = file_view::render_editable_source(
         &state.focused_editor_path,
         if state.focused_editor_content.is_empty() {
@@ -972,7 +981,7 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         state.focused_editor_line,
         state.focused_editor_column,
         state.focused_editor_selection.as_ref(),
-        &marks,
+        &decorations,
     );
     frame.render_widget(
         Paragraph::new(source)

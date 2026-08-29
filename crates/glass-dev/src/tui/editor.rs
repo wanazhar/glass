@@ -163,6 +163,7 @@ pub enum GutterMark {
     Agent,
     Page,
     Proof,
+    Comment,
 }
 
 impl GutterMark {
@@ -173,6 +174,7 @@ impl GutterMark {
             Self::Agent => '▸',
             Self::Page => '◎',
             Self::Proof => '✓',
+            Self::Comment => '#',
         }
     }
 }
@@ -627,14 +629,19 @@ pub fn evidence_card(
     )
 }
 
+pub struct ReviewEvidence<'a> {
+    pub last_verify: Option<&'a str>,
+    pub git_diff: Option<&'a str>,
+    pub tasks: Option<&'a str>,
+    pub checkpoint: Option<&'a str>,
+    pub wake: Option<&'a str>,
+}
+
 pub fn review_object(
     github_summary: &str,
     github_review: &str,
     proposals: &[(String, String, String)],
-    last_verify: Option<&str>,
-    git_diff: Option<&str>,
-    tasks: Option<&str>,
-    checkpoint: Option<&str>,
+    evidence: ReviewEvidence<'_>,
 ) -> String {
     let mut lines = vec![
         "REVIEW".to_string(),
@@ -650,32 +657,194 @@ pub fn review_object(
             lines.push(format!("  {id} · {path} · {state}"));
         }
     }
-    if let Some(verify) = last_verify {
+    if let Some(verify) = evidence.last_verify {
         lines.push(String::new());
         lines.push(format!("LAST VERIFY\n{verify}"));
     }
-    if let Some(diff) = git_diff.filter(|diff| !diff.trim().is_empty()) {
+    if let Some(diff) = evidence.git_diff.filter(|diff| !diff.trim().is_empty()) {
         lines.push(String::new());
         lines.push("DIFF".into());
         for line in diff.lines().take(40) {
             lines.push(format!("  {line}"));
         }
     }
-    if let Some(tasks) = tasks.filter(|tasks| !tasks.trim().is_empty()) {
+    if let Some(tasks) = evidence.tasks.filter(|tasks| !tasks.trim().is_empty()) {
         lines.push(String::new());
         lines.push("CREW".into());
         for line in tasks.lines().take(16) {
             lines.push(format!("  {line}"));
         }
     }
-    if let Some(checkpoint) = checkpoint.filter(|checkpoint| !checkpoint.is_empty()) {
+    if let Some(checkpoint) = evidence
+        .checkpoint
+        .filter(|checkpoint| !checkpoint.is_empty())
+    {
         lines.push(String::new());
         lines.push(format!("CHECKPOINT {checkpoint}"));
+    }
+    if let Some(wake) = evidence.wake.filter(|wake| !wake.trim().is_empty()) {
+        lines.push(String::new());
+        lines.push(wake.trim_end().to_string());
     }
     lines.push(
         "\n:review accept [ID] · :review reject [ID] · :review ship TITLE · :review ask".into(),
     );
     lines.join("\n")
+}
+
+/// Parse LSP `textDocument/inlayHint` results into one-based line suffixes.
+pub fn parse_inlay_hints(value: &serde_json::Value) -> Vec<(u32, String)> {
+    let items = value
+        .as_array()
+        .or_else(|| value.get("result").and_then(serde_json::Value::as_array))
+        .cloned()
+        .unwrap_or_default();
+    let mut by_line = std::collections::BTreeMap::<u32, Vec<String>>::new();
+    for item in items {
+        let line = item
+            .pointer("/position/line")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32
+            + 1;
+        let label = inlay_label(&item["label"]);
+        if !label.is_empty() {
+            by_line.entry(line).or_default().push(label);
+        }
+    }
+    by_line
+        .into_iter()
+        .map(|(line, parts)| (line, parts.join(" ")))
+        .collect()
+}
+
+fn inlay_label(value: &serde_json::Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.trim().to_string();
+    }
+    if let Some(parts) = value.as_array() {
+        return parts
+            .iter()
+            .filter_map(|part| {
+                part.as_str().map(str::to_string).or_else(|| {
+                    part.get("value")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("");
+    }
+    String::new()
+}
+
+const COMPOSER_MENTIONS: &[&str] = &[
+    "@file",
+    "@page",
+    "@entity",
+    "@workflow",
+    "@workspace",
+    "@diagnostic",
+    "@selection",
+    "@symbol",
+    "@memory",
+    "@browser",
+];
+
+/// Rewrite a bare `@file` / `@symbol` token to the focused buffer path.
+pub fn expand_mentions(text: &str, file: Option<&str>) -> String {
+    let Some(path) = file.filter(|path| !path.is_empty()) else {
+        return text.to_string();
+    };
+    let mut out = String::with_capacity(text.len() + path.len());
+    for token in text.split_inclusive(char::is_whitespace) {
+        let core = token.trim_end_matches(|character: char| {
+            character.is_whitespace() || matches!(character, ',' | '.' | '?' | '!' | ')' | ']')
+        });
+        let suffix = &token[core.len()..];
+        if core == "@file" || core == "@symbol" {
+            out.push_str("@file:");
+            out.push_str(path);
+            out.push_str(suffix);
+        } else {
+            out.push_str(token);
+        }
+    }
+    out
+}
+
+/// Complete the `@mention` at `cursor`, cycling `@file:` through `files`.
+pub fn complete_mention(text: &str, cursor: usize, files: &[String]) -> Option<(String, usize)> {
+    let (start, token) = mention_token_at(text, cursor)?;
+    let replacement = if token == "@file" || token.starts_with("@file:") {
+        let current = token.strip_prefix("@file:").unwrap_or("");
+        let path = if current.is_empty() {
+            files.first().cloned()
+        } else if let Some(index) = files.iter().position(|file| file == current) {
+            files.get(index + 1).or_else(|| files.first()).cloned()
+        } else {
+            files
+                .iter()
+                .find(|file| file.starts_with(current) || file.contains(current))
+                .cloned()
+        }?;
+        format!("@file:{path}")
+    } else {
+        let matches = COMPOSER_MENTIONS
+            .iter()
+            .copied()
+            .filter(|mention| mention.starts_with(&token) && *mention != token)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => return None,
+            [only] => (*only).to_string(),
+            rest => {
+                let prefix = longest_common_prefix(rest);
+                if prefix.len() > token.len() {
+                    prefix
+                } else {
+                    rest[0].to_string()
+                }
+            }
+        }
+    };
+    let mut next = String::with_capacity(text.len() + replacement.len());
+    next.push_str(&text[..start]);
+    next.push_str(&replacement);
+    next.push_str(&text[cursor.min(text.len())..]);
+    let new_cursor = start + replacement.len();
+    Some((next, new_cursor))
+}
+
+fn mention_token_at(text: &str, cursor: usize) -> Option<(usize, String)> {
+    let cursor = cursor.min(text.len());
+    if !text.is_char_boundary(cursor) {
+        return None;
+    }
+    let before = &text[..cursor];
+    let start = before
+        .char_indices()
+        .rev()
+        .find(|(_, character)| character.is_whitespace())
+        .map(|(index, character)| index + character.len_utf8())
+        .unwrap_or(0);
+    let token = &before[start..];
+    token.starts_with('@').then(|| (start, token.to_string()))
+}
+
+fn longest_common_prefix(items: &[&str]) -> String {
+    let Some(first) = items.first().copied() else {
+        return String::new();
+    };
+    let mut prefix = first.to_string();
+    for item in items.iter().skip(1) {
+        prefix = prefix
+            .chars()
+            .zip(item.chars())
+            .take_while(|(left, right)| left == right)
+            .map(|(left, _)| left)
+            .collect();
+    }
+    prefix
 }
 
 fn capture_after<'a>(lower: &str, original: &'a str, needles: &[&str]) -> Option<&'a str> {
@@ -981,6 +1150,7 @@ mod tests {
             GutterMark::Agent,
             GutterMark::Page,
             GutterMark::Proof,
+            GutterMark::Comment,
         );
         let function = textobject_selection(source, start, TextObject::Function { around: true })
             .expect("function fold");
@@ -1016,6 +1186,59 @@ mod tests {
         assert_eq!(found.line, 2);
         assert!(found.column > 5);
         assert_eq!(GutterMark::Proof.glyph(), '✓');
+        assert_eq!(GutterMark::Comment.glyph(), '#');
+    }
+
+    #[test]
+    fn parse_inlay_hints_groups_labels_by_one_based_line() {
+        let hints = parse_inlay_hints(&serde_json::json!([
+            {"position":{"line":0,"character":10},"label":": u32"},
+            {"position":{"line":0,"character":18},"label":[{"value":"-> "},{"value":"bool"}]}
+        ]));
+        assert_eq!(hints, vec![(1, ": u32 -> bool".into())]);
+    }
+
+    #[test]
+    fn expand_mentions_pins_the_focused_file() {
+        assert_eq!(
+            expand_mentions("inspect @file please", Some("src/main.rs")),
+            "inspect @file:src/main.rs please"
+        );
+        assert_eq!(
+            expand_mentions("inspect @file please", None),
+            "inspect @file please"
+        );
+    }
+
+    #[test]
+    fn complete_mention_cycles_files_and_completes_prefixes() {
+        let files = vec!["src/lib.rs".into(), "src/main.rs".into()];
+        let (text, cursor) = complete_mention("look at @fi", 11, &files).expect("prefix");
+        assert_eq!(text, "look at @file");
+        assert_eq!(cursor, 13);
+        let (text, _) = complete_mention("look at @file", 13, &files).expect("first file");
+        assert_eq!(text, "look at @file:src/lib.rs");
+        let (text, _) = complete_mention(&text, text.len(), &files).expect("next file");
+        assert_eq!(text, "look at @file:src/main.rs");
+    }
+
+    #[test]
+    fn review_object_includes_the_crew_wake() {
+        let text = review_object(
+            "repo",
+            "no review",
+            &[],
+            ReviewEvidence {
+                last_verify: None,
+                git_diff: None,
+                tasks: None,
+                checkpoint: Some("before-crew"),
+                wake: Some("WAKE crew-1\n  goal add toggle"),
+            },
+        );
+        assert!(text.contains("CHECKPOINT before-crew"));
+        assert!(text.contains("WAKE crew-1"));
+        assert!(text.contains("goal add toggle"));
     }
 
     #[test]

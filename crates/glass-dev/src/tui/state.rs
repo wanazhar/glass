@@ -1,8 +1,9 @@
 use super::command;
 use super::editor::{
     self as native, EditorEngine, EditorMode, GhostText, Motion, Operator, TextObject,
-    apply_motion, compile_prove_it, evidence_card, line_hunks, local_fim, pair_apply_caret,
-    pair_apply_step, textobject_from_key, textobject_selection,
+    apply_motion, compile_prove_it, complete_mention, evidence_card, expand_mentions, line_hunks,
+    local_fim, pair_apply_caret, pair_apply_step, parse_inlay_hints, textobject_from_key,
+    textobject_selection,
 };
 use super::parse::IncrementalSyntax;
 use crate::development::TextSelection;
@@ -260,6 +261,8 @@ pub struct DevTuiState {
     pub editor_comments: Vec<crate::development::EditorComment>,
     pub editor_proposals: Vec<crate::development::EditorProposal>,
     pub editor_checkpoints: Vec<crate::development::EditorCheckpoint>,
+    pub editor_inlays: Vec<(u32, String)>,
+    pub last_crew_wake: Option<String>,
     pub agents: String,
     pub agent_readiness: String,
     pub harnesses: String,
@@ -489,6 +492,8 @@ impl DevTuiState {
             editor_comments: Vec::new(),
             editor_proposals: Vec::new(),
             editor_checkpoints: Vec::new(),
+            editor_inlays: Vec::new(),
+            last_crew_wake: None,
             status: initial_status,
             agents: String::new(),
             agent_readiness,
@@ -1382,7 +1387,8 @@ impl DevTuiState {
         self.composer_mode = true;
         self.composer_cursor = self.composer_input.len();
         self.status =
-            "Agent composer · Enter sends · Shift-Enter newline · ↑ history · Esc cancel".into();
+            "Agent composer · Enter sends · Tab @mention · Shift-Enter newline · ↑ history · Esc cancel"
+                .into();
     }
     /// Move from the native editor into the shared agent conversation with
     /// the focused buffer attached as unsaved, bounded context.
@@ -1439,10 +1445,13 @@ impl DevTuiState {
             &self.github.summary(),
             &self.github_review,
             &proposals,
-            self.last_verify.as_deref(),
-            diff,
-            Some(self.tasks.as_str()).filter(|tasks| !tasks.trim().is_empty()),
-            checkpoint,
+            super::editor::ReviewEvidence {
+                last_verify: self.last_verify.as_deref(),
+                git_diff: diff,
+                tasks: Some(self.tasks.as_str()).filter(|tasks| !tasks.trim().is_empty()),
+                checkpoint,
+                wake: self.last_crew_wake.as_deref(),
+            },
         )
     }
 
@@ -1838,6 +1847,19 @@ impl DevTuiState {
         }
     }
 
+    pub fn complete_composer_mention(&mut self) {
+        match complete_mention(&self.composer_input, self.composer_cursor, &self.files) {
+            Some((text, cursor)) => {
+                self.composer_input = text;
+                self.composer_cursor = cursor;
+                self.status = "Mention completed · Tab cycles @file".into();
+            }
+            None => {
+                self.status = "Mentions: @file @page @entity @workflow @workspace".into();
+            }
+        }
+    }
+
     pub fn composer_backspace(&mut self) {
         if self.composer_cursor == 0 {
             return;
@@ -1874,8 +1896,13 @@ impl DevTuiState {
             self.status = "Message is empty · type a prompt, then press Enter".into();
             return;
         }
-        let display_text = self.composer_input.clone();
-        let text = std::mem::take(&mut self.composer_input);
+        let file = if !self.focused_editor_path.is_empty() {
+            Some(self.focused_editor_path.as_str())
+        } else {
+            self.files.get(self.selected_file).map(String::as_str)
+        };
+        let display_text = expand_mentions(&self.composer_input, file);
+        let text = expand_mentions(&std::mem::take(&mut self.composer_input), file);
         self.remember_composer_history(&text);
         let prove = compile_prove_it(&text);
         let steer = self.composer_steer;
@@ -2318,7 +2345,30 @@ impl DevTuiState {
                         .and_then(serde_json::Value::as_str)
                         .map(|url| format!("Pull request created · {url}"))
                         .unwrap_or_else(|| "Pull request created · review GitHub status".into());
+                } else if result.tool == "glass.task.crew" {
+                    let wake = value.get("wake").cloned().unwrap_or_else(|| value.clone());
+                    self.last_crew_wake = serde_json::from_value::<crate::CrewWake>(wake)
+                        .ok()
+                        .map(|wake| wake.render())
+                        .or_else(|| {
+                            value
+                                .get("goal")
+                                .and_then(serde_json::Value::as_str)
+                                .map(|goal| format!("WAKE\n  goal {goal}"))
+                        });
+                    self.surface = DevSurface::Tasks;
+                    self.status = format!(
+                        "Crew wake {} · :review",
+                        value
+                            .pointer("/wake/id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("queued")
+                    );
                 } else if result.tool.starts_with("glass.lsp") {
+                    if result.tool == "glass.lsp.inlay_hints" {
+                        self.editor_inlays =
+                            parse_inlay_hints(value.get("result").unwrap_or(&value));
+                    }
                     self.editor = if result.tool == "glass.lsp.diagnostics" {
                         super::projection::lsp(Some(&value))
                     } else {
@@ -2333,6 +2383,8 @@ impl DevTuiState {
                         | "glass.git.diff"
                         | "glass.github.review"
                         | "glass.github.ship"
+                        | "glass.browser.verify"
+                        | "glass.task.crew"
                 ) {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
@@ -2859,8 +2911,24 @@ impl DevTuiState {
             self.focused_editor_selection = None;
             self.editor_scroll_line = 0;
             self.editor_scroll_column = 0;
+            self.editor_inlays.clear();
         }
         self.editor = format_editor_buffers(&buffers);
+    }
+
+    fn refresh_editor_inlays(&mut self) {
+        let path = self.focused_editor_path.clone();
+        if path.is_empty() {
+            self.editor_inlays.clear();
+            return;
+        }
+        let response = self.workspace.try_lock().ok().and_then(|mut workspace| {
+            let name = workspace.language().names().next()?.to_string();
+            workspace.language().inlay_hints(&name, "local", &path).ok()
+        });
+        self.editor_inlays = response
+            .map(|response| parse_inlay_hints(&response.result))
+            .unwrap_or_default();
     }
 
     pub fn editor_collaboration_summary(&self) -> String {
@@ -2922,6 +2990,7 @@ impl DevTuiState {
             self.ensure_editor_cursor_visible();
             self.editor_engine.enter_insert();
             self.refresh_editor_hunks();
+            self.refresh_editor_inlays();
             self.status =
                 "INSERT · Esc normal · i insert · dif function · dia argument · gd · Ctrl-S".into();
         }
@@ -3075,6 +3144,10 @@ impl DevTuiState {
                 .into_iter()
                 .map(|(line, mark)| (line, mark.glyph()))
                 .collect::<Vec<_>>();
+            let decorations = super::file_view::EditorDecorations {
+                marks: &marks,
+                inlays: &self.editor_inlays,
+            };
             let wrapped = super::file_view::render_editable_source_wrapped(
                 &self.focused_editor_path,
                 &self.focused_editor_content,
@@ -3082,7 +3155,7 @@ impl DevTuiState {
                 self.focused_editor_column,
                 self.focused_editor_selection.as_ref(),
                 self.terminal_width.saturating_sub(4).max(1),
-                &marks,
+                &decorations,
             );
             let Some(cursor) = wrapped.cursor else {
                 return;
@@ -3813,6 +3886,13 @@ impl DevTuiState {
         {
             marks.push((caret.line, native::GutterMark::Agent));
         }
+        for comment in &self.editor_comments {
+            if comment.state == crate::development::EditorCommentState::Open
+                && (path.is_empty() || comment.path == *path)
+            {
+                marks.push((comment.start_line, native::GutterMark::Comment));
+            }
+        }
         if self.last_proof_ok == Some(true) {
             marks.push((self.focused_editor_line.max(1), native::GutterMark::Proof));
         } else if self.last_proof_ok == Some(false) {
@@ -4381,6 +4461,9 @@ impl DevTuiState {
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(wake) = workspace.latest_crew_wake() {
+            self.last_crew_wake = Some(wake.render());
+        }
         if !self.files.is_empty() {
             self.selected_file = self.selected_file.min(self.files.len() - 1);
         }
@@ -6208,6 +6291,81 @@ mod tests {
         assert!(state.status.contains("REAL_RESULT"));
         assert_eq!(state.surface, DevSurface::Agent);
         assert!(state.running_tool_job.is_none());
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_tab_completes_file_mentions_and_submit_pins_the_path() {
+        let root =
+            std::env::temp_dir().join(format!("glass-composer-mention-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec!["src/main.rs".into(), "src/lib.rs".into()];
+        state.focused_editor_path = "src/main.rs".into();
+        state.open_composer();
+        state.insert_composer_text("inspect @fi");
+        state.complete_composer_mention();
+        assert_eq!(state.composer_input, "inspect @file");
+        state.complete_composer_mention();
+        assert_eq!(state.composer_input, "inspect @file:src/main.rs");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn editor_gutter_marks_open_comments_on_the_focused_buffer() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-editor-comment-gutter-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.focused_editor_path = "src/main.rs".into();
+        state
+            .editor_comments
+            .push(crate::development::EditorComment {
+                id: "comment-1".into(),
+                path: "src/main.rs".into(),
+                start_line: 4,
+                end_line: 4,
+                text: "simplify this".into(),
+                actor: crate::development::Actor::local(),
+                state: crate::development::EditorCommentState::Open,
+                created_revision: 1,
+                updated_revision: 1,
+            });
+        let marks = state.editor_gutter_marks();
+        assert!(marks.contains(&(4, native::GutterMark::Comment)));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn crew_tool_result_stores_the_wake_artifact() {
+        let root = std::env::temp_dir().join(format!("glass-crew-wake-tui-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.running_tool_job = Some(3);
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 3,
+            tool: "glass.task.crew".into(),
+            result: Ok(serde_json::json!({
+                "goal": "add settings toggle",
+                "wake": {
+                    "id": "add-settings-toggle",
+                    "goal": "add settings toggle",
+                    "worktree": "/tmp/worktree",
+                    "checkpoint": "before-crew:add settings toggle",
+                    "createdAtMs": 1,
+                    "tasks": [{"id":"task-0001","role":"architect","title":"architect: add settings toggle","state":"queued"}]
+                }
+            })),
+        });
+        let wake = state.last_crew_wake.expect("wake");
+        assert!(wake.contains("WAKE add-settings-toggle"));
+        assert!(wake.contains("architect task-0001 queued"));
+        assert_eq!(state.surface, DevSurface::Tasks);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

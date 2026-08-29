@@ -122,10 +122,21 @@ pub fn resolve_context_with_browser(
             "@page" | "@browser" => browser.map(serde_json::to_value).transpose()?.unwrap_or_else(|| serde_json::json!({
                 "status": "requires-attached-browser-workspace", "defaultObservation": "structured"
             })),
-            "@selection" => browser
+            "@selection" | "@entity" => browser
                 .and_then(|value| value.selected_entity.clone())
                 .unwrap_or_else(|| serde_json::json!({"status": "not-selected"})),
-            "@file" | "@symbol" => serde_json::json!({"status": "not-selected"}),
+            "@file" | "@symbol" => workspace
+                .buffers()
+                .next()
+                .map(|buffer| {
+                    serde_json::json!({
+                        "path": buffer.path,
+                        "bytes": buffer.content.len(),
+                        "dirty": buffer.dirty,
+                        "sha256": prompt_evidence(&buffer.content)["sha256"],
+                    })
+                })
+                .unwrap_or_else(|| serde_json::json!({"status": "not-selected"})),
             value if value.starts_with("@entity:") => {
                 serde_json::to_value(workspace.graph().links_for(&value[8..]))?
             }
@@ -1859,6 +1870,7 @@ impl PiHarness {
                     "glass_lsp_references",
                     "glass_lsp_document_symbols",
                     "glass_lsp_workspace_symbols",
+                    "glass_lsp_inlay_hints",
                     "glass_lsp_signature_help",
                     "glass_lsp_code_actions",
                     "glass_lsp_formatting",
@@ -3088,5 +3100,45 @@ mod tests {
         let serialized = serde_json::to_string(&packet).unwrap();
         assert!(!serialized.contains("do not inline this source"));
         assert_eq!(packet.references.len(), 2);
+    }
+
+    #[test]
+    fn semantic_context_resolves_bare_file_and_entity_mentions() {
+        let root =
+            std::env::temp_dir().join(format!("glass-context-mentions-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("secret.txt"), "do not inline this source").unwrap();
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        workspace
+            .open_buffer("secret.txt", crate::development::Actor::local())
+            .unwrap();
+        let packet = resolve_context(&mut workspace, "Inspect @file").unwrap();
+        assert_eq!(packet.resolved["@file"]["path"], "secret.txt");
+        assert!(
+            !serde_json::to_string(&packet)
+                .unwrap()
+                .contains("do not inline this source")
+        );
+
+        let browser = BrowserAgentContext {
+            connected: true,
+            target_id: Some("page-1".into()),
+            origin: None,
+            url: "https://example.com".into(),
+            title: "Example".into(),
+            browser_revision: 4,
+            semantic_summary: "button".into(),
+            semantic_entity_count: 1,
+            selected_entity: Some(serde_json::json!({"id":"e1","role":"button"})),
+            workflow_state: "idle".into(),
+            input_owner: "human".into(),
+            freshness: "fresh".into(),
+            memory_scope: "session".into(),
+        };
+        let packet =
+            resolve_context_with_browser(&mut workspace, "click @entity", Some(&browser)).unwrap();
+        assert_eq!(packet.resolved["@entity"]["id"], "e1");
+        let _ = fs::remove_dir_all(root);
     }
 }

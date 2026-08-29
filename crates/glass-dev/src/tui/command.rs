@@ -2125,12 +2125,13 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
         "stop" => ("glass.lsp.stop", json!({"server":server.ok_or("lsp stop requires SERVER")?}), true),
         "list" => ("glass.lsp.list", json!({}), false),
         "events" => ("glass.lsp.events", json!({"since":parts.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(0)}), false),
-        "diagnostics" | "symbols" | "format" | "tokens" => {
+        "diagnostics" | "symbols" | "format" | "tokens" | "inlay" | "inlays" => {
             let path = parts.get(2).ok_or("lsp action requires SERVER PATH")?;
             let tool = match action {
                 "diagnostics" => "glass.lsp.diagnostics",
                 "symbols" => "glass.lsp.document_symbols",
                 "format" => "glass.lsp.formatting",
+                "inlay" | "inlays" => "glass.lsp.inlay_hints",
                 _ => "glass.lsp.semantic_tokens",
             };
             (tool, json!({"server":server.ok_or("missing SERVER")?,"path":path}), false)
@@ -2149,7 +2150,7 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
             (tool, json!({"server":server.ok_or("lsp position action requires SERVER PATH LINE CHARACTER")?,"path":parts.get(2).ok_or("missing PATH")?,"line":parse_u64(parts.get(3), "LINE")?,"character":parse_u64(parts.get(4), "CHARACTER")?}), false)
         }
         "rename" => ("glass.lsp.rename", json!({"server":server.ok_or("lsp rename requires SERVER PATH LINE CHARACTER NAME")?,"path":parts.get(2).ok_or("missing PATH")?,"line":parse_u64(parts.get(3), "LINE")?,"character":parse_u64(parts.get(4), "CHARACTER")?,"newName":parts.get(5).ok_or("missing NAME")?}), false),
-        _ => return Err("lsp actions: start, stop, list, events, diagnostics, hover, complete, definition, declaration, implementation, references, symbols, workspace-symbols, signature, format, tokens, rename".into()),
+        _ => return Err("lsp actions: start, stop, list, events, diagnostics, hover, complete, definition, declaration, implementation, references, symbols, workspace-symbols, inlay, signature, format, tokens, rename".into()),
     };
     let result = run_tool(state, tool, arguments, mutating)?;
     state.editor = if tool == "glass.lsp.diagnostics" {
@@ -3017,6 +3018,27 @@ mod tests {
             .expect("crew request");
         assert_eq!(call.name, "glass.task.crew");
         assert_eq!(call.arguments["goal"], "add settings toggle");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn review_object_includes_a_persisted_crew_wake() {
+        let (mut state, root) = test_state("review-wake");
+        state.last_crew_wake = Some("WAKE crew-1\n  goal add settings toggle".into());
+        execute(&mut state, "review").expect("open review");
+        assert!(state.git_diff.contains("WAKE crew-1"));
+        assert!(state.git_diff.contains("goal add settings toggle"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lsp_inlay_routes_to_the_resident_tool() {
+        let (mut state, root) = test_state("lsp-inlay");
+        execute(&mut state, "lsp inlay rust-analyzer src/lib.rs").expect("queue inlay");
+        let (call, _) = state.queued_tool_request.take().expect("inlay request");
+        assert_eq!(call.name, "glass.lsp.inlay_hints");
+        assert_eq!(call.arguments["server"], "rust-analyzer");
+        assert_eq!(call.arguments["path"], "src/lib.rs");
         let _ = fs::remove_dir_all(root);
     }
 

@@ -274,6 +274,58 @@ pub struct TaskSnapshot {
     pub blocked_override: bool,
 }
 
+/// Durable overnight-crew artifact written under `{root}/.glass/crew`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CrewWake {
+    pub id: String,
+    pub goal: String,
+    pub worktree: Option<String>,
+    pub checkpoint: String,
+    pub created_at_ms: u128,
+    pub tasks: Vec<CrewWakeMember>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CrewWakeMember {
+    pub id: String,
+    pub role: String,
+    pub title: String,
+    pub state: String,
+}
+
+impl CrewWake {
+    pub fn render(&self) -> String {
+        let mut lines = vec![
+            format!("WAKE {}", self.id),
+            format!("  goal {}", self.goal),
+            format!("  worktree {}", self.worktree.as_deref().unwrap_or("—")),
+            format!("  checkpoint {}", self.checkpoint),
+        ];
+        for task in &self.tasks {
+            lines.push(format!("  {} {} {}", task.role, task.id, task.state));
+        }
+        lines.join("\n")
+    }
+}
+
+/// Persist a crew wake object and replace `{root}/.glass/crew/latest.json`.
+pub fn persist_crew_wake(root: &Path, wake: &CrewWake) -> DevelopmentResult<()> {
+    let dir = root.join(".glass").join("crew");
+    std::fs::create_dir_all(&dir)?;
+    let encoded = serde_json::to_vec_pretty(wake)?;
+    std::fs::write(dir.join(format!("{}.json", wake.id)), &encoded)?;
+    std::fs::write(dir.join("latest.json"), encoded)?;
+    Ok(())
+}
+
+/// Load the most recently queued overnight crew, if one exists.
+pub fn load_latest_crew_wake(root: &Path) -> Option<CrewWake> {
+    let path = root.join(".glass").join("crew").join("latest.json");
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
 struct TaskRecord {
     snapshot: TaskSnapshot,
     next_retry_at_ms: Option<u128>,
@@ -1562,6 +1614,41 @@ mod tests {
             snapshots[4].verification,
             VerificationRequirement::BrowserWorkflow { .. }
         ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn crew_wake_persists_and_reloads_from_glass_crew() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-crew-wake-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let wake = CrewWake {
+            id: "add-settings-toggle".into(),
+            goal: "add settings toggle".into(),
+            worktree: Some(
+                root.join(".glass/worktrees/add-settings-toggle")
+                    .display()
+                    .to_string(),
+            ),
+            checkpoint: "before-crew:add settings toggle".into(),
+            created_at_ms: 1,
+            tasks: vec![CrewWakeMember {
+                id: "task-0001".into(),
+                role: "architect".into(),
+                title: "architect: add settings toggle".into(),
+                state: "queued".into(),
+            }],
+        };
+        persist_crew_wake(&root, &wake).unwrap();
+        let loaded = load_latest_crew_wake(&root).expect("latest wake");
+        assert_eq!(loaded, wake);
+        assert!(loaded.render().contains("WAKE add-settings-toggle"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

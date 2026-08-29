@@ -15,7 +15,8 @@ use crate::kernels::{KernelError, KernelExecution, KernelManager, KernelToolCall
 use crate::lsp::LanguageService;
 use crate::pi_runtime::PiToolExecutor;
 use crate::tasks::{
-    TaskId, TaskScheduler, TaskSnapshot, TaskSpec, TaskState, VerificationRequirement,
+    CrewWake, CrewWakeMember, TaskId, TaskScheduler, TaskSnapshot, TaskSpec, TaskState,
+    VerificationRequirement, persist_crew_wake,
 };
 use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
@@ -188,7 +189,7 @@ impl DevelopmentWorkspace {
     }
 
     /// Queue the overnight factory crew in a confined worktree when Git is available.
-    pub fn create_crew(&mut self, goal: &str) -> DevelopmentResult<Vec<TaskSnapshot>> {
+    pub fn create_crew(&mut self, goal: &str) -> DevelopmentResult<CrewWake> {
         if !self.trust.permits_project_execution() {
             return Err(crate::development::DevelopmentError::Conflict(
                 "task execution is blocked until the workspace is trusted".into(),
@@ -201,22 +202,50 @@ impl DevelopmentWorkspace {
         };
         let _ = self
             .project
-            .create_editor_checkpoint(checkpoint_name, crate::development::Actor::local());
-        let worktree = self.prepare_crew_worktree(goal)?;
+            .create_editor_checkpoint(checkpoint_name.clone(), crate::development::Actor::local());
+        let slug = crew_slug(goal);
+        let worktree = self.prepare_crew_worktree(&slug)?;
         let unrestricted = self.agents.default_unrestricted();
         let ids = self
             .tasks
-            .create_crew(&mut self.agents, goal, worktree, unrestricted)?;
-        ids.into_iter()
-            .map(|id| self.tasks.snapshot(&mut self.agents, &id))
-            .collect()
+            .create_crew(&mut self.agents, goal, worktree.clone(), unrestricted)?;
+        let tasks = ids
+            .into_iter()
+            .map(|id| {
+                self.tasks
+                    .snapshot(&mut self.agents, &id)
+                    .map(|snapshot| CrewWakeMember {
+                        id: snapshot.id.as_str().to_string(),
+                        role: snapshot.role,
+                        title: snapshot.title,
+                        state: snapshot.state.label().to_string(),
+                    })
+            })
+            .collect::<DevelopmentResult<Vec<_>>>()?;
+        let wake = CrewWake {
+            id: slug,
+            goal: goal.to_string(),
+            worktree: worktree.map(|path| path.display().to_string()),
+            checkpoint: checkpoint_name,
+            created_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0),
+            tasks,
+        };
+        persist_crew_wake(&self.root, &wake)?;
+        Ok(wake)
     }
 
-    fn prepare_crew_worktree(&mut self, goal: &str) -> DevelopmentResult<Option<PathBuf>> {
-        let slug = crew_slug(goal);
+    /// Latest overnight crew wake written under `.glass/crew`.
+    pub fn latest_crew_wake(&self) -> Option<CrewWake> {
+        crate::load_latest_crew_wake(&self.root)
+    }
+
+    fn prepare_crew_worktree(&mut self, slug: &str) -> DevelopmentResult<Option<PathBuf>> {
         let parent = self.root.join(".glass").join("worktrees");
         std::fs::create_dir_all(&parent)?;
-        let path = parent.join(&slug);
+        let path = parent.join(slug);
         if let Some(git) = self.git.as_ref() {
             let branch = format!("glass/crew/{slug}");
             if git.create_worktree(&path, &branch, true).is_ok() {

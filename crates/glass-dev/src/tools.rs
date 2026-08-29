@@ -863,6 +863,11 @@ impl DevelopmentToolRouter {
                 &actor,
                 string("query")?,
             )),
+            "glass.lsp.inlay_hints" => map_service(workspace.language().inlay_hints(
+                string("server")?,
+                &actor,
+                string("path")?,
+            )),
             "glass.lsp.signature_help" => map_service(workspace.language().signature_help(
                 string("server")?,
                 &actor,
@@ -1258,9 +1263,12 @@ impl DevelopmentToolRouter {
             }
             "glass.task.crew" => {
                 let goal = string("goal")?;
+                let wake = workspace.create_crew(goal)?;
+                let crew = wake.tasks.clone();
                 Ok(serde_json::json!({
                     "goal": goal,
-                    "crew": workspace.create_crew(goal)?,
+                    "wake": wake,
+                    "crew": crew,
                 }))
             }
             "glass.task.list" => Ok(serde_json::to_value(workspace.tasks()?)?),
@@ -1540,6 +1548,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.lsp.references",
         "glass.lsp.document_symbols",
         "glass.lsp.workspace_symbols",
+        "glass.lsp.inlay_hints",
         "glass.lsp.signature_help",
         "glass.lsp.code_actions",
         "glass.lsp.formatting",
@@ -2795,6 +2804,7 @@ mod tests {
             "glass.lsp.references",
             "glass.lsp.document_symbols",
             "glass.lsp.workspace_symbols",
+            "glass.lsp.inlay_hints",
             "glass.lsp.signature_help",
             "glass.lsp.code_actions",
             "glass.lsp.formatting",

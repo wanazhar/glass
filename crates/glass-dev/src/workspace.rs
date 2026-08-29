@@ -205,10 +205,22 @@ impl DevelopmentWorkspace {
             .create_editor_checkpoint(checkpoint_name.clone(), crate::development::Actor::local());
         let slug = crew_slug(goal);
         let worktree = self.prepare_crew_worktree(&slug)?;
+        let implementer_trees = ["a", "b"]
+            .into_iter()
+            .filter_map(|label| {
+                self.prepare_crew_worktree(&format!("{slug}-{label}"))
+                    .ok()
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
         let unrestricted = self.agents.default_unrestricted();
-        let ids = self
-            .tasks
-            .create_crew(&mut self.agents, goal, worktree.clone(), unrestricted)?;
+        let ids = self.tasks.create_crew(
+            &mut self.agents,
+            goal,
+            worktree.clone(),
+            implementer_trees,
+            unrestricted,
+        )?;
         let tasks = ids
             .into_iter()
             .map(|id| {
@@ -219,6 +231,7 @@ impl DevelopmentWorkspace {
                         role: snapshot.role,
                         title: snapshot.title,
                         state: snapshot.state.label().to_string(),
+                        worktree: Some(snapshot.worktree.display().to_string()),
                     })
             })
             .collect::<DevelopmentResult<Vec<_>>>()?;
@@ -1225,6 +1238,46 @@ command = '''{command}'''
         assert!(rendered.contains("PAGE"));
         assert!(rendered.contains("accept proposal-1"));
         assert_eq!(wake.accept, "proposal-1");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_crew_isolates_implementers_in_separate_worktrees() {
+        let root = test_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='crew-trees'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
+        workspace
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
+            .unwrap();
+        let wake = workspace.create_crew("add settings toggle").unwrap();
+        let implementers = wake
+            .tasks
+            .iter()
+            .filter(|task| task.role == "implementer")
+            .collect::<Vec<_>>();
+        assert_eq!(implementers.len(), 2);
+        let trees = implementers
+            .iter()
+            .filter_map(|task| task.worktree.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(trees.len(), 2);
+        assert_ne!(trees[0], trees[1]);
+        assert!(trees.iter().all(|path| Path::new(path).starts_with(&root)));
+        let testers = wake
+            .tasks
+            .iter()
+            .filter(|task| task.role == "tester")
+            .collect::<Vec<_>>();
+        assert_eq!(testers.len(), 2);
+        assert_ne!(
+            testers[0].worktree.as_deref(),
+            testers[1].worktree.as_deref()
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

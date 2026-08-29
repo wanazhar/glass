@@ -287,7 +287,7 @@ const TASK_ACTIONS: &[SurfaceAction] = &[
         label: "Overnight crew",
         command: "task crew GOAL",
         key: ":",
-        description: "queue architect, implementer, tester, reviewer, and browser",
+        description: "queue architect, isolated implementers, testers, reviewer, and browser",
     },
     SurfaceAction {
         label: "Cancel task",

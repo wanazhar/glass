@@ -880,6 +880,11 @@ pub fn run(
                 .checked_sub(Duration::from_millis(33))
                 .unwrap_or_else(Instant::now);
         }
+        if state.tick_fim() {
+            last_render = Instant::now()
+                .checked_sub(Duration::from_millis(33))
+                .unwrap_or_else(Instant::now);
+        }
         if last_refresh.elapsed() >= Duration::from_millis(250) {
             worker.request_refresh();
             last_refresh = Instant::now();

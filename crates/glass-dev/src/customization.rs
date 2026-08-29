@@ -60,6 +60,17 @@ pub struct AgentConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct EditorConfig {
     pub engine: Option<String>,
+    pub fim: FimConfig,
+}
+
+/// Optional fill-in-the-middle provider for editor ghosts.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct FimConfig {
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub api_key_env: Option<String>,
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

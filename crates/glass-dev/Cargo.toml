@@ -49,6 +49,7 @@ sha2 = "0.10"
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 tree-sitter = "0.26.13"
 tree-sitter-rust = "0.24.2"
 tree-sitter-javascript = "0.25.0"
@@ -64,4 +65,3 @@ tree-sitter-bash = "0.25.1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

@@ -340,6 +340,21 @@ impl DevelopmentToolRouter {
             "glass.editor.proposals" => Ok(serde_json::to_value(
                 workspace.project().editor_proposals(),
             )?),
+            "glass.editor.fim" => {
+                let provider = crate::fim::FimProvider::from_editor(
+                    &workspace.customization().config().editor,
+                )
+                .ok_or_else(|| {
+                    DevelopmentError::NotFound(
+                        "no FIM provider configured · set editor.fim.endpoint or GLASS_FIM_ENDPOINT"
+                            .into(),
+                    )
+                })?;
+                let text = provider
+                    .complete(string("prefix")?, optional_string(call, "suffix").unwrap_or(""))
+                    .map_err(DevelopmentError::InvalidInput)?;
+                Ok(serde_json::json!({"text": text, "model": provider.model}))
+            },
             "glass.editor.checkpoints" => Ok(serde_json::to_value(
                 workspace.project().editor_checkpoints(),
             )?),
@@ -1531,6 +1546,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.editor.buffers",
         "glass.editor.comments",
         "glass.editor.proposals",
+        "glass.editor.fim",
         "glass.editor.checkpoints",
         "glass.eval.list",
         "glass.lsp.diagnostics",
@@ -1782,6 +1798,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.editor.buffers"
             | "glass.editor.comments"
             | "glass.editor.proposals"
+            | "glass.editor.fim"
             | "glass.editor.checkpoints"
             | "glass.daemon.logs"
             | "glass.neovim.probe"
@@ -2765,6 +2782,7 @@ mod tests {
             "glass.editor.save",
             "glass.editor.comments",
             "glass.editor.proposals",
+            "glass.editor.fim",
             "glass.editor.checkpoints",
             "glass.editor.comment.add",
             "glass.editor.comment.resolve",

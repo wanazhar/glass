@@ -46,6 +46,12 @@ impl TuiWorkflowRecording {
     }
 }
 
+struct PendingFim {
+    path: String,
+    offset: usize,
+    rx: std::sync::mpsc::Receiver<Option<String>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingAgentApproval {
     pub agent_id: String,
@@ -341,6 +347,7 @@ pub struct DevTuiState {
     pub cockpit_url: String,
     pub private_cockpit: Option<crate::development::LocalCockpit>,
     pub workflow_recording: Option<TuiWorkflowRecording>,
+    pending_fim: Option<PendingFim>,
 }
 
 impl DevTuiState {
@@ -584,6 +591,7 @@ impl DevTuiState {
             cockpit_url: String::new(),
             private_cockpit: None,
             workflow_recording: None,
+            pending_fim: None,
         };
         if initial_refresh {
             state.refresh();
@@ -4824,17 +4832,23 @@ impl DevTuiState {
 
     pub fn request_ghost_from_line(&mut self) {
         let path = self.focused_editor_path.clone();
-        if let Some(offset) = crate::development::editor::text_position_offset(
+        let Some(offset) = crate::development::editor::text_position_offset(
             &self.focused_editor_content,
             crate::development::TextPosition {
                 line: self.focused_editor_line.max(1),
                 column: self.focused_editor_column.max(1),
             },
-        ) && let Some(text) = local_fim(&self.focused_editor_content, offset)
-        {
+        ) else {
+            return;
+        };
+        if let Some(text) = local_fim(&self.focused_editor_content, offset) {
             self.editor_engine.ghost = Some(GhostText { text });
             return;
         }
+        if self.take_ready_fim(&path, offset) {
+            return;
+        }
+        self.spawn_hosted_fim(&path, offset);
         let line = self.focused_editor_line.saturating_sub(1);
         let character = self.focused_editor_column.saturating_sub(1);
         if let Some(text) = self.lsp_ghost_insert(&path, line, character) {
@@ -4859,6 +4873,73 @@ impl DevTuiState {
             return;
         };
         self.editor_engine.ghost = Some(GhostText { text: ghost.into() });
+    }
+
+    pub fn tick_fim(&mut self) -> bool {
+        let path = self.focused_editor_path.clone();
+        let Some(offset) = crate::development::editor::text_position_offset(
+            &self.focused_editor_content,
+            crate::development::TextPosition {
+                line: self.focused_editor_line.max(1),
+                column: self.focused_editor_column.max(1),
+            },
+        ) else {
+            return false;
+        };
+        self.take_ready_fim(&path, offset)
+    }
+
+    fn take_ready_fim(&mut self, path: &str, offset: usize) -> bool {
+        let Some(pending) = self.pending_fim.as_mut() else {
+            return false;
+        };
+        match pending.rx.try_recv() {
+            Ok(Some(text))
+                if pending.path == path && pending.offset == offset && !text.is_empty() =>
+            {
+                self.pending_fim = None;
+                self.editor_engine.ghost = Some(GhostText { text });
+                true
+            }
+            Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending_fim = None;
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if pending.path != path || pending.offset != offset {
+                    self.pending_fim = None;
+                }
+                false
+            }
+        }
+    }
+
+    fn spawn_hosted_fim(&mut self, path: &str, offset: usize) {
+        if self
+            .pending_fim
+            .as_ref()
+            .is_some_and(|pending| pending.path == path && pending.offset == offset)
+        {
+            return;
+        }
+        let Some(provider) = self.workspace.try_lock().ok().and_then(|workspace| {
+            crate::fim::FimProvider::from_editor(&workspace.customization().config().editor)
+        }) else {
+            return;
+        };
+        let prefix = self.focused_editor_content[..offset].to_string();
+        let suffix = self.focused_editor_content[offset..].to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = std::thread::Builder::new()
+            .name("glass-fim".into())
+            .spawn(move || {
+                let _ = tx.send(provider.complete(&prefix, &suffix).ok());
+            });
+        self.pending_fim = Some(PendingFim {
+            path: path.to_string(),
+            offset,
+            rx,
+        });
     }
 
     fn lsp_ghost_insert(&mut self, path: &str, line: u32, character: u32) -> Option<String> {
@@ -7357,6 +7438,51 @@ mod tests {
         assert_eq!(state.focused_editor_path, "src/button.tsx");
         assert_eq!(state.focused_editor_line, 1);
         assert!(state.code_edit_mode);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn hosted_fim_stub_fills_an_empty_block() {
+        let root = std::env::temp_dir().join(format!("glass-fim-stub-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(
+            root.join("glass.toml"),
+            "[editor.fim]\nendpoint = \"stub://test\"\nmodel = \"stub\"\n",
+        )
+        .expect("write fim config");
+        std::fs::write(root.join("src/main.rs"), "fn main() {\n    \n}\n").expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open");
+        state.refresh_editor_projection();
+        state
+            .ws_mut()
+            .expect("lock")
+            .project_mut()
+            .set_buffer_cursor("src/main.rs", 2, 5)
+            .expect("cursor");
+        state.refresh_editor_projection();
+        state.request_ghost_from_line();
+        let mut attempts = 0;
+        while state.editor_engine.ghost.is_none() && attempts < 50 {
+            let _ = state.tick_fim();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            attempts += 1;
+        }
+        assert_eq!(
+            state
+                .editor_engine
+                .ghost
+                .as_ref()
+                .map(|ghost| ghost.text.as_str()),
+            Some("todo!()"),
+            "configured stub FIM should fill the empty block"
+        );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

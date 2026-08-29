@@ -62,6 +62,8 @@ pub mod development;
 pub mod experiments;
 /// One-shot adapters for installed external coding agents.
 pub mod external_agents;
+/// Configured fill-in-the-middle provider for editor ghosts.
+pub mod fim;
 /// Governed Git workspace operations.
 pub mod git;
 /// GitHub status, review, and pull-request shipping operations.

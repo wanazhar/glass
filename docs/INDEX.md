@@ -1,15 +1,15 @@
 # Glass documentation
 
-Status: Current 0.3.13 source behavior; release documentation is dated
-2026-08-27 and external publication evidence is tracked separately.
+Status: Current 0.3.14 source behavior; release documentation is dated
+2026-08-29 and external publication evidence is tracked separately.
 
-These guides describe the complete Glass product in the current `0.3.13`
-source checkout. The `0.3.13` release notes and migration guide route the last
-published source contract; the signed `v0.3.12` release and its migration
-record remain historical. Published docs.rs pages match crate `0.3.13`. The
-working-tree changelog `Unreleased` section records checkout-only TUI, MCP, and
-composer changes after that publication. `Local only` means a capability
-exists in the checkout but is not part of an external release record.
+These guides describe the complete Glass product in the current `0.3.14`
+source checkout. The `0.3.14` release notes and migration guide route the
+current source contract; the signed `v0.3.13` release and its migration record
+remain historical. Published docs.rs pages currently match crate `0.3.13`.
+The empty working-tree changelog `Unreleased` section is reserved for changes
+after this release. `Local only` means a capability exists in the checkout but
+is not part of an external release record.
 Platform certification remains separate from source availability; see
 [cross-platform feature parity](feature-parity.md).
 
@@ -216,8 +216,10 @@ current user instructions.
   client, and validation evidence.
 - [Tag signing](tag-signing.md) — current `unknown_key` evidence, maintainer
   identity repair, and the GitHub-verification release gate.
-- [Glass 0.3.13 release notes](releases/0.3.13.md) — current dated release
+- [Glass 0.3.14 release notes](releases/0.3.14.md) — current dated release
   source record; exact publication evidence is maintained separately.
+- [Glass 0.3.13 release notes](releases/0.3.13.md) — previous published
+  release record.
 - [Glass 0.3.12 release notes](releases/0.3.12.md) — historical immutable
   tagged-release record.
 - [Glass 0.3.11 release notes](releases/0.3.11.md) — previous published
@@ -234,9 +236,12 @@ current user instructions.
   retained for audit history; it was not published to crates.io.
 - [Glass 0.3.5 release notes](releases/0.3.5.md) — previous release record.
 - [Changelog](../CHANGELOG.md) — empty `Unreleased` section followed by the
-  0.3.13 release entries and immutable historical release entries.
-- [Migrate from 0.3.12 to 0.3.13](migration/0.3.13.md) — current upgrade
-  contract for package ownership, Pi 0.84.3, TUI, editor, and browser changes.
+  0.3.14 release entries and immutable historical release entries.
+- [Migrate from 0.3.13 to 0.3.14](migration/0.3.14.md) — current upgrade
+  contract for package ownership, Pi 0.84.3, TUI, editor, crew, Git, and
+  browser changes.
+- [Migrate from 0.3.12 to 0.3.13](migration/0.3.13.md) — previous published
+  release migration.
 - [Migrate from 0.3.11 to 0.3.12](migration/0.3.12.md) — historical upgrade
   contract for the tagged release.
 - [Migrate from 0.3.9 to 0.3.11](migration/0.3.11.md) — previous published

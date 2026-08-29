@@ -5,7 +5,7 @@ the current source checkout; it is not a cross-platform certification claim.
 The machine-readable target status is in
 [feature-parity.json](feature-parity.json).
 
-**Status: Current 0.3.13 source behavior.** This reference describes the
+**Status: Current 0.3.14 source behavior.** This reference describes the
 checked-in source checkout. Checkout-only TUI/editor/collaboration behavior is
 current source, not an immutable published-release claim.
 
@@ -233,7 +233,7 @@ Repository clients in `clients/typescript` and `clients/python` are thin MCP
 clients, not browser runtimes. They negotiate capabilities, expose browser and
 Development Runtime helpers, maintain bounded request state, support
 cancellation, cursor-based project events, process-health waits, reconnect
-workflows, and mutation-lease scopes. They are part of the current `0.3.13`
+workflows, and mutation-lease scopes. They are part of the current `0.3.14`
 source checkout, not published npm or PyPI packages.
 
 Run their browser-free conformance smokes:

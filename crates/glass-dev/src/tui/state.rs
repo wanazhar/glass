@@ -6098,7 +6098,7 @@ impl DevTuiState {
                         false,
                     );
                 }
-                self.status = "Definition · Ctrl-O back".into();
+                self.status = "Definition · Ctrl-O symbols · Enter jump".into();
             }
             Some(Err(error)) => self.status = format!("Definition unavailable: {error}"),
             None => self.status = "Definition unavailable · workspace busy".into(),

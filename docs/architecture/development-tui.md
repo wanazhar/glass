@@ -1,6 +1,6 @@
 # Glass Dev TUI
 
-Status: Current 0.3.13 source behavior (current-source changes are included here, not as a published-release claim).
+Status: Current 0.3.14 source behavior (current-source changes are included here, not as a published-release claim).
 
 This document is the architecture contract for the `glass`/Glass Dev terminal
 workspace. The standalone browser-only TUI is a different product and reducer;
@@ -136,12 +136,16 @@ trap confirm or palette input.
 |---|---|
 | `1`–`8` (desktop/compact) | Agent, Code, App, Terminal, Tasks, Git, Debug, More |
 | `1`–`5` (Phone) | Agent, Code, App, Tasks, More |
+| `c` / `v` / `w` / `g` / `d` / `m` (desktop/compact) | mnemonic aliases for Code / App / Tasks / Git / Debug / More when the current surface has not claimed the key; Agent treats printable input as composer text |
 | `Tab` / `Shift-Tab` | next/previous primary surface |
 | Left/Right | previous/next surface (unless Alt-modified browser history) |
 | Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
 | PageUp/PageDown, Home/End | surface scroll/page or bounds |
 | `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
 | `Ctrl-L` | open the shared composer dock on the current surface |
+| `Ctrl-P` | open the file picker; in the composer or palette, it keeps its local history behavior |
+| `Ctrl-K` / `Ctrl-Shift-P` | open the command palette from the normal surface view |
+| `Ctrl-G` | jump to App while keeping the composer dock open |
 | `Ctrl-Shift-A` | cycle Ask, Plan, and Agent; default Agent; Ask/Plan fail closed for mutations |
 | `?` | help; `j`/`k`, PageUp/PageDown and Home/End scroll; `?`/Esc closes |
 | `Enter` on Agent | start/continue the agent interaction; with text focus, submit composer |

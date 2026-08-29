@@ -55,7 +55,7 @@ pub fn curriculum_help(surface: DevSurface) -> String {
         DevSurface::More => "MORE\n  j/k routes · Enter runs doctor/cockpit/kernels",
     };
     format!(
-        "DO THIS\n  type in the dock   talk to Glass\n  :                  search commands\n  a                  this surface's actions\n  Enter              do the highlighted thing\n  Esc                back\n  ?                  close help\n\n{surface_lines}\n\nMORE\n  Agent · Code · App · Terminal · Tasks · Git · Debug · More\n\nKEYS\n  Ctrl-L  dock · Alt-A dock from editor\n  Ctrl-P  file · Ctrl-K / Ctrl-Shift-P palette\n  Ctrl-Shift-A  Ask/Plan/Agent · /ask /plan /agent /todo\n  Ctrl-G  App · Tab surfaces · Ctrl-O back · Ctrl-D steer · Ctrl-X abort\n  click dock · double-click open · right-click / long-press = a"
+        "DO THIS\n  type in the dock   talk to Glass\n  :                  search commands\n  a                  this surface's actions\n  Enter              do the highlighted thing\n  Esc                back\n  ?                  close help\n\n{surface_lines}\n\nMORE\n  Agent · Code · App · Terminal · Tasks · Git · Debug · More\n\nKEYS\n  Ctrl-L  dock · Alt-A dock from editor\n  Ctrl-P  file · Ctrl-K / Ctrl-Shift-P palette\n  Ctrl-Shift-A  Ask/Plan/Agent · /ask /plan /agent /todo\n  Ctrl-G  App · Tab surfaces · App Alt-Left/Right history\n  editor Ctrl-O symbols · Ctrl-D steer · Ctrl-X abort\n  click dock · double-click open · right-click / long-press = a"
     )
 }
 

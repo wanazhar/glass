@@ -4,7 +4,7 @@ Glass has a geometry-responsive terminal workspace for SSH, Mosh, and narrow
 local terminals. “Phone” means a single-pane terminal layout. It does not add a
 second mobile authority path and it does not require touch events.
 
-**Status: Current 0.3.13 source behavior.** This describes the implemented
+**Status: Current 0.3.14 source behavior.** This describes the implemented
 geometry-responsive TUI and development-TUI Remote View in this checkout.
 Earlier card-based mobile designs are historical and immutable.
 

@@ -1,6 +1,6 @@
 # Private development cockpit and mobile presentation
 
-Status: Current 0.3.13 source behavior (private cockpit API); the former card
+Status: Current 0.3.14 source behavior (private cockpit API); the former card
 and capsule design is historical and is not an implementation contract.
 
 This document covers the Glass Dev private cockpit and how a remote/mobile

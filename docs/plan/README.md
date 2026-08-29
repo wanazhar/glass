@@ -1,34 +1,34 @@
 # Glass delivery plans
 
-## Current source line: Glass 0.3.13
+## Current source line: Glass 0.3.14
 
-Status: Current 0.3.13 source behavior for the 2026-08-27 release record.
-The `0.3.12` release notes and migration guide are historical records for the
+Status: Current 0.3.14 source behavior for the 2026-08-29 release record.
+The `0.3.13` release notes and migration guide are historical records for the
 earlier tagged release; they are not current-source instructions. The
 [documentation index](../INDEX.md#glass-documentation) is the navigation map
 for this source line.
 
-The [0.3.13 release notes](../releases/0.3.13.md) and
-[0.3.13 migration guide](../migration/0.3.13.md) route the current release
-contract. The [0.3.13 release evidence](../release-evidence.md#0.3.13-release-evidence)
+The [0.3.14 release notes](../releases/0.3.14.md) and
+[0.3.14 migration guide](../migration/0.3.14.md) route the current release
+contract. The [0.3.14 release evidence](../release-evidence.md#0.3.14-release-evidence)
 holds exact-source records and pending fields for external validation. The
-historical [0.3.12 release notes](../releases/0.3.12.md) and
-[0.3.12 migration guide](../migration/0.3.12.md) retain their original
+historical [0.3.13 release notes](../releases/0.3.13.md) and
+[0.3.13 migration guide](../migration/0.3.13.md) retain their original
 version claims.
 
 | Current source area | Status and reference |
 |---|---|
-| TUI onboarding and development-suite launch | 0.3.13; [Development TUI](../architecture/development-tui.md) and [Development Runtime](../development-runtime.md) |
-| Editor source/diff rendering, soft-wrap, cursor synchronization, and review state | 0.3.13; [Development TUI](../architecture/development-tui.md) and [Development Runtime](../development-runtime.md) |
-| Actor-attributed editor collaboration | 0.3.13; [Development Runtime](../development-runtime.md) and [MCP tool catalog](../mcp-tools.md) |
-| Kitty/live browser presentation | 0.3.13; [Mobile and remote](../mobile-remote.md) and [browser connection](../architecture/browser-connection.md) |
-| Pi runtime and external harness workflow | 0.3.13 with Pi SDK 0.84.3; [Native Pi SDK runtime](../pi-sdk-runtime.md), [Development Runtime](../development-runtime.md), and [CLI](../cli.md) |
+| TUI onboarding and development-suite launch | 0.3.14; [Development TUI](../architecture/development-tui.md) and [Development Runtime](../development-runtime.md) |
+| Editor source/diff rendering, soft-wrap, cursor synchronization, and review state | 0.3.14; [Development TUI](../architecture/development-tui.md) and [Development Runtime](../development-runtime.md) |
+| Actor-attributed editor collaboration | 0.3.14; [Development Runtime](../development-runtime.md) and [MCP tool catalog](../mcp-tools.md) |
+| Kitty/live browser presentation | 0.3.14; [Mobile and remote](../mobile-remote.md) and [browser connection](../architecture/browser-connection.md) |
+| Pi runtime and external harness workflow | 0.3.14 with Pi SDK 0.84.3; [Native Pi SDK runtime](../pi-sdk-runtime.md), [Development Runtime](../development-runtime.md), and [CLI](../cli.md) |
 
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and
 release provenance; the latest published release evidence is 0.3.13. Current-checkout
-additions are listed in the current 0.3.13 source section above.
+additions are listed in the current 0.3.14 source section above.
 
 Issue [#36](https://github.com/wanazhar/glass/issues/36) is the authoritative
 urgent product-repair contract. The 35-pillar baseline, locked architecture,
@@ -53,7 +53,7 @@ next task starts.
 
 Status: Historical/superseded — this 0.3.5 audit body is retained for issue and
 release provenance; the latest published release evidence is 0.3.13. Current-checkout
-additions are listed in the current 0.3.13 source section above.
+additions are listed in the current 0.3.14 source section above.
 
 Issue [#35](https://github.com/wanazhar/glass/issues/35) is the authoritative
 sixteen-pillar trust and runtime-convergence contract. The audited baseline,
@@ -120,7 +120,7 @@ implementation record is
 
 Status: Historical/superseded — this 0.3.3 audit body is retained for issue and
 release provenance; the latest published release evidence is 0.3.13. Current-checkout
-additions are listed in the current 0.3.13 source section above.
+additions are listed in the current 0.3.14 source section above.
 
 Issue #33 and its authoritative amendment define 15 integration pillars, 53
 mandatory release checkboxes, scenarios A–K, full-suite command exposure and
@@ -185,7 +185,7 @@ active; its first foundation phase is [stable runtime platform](tasks/platform-0
 
 Status: Historical/superseded — this 0.3.1 audit body is retained for issue and
 release provenance; the latest published release evidence is 0.3.13. Current-checkout
-additions are listed in the current 0.3.13 source section above.
+additions are listed in the current 0.3.14 source section above.
 
 The authoritative [issue #31](https://github.com/wanazhar/glass/issues/31)
 defines four mandatory pillars—semantic memory, multi-surface understanding,
@@ -215,7 +215,7 @@ and independent review.
 
 Status: Historical/superseded — this 0.3.2 audit body is retained for issue and
 release provenance; the latest published release evidence is 0.3.13. Current-checkout
-additions are listed in the current 0.3.13 source section above.
+additions are listed in the current 0.3.14 source section above.
 
 Issue #32 is an architectural epic. The original thin-slice interpretation was
 rejected during the issue/comment audit; the current candidate is reviewed
@@ -267,7 +267,7 @@ The post-issue-32 product enhancements are defined in the
 ## Proposed plan: best-in-class agent browser
 
 Status: Proposed draft — requires owner approval before implementation; it is
-not a commitment for the current `0.3.13` source line.
+not a commitment for the current `0.3.14` source line.
 
 The proposed goal is to make Glass a deterministic, memory-efficient browser
 control layer that humans and agents prefer over mature alternatives for local

@@ -1,6 +1,6 @@
 # Glass Coding Harness Architecture
 
-**Status: Current 0.3.13 source behavior.** This guide defines worker boundaries and display-state flow in `glass-dev`. It does not make an external coding program part of Glass and does not change immutable release history. See [Development Runtime](development-runtime.md) for project semantics and [Native Pi SDK runtime](pi-sdk-runtime.md) for Pi protocol details.
+**Status: Current 0.3.14 source behavior.** This guide defines worker boundaries and display-state flow in `glass-dev`. It does not make an external coding program part of Glass and does not change immutable release history. See [Development Runtime](development-runtime.md) for project semantics and [Native Pi SDK runtime](pi-sdk-runtime.md) for Pi protocol details.
 
 ## Runtime planes
 

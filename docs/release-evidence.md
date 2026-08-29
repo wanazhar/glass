@@ -1,5 +1,30 @@
 # Release evidence
 
+## 0.3.14 release evidence
+
+Status: Open. This section is the evidence record for the 0.3.14 release
+source dated 2026-08-29. It makes no publication, signature, native, fuzz, or
+GitHub Release claim until the exact command output and immutable remote record
+for that gate are entered below. Evidence from 0.3.13 remains historical and
+is not reused.
+
+### Release preparation record
+
+| Field | Exact record |
+|---|---|
+| Version/date | `0.3.14` / `2026-08-29` |
+| Source | To be recorded after the release metadata commit is pushed to `main` and its complete CI run passes. |
+| Signed tag | To be recorded after one annotated `v0.3.14` tag is created, the tag signature check reports a valid signature, and GitHub reports it as verified. |
+| Main CI | To be recorded with the run ID, exact `headSha`, terminal conclusion, and every job result. |
+| Exact-tag CI | To be recorded with the exact-tag run ID, source SHA, conclusion, and any retained failed attempt. |
+| Release workflow | To be recorded with the exact-tag crates.io/GitHub Release workflow run and validation, publication, and release job IDs. |
+| Registry | To be recorded from the exact crates.io API responses for `glass-browser 0.3.14` and `glass-dev 0.3.14`, including HTTP status, timestamp, and `yanked: false`. |
+| Installation | To be recorded from clean registry installs of both exact versions and `glass`, `glass-browser`, and full-product help smoke checks. |
+| Native | To be recorded from the exact-tag native certification dispatch and its expected source SHA. |
+| Fuzz | To be recorded from the fuzz workflow that tests the exact release source; non-exact runs will remain labeled as such. |
+| GitHub Release | To be recorded after `v0.3.14` is non-draft, non-prerelease, latest, source-only, asset-free, and attached to the verified tag. |
+| Closure | To be recorded only after the GitHub release-record check, final documentation validators, and clean main synchronization pass. |
+
 ## 0.3.13 release evidence
 
 Status: Closed. The exact signed source, publication, native certification,

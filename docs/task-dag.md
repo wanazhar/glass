@@ -1,6 +1,6 @@
 # Autonomous task DAGs
 
-**Status: Current 0.3.13 source behavior.** The task scheduler is a Glass-owned orchestration layer above resident agents. It is not a general workflow engine and it does not persist task records across a workspace restart.
+**Status: Current 0.3.14 source behavior.** The task scheduler is a Glass-owned orchestration layer above resident agents. It is not a general workflow engine and it does not persist task records across a workspace restart.
 
 ```text
 TaskSpec (goal, prompt, policy, verifier, budget)

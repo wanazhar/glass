@@ -448,25 +448,6 @@ pub fn run(
                             }
                             _ => {}
                         }
-                    } else if state.git_diff_open && state.surface == DevSurface::Git {
-                        match key.code {
-                            KeyCode::Esc => state.close_git_diff(),
-                            KeyCode::Up | KeyCode::Char('k') => state.move_git_selection(-1),
-                            KeyCode::Down | KeyCode::Char('j') => state.move_git_selection(1),
-                            KeyCode::Enter | KeyCode::Char('d') => {
-                                state.queue_git_diff(&mut worker)
-                            }
-                            KeyCode::Char(' ') => state.toggle_selected_git_stage(),
-                            KeyCode::Char('c') => state.compose_git_commit(),
-                            KeyCode::Char('o') => state.open_selected_git_file(),
-                            KeyCode::Char('x') => state.discard_selected_git_file(),
-                            KeyCode::Char('r') => state.queue_github_review(&mut worker),
-                            KeyCode::PageUp => state.scroll_surface(-10),
-                            KeyCode::PageDown => state.scroll_surface(10),
-                            KeyCode::Home => state.scroll_home(),
-                            KeyCode::End => state.scroll_end(),
-                            _ => {}
-                        }
                     } else if state.pending_agent_approval.is_some() {
                         match key.code {
                             KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
@@ -709,6 +690,11 @@ pub fn run(
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
                                 state.open_palette();
+                            }
+                            (KeyCode::Esc, _)
+                                if state.git_diff_open && state.surface == DevSurface::Git =>
+                            {
+                                state.close_git_diff();
                             }
                             (KeyCode::Esc, _) if state.running_tool_job.is_some() => {
                                 state.status =
@@ -1066,6 +1052,7 @@ pub fn run(
             }
         }
         state.flush_pending_trust();
+        state.flush_pending_open_file();
         if state.git_diff_requested {
             state.git_diff_requested = false;
             state.queue_git_diff(&mut worker);
@@ -1228,6 +1215,8 @@ pub fn run(
         if let Some(snapshot) = worker.take_pending() {
             state.apply_snapshot(&snapshot);
         }
+        state.flush_pending_trust();
+        state.flush_pending_open_file();
     }
 
     let kitty_cleanup = visual.shutdown();

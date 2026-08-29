@@ -48,7 +48,11 @@ fn panel_text(content: &str) -> Text<'static> {
                     Style::default().fg(MUTED)
                 } else if trimmed.starts_with('✓') {
                     Style::default().fg(SUCCESS)
-                } else if trimmed.starts_with('×') || trimmed.contains("failed") {
+                } else if trimmed.starts_with('×')
+                    || (trimmed.contains("failed")
+                        && !trimmed.contains("0 failed")
+                        && !trimmed.starts_with("failed 0"))
+                {
                     Style::default().fg(ERROR)
                 } else {
                     Style::default().fg(TEXT)
@@ -1964,20 +1968,15 @@ fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 
 fn render_code_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let title = if state.focused_editor_path.is_empty() {
-        " EDITOR · choose a file · Enter full-screen ".to_string()
+        " EDITOR ".to_string()
     } else {
-        let dirty = if state.focused_editor_dirty {
-            "unsaved"
-        } else {
-            "saved"
-        };
         format!(
-            " PREVIEW · {dirty} · Ln {} Col {} · Enter full-screen edit ",
+            " PREVIEW · Ln {} Col {} ",
             state.focused_editor_line, state.focused_editor_column,
         )
     };
     let content = if state.editor.trim().is_empty() {
-        "No file open · ↑/↓ select a file · Enter opens full-screen · i edits"
+        "No file open\n↑/↓ select a file\nEnter full-screen\ni edits"
     } else {
         state.editor.as_str()
     };
@@ -2101,6 +2100,15 @@ fn render_code_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         render_file_tree(frame, state, rows[0]);
         render_code_editor(frame, state, rows[1]);
         render_editor_collaboration(frame, state, rows[2]);
+        return;
+    }
+    if area.width < 96 {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(24), Constraint::Min(28)])
+            .split(area);
+        render_file_tree(frame, state, columns[0]);
+        render_code_editor(frame, state, columns[1]);
         return;
     }
     let columns = Layout::default()
@@ -2409,6 +2417,22 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         .split(rows[0]);
     render_todo_list(frame, state, split[0]);
     render_task_list(frame, state, split[1]);
+    let (running, queued, failed) = task_counts(state);
+    let wake = state
+        .last_crew_wake
+        .as_deref()
+        .and_then(|wake| wake.lines().next())
+        .unwrap_or("no crew wake");
+    render_panel(
+        frame,
+        rows[1],
+        " SUMMARY ",
+        format!("{running} running\n{queued} queued\n{failed} failed\n{wake}"),
+        PURPLE,
+    );
+}
+
+fn task_counts(state: &DevTuiState) -> (usize, usize, usize) {
     let running = state
         .tasks
         .lines()
@@ -2424,18 +2448,7 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         .lines()
         .filter(|line| line.starts_with("×"))
         .count();
-    let wake = state
-        .last_crew_wake
-        .as_deref()
-        .and_then(|wake| wake.lines().next())
-        .unwrap_or("no crew wake");
-    render_panel(
-        frame,
-        rows[1],
-        " SUMMARY ",
-        format!("{running} running · {queued} queued · {failed} failed\n{wake}"),
-        PURPLE,
-    );
+    (running, queued, failed)
 }
 
 fn render_todo_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -2693,6 +2706,40 @@ fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let session_count = state.debug_sessions.len();
+    if session_count == 0 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(8), Constraint::Min(6)])
+            .split(area);
+        render_panel(
+            frame,
+            rows[0],
+            " DEBUG · 0 ",
+            "No debugger sessions\n:debug start NAME COMMAND\na opens actions",
+            ACCENT_BRIGHT,
+        );
+        let bottom = if stack_for_phone(state, area) {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(rows[1])
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(58), Constraint::Min(18)])
+                .split(rows[1])
+        };
+        render_panel(
+            frame,
+            bottom[0],
+            " VARIABLES ",
+            "Starts after a session is selected",
+            ACCENT_BRIGHT,
+        );
+        render_status_list(frame, bottom[1], " TESTS ", &state.tests, "No test runs");
+        return;
+    }
     let rows = if stack_for_phone(state, area) {
         Layout::default()
             .direction(Direction::Vertical)
@@ -2710,7 +2757,6 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
             .constraints([Constraint::Percentage(72), Constraint::Min(6)])
             .split(area)
     };
-    let session_count = state.debug_sessions.len();
     if stack_for_phone(state, area) {
         render_debug_list(
             frame,
@@ -2915,16 +2961,18 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .split(area);
     let narrow = area.width < 60 || phone;
     let kernel_count = status_line_count(&state.kernels);
-    let summary = compact_multiline(
-        &format!(
-            "{} skills · {} tools · {kernel_count} kernels\n{}\nCOCKPIT {}",
-            state.snapshot_skills_count,
-            state.snapshot_tools_count,
-            activity_summary(state),
-            state.private_cockpit_status(),
-        ),
-        rows[0].width.saturating_sub(4),
+    let mut summary = format!(
+        "{} skills · {} tools · {kernel_count} kernels\n{}\nCOCKPIT {}",
+        state.snapshot_skills_count,
+        state.snapshot_tools_count,
+        activity_summary(state),
+        state.private_cockpit_status(),
     );
+    if !state.more_result.is_empty() {
+        summary.push('\n');
+        summary.push_str(state.more_result.lines().next().unwrap_or_default());
+    }
+    let summary = compact_multiline(&summary, rows[0].width.saturating_sub(4));
     render_panel(frame, rows[0], " SERVICES ", summary, ACCENT_BRIGHT);
     if phone {
         let columns = Layout::default()
@@ -3010,7 +3058,7 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let mut routes = more_route_lines(state);
     if !narrow {
         routes.push(String::new());
-        routes.push("HARNESS CATALOG".into());
+        routes.push("Harness catalog".into());
         routes.push(if installed_harnesses.is_empty() {
             "none detected".into()
         } else {
@@ -3427,24 +3475,10 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 .to_string(),
         ),
         DevSurface::Tasks => {
-            let running = state
-                .tasks
-                .lines()
-                .filter(|line| line.starts_with("●"))
-                .count();
-            let queued = state
-                .tasks
-                .lines()
-                .filter(|line| line.starts_with("○"))
-                .count();
-            let failed = state
-                .tasks
-                .lines()
-                .filter(|line| line.starts_with("×"))
-                .count();
+            let (running, queued, failed) = task_counts(state);
             (
                 "TASKS",
-                format!("{running} running · {queued} queued · {failed} failed"),
+                format!("{running} running\n{queued} queued\n{failed} failed"),
             )
         }
         DevSurface::Git => (
@@ -3457,7 +3491,7 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         DevSurface::More => (
             "SERVICES",
             format!(
-                "{} skills · {} tools · {} kernels",
+                "{} skills\n{} tools\n{} kernels",
                 state.snapshot_skills_count,
                 state.snapshot_tools_count,
                 status_line_count(&state.kernels)
@@ -4016,6 +4050,46 @@ mod tests {
         assert!(output.contains("0 kernels"));
         assert!(output.contains("PI"));
         assert!(output.contains("ROUTES"));
+    }
+
+    #[test]
+    fn panel_headings_ignore_title_case_catalog_labels() {
+        assert!(is_panel_heading("START HERE"));
+        assert!(is_panel_heading("HARNESS CATALOG"));
+        assert!(!is_panel_heading("Harness catalog"));
+        assert!(!is_panel_heading("  ROUTES"));
+    }
+
+    #[test]
+    fn tasks_and_more_context_keep_counts_on_their_own_lines() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Tasks;
+        let tasks = rendered(&state, 120, 32);
+        assert!(tasks.contains("0 running"));
+        assert!(tasks.contains("0 queued"));
+        assert!(tasks.contains("0 failed"));
+        assert!(!tasks.contains("0 running · 0 queued · 0"));
+
+        state.surface = DevSurface::More;
+        state.harnesses = "● claude    Claude Code\n● pi        Pi".into();
+        let more = rendered(&state, 220, 40);
+        assert!(more.contains("Harness catalog"));
+        assert!(!more.contains("HARNESS CATALOG"));
+        assert!(more.contains("0 skills"));
+        assert!(more.contains("0 tools"));
+    }
+
+    #[test]
+    fn empty_debug_workbench_uses_a_single_start_panel() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Debug;
+        let output = rendered(&state, 140, 40);
+        assert!(output.contains("DEBUG · 0"));
+        assert!(output.contains("No debugger sessions"));
+        assert!(output.contains(":debug start NAME COMMAND"));
+        assert!(!output.contains("THREADS"));
+        assert!(output.contains("VARIABLES"));
+        assert!(output.contains("TESTS"));
     }
 
     #[test]

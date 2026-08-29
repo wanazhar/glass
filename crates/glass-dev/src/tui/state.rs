@@ -389,6 +389,7 @@ pub struct DevTuiState {
     pub git_conflicts: Vec<String>,
     pub github_review_requested: bool,
     pub pending_trust: Option<crate::LocalTrustDecision>,
+    pub pending_open_file: Option<String>,
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
@@ -492,6 +493,7 @@ pub struct DevTuiState {
     pub debug_variables_requested: bool,
     pub selected_todo: usize,
     pub selected_more: usize,
+    pub more_result: String,
     pub replay: String,
     pub browser: String,
     pub browser_detail: String,
@@ -673,6 +675,7 @@ impl DevTuiState {
             git_conflicts: Vec::new(),
             github_review_requested: false,
             pending_trust: None,
+            pending_open_file: None,
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
             selected_agent: None,
@@ -768,6 +771,7 @@ impl DevTuiState {
             debug_variables_requested: false,
             selected_todo: 0,
             selected_more: 0,
+            more_result: String::new(),
             replay: String::new(),
             browser: String::new(),
             browser_detail: "No browser observation yet".into(),
@@ -3758,8 +3762,14 @@ impl DevTuiState {
     pub fn show_surface(&mut self, surface: DevSurface) {
         self.surface = surface;
         self.status = format!("{} selected", surface.label());
-        if surface == DevSurface::Code && !self.code_edit_mode && !self.files.is_empty() {
-            self.open_selected_file();
+        if surface != DevSurface::Code {
+            self.pending_open_file = None;
+        }
+        if surface == DevSurface::Code && !self.code_edit_mode {
+            self.queue_selected_file_preview();
+        }
+        if surface == DevSurface::Git {
+            self.request_selected_git_diff();
         }
     }
 
@@ -3800,6 +3810,51 @@ impl DevTuiState {
         if self.apply_trust(decision) {
             self.pending_trust = None;
         }
+    }
+
+    fn queue_selected_file_preview(&mut self) {
+        if self.files.is_empty() {
+            self.pending_open_file = Some(String::new());
+            return;
+        }
+        self.open_selected_file();
+    }
+
+    pub fn flush_pending_open_file(&mut self) {
+        if self.pending_open_file.is_none() {
+            return;
+        }
+        if self.surface != DevSurface::Code || self.code_edit_mode {
+            return;
+        }
+        if self.files.is_empty() {
+            return;
+        }
+        let queued = self.pending_open_file.take().unwrap_or_default();
+        if !queued.is_empty()
+            && let Some(index) = self.files.iter().position(|path| path == &queued)
+        {
+            self.selected_file = index;
+        }
+        self.open_selected_file();
+    }
+
+    fn request_selected_git_diff(&mut self) {
+        if self.git_entries.is_empty() {
+            return;
+        }
+        self.git_diff_requested = true;
+        if let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) {
+            self.git_diff_path = Some(path);
+        }
+        if !self.git_diff_open {
+            self.git_diff_open = true;
+            self.git_diff = "Loading Git diff…".into();
+        }
+    }
+
+    fn is_workspace_busy(error: &impl std::fmt::Display) -> bool {
+        error.to_string().contains("workspace busy")
     }
 
     pub fn next_surface(&mut self) {
@@ -4479,8 +4534,13 @@ impl DevTuiState {
             return;
         }
         match super::command::execute(self, command) {
-            Ok(message) => self.status = message,
+            Ok(message) => {
+                self.surface = DevSurface::More;
+                self.more_result = message.clone();
+                self.status = more_route_status(command, &message);
+            }
             Err(error) => {
+                self.surface = DevSurface::More;
                 self.open_palette_with(command);
                 self.status = format!("{command} · {error}");
             }
@@ -4509,6 +4569,7 @@ impl DevTuiState {
         };
         match result {
             Ok(()) => {
+                self.pending_open_file = None;
                 self.editor_buffer_index = self
                     .workspace
                     .try_lock()
@@ -4526,6 +4587,10 @@ impl DevTuiState {
                 } else {
                     format!("Opened {path} · Enter opens the full-screen editor")
                 };
+            }
+            Err(error) if Self::is_workspace_busy(&error) => {
+                self.pending_open_file = Some(path.clone());
+                self.status = format!("Opening {path} when the workspace is free");
             }
             Err(error) => self.status = format!("Open failed: {error}"),
         }
@@ -4769,7 +4834,7 @@ impl DevTuiState {
         if !has_buffer {
             self.open_selected_file();
         }
-        if self.focused_buffer().is_some() {
+        if self.focused_buffer().is_some() || !self.focused_editor_path.is_empty() {
             self.surface = DevSurface::Code;
             self.code_edit_mode = true;
             self.editor_exit_prompt = None;
@@ -6931,6 +6996,12 @@ impl DevTuiState {
             self.selected_git_file = self
                 .selected_git_file
                 .min(self.git_entries.len().saturating_sub(1));
+            if self.surface == DevSurface::Git && !self.git_diff_requested {
+                let selected_path = self.selected_git_entry().map(|entry| entry.path.as_str());
+                if !self.git_diff_open || selected_path != self.git_diff_path.as_deref() {
+                    self.request_selected_git_diff();
+                }
+            }
         }
         self.tests = snapshot.tests.clone();
         self.kernels = snapshot.kernels.clone();
@@ -6974,6 +7045,13 @@ impl DevTuiState {
             if !self.files.is_empty() {
                 self.selected_file = self.selected_file.min(self.files.len() - 1);
             }
+        }
+        if self.surface == DevSurface::Code
+            && !self.code_edit_mode
+            && self.pending_open_file.is_some()
+            && !self.files.is_empty()
+        {
+            self.flush_pending_open_file();
         }
     }
 
@@ -8263,6 +8341,17 @@ fn parse_editor_diagnostics(
             serde_json::from_value::<Vec<crate::development::LanguageDiagnostic>>(item.clone()).ok()
         })
         .unwrap_or_default()
+}
+
+fn more_route_status(command: &str, message: &str) -> String {
+    match command {
+        "doctor" if message.contains("is ready") => {
+            "Doctor · Agent is ready · PI panel updated · 1 opens chat".into()
+        }
+        "doctor" => format!("Doctor · {message}"),
+        "harness list" => "Harness catalog listed in ROUTES".into(),
+        _ => message.to_string(),
+    }
 }
 
 fn format_editor_buffers(buffers: &[crate::development::EditorBuffer]) -> String {
@@ -10089,6 +10178,72 @@ mod tests {
         assert!(state.browser_visual_live);
         assert!(state.status.contains("Sign in"));
         assert!(state.status.contains("watching"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn code_preview_queues_when_workspace_is_busy() {
+        let root = std::env::temp_dir().join(format!("glass-open-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        std::fs::write(root.join("notes.txt"), "hello\n").expect("write preview file");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec!["notes.txt".into()];
+        let workspace = state.workspace.clone();
+        let _guard = workspace.lock().expect("hold workspace lock");
+
+        state.show_surface(DevSurface::Code);
+        assert_eq!(state.pending_open_file.as_deref(), Some("notes.txt"));
+        assert!(state.status.contains("when the workspace is free"));
+        assert!(
+            !state.status.contains("Open failed"),
+            "busy preview must queue instead of failing: {}",
+            state.status
+        );
+
+        drop(_guard);
+        state.flush_pending_open_file();
+        assert!(state.pending_open_file.is_none());
+        assert_eq!(state.focused_editor_path, "notes.txt");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn more_doctor_stays_on_more_and_git_loads_the_selected_diff() {
+        let root = std::env::temp_dir().join(format!("glass-more-git-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
+            .expect("trust project");
+        state.snapshot_trust_label = "trusted-project".into();
+
+        state.show_surface(DevSurface::More);
+        state.selected_more = 0;
+        state.activate_more_selection();
+        assert_eq!(state.surface, DevSurface::More);
+        assert!(
+            state.status.to_ascii_lowercase().contains("doctor")
+                || state.status.contains("PI panel"),
+            "doctor should stay on More: {}",
+            state.status
+        );
+
+        state.git_entries = vec![crate::git::GitStatusEntry {
+            path: "notes.txt".into(),
+            original_path: None,
+            index_status: ' ',
+            worktree_status: 'M',
+            untracked: false,
+        }];
+        state.show_surface(DevSurface::Git);
+        assert!(state.git_diff_requested);
+        assert!(state.git_diff_open);
+        assert!(state.git_diff.contains("Loading"));
+        assert_eq!(state.git_diff_path.as_deref(), Some("notes.txt"));
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 }

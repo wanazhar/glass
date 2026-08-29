@@ -44,7 +44,7 @@ There are two checked-in version facts:
 The current `0.3.14` source and package metadata are aligned on `0.84.3`.
 Do not describe `0.84.3` as part of the immutable `0.3.12` release; keep the
 published `0.3.12` SDK fact scoped to its historical release record. The
-published `0.3.13` crate and docs.rs pages use `0.84.3`. Checkout-only TUI
+published `0.3.14` crate and docs.rs pages use `0.84.3`. Checkout-only TUI
 playbooks and workspace-local todo behavior can be newer than that published
 API page.
 

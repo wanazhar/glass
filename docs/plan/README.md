@@ -11,7 +11,7 @@ for this source line.
 The [0.3.14 release notes](../releases/0.3.14.md) and
 [0.3.14 migration guide](../migration/0.3.14.md) route the current release
 contract. The [0.3.14 release evidence](../release-evidence.md#0.3.14-release-evidence)
-holds exact-source records and pending fields for external validation. The
+holds the exact-source records and closed publication evidence. The
 historical [0.3.13 release notes](../releases/0.3.13.md) and
 [0.3.13 migration guide](../migration/0.3.13.md) retain their original
 version claims.
@@ -27,7 +27,7 @@ version claims.
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and
-release provenance; the latest published release evidence is 0.3.13. Current-checkout
+release provenance; the latest published release evidence is 0.3.14. Current-checkout
 additions are listed in the current 0.3.14 source section above.
 
 Issue [#36](https://github.com/wanazhar/glass/issues/36) is the authoritative
@@ -52,7 +52,7 @@ next task starts.
 ## Historical plan: Glass v0.3.5 issue #35
 
 Status: Historical/superseded — this 0.3.5 audit body is retained for issue and
-release provenance; the latest published release evidence is 0.3.13. Current-checkout
+release provenance; the latest published release evidence is 0.3.14. Current-checkout
 additions are listed in the current 0.3.14 source section above.
 
 Issue [#35](https://github.com/wanazhar/glass/issues/35) is the authoritative
@@ -119,7 +119,7 @@ implementation record is
 ## Historical plan: Glass v0.3.3 issue #33
 
 Status: Historical/superseded — this 0.3.3 audit body is retained for issue and
-release provenance; the latest published release evidence is 0.3.13. Current-checkout
+release provenance; the latest published release evidence is 0.3.14. Current-checkout
 additions are listed in the current 0.3.14 source section above.
 
 Issue #33 and its authoritative amendment define 15 integration pillars, 53
@@ -184,7 +184,7 @@ active; its first foundation phase is [stable runtime platform](tasks/platform-0
 ## Historical plan: Glass v0.3.1 issue #31
 
 Status: Historical/superseded — this 0.3.1 audit body is retained for issue and
-release provenance; the latest published release evidence is 0.3.13. Current-checkout
+release provenance; the latest published release evidence is 0.3.14. Current-checkout
 additions are listed in the current 0.3.14 source section above.
 
 The authoritative [issue #31](https://github.com/wanazhar/glass/issues/31)
@@ -214,7 +214,7 @@ and independent review.
 ## Historical plan: Glass v0.3.2 issue #32
 
 Status: Historical/superseded — this 0.3.2 audit body is retained for issue and
-release provenance; the latest published release evidence is 0.3.13. Current-checkout
+release provenance; the latest published release evidence is 0.3.14. Current-checkout
 additions are listed in the current 0.3.14 source section above.
 
 Issue #32 is an architectural epic. The original thin-slice interpretation was

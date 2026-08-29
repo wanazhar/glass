@@ -1187,7 +1187,7 @@ mod tests {
         );
         let mut html_stream = TcpStream::connect(cockpit.address()).unwrap();
         html_stream.write_all(html_request.as_bytes()).unwrap();
-        html_stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = html_stream.shutdown(std::net::Shutdown::Write);
         let mut html = Vec::new();
         html_stream.read_to_end(&mut html).unwrap();
         let html = String::from_utf8_lossy(&html);
@@ -1200,7 +1200,7 @@ mod tests {
         );
         let mut state_stream = TcpStream::connect(cockpit.address()).unwrap();
         state_stream.write_all(state_request.as_bytes()).unwrap();
-        state_stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = state_stream.shutdown(std::net::Shutdown::Write);
         let mut state_body = Vec::new();
         state_stream.read_to_end(&mut state_body).unwrap();
         let state_body = String::from_utf8_lossy(&state_body);
@@ -1216,7 +1216,7 @@ mod tests {
         );
         let mut denied_stream = TcpStream::connect(cockpit.address()).unwrap();
         denied_stream.write_all(denied_request.as_bytes()).unwrap();
-        denied_stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = denied_stream.shutdown(std::net::Shutdown::Write);
         let mut denied_body = Vec::new();
         denied_stream.read_to_end(&mut denied_body).unwrap();
         let denied_body = String::from_utf8_lossy(&denied_body);
@@ -1235,7 +1235,7 @@ mod tests {
         );
         let mut accept_stream = TcpStream::connect(cockpit.address()).unwrap();
         accept_stream.write_all(accept_request.as_bytes()).unwrap();
-        accept_stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = accept_stream.shutdown(std::net::Shutdown::Write);
         let mut accept_body = Vec::new();
         accept_stream.read_to_end(&mut accept_body).unwrap();
         let accept_body = String::from_utf8_lossy(&accept_body);

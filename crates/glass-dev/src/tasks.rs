@@ -275,7 +275,7 @@ pub struct TaskSnapshot {
 }
 
 /// Durable overnight-crew artifact written under `{root}/.glass/crew`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CrewWake {
     pub id: String,
@@ -284,6 +284,16 @@ pub struct CrewWake {
     pub checkpoint: String,
     pub created_at_ms: u128,
     pub tasks: Vec<CrewWakeMember>,
+    #[serde(default)]
+    pub diff: String,
+    #[serde(default)]
+    pub tests: String,
+    #[serde(default)]
+    pub verify: String,
+    #[serde(default)]
+    pub page: String,
+    #[serde(default)]
+    pub accept: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -295,6 +305,14 @@ pub struct CrewWakeMember {
     pub state: String,
 }
 
+/// Live TUI evidence folded into a crew wake on review.
+#[derive(Debug, Clone, Default)]
+pub struct CrewWakeLiveEvidence {
+    pub verify: Option<String>,
+    pub page: Option<String>,
+    pub accept: Option<String>,
+}
+
 impl CrewWake {
     pub fn render(&self) -> String {
         let mut lines = vec![
@@ -302,11 +320,40 @@ impl CrewWake {
             format!("  goal {}", self.goal),
             format!("  worktree {}", self.worktree.as_deref().unwrap_or("—")),
             format!("  checkpoint {}", self.checkpoint),
+            format!(
+                "  accept {}",
+                if self.accept.is_empty() {
+                    "none"
+                } else {
+                    self.accept.as_str()
+                }
+            ),
         ];
-        for task in &self.tasks {
-            lines.push(format!("  {} {} {}", task.role, task.id, task.state));
+        append_wake_section(&mut lines, "VERIFY", &self.verify, 12);
+        append_wake_section(&mut lines, "TESTS", &self.tests, 16);
+        append_wake_section(&mut lines, "PAGE", &self.page, 8);
+        append_wake_section(&mut lines, "DIFF", &self.diff, 40);
+        lines.push(String::new());
+        lines.push("CREW".into());
+        if self.tasks.is_empty() {
+            lines.push("  none queued".into());
+        } else {
+            for task in &self.tasks {
+                lines.push(format!("  {} {} {}", task.role, task.id, task.state));
+            }
         }
         lines.join("\n")
+    }
+}
+
+fn append_wake_section(lines: &mut Vec<String>, title: &str, body: &str, limit: usize) {
+    if body.trim().is_empty() {
+        return;
+    }
+    lines.push(String::new());
+    lines.push(title.into());
+    for line in body.lines().take(limit) {
+        lines.push(format!("  {line}"));
     }
 }
 
@@ -1644,11 +1691,28 @@ mod tests {
                 title: "architect: add settings toggle".into(),
                 state: "queued".into(),
             }],
+            verify: "PROOF ✓\n  url /settings".into(),
+            tests: "cargo passed · 12 ms · exit 0".into(),
+            page: "url http://localhost:3000".into(),
+            diff: "diff --git a/src/lib.rs b/src/lib.rs".into(),
+            accept: "proposal-1".into(),
         };
         persist_crew_wake(&root, &wake).unwrap();
         let loaded = load_latest_crew_wake(&root).expect("latest wake");
         assert_eq!(loaded, wake);
-        assert!(loaded.render().contains("WAKE add-settings-toggle"));
+        let rendered = loaded.render();
+        assert!(rendered.contains("WAKE add-settings-toggle"));
+        assert!(rendered.contains("VERIFY"));
+        assert!(rendered.contains("TESTS"));
+        assert!(rendered.contains("PAGE"));
+        assert!(rendered.contains("DIFF"));
+        assert!(rendered.contains("accept proposal-1"));
+        let legacy = serde_json::from_str::<CrewWake>(
+            r#"{"id":"legacy","goal":"g","checkpoint":"c","createdAtMs":1,"tasks":[]}"#,
+        )
+        .unwrap();
+        assert!(legacy.diff.is_empty());
+        assert_eq!(legacy.accept, "");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

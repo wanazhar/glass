@@ -1445,27 +1445,70 @@ impl DevTuiState {
         } else {
             Some(self.git_diff.as_str()).filter(|diff| !diff.trim().is_empty())
         };
+        let wake = self.last_crew_wake.as_deref();
+        let packed = wake.is_some_and(|wake| wake.starts_with("WAKE"));
         super::editor::review_object(
             &self.github.summary(),
             &self.github_review,
             &proposals,
             super::editor::ReviewEvidence {
-                last_verify: self.last_verify.as_deref(),
-                git_diff: diff,
-                tasks: Some(self.tasks.as_str()).filter(|tasks| !tasks.trim().is_empty()),
-                checkpoint,
-                wake: self.last_crew_wake.as_deref(),
+                last_verify: if packed {
+                    None
+                } else {
+                    self.last_verify.as_deref()
+                },
+                git_diff: if packed { None } else { diff },
+                tasks: if packed {
+                    None
+                } else {
+                    Some(self.tasks.as_str()).filter(|tasks| !tasks.trim().is_empty())
+                },
+                checkpoint: if packed { None } else { checkpoint },
+                wake,
             },
         )
     }
 
     pub fn refresh_review_object(&mut self) {
+        self.refresh_crew_wake_from_live();
         let text = self.review_object_text();
         self.editor = text.clone();
         self.git_diff = text;
         self.git_diff_path = Some("REVIEW".into());
         self.git_diff_open = true;
-        self.status = "REVIEW · :review accept · reject · ship TITLE · ask".into();
+        self.status = "REVIEW · :review accept applies the pack · ship TITLE · ask".into();
+    }
+
+    pub fn accept_review_pack(&mut self) -> Result<String, String> {
+        let ids = self
+            .editor_proposals
+            .iter()
+            .filter(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
+            .map(|proposal| proposal.id.clone())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Err("No pending proposals in the wake pack".into());
+        }
+        self.auto_checkpoint("before-review-accept");
+        for id in &ids {
+            match self.locked(|workspace| {
+                workspace
+                    .project_mut()
+                    .accept_editor_proposal(id, crate::development::Actor::local())
+                    .map(|_| ())
+            }) {
+                Some(Ok(())) => {}
+                Some(Err(error)) => return Err(error.to_string()),
+                None => return Err("Accept failed · workspace busy".into()),
+            }
+        }
+        self.refresh_editor_hunks();
+        self.refresh_editor_projection();
+        self.refresh_review_object();
+        Ok(format!(
+            "Accepted {} proposal(s) from the wake pack",
+            ids.len()
+        ))
     }
 
     pub fn accept_review_proposal(&mut self, id: Option<&str>) -> Result<String, String> {
@@ -1479,6 +1522,7 @@ impl DevTuiState {
         }) {
             Some(Ok(())) => {
                 self.refresh_editor_hunks();
+                self.refresh_editor_projection();
                 self.refresh_review_object();
                 Ok(format!("Accepted proposal {id}"))
             }
@@ -1514,6 +1558,41 @@ impl DevTuiState {
             .find(|item| item.state == crate::development::EditorProposalState::Pending)
             .map(|item| item.id.clone())
             .ok_or_else(|| "No pending editor proposal".into())
+    }
+
+    fn refresh_crew_wake_from_live(&mut self) {
+        let accept = self
+            .editor_proposals
+            .iter()
+            .find(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
+            .map(|proposal| proposal.id.clone());
+        let browser = self.browser_workspace.state();
+        let page = if browser.url.is_empty() && browser.selected().is_none() {
+            None
+        } else {
+            Some(self.page_evidence())
+        };
+        let live = crate::CrewWakeLiveEvidence {
+            verify: self.last_verify.clone(),
+            page,
+            accept,
+        };
+        if let Some(Ok(Some(wake))) = self.locked(|workspace| workspace.refresh_crew_wake(live)) {
+            self.last_crew_wake = Some(wake.render());
+        }
+    }
+
+    fn page_evidence(&self) -> String {
+        let browser = self.browser_workspace.state();
+        let url = safe_browser_url(&browser.url).unwrap_or_else(|| "—".into());
+        let entity = browser
+            .selected()
+            .map(|entity| entity.reference.as_str())
+            .unwrap_or("—");
+        format!(
+            "url {url}\n  entity {entity}\n  revision {}",
+            browser.browser_revision.unwrap_or(0)
+        )
     }
 
     /// Prepare an editable review prompt using the current workspace evidence.
@@ -2349,6 +2428,12 @@ impl DevTuiState {
                         .and_then(serde_json::Value::as_str)
                         .map(|url| format!("Pull request created · {url}"))
                         .unwrap_or_else(|| "Pull request created · review GitHub status".into());
+                } else if result.tool == "glass.task.wake" {
+                    self.last_crew_wake = serde_json::from_value::<crate::CrewWake>(value.clone())
+                        .ok()
+                        .map(|wake| wake.render());
+                    self.surface = DevSurface::Tasks;
+                    self.status = "Crew wake loaded · :review".into();
                 } else if result.tool == "glass.task.crew" {
                     let wake = value.get("wake").cloned().unwrap_or_else(|| value.clone());
                     self.last_crew_wake = serde_json::from_value::<crate::CrewWake>(wake)
@@ -2389,6 +2474,7 @@ impl DevTuiState {
                         | "glass.github.ship"
                         | "glass.browser.verify"
                         | "glass.task.crew"
+                        | "glass.task.wake"
                 ) {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
@@ -6598,6 +6684,41 @@ mod tests {
         assert!(wake.contains("WAKE add-settings-toggle"));
         assert!(wake.contains("architect task-0001 queued"));
         assert_eq!(state.surface, DevSurface::Tasks);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn review_accept_applies_the_wake_proposal_pack() {
+        let root = std::env::temp_dir().join(format!("glass-review-pack-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open buffer");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .propose_editor_change(
+                "src/main.rs",
+                "fn main() {}\n".into(),
+                "fn main() { 1 }\n".into(),
+                "add one".into(),
+                crate::development::Actor::local(),
+            )
+            .expect("propose");
+        state.refresh_editor_projection();
+        let accepted = state.accept_review_pack().expect("accept pack");
+        assert!(accepted.contains("1 proposal"));
+        assert_eq!(
+            state.focused_editor_content, "fn main() { 1 }\n",
+            "pack accept must write the proposed buffer"
+        );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

@@ -1272,6 +1272,7 @@ impl DevelopmentToolRouter {
                 }))
             }
             "glass.task.list" => Ok(serde_json::to_value(workspace.tasks()?)?),
+            "glass.task.wake" => Ok(serde_json::to_value(workspace.latest_crew_wake())?),
             "glass.task.get" | "glass.task.inspect" => {
                 let id = TaskId::parse(string("taskId")?)?;
                 Ok(serde_json::to_value(workspace.task(&id)?)?)
@@ -1567,6 +1568,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.threads",
         "glass.graph.source",
         "glass.task.list",
+        "glass.task.wake",
         "glass.task.get",
         "glass.task.inspect",
         "glass.test.results",
@@ -1795,6 +1797,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.workspace.trust.status"
             | "glass.workspace.trust.inspect"
             | "glass.task.list"
+            | "glass.task.wake"
             | "glass.task.get"
             | "glass.task.inspect"
     )
@@ -2835,6 +2838,7 @@ mod tests {
             "glass.task.create",
             "glass.task.crew",
             "glass.task.list",
+            "glass.task.wake",
             "glass.task.get",
             "glass.task.inspect",
             "glass.task.pause",

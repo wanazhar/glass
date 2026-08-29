@@ -793,7 +793,7 @@ fn execute_review(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         "show" | "changes" => {
             state.surface = DevSurface::Git;
             state.refresh_review_object();
-            Ok("Review object ready · accept ID · reject ID · ship TITLE · ask".into())
+            Ok("Review object ready · accept the pack · reject ID · ship TITLE · ask".into())
         }
         "ask" => {
             require_trusted(state)?;
@@ -803,7 +803,10 @@ fn execute_review(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         }
         "accept" => {
             require_trusted(state)?;
-            state.accept_review_proposal(parts.get(1).copied())
+            match parts.get(1).copied() {
+                Some(id) => state.accept_review_proposal(Some(id)),
+                None => state.accept_review_pack(),
+            }
         }
         "reject" => {
             require_trusted(state)?;
@@ -1795,6 +1798,13 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             false,
             DevSurface::Tasks,
         ),
+        "wake" => execute_named_tool(
+            state,
+            "glass.task.wake",
+            json!({}),
+            false,
+            DevSurface::Tasks,
+        ),
         "get" | "inspect" => execute_named_tool(
             state,
             "glass.task.inspect",
@@ -1901,7 +1911,7 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
                 DevSurface::Tasks,
             )
         }
-        _ => Err("task actions: list, get, inspect, create, create-after, crew, pause, resume, cancel, retry, reassign, override, evidence, verify".into()),
+        _ => Err("task actions: list, get, inspect, create, create-after, crew, wake, pause, resume, cancel, retry, reassign, override, evidence, verify".into()),
     }
 }
 
@@ -3068,6 +3078,13 @@ mod tests {
         execute(&mut state, "review").expect("open review");
         assert!(state.git_diff.contains("WAKE crew-1"));
         assert!(state.git_diff.contains("goal add settings toggle"));
+        state.last_crew_wake = Some(
+            "WAKE crew-1\n  goal add settings toggle\n  accept proposal-1\n\nVERIFY\n  PROOF ✓"
+                .into(),
+        );
+        execute(&mut state, "review").expect("open packed review");
+        assert!(state.git_diff.contains("VERIFY"));
+        assert!(state.git_diff.contains("accept proposal-1"));
         let _ = fs::remove_dir_all(root);
     }
 

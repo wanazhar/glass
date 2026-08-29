@@ -5,8 +5,8 @@ use crate::browser::BrowserService;
 use crate::customization::Customization;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
 use crate::development::{
-    Actor, ActorConnection, ActorKind, DevelopmentResult, ProjectWorkspace, ToolAuthorization,
-    ToolCall,
+    Actor, ActorConnection, ActorKind, DevelopmentResult, EditorProposalState, ProjectWorkspace,
+    ToolAuthorization, ToolCall,
 };
 use crate::experiments::ExperimentManager;
 use crate::git::GitService;
@@ -15,8 +15,8 @@ use crate::kernels::{KernelError, KernelExecution, KernelManager, KernelToolCall
 use crate::lsp::LanguageService;
 use crate::pi_runtime::PiToolExecutor;
 use crate::tasks::{
-    CrewWake, CrewWakeMember, TaskId, TaskScheduler, TaskSnapshot, TaskSpec, TaskState,
-    VerificationRequirement, persist_crew_wake,
+    CrewWake, CrewWakeLiveEvidence, CrewWakeMember, TaskId, TaskScheduler, TaskSnapshot, TaskSpec,
+    TaskState, VerificationRequirement, persist_crew_wake,
 };
 use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
@@ -232,6 +232,7 @@ impl DevelopmentWorkspace {
                 .map(|duration| duration.as_millis())
                 .unwrap_or(0),
             tasks,
+            ..CrewWake::default()
         };
         persist_crew_wake(&self.root, &wake)?;
         Ok(wake)
@@ -240,6 +241,49 @@ impl DevelopmentWorkspace {
     /// Latest overnight crew wake written under `.glass/crew`.
     pub fn latest_crew_wake(&self) -> Option<CrewWake> {
         crate::load_latest_crew_wake(&self.root)
+    }
+
+    /// Fold live git/test/verify/page evidence into the persisted crew wake.
+    pub fn refresh_crew_wake(
+        &mut self,
+        live: CrewWakeLiveEvidence,
+    ) -> DevelopmentResult<Option<CrewWake>> {
+        let Some(mut wake) = self.latest_crew_wake() else {
+            return Ok(None);
+        };
+        for member in &mut wake.tasks {
+            if let Ok(id) = TaskId::parse(&member.id)
+                && let Ok(snapshot) = self.tasks.snapshot(&mut self.agents, &id)
+            {
+                member.state = snapshot.state.label().to_string();
+            }
+        }
+        wake.diff = self
+            .git
+            .as_ref()
+            .and_then(|git| git.diff(false, None).ok())
+            .map(truncate_wake_text)
+            .unwrap_or_default();
+        wake.tests = format_last_test_run(&self.tests);
+        if let Some(verify) = live.verify.filter(|value| !value.trim().is_empty()) {
+            wake.verify = truncate_wake_text(verify);
+        }
+        if let Some(page) = live.page.filter(|value| !value.trim().is_empty()) {
+            wake.page = truncate_wake_text(page);
+        }
+        wake.accept = live
+            .accept
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                self.project
+                    .editor_proposals()
+                    .into_iter()
+                    .find(|proposal| proposal.state == EditorProposalState::Pending)
+                    .map(|proposal| proposal.id)
+                    .unwrap_or_else(|| "none".into())
+            });
+        persist_crew_wake(&self.root, &wake)?;
+        Ok(Some(wake))
     }
 
     fn prepare_crew_worktree(&mut self, slug: &str) -> DevelopmentResult<Option<PathBuf>> {
@@ -746,6 +790,52 @@ fn crew_slug(goal: &str) -> String {
     format!("{slug}-{}", std::process::id())
 }
 
+fn truncate_wake_text(mut text: String) -> String {
+    const LIMIT: usize = 24 * 1024;
+    if text.len() > LIMIT {
+        text.truncate(LIMIT);
+        text.push_str("\n…truncated");
+    }
+    text
+}
+
+fn format_last_test_run(tests: &crate::testing::TestService) -> String {
+    let Some(run) = tests.results().next_back() else {
+        return String::new();
+    };
+    let mut lines = vec![format!(
+        "{} {} · {} ms · exit {}",
+        run.suite_id,
+        run.state.label(),
+        run.duration_ms.unwrap_or(0),
+        run.exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "—".into())
+    )];
+    for case in run.cases.iter().take(12) {
+        let label = match case.state {
+            crate::testing::TestCaseState::Passed => "pass",
+            crate::testing::TestCaseState::Failed => "fail",
+            crate::testing::TestCaseState::Ignored => "skip",
+        };
+        lines.push(format!("{label} {}", case.name));
+    }
+    let tail = run
+        .output
+        .lines()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !tail.is_empty() {
+        lines.push(tail);
+    }
+    truncate_wake_text(lines.join("\n"))
+}
+
 fn validate_service_name(name: &str) -> DebugResult<()> {
     if name.is_empty()
         || name.len() > 64
@@ -1099,6 +1189,42 @@ command = '''{command}'''
             WorkspaceTrustStore::at(root.with_extension("trust.json")),
         );
         assert!(result.is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refresh_crew_wake_folds_live_evidence() {
+        let root = test_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='wake-fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        crate::persist_crew_wake(
+            &root,
+            &crate::CrewWake {
+                id: "wake-1".into(),
+                goal: "toggle".into(),
+                checkpoint: "before".into(),
+                ..crate::CrewWake::default()
+            },
+        )
+        .unwrap();
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
+        let wake = workspace
+            .refresh_crew_wake(crate::CrewWakeLiveEvidence {
+                verify: Some("PROOF ✓\n  url /settings".into()),
+                page: Some("url http://localhost:3000".into()),
+                accept: Some("proposal-1".into()),
+            })
+            .unwrap()
+            .expect("wake");
+        let rendered = wake.render();
+        assert!(rendered.contains("VERIFY"));
+        assert!(rendered.contains("PAGE"));
+        assert!(rendered.contains("accept proposal-1"));
+        assert_eq!(wake.accept, "proposal-1");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -686,9 +686,7 @@ pub fn review_object(
         lines.push(String::new());
         lines.push(wake.trim_end().to_string());
     }
-    lines.push(
-        "\n:review accept [ID] · :review reject [ID] · :review ship TITLE · :review ask".into(),
-    );
+    lines.push("\n:review accept · :review reject [ID] · :review ship TITLE · :review ask".into());
     lines.join("\n")
 }
 
@@ -1339,6 +1337,7 @@ mod tests {
         assert!(text.contains("CHECKPOINT before-crew"));
         assert!(text.contains("WAKE crew-1"));
         assert!(text.contains("goal add toggle"));
+        assert!(text.contains(":review accept"));
     }
 
     #[test]

@@ -155,6 +155,12 @@ const CODE_ACTIONS: &[SurfaceAction] = &[
         description: "write the focused buffer",
     },
     SurfaceAction {
+        label: "Jump to App",
+        command: "app page",
+        key: ":",
+        description: "open the detected app at this handler",
+    },
+    SurfaceAction {
         label: "Propose edit",
         command: "editor propose PATH SUMMARY TEXT",
         key: ":",
@@ -217,6 +223,18 @@ const APP_ACTIONS: &[SurfaceAction] = &[
         key: ":",
         description: "request native or ANSI browser pixels",
     },
+    SurfaceAction {
+        label: "Jump to source",
+        command: "app source",
+        key: ":",
+        description: "open the selected entity's handler",
+    },
+    SurfaceAction {
+        label: "Open detected app",
+        command: "app open",
+        key: ":",
+        description: "navigate to the detected loopback URL",
+    },
 ];
 
 const TERMINAL_ACTIONS: &[SurfaceAction] = &[
@@ -243,6 +261,12 @@ const TERMINAL_ACTIONS: &[SurfaceAction] = &[
         command: "process stop NAME",
         key: ":",
         description: "stop a managed process",
+    },
+    SurfaceAction {
+        label: "Attach detected URL",
+        command: "app open",
+        key: ":",
+        description: "open the process loopback URL in App",
     },
 ];
 
@@ -681,6 +705,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         "editor" => execute_editor(state, parts.collect()),
         "lsp" => execute_lsp(state, parts.collect()),
         "process" => execute_process(state, parts.collect()),
+        "app" => execute_app(state, parts.collect()),
         "browser" | "workflow" => execute_browser(state, command, parts.collect()),
         "github" | "gh" => execute_github(state, parts.collect()),
         "harness" => execute_harness(state, parts.collect()),
@@ -2233,6 +2258,21 @@ fn execute_process(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
     execute_named_tool(state, tool, arguments, mutating, DevSurface::Terminal)
 }
 
+fn execute_app(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("open") {
+        "open" | "attach" => state.attach_detected_app(),
+        "source" => {
+            state.jump_source_from_page();
+            Ok(state.status.clone())
+        }
+        "page" => {
+            state.jump_page_from_source();
+            Ok(state.status.clone())
+        }
+        _ => Err("app actions: open, attach, source, page".into()),
+    }
+}
+
 fn execute_browser(
     state: &mut DevTuiState,
     command: &str,
@@ -3028,6 +3068,33 @@ mod tests {
         execute(&mut state, "review").expect("open review");
         assert!(state.git_diff.contains("WAKE crew-1"));
         assert!(state.git_diff.contains("goal add settings toggle"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn app_open_attaches_the_detected_loopback_url() {
+        let (mut state, root) = test_state("app-open");
+        state.process_urls = vec!["http://localhost:3000/".into()];
+        execute(&mut state, "app open").expect("queue app open");
+        assert_eq!(
+            state.pending_browser_navigation.as_deref(),
+            Some("http://localhost:3000")
+        );
+        assert_eq!(state.surface, DevSurface::App);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn app_page_uses_the_handler_route() {
+        let (mut state, root) = test_state("app-page");
+        state.focused_editor_path = "app/settings/page.tsx".into();
+        state.focused_editor_line = 1;
+        state.process_urls = vec!["http://127.0.0.1:5173/".into()];
+        execute(&mut state, "app page").expect("jump to page");
+        assert_eq!(
+            state.pending_browser_navigation.as_deref(),
+            Some("http://127.0.0.1:5173/settings")
+        );
         let _ = fs::remove_dir_all(root);
     }
 

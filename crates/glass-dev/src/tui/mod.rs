@@ -665,6 +665,17 @@ pub fn run(
                             (KeyCode::Char('s'), _) if state.surface == DevSurface::Terminal => {
                                 state.request_detected_dev();
                             }
+                            (KeyCode::Char('u'), _) if state.surface == DevSurface::Terminal => {
+                                match state.attach_detected_app() {
+                                    Ok(message) => state.status = message,
+                                    Err(error) => state.status = error,
+                                }
+                            }
+                            (KeyCode::Char('g'), _)
+                                if state.surface == DevSurface::App && !state.code_edit_mode =>
+                            {
+                                state.jump_source_from_page();
+                            }
                             (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
                                 state.queue_git_diff(&mut worker);
                             }

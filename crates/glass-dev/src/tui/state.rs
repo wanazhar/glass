@@ -1,9 +1,9 @@
 use super::command;
 use super::editor::{
     self as native, EditorEngine, EditorMode, GhostText, Motion, Operator, TextObject,
-    apply_motion, compile_prove_it, complete_mention, evidence_card, expand_mentions, line_hunks,
-    local_fim, pair_apply_caret, pair_apply_step, parse_inlay_hints, textobject_from_key,
-    textobject_selection,
+    apply_motion, compile_prove_it, complete_mention, evidence_card, expand_mentions,
+    inferred_app_path, join_app_url, line_hunks, local_fim, pair_apply_caret, pair_apply_step,
+    parse_inlay_hints, textobject_from_key, textobject_selection,
 };
 use super::parse::IncrementalSyntax;
 use crate::development::TextSelection;
@@ -227,6 +227,8 @@ pub struct DevTuiState {
     pub pending_confirmation: Option<PendingConfirmation>,
     /// URL retained while the TUI launches a detached browser before navigation.
     pub pending_browser_navigation: Option<String>,
+    pub pending_page_entity: Option<String>,
+    pub process_urls: Vec<String>,
     pub pending_agent_approval: Option<PendingAgentApproval>,
     pub editor_exit_prompt: Option<EditorExitPrompt>,
     pub queued_tool_request: Option<(
@@ -468,6 +470,8 @@ impl DevTuiState {
             editor_exit_prompt: None,
             pending_agent_approval: None,
             pending_browser_navigation: None,
+            pending_page_entity: None,
+            process_urls: Vec::new(),
             queued_tool_request: None,
             running_tool_job: None,
             surface_scroll: std::collections::BTreeMap::new(),
@@ -2408,6 +2412,7 @@ impl DevTuiState {
 
     pub fn deny_confirmation(&mut self) {
         self.pending_browser_navigation = None;
+        self.pending_page_entity = None;
         if let Some(pending) = self.pending_confirmation.take() {
             self.status = format!("Denied · {}", pending.summary);
         }
@@ -3886,6 +3891,11 @@ impl DevTuiState {
         {
             marks.push((caret.line, native::GutterMark::Agent));
         }
+        if let Ok(workspace) = self.workspace.try_lock() {
+            for link in workspace.project().graph().entities_for_source(path, None) {
+                marks.push((link.source.start_line, native::GutterMark::Page));
+            }
+        }
         for comment in &self.editor_comments {
             if comment.state == crate::development::EditorCommentState::Open
                 && (path.is_empty() || comment.path == *path)
@@ -4102,31 +4112,163 @@ impl DevTuiState {
         self.refresh_editor_hunks();
     }
 
-    fn jump_page_from_source(&mut self) {
+    pub fn jump_page_from_source(&mut self) {
         let path = self.focused_editor_path.clone();
-        let line = self.focused_editor_line;
+        if path.is_empty() {
+            self.status = "Open a buffer, then gp jumps to App".into();
+            return;
+        }
+        let line = self.focused_editor_line.max(1);
         let entity = self
             .locked(|workspace| {
+                let _ = workspace.project_mut().discover_runtime_links();
                 workspace
                     .project()
                     .graph()
-                    .links
-                    .values()
-                    .flatten()
-                    .find(|link| {
-                        link.source.path == path
-                            && line >= link.source.start_line
-                            && line <= link.source.end_line
-                    })
+                    .entities_for_source(&path, Some(line))
+                    .first()
                     .map(|link| link.entity_id.clone())
             })
             .flatten();
-        if let Some(entity) = entity {
+        if let Some(entity) = entity.clone() {
+            self.pending_page_entity = Some(entity.clone());
+            if self.select_page_entity(&entity) {
+                self.surface = DevSurface::App;
+                self.code_edit_mode = false;
+                self.status = format!("Page bound · entity {entity}");
+            }
+        }
+        let route = inferred_app_path(&path);
+        let Some(base) = self.resolved_app_url() else {
+            if entity.is_none() {
+                self.status = "No App URL · start the detected suite, then gp".into();
+            }
+            return;
+        };
+        let url = join_app_url(&base, route.as_deref());
+        let current = self.browser_workspace.state().url.clone();
+        let current_origin = current.trim_end_matches('/');
+        if entity.is_some()
+            && !current.is_empty()
+            && (current == url || current.starts_with(&url) || url.starts_with(current_origin))
+        {
             self.surface = DevSurface::App;
             self.code_edit_mode = false;
-            self.status = format!("Page bound · entity {entity} · App selected");
-        } else {
-            self.status = "No source/runtime link on this line · :project graph".into();
+            return;
+        }
+        self.auto_checkpoint("before-app-jump");
+        match self.prepare_browser_navigation(&url) {
+            Ok(message) => {
+                self.status = if entity.is_some() {
+                    format!("{message} · will bind page entity")
+                } else {
+                    message
+                };
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    pub fn jump_source_from_page(&mut self) {
+        let Some(entity) = self.browser_workspace.state().selected().cloned() else {
+            self.status = "Select an App entity, then g jumps to source".into();
+            return;
+        };
+        let reference = entity.reference.clone();
+        let name = entity.name.clone();
+        let link = self
+            .locked(|workspace| {
+                let _ = workspace.project_mut().discover_runtime_links();
+                let graph = workspace.project().graph();
+                graph
+                    .best_link(&reference)
+                    .cloned()
+                    .or_else(|| graph.best_link(&name).cloned())
+                    .or_else(|| {
+                        graph
+                            .links
+                            .values()
+                            .flatten()
+                            .find(|link| {
+                                reference.ends_with(&link.entity_id)
+                                    || name.contains(&link.entity_id)
+                            })
+                            .cloned()
+                    })
+            })
+            .flatten();
+        let Some(link) = link else {
+            self.status = format!("No source link for {reference} · :project graph discover");
+            return;
+        };
+        self.open_source_at(&link.source.path, link.source.start_line);
+    }
+
+    pub fn attach_detected_app(&mut self) -> Result<String, String> {
+        let url = self
+            .resolved_app_url()
+            .ok_or_else(|| "No App URL · start the detected suite".to_string())?;
+        self.auto_checkpoint("before-app-attach");
+        self.prepare_browser_navigation(&url)
+    }
+
+    pub fn resolved_app_url(&self) -> Option<String> {
+        self.process_urls
+            .iter()
+            .find(|url| !url.is_empty())
+            .cloned()
+            .or_else(|| {
+                self.workspace.try_lock().ok().and_then(|workspace| {
+                    let detection = workspace.project().detection();
+                    detection.browser_url.clone().or_else(|| {
+                        detection
+                            .local_development_urls
+                            .iter()
+                            .find(|url| !url.is_empty())
+                            .cloned()
+                    })
+                })
+            })
+            .map(|url| join_app_url(&url, None))
+    }
+
+    fn select_page_entity(&mut self, entity_id: &str) -> bool {
+        let index = self
+            .browser_workspace
+            .state()
+            .entities
+            .iter()
+            .position(|entity| {
+                entity.reference == entity_id
+                    || entity.reference.ends_with(entity_id)
+                    || entity.name == entity_id
+                    || (!entity_id.is_empty() && entity.name.contains(entity_id))
+            });
+        let Some(index) = index else {
+            return false;
+        };
+        self.browser_workspace.state_mut().selected_entity = Some(index);
+        self.browser = self.browser_workspace_summary();
+        true
+    }
+
+    fn open_source_at(&mut self, path: &str, line: u32) {
+        match self.open_path(path) {
+            Ok(_) => {
+                let focused = self.focused_editor_path.clone();
+                let _ = self.set_editor_cursor(
+                    &focused,
+                    crate::development::TextPosition {
+                        line: line.max(1),
+                        column: 1,
+                    },
+                    false,
+                );
+                self.refresh_editor_projection();
+                self.ensure_editor_cursor_visible();
+                self.status = format!("Source · {path}:{line}");
+            }
+            Err(error) => self.status = format!("Source jump failed: {error}"),
         }
     }
 
@@ -4578,12 +4720,15 @@ impl DevTuiState {
                 .join("\n\n"),
             Err(error) => format!("Task scheduler failed: {error}"),
         };
-        self.processes = workspace
-            .project_mut()
-            .processes()
-            .list_checked()
-            .map(|items| {
-                if items.is_empty() {
+        match workspace.project_mut().processes().list_checked() {
+            Ok(items) => {
+                self.process_urls = items
+                    .iter()
+                    .flat_map(|item| item.detected_urls.iter().cloned())
+                    .collect();
+                self.process_urls.sort();
+                self.process_urls.dedup();
+                self.processes = if items.is_empty() {
                     "No managed terminals. Start the detected development command from More.".into()
                 } else {
                     items
@@ -4608,9 +4753,13 @@ impl DevTuiState {
                         })
                         .collect::<Vec<_>>()
                         .join("\n\n")
-                }
-            })
-            .unwrap_or_else(|error| format!("Process state failed: {error}"));
+                };
+            }
+            Err(error) => {
+                self.process_urls.clear();
+                self.processes = format!("Process state failed: {error}");
+            }
+        }
         let buffers = workspace.project().buffers().cloned().collect::<Vec<_>>();
         self.editor = if buffers.is_empty() {
             "No file open. Select a file below and press Enter to open the full-screen editor."
@@ -5028,6 +5177,12 @@ impl DevTuiState {
                         })
                         .collect();
                     self.browser_workspace.replace_entities(revision, entities);
+                    if let Some(entity) = self.pending_page_entity.clone()
+                        && self.select_page_entity(&entity)
+                    {
+                        self.pending_page_entity = None;
+                        self.status = format!("Page bound · {entity}");
+                    }
                 }
             }
             "glass.browser.targets" => {
@@ -6337,6 +6492,83 @@ mod tests {
             });
         let marks = state.editor_gutter_marks();
         assert!(marks.contains(&(4, native::GutterMark::Comment)));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn page_gutter_marks_graph_linked_handlers() {
+        let root = std::env::temp_dir().join(format!("glass-page-gutter-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/button.tsx"), "export function Pay() {}\n")
+            .expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .link_runtime_source(
+                "action.checkout.submit",
+                "src/button.tsx",
+                1,
+                1,
+                crate::development::LinkProvenance::ExplicitMarker,
+                "test link",
+                1.0,
+                crate::development::Actor::local(),
+            )
+            .expect("link source");
+        state.focused_editor_path = "src/button.tsx".into();
+        let marks = state.editor_gutter_marks();
+        assert!(marks.contains(&(1, native::GutterMark::Page)));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn gp_navigates_to_the_inferred_app_route() {
+        let root = std::env::temp_dir().join(format!("glass-gp-app-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.focused_editor_path = "app/settings/page.tsx".into();
+        state.focused_editor_line = 1;
+        state.process_urls = vec!["http://localhost:3000/".into()];
+        state.jump_page_from_source();
+        assert_eq!(
+            state.pending_browser_navigation.as_deref(),
+            Some("http://localhost:3000/settings")
+        );
+        assert_eq!(state.surface, DevSurface::App);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn g_on_app_opens_the_linked_source() {
+        let root = std::env::temp_dir().join(format!("glass-app-source-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(
+            root.join("src/button.tsx"),
+            "<button data-glass-entity=\"action.checkout.submit\">Pay</button>\n",
+        )
+        .expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.files = vec!["src/button.tsx".into()];
+        state.browser_workspace.replace_entities(
+            1,
+            vec![BrowserWorkspaceEntity {
+                reference: "action.checkout.submit".into(),
+                role: "button".into(),
+                name: "Pay".into(),
+                actionable: true,
+                revision: 1,
+            }],
+        );
+        state.browser_workspace.state_mut().selected_entity = Some(0);
+        state.jump_source_from_page();
+        assert_eq!(state.focused_editor_path, "src/button.tsx");
+        assert_eq!(state.focused_editor_line, 1);
+        assert!(state.code_edit_mode);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

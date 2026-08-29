@@ -692,6 +692,106 @@ pub fn review_object(
     lines.join("\n")
 }
 
+/// Infer a web route from a source path such as `app/settings/page.tsx`.
+pub fn inferred_app_path(source_path: &str) -> Option<String> {
+    let normalized = source_path.replace('\\', "/");
+    let stem = strip_web_extension(&normalized)?;
+    if let Some(rest) = strip_dir_prefix(stem, "src/app").or_else(|| strip_dir_prefix(stem, "app"))
+    {
+        return app_router_path(rest);
+    }
+    if let Some(rest) =
+        strip_dir_prefix(stem, "src/pages").or_else(|| strip_dir_prefix(stem, "pages"))
+    {
+        return pages_router_path(rest);
+    }
+    strip_dir_prefix(stem, "src/routes").map(slash_path)
+}
+
+/// Join a detected origin with an inferred route.
+pub fn join_app_url(base: &str, route: Option<&str>) -> String {
+    let origin = base.trim().trim_end_matches('/');
+    match route
+        .map(str::trim)
+        .filter(|route| !route.is_empty() && *route != "/")
+    {
+        None => origin.to_string(),
+        Some(path) => {
+            let path = if path.starts_with('/') {
+                path
+            } else {
+                return origin.to_string();
+            };
+            format!("{origin}{path}")
+        }
+    }
+}
+
+fn strip_web_extension(path: &str) -> Option<&str> {
+    for extension in [".tsx", ".ts", ".jsx", ".js", ".vue", ".svelte", ".html"] {
+        if let Some(stem) = path.strip_suffix(extension) {
+            return Some(stem);
+        }
+    }
+    None
+}
+
+fn strip_dir_prefix<'a>(path: &'a str, directory: &str) -> Option<&'a str> {
+    let prefix = format!("{directory}/");
+    if let Some(rest) = path.strip_prefix(&prefix) {
+        return Some(rest);
+    }
+    let needle = format!("/{prefix}");
+    path.find(&needle)
+        .map(|index| &path[index + directory.len() + 2..])
+}
+
+fn app_router_path(rest: &str) -> Option<String> {
+    let rest = rest
+        .trim_end_matches("/page")
+        .trim_end_matches("/route")
+        .trim_end_matches("/layout")
+        .trim_end_matches("/default")
+        .trim_end_matches("/loading")
+        .trim_end_matches("/error");
+    let segments = rest
+        .split('/')
+        .filter(|segment| {
+            !segment.is_empty()
+                && !segment.starts_with('(')
+                && !segment.starts_with('@')
+                && *segment != "page"
+                && !(segment.starts_with('[') && segment.ends_with(']'))
+        })
+        .collect::<Vec<_>>();
+    Some(if segments.is_empty() {
+        "/".into()
+    } else {
+        format!("/{}", segments.join("/"))
+    })
+}
+
+fn pages_router_path(rest: &str) -> Option<String> {
+    if rest == "_app" || rest == "_document" || rest.starts_with("api/") {
+        return None;
+    }
+    if rest == "index" {
+        return Some("/".into());
+    }
+    if let Some(parent) = rest.strip_suffix("/index") {
+        return Some(slash_path(parent));
+    }
+    Some(slash_path(rest))
+}
+
+fn slash_path(rest: &str) -> String {
+    if rest.is_empty() {
+        "/".into()
+    } else {
+        format!("/{}", rest.trim_matches('/'))
+    }
+}
+
 /// Parse LSP `textDocument/inlayHint` results into one-based line suffixes.
 pub fn parse_inlay_hints(value: &serde_json::Value) -> Vec<(u32, String)> {
     let items = value
@@ -1302,5 +1402,31 @@ mod tests {
         let source = "fn hello_world() {}\nfn hello_";
         let ghost = local_fim(source, source.len()).expect("fim");
         assert_eq!(ghost, "world");
+    }
+
+    #[test]
+    fn inferred_app_path_reads_app_and_pages_routes() {
+        assert_eq!(
+            inferred_app_path("app/settings/page.tsx").as_deref(),
+            Some("/settings")
+        );
+        assert_eq!(
+            inferred_app_path("src/app/(dashboard)/orders/[id]/page.tsx").as_deref(),
+            Some("/orders")
+        );
+        assert_eq!(inferred_app_path("pages/index.tsx").as_deref(), Some("/"));
+        assert_eq!(
+            inferred_app_path("src/pages/account/billing.tsx").as_deref(),
+            Some("/account/billing")
+        );
+        assert_eq!(inferred_app_path("src/main.rs"), None);
+        assert_eq!(
+            join_app_url("http://localhost:3000/", Some("/settings")),
+            "http://localhost:3000/settings"
+        );
+        assert_eq!(
+            join_app_url("http://127.0.0.1:5173", Some("/")),
+            "http://127.0.0.1:5173"
+        );
     }
 }

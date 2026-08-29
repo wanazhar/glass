@@ -901,13 +901,13 @@ fn help_content(surface: DevSurface) -> String {
             "AGENT\n  Enter    start or continue a conversation\n  Shift-Enter  newline · Tab @mention\n  ↑        previous prompt\n  Ctrl-D   steer the active turn\n  Ctrl-X   abort the selected agent\n  :agent setup / doctor / new\n  :review  show/accept/ship · :task crew GOAL\n  :harness list / start NAME"
         }
         DevSurface::Code => {
-            "CODE\n  Ctrl-P   fuzzy-open a file\n  ↑/↓      select a file\n  Enter    open full-screen editor\n  i        edit the focused buffer\n  [ / ]    cycle buffers\n  Ctrl-S   save · Ctrl-Z/Y undo/redo\n  Alt-A    ask Pi with this buffer\n  :open PATH · :project search QUERY"
+            "CODE\n  Ctrl-P   fuzzy-open a file\n  ↑/↓      select a file\n  Enter    open full-screen editor\n  i        edit the focused buffer\n  gp       jump this handler to App\n  [ / ]    cycle buffers\n  Ctrl-S   save · Ctrl-Z/Y undo/redo\n  Alt-A    ask Pi with this buffer\n  :open PATH · :project search QUERY"
         }
         DevSurface::App => {
-            "APP\n  :browser start / navigate URL / observe\n  T        target picker\n  Enter    activate selected entity\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n  :browser view  toggle live view"
+            "APP\n  :browser start / navigate URL / observe\n  T        target picker\n  Enter    activate selected entity\n  g        jump entity to source\n  Alt-←/→  back / forward\n  Ctrl-R   reload\n  :browser view  toggle live view"
         }
         DevSurface::Terminal => {
-            "TERMINAL\n  s        start the detected suite\n  a        surface actions\n  :process start NAME COMMAND\n  :process logs / stop / ports"
+            "TERMINAL\n  s        start the detected suite\n  u        attach detected URL\n  a        surface actions\n  :process start NAME COMMAND\n  :process logs / stop / ports"
         }
         DevSurface::Git => {
             "GIT\n  ↑/↓      changed file\n  Enter/d  diff\n  :git status / stage / commit\n  :github review / ship"

@@ -10,9 +10,9 @@ checked-in source checkout. Checkout-only TUI/editor/collaboration behavior is
 current source, not an immutable published-release claim.
 
 
-Published docs.rs pages match the crate version they were built from (`0.3.13`
-at last publication). They are not a substitute for this source-behavior
-reference.
+Published docs.rs pages match the crate version they were built from
+(`0.3.14` at last publication). They are not a substitute for this
+source-behavior reference.
 
 
 ## Interfaces

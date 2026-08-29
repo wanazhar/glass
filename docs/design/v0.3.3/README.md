@@ -47,8 +47,8 @@ metadata.
 Interaction references applied to the final design:
 
 - [Claude Code interactive mode](https://code.claude.com/docs/en/interactive-mode):
-  persistent composer, `?` help, `Ctrl-L` redraw, visible background work,
-  and mouse-optional operation;
+  persistent composer, `?` help, keyboard focus/navigation, visible background
+  work, and mouse-optional operation;
 - [Codex CLI](https://developers.openai.com/codex/cli/features) and its
   [developer commands](https://developers.openai.com/codex/cli/slash-commands):
   command discovery, status composition, bounded background terminals, and

@@ -1,4 +1,8 @@
-//! Session-scoped todos for the current Glass Agent conversation.
+//! Workspace-local todos for the Glass Agent checklist.
+//!
+//! The list persists at `.glass/todos/session.json` and is used by Agent and
+//! Tasks (`glass.todo.*`). It is not the overnight [`crate::tasks`] DAG or a
+//! `glass.task.crew` wake.
 
 use crate::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};

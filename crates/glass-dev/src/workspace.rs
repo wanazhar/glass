@@ -56,7 +56,10 @@ pub struct DevelopmentWorkspace {
     agent_turn_mode: AgentTurnMode,
 }
 
-/// Per-turn composer personality. Ask and Plan are fail-closed for mutations.
+/// Per-turn composer personality for the shared chat dock.
+///
+/// Ask inspects only. Plan writes a bounded numbered plan and does not mutate.
+/// Agent is the default and is the only mode that may edit, run, or act.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentTurnMode {
@@ -1364,6 +1367,7 @@ command = '''{command}'''
             "[package]\nname='crew-trees'\nversion='0.1.0'\n",
         )
         .unwrap();
+        let canonical_root = root.canonicalize().unwrap();
         let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
         workspace
             .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
@@ -1381,7 +1385,11 @@ command = '''{command}'''
             .collect::<Vec<_>>();
         assert_eq!(trees.len(), 2);
         assert_ne!(trees[0], trees[1]);
-        assert!(trees.iter().all(|path| Path::new(path).starts_with(&root)));
+        assert!(
+            trees
+                .iter()
+                .all(|path| Path::new(path).starts_with(&canonical_root))
+        );
         let testers = wake
             .tasks
             .iter()

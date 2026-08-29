@@ -484,7 +484,7 @@ export default function (pi: ExtensionAPI) {
   register("glass_git_pull", "glass.git.pull", "Pull a remote branch", Type.Object({ remote: Type.Optional(Type.String()), branch: Type.Optional(Type.String()) }), true);
   register("glass_git_merge", "glass.git.merge", "Merge a branch into HEAD", Type.Object({ branch: Type.String() }), true);
   register("glass_git_rebase", "glass.git.rebase", "Rebase HEAD onto a branch", Type.Object({ onto: Type.String() }), true);
-  register("glass_todo_list", "glass.todo.list", "List session todos for the current Agent conversation", Type.Object({}));
+  register("glass_todo_list", "glass.todo.list", "List the workspace-local Agent checklist", Type.Object({}));
   register("glass_todo_write", "glass.todo.write", "Replace the session todo list (at most one active item)", Type.Object({ items: Type.Array(Type.Object({ id: Type.String(), title: Type.String(), status: Type.Union([Type.Literal("pending"), Type.Literal("active"), Type.Literal("done")]), surface: Type.Optional(Type.String()) })) }), true);
   register("glass_todo_complete", "glass.todo.complete", "Mark one session todo done", Type.Object({ id: Type.String() }), true);
   register("glass_eval_cancel", "glass.eval.cancel", "Cancel a persistent execution kernel", Type.Object({ name: Type.String() }), true);

@@ -1,4 +1,12 @@
 //! Decomposed full Glass Dev terminal application.
+//!
+//! The event loop keeps overlays above surface keys: quit, editor exit, help,
+//! menus, pickers, recovery, agent approval, mutation confirmation, the
+//! full-screen editor, composer dock, then the command palette. Git workbench
+//! keys stay live while a diff is open, but they do not trap confirm or
+//! palette input. `Ctrl-C` opens quit confirmation from editor input; an
+//! already-open unsaved-exit prompt keeps its save/discard/stay choices. Clean
+//! `Esc` from NORMAL leaves the editor; unsaved work still asks.
 
 mod bindings;
 mod command;

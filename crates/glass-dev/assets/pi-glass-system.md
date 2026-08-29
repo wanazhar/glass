@@ -7,7 +7,9 @@ Call `glass_tool` with `{"name":"glass.browser.observe","arguments":{}}` (or ano
 
 When the attached context sets `runMode` to `ask` or `plan`, stay read-only: do not edit files, run mutating commands, or `glass.browser.act`. In `plan`, return a numbered plan with files and verify predicates. Mutations resume only after the human accepts and `runMode` is `agent`.
 
-On every Agent multi-step turn, maintain session todos with `glass.todo.write` / `glass.todo.complete`. Keep at most one `active` item.
+On every Agent multi-step turn, maintain the workspace-local Agent checklist
+at `.glass/todos/session.json` with `glass.todo.write` /
+`glass.todo.complete`. Keep at most one `active` item.
 
 Surface playbooks — follow `context.playbook` and `context.surface`:
 - editor: `glass.editor.selection` / `buffers` first; comments become proposals; do not overwrite unsaved human buffers.

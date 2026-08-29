@@ -24,13 +24,13 @@ runtime API is documented at
 [`docs.rs/glass-dev`](https://docs.rs/glass-dev).
 
 docs.rs renders published Rust API artifacts. This guide follows the checked-in
-source, which is version `0.3.13` with current-source work; published `0.3.12`
-docs.rs pages are immutable release evidence. Verify newer source-level
-surfaces, including `browser_workspace`, against this checkout rather than
-assuming they were part of the published release. Some benchmark-style Cargo
-examples use development-only dependencies and are not all listed in the
-docs.rs example index; the checked-in examples catalog remains the source-level
-inventory.
+source, which is version `0.3.13` with current-source work. Published docs.rs
+pages match the crate version they were built from (`0.3.13` at last
+publication). Verify newer source-level surfaces, including `todos` and
+`AgentTurnMode`, against this checkout rather than assuming they were part of
+the last published API page. Some benchmark-style Cargo examples use
+development-only dependencies and are not all listed in the docs.rs example
+index; the checked-in examples catalog remains the source-level inventory.
 
 
 ## Dependency and features
@@ -53,9 +53,10 @@ glass-dev = "0.3"
 ```
 
 Use `glass_dev::…` for project/editor/process/LSP, resident Pi, harness,
-collaboration, Git, and TUI APIs. `glass-dev` depends on `glass-browser`; the
-browser crate does not depend on `glass-dev`, so browser-only embeddings do not
-acquire the development runtime.
+collaboration, workspace-local Agent todos, Ask/Plan/Agent turn mode, and TUI
+APIs.
+`glass-dev` depends on `glass-browser`; the browser crate does not depend on
+`glass-dev`, so browser-only embeddings do not acquire the development runtime.
 
 | `glass-browser` feature | Default | Purpose |
 |---|---:|---|
@@ -263,6 +264,11 @@ managed SDK, authentication, provider, and session state. `PiSessionRequest`
 is the native resident-session protocol used by the development agent runtime;
 it is distinct from the CLI's legacy one-shot `PiHarness` RPC adapter.
 
+`AgentTurnMode` is the per-turn composer personality: Ask, Plan, or Agent
+(default Agent). Ask and Plan are fail-closed for mutations. `SessionTodo`,
+`SessionTodoList`, and `TodoStatus` are the workspace-local Agent checklist
+persisted at `.glass/todos/session.json`. They are not the overnight task DAG.
+
 ## Backends, surfaces, and presentation
 
 - `browser_backend` defines semantic requests, responses, profiles,
@@ -362,10 +368,12 @@ Pi, Neovim, Git, and collaboration belong to `glass-dev`.
 | `pi_runtime` | Managed Pi runtime readiness and sessions |
 | `tasks` | Task scheduling, retry, evidence, and verification requirements |
 | `testing` | Test execution and result collection |
+| `todos` | Workspace-local Agent checklist persisted at `.glass/todos/session.json` (`glass.todo.*`); not the overnight DAG |
+| `fim` | Configured fill-in-the-middle provider for editor ghosts |
 | `tools` | Governed development-tool routing |
 | `trust` | Workspace trust decisions and persistence |
 | `tui` | Resident development terminal application and surface routing |
-| `workspace` | Workspace ownership and shared handles |
+| `workspace` | Workspace ownership, shared handles, and per-turn Ask/Plan/Agent mode |
 
 ## Errors and privacy
 

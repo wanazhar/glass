@@ -2221,7 +2221,9 @@ async fn popup_topology_that_never_becomes_quiet_fails_closed_at_deadline() {
         moving_topology.lock().await.sequence += 1;
         let _ = movement_started_tx.send(());
         loop {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            // Keep the sequence changing independently of platform timer
+            // granularity so the waiter cannot observe a false quiet window.
+            tokio::task::yield_now().await;
             moving_topology.lock().await.sequence += 1;
         }
     });
@@ -2239,6 +2241,7 @@ async fn popup_topology_that_never_becomes_quiet_fails_closed_at_deadline() {
     .unwrap_err();
 
     movement.abort();
+    let _ = movement.await;
     assert_eq!(error.kind, PopupClickErrorKind::TopologyLagged);
     assert!(started.elapsed() >= Duration::from_millis(55));
 }

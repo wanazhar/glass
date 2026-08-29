@@ -610,8 +610,8 @@ fn parse_status(output: &str) -> GitResult<GitStatus> {
             let entry = GitStatusEntry {
                 path: fields[8].to_string(),
                 original_path: None,
-                index_status: xy.first().copied().unwrap_or(b'.') as char,
-                worktree_status: xy.get(1).copied().unwrap_or(b'.') as char,
+                index_status: porcelain_flag(xy.first().copied()),
+                worktree_status: porcelain_flag(xy.get(1).copied()),
                 untracked: false,
             };
             if record.starts_with("u ") {
@@ -632,13 +632,20 @@ fn parse_status(output: &str) -> GitResult<GitStatus> {
             status.entries.push(GitStatusEntry {
                 path: fields[9].to_string(),
                 original_path: Some(original_path),
-                index_status: xy.first().copied().unwrap_or(b'.') as char,
-                worktree_status: xy.get(1).copied().unwrap_or(b'.') as char,
+                index_status: porcelain_flag(xy.first().copied()),
+                worktree_status: porcelain_flag(xy.get(1).copied()),
                 untracked: false,
             });
         }
     }
     Ok(status)
+}
+
+fn porcelain_flag(flag: Option<u8>) -> char {
+    match flag.unwrap_or(b'.') {
+        b'.' => ' ',
+        other => other as char,
+    }
 }
 
 fn parse_worktrees(output: &str) -> GitResult<Vec<GitWorktree>> {
@@ -756,6 +763,17 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_REPOSITORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn porcelain_v2_dot_means_unstaged_not_staged() {
+        let status = parse_status(
+            "# branch.head main\x001 .M N... 100644 100644 100644 0 0 notes.txt\x00? extra.rs\x00",
+        )
+        .unwrap();
+        assert_eq!(status.entries[0].index_status, ' ');
+        assert_eq!(status.entries[0].worktree_status, 'M');
+        assert!(!status.entries[0].untracked);
+    }
 
     #[test]
     fn sorted_entries_rank_conflicts_before_unstaged_and_untracked() {

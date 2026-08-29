@@ -1,4 +1,5 @@
 use super::command;
+use super::editor::EditorMode;
 use super::file_view;
 use super::state::{DevSurface, DevTuiState, ResponsiveClass};
 use ratatui::Frame;
@@ -414,17 +415,33 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         None
     };
 
+    let insert = matches!(
+        state.editor_engine.mode,
+        EditorMode::Insert | EditorMode::Select
+    );
     let (editor_help, exit_help) = if area.width < 40 {
-        ("Arrows · Alt-W · Ctrl-S", "Esc exit · Ctrl-C quit")
+        (
+            "Arrows · Ctrl-S",
+            if insert {
+                "Esc normal"
+            } else {
+                "Esc exit · Ctrl-C quit"
+            },
+        )
+    } else if insert {
+        (
+            "Esc normal · Ctrl-S save · Alt-A / Ctrl-L ask",
+            "Esc returns to NORMAL · Esc again leaves",
+        )
     } else if area.width < 70 {
         (
-            "Arrows · Shift select · Alt-W wrap · Ctrl-S save",
-            "Esc exit · Ctrl-C quit",
+            "hjkl · i insert · Ctrl-S save",
+            "Esc leaves the editor · Ctrl-C quits Glass",
         )
     } else {
         (
-            "Esc normal · hjkl · dif/dia · gd ]c · i insert · Ctrl-S save · Alt-A / Ctrl-L ask",
-            "Esc exit editor · exit prompt protects unsaved work",
+            "hjkl · i insert · dif/dia · Ctrl-S save · Alt-A / Ctrl-L ask",
+            "Esc leaves the editor · unsaved work asks first",
         )
     };
     if state.composer_mode {
@@ -1366,11 +1383,14 @@ fn render_panel(
 }
 
 fn stack_for_phone(state: &DevTuiState, area: Rect) -> bool {
-    area.width < 84
-        || matches!(
-            state.responsive_class(area.width, area.height),
-            ResponsiveClass::Phone
-        )
+    match state.responsive_class(
+        state.terminal_width.max(area.width),
+        state.terminal_height.max(area.height),
+    ) {
+        ResponsiveClass::Phone => true,
+        ResponsiveClass::Compact => area.width < 70,
+        ResponsiveClass::Desktop => false,
+    }
 }
 
 fn status_color(line: &str) -> Color {
@@ -1885,12 +1905,22 @@ fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 } else {
                     " "
                 };
+                let git = state
+                    .git_entries
+                    .iter()
+                    .find(|entry| entry.path == *path || path.ends_with(&entry.path));
                 let icon = if path.ends_with('/') {
-                    "▾ "
+                    "▾ ".into()
+                } else if let Some(entry) = git {
+                    if entry.untracked {
+                        "?? ".into()
+                    } else {
+                        format!("{}{} ", entry.index_status, entry.worktree_status)
+                    }
                 } else if focused {
-                    "▸ "
+                    "▸ ".into()
                 } else {
-                    "· "
+                    "  ".into()
                 };
                 let style = if selected {
                     Style::default()
@@ -2561,13 +2591,13 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
                         .filter(|entry| entry.untracked)
                         .count();
                     if conflicts > 0 {
-                        title.push_str(&format!("· {conflicts} conflict "));
+                        title.push_str(&format!("· {conflicts}! "));
                     }
                     if unstaged > 0 {
-                        title.push_str(&format!("· {unstaged} unstaged "));
+                        title.push_str(&format!("· {unstaged}M "));
                     }
                     if untracked > 0 {
-                        title.push_str(&format!("· {untracked} untracked "));
+                        title.push_str(&format!("· {untracked}? "));
                     }
                     title
                 },
@@ -4532,10 +4562,10 @@ mod tests {
         assert!(output.contains("GLASS DEV · EDITOR"));
         assert!(output.contains("SOURCE"));
         assert!(
-            output.contains("Esc exit editor"),
+            output.contains("Esc normal") || output.contains("Esc leaves"),
             "rendered output: {output:?}"
         );
-        assert!(output.contains("Ctrl-S save"));
+        assert!(output.contains("Ctrl-S"));
 
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -4620,7 +4650,10 @@ mod tests {
         state.status = "EDITING".into();
         state.set_terminal_size(32, 16);
         let narrow_output = rendered(&state, 32, 16);
-        assert!(narrow_output.contains("Esc exit"));
+        assert!(
+            narrow_output.contains("Esc"),
+            "narrow editor footer should keep Esc: {narrow_output:?}"
+        );
 
         let backend = TestBackend::new(32, 16);
         let mut terminal = Terminal::new(backend).unwrap();

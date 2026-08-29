@@ -388,6 +388,7 @@ pub struct DevTuiState {
     pub git_behind: u64,
     pub git_conflicts: Vec<String>,
     pub github_review_requested: bool,
+    pub pending_trust: Option<crate::LocalTrustDecision>,
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
@@ -671,6 +672,7 @@ impl DevTuiState {
             git_behind: 0,
             git_conflicts: Vec::new(),
             github_review_requested: false,
+            pending_trust: None,
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
             selected_agent: None,
@@ -3619,18 +3621,7 @@ impl DevTuiState {
                 _ => None,
             };
             if let Some(decision) = decision {
-                match self
-                    .workspace
-                    .try_lock()
-                    .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
-                {
-                    Ok(trust) => {
-                        self.surface = DevSurface::Agent;
-                        self.snapshot_trust_label = trust.label().into();
-                        self.status = format!("Workspace opened with {} authority", trust.label());
-                    }
-                    Err(error) => self.status = format!("Trust decision failed: {error}"),
-                }
+                self.queue_trust(decision);
                 return;
             }
         }
@@ -3641,17 +3632,7 @@ impl DevTuiState {
                 _ => None,
             };
             if let Some(decision) = decision {
-                match self
-                    .workspace
-                    .try_lock()
-                    .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
-                {
-                    Ok(trust) => {
-                        self.snapshot_trust_label = trust.label().into();
-                        self.status = format!("Workspace opened with {} authority", trust.label());
-                    }
-                    Err(error) => self.status = format!("Trust decision failed: {error}"),
-                }
+                self.queue_trust(decision);
                 return;
             }
         }
@@ -3689,8 +3670,7 @@ impl DevTuiState {
                 _ => None,
             };
             if let Some(surface) = surface {
-                self.surface = surface;
-                self.status = format!("{} selected", surface.label());
+                self.show_surface(surface);
                 return;
             }
         }
@@ -3706,8 +3686,7 @@ impl DevTuiState {
             _ => None,
         };
         if let Some(surface) = surface {
-            self.surface = surface;
-            self.status = format!("{} selected", surface.label());
+            self.show_surface(surface);
         } else if self.surface == DevSurface::Agent && self.snapshot_trust_label != "untrusted" {
             self.open_composer();
             self.insert_composer_text(&character.to_string());
@@ -3776,6 +3755,53 @@ impl DevTuiState {
         }
     }
 
+    pub fn show_surface(&mut self, surface: DevSurface) {
+        self.surface = surface;
+        self.status = format!("{} selected", surface.label());
+        if surface == DevSurface::Code && !self.code_edit_mode && !self.files.is_empty() {
+            self.open_selected_file();
+        }
+    }
+
+    pub fn queue_trust(&mut self, decision: crate::LocalTrustDecision) {
+        if self.apply_trust(decision) {
+            return;
+        }
+        self.pending_trust = Some(decision);
+        self.status = "Trust queued · applying when the workspace is free".into();
+    }
+
+    fn apply_trust(&mut self, decision: crate::LocalTrustDecision) -> bool {
+        match self
+            .workspace
+            .try_lock()
+            .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
+        {
+            Ok(trust) => {
+                if self.surface == DevSurface::Trust {
+                    self.surface = DevSurface::Agent;
+                }
+                self.snapshot_trust_label = trust.label().into();
+                self.status = format!("Workspace opened with {} authority", trust.label());
+                true
+            }
+            Err(error) if error.to_string().contains("workspace busy") => false,
+            Err(error) => {
+                self.status = format!("Trust decision failed: {error}");
+                true
+            }
+        }
+    }
+
+    pub fn flush_pending_trust(&mut self) {
+        let Some(decision) = self.pending_trust else {
+            return;
+        };
+        if self.apply_trust(decision) {
+            self.pending_trust = None;
+        }
+    }
+
     pub fn next_surface(&mut self) {
         let surfaces: &[DevSurface] = if self
             .responsive_class(self.terminal_width, self.terminal_height)
@@ -3789,8 +3815,7 @@ impl DevTuiState {
             .iter()
             .position(|surface| *surface == self.surface)
             .unwrap_or(0);
-        self.surface = surfaces[(index + 1) % surfaces.len()];
-        self.status = format!("{} selected", self.surface.label());
+        self.show_surface(surfaces[(index + 1) % surfaces.len()]);
     }
 
     pub fn scroll_surface(&mut self, delta: i32) {
@@ -3841,6 +3866,9 @@ impl DevTuiState {
         self.selected_file = (self.selected_file as i32 + delta)
             .clamp(0, self.files.len().saturating_sub(1) as i32)
             as usize;
+        if !self.code_edit_mode {
+            self.open_selected_file();
+        }
     }
     pub fn move_git_selection(&mut self, delta: i32) {
         if self.git_entries.is_empty() {
@@ -4776,6 +4804,10 @@ impl DevTuiState {
                 if self.editor_engine.clear_extra_cursors() {
                     self.status = "NORMAL · extra carets cleared".into();
                     self.refresh_editor_projection();
+                    return;
+                }
+                if !self.focused_editor_dirty {
+                    self.close_code_edit();
                     return;
                 }
                 self.request_editor_exit();
@@ -6765,8 +6797,7 @@ impl DevTuiState {
             .iter()
             .position(|surface| *surface == self.surface)
             .unwrap_or(0);
-        self.surface = surfaces[(index + surfaces.len() - 1) % surfaces.len()];
-        self.status = format!("{} selected", self.surface.label());
+        self.show_surface(surfaces[(index + surfaces.len() - 1) % surfaces.len()]);
     }
 
     /// Apply one background snapshot without touching UI-only fields.

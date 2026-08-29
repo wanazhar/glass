@@ -199,11 +199,13 @@ fn navigation_surface_at(
 fn apply_select(state: &mut DevTuiState, hit: &HitRegion) {
     match hit {
         HitRegion::Surface(surface) => {
-            state.surface = *surface;
-            state.status = format!("{} selected", surface.label());
+            state.show_surface(*surface);
         }
         HitRegion::File(index) => {
             state.selected_file = *index;
+            if !state.code_edit_mode {
+                state.open_selected_file();
+            }
         }
         HitRegion::Git(index) => {
             state.selected_git_file = *index;
@@ -287,7 +289,7 @@ fn apply_primary(state: &mut DevTuiState, hit: &HitRegion) -> bool {
             true
         }
         HitRegion::Surface(surface) => {
-            state.surface = *surface;
+            state.show_surface(*surface);
             true
         }
         _ => apply_click(state, hit),

@@ -360,11 +360,6 @@ pub fn run(
                         state.handle_editor_exit_key(key.code);
                     } else if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
-                        && state.code_edit_mode
-                    {
-                        state.request_editor_exit();
-                    } else if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         state.request_quit();
                     } else if state.help_open {
@@ -1070,6 +1065,7 @@ pub fn run(
                 HerdrEvent::Connected | HerdrEvent::Stopped => {}
             }
         }
+        state.flush_pending_trust();
         if state.git_diff_requested {
             state.git_diff_requested = false;
             state.queue_git_diff(&mut worker);

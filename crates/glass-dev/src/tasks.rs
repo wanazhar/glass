@@ -186,6 +186,45 @@ fn default_role() -> String {
     "developer".into()
 }
 
+fn crew_spec(
+    role: &str,
+    goal: &str,
+    worktree: Option<PathBuf>,
+    unrestricted: bool,
+    verification: VerificationRequirement,
+    dependencies: Vec<TaskId>,
+) -> TaskSpec {
+    let mut spec = TaskSpec::new(format!("{role}: {goal}"), crew_prompt(role, goal));
+    spec.role = role.to_string();
+    spec.goal = goal.to_string();
+    spec.worktree = worktree;
+    spec.unrestricted = unrestricted;
+    spec.verification = verification;
+    spec.dependencies = dependencies;
+    spec
+}
+
+fn crew_prompt(role: &str, goal: &str) -> String {
+    match role {
+        "architect" => format!(
+            "You are the architect for: {goal}\nWrite a bounded plan, file-level proposals, and UI verify predicates. Do not implement production code."
+        ),
+        "implementer" => format!(
+            "You are the implementer for: {goal}\nFollow the architect plan. Default file writes are editor proposals; do not write through unless unrestricted mode is on. Keep the change minimal."
+        ),
+        "tester" => format!(
+            "You are the tester for: {goal}\nRun the detected project suite. Do not edit production code. Record failing tests as evidence."
+        ),
+        "reviewer" => format!(
+            "You are the reviewer for: {goal}\nYou cannot write, patch, or save files. Inspect the implementer's proposals and return accept or reject with file-level reasons."
+        ),
+        "browser" => format!(
+            "You are the browser operator for: {goal}\nDrive the running app. Do not touch src/. Prove the UI with causal verify predicates and attach evidence."
+        ),
+        other => format!("You are {other} for: {goal}"),
+    }
+}
+
 impl TaskSpec {
     pub fn new(title: impl Into<String>, prompt: impl Into<String>) -> Self {
         let title = title.into();
@@ -353,6 +392,75 @@ impl TaskScheduler {
         );
         self.schedule_ready(agents)?;
         Ok(id)
+    }
+
+    /// Queue the overnight factory crew: architect → implementer → tester / reviewer, then browser.
+    pub fn create_crew<B: TaskAgentBackend>(
+        &mut self,
+        agents: &mut B,
+        goal: &str,
+        worktree: Option<PathBuf>,
+        unrestricted: bool,
+    ) -> DevelopmentResult<Vec<TaskId>> {
+        validate_text("crew goal", goal)?;
+        let architect = self.create(
+            agents,
+            crew_spec(
+                "architect",
+                goal,
+                worktree.clone(),
+                false,
+                VerificationRequirement::Settled,
+                Vec::new(),
+            ),
+        )?;
+        let implementer = self.create(
+            agents,
+            crew_spec(
+                "implementer",
+                goal,
+                worktree.clone(),
+                unrestricted,
+                VerificationRequirement::Inferred,
+                vec![architect.clone()],
+            ),
+        )?;
+        let tester = self.create(
+            agents,
+            crew_spec(
+                "tester",
+                goal,
+                worktree.clone(),
+                false,
+                VerificationRequirement::Inferred,
+                vec![implementer.clone()],
+            ),
+        )?;
+        let reviewer = self.create(
+            agents,
+            crew_spec(
+                "reviewer",
+                goal,
+                worktree.clone(),
+                false,
+                VerificationRequirement::Settled,
+                vec![implementer.clone()],
+            ),
+        )?;
+        let browser = self.create(
+            agents,
+            crew_spec(
+                "browser",
+                goal,
+                None,
+                false,
+                VerificationRequirement::BrowserWorkflow {
+                    assertion: goal.to_string(),
+                },
+                vec![tester.clone()],
+            ),
+        )?;
+        Ok(vec![architect, implementer, tester, reviewer, browser])
     }
 
     pub fn refresh<B: TaskAgentBackend>(&mut self, agents: &mut B) -> DevelopmentResult<()> {
@@ -1421,6 +1529,39 @@ mod tests {
             scheduler.tasks[&research].snapshot.verification,
             VerificationRequirement::Settled
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn factory_crew_queues_architect_implementer_tester_reviewer_and_browser() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let ids = scheduler
+            .create_crew(&mut agents, "add settings toggle", None, false)
+            .unwrap();
+        assert_eq!(ids.len(), 5);
+        let snapshots = ids
+            .iter()
+            .map(|id| scheduler.snapshot(&mut agents, id).unwrap())
+            .collect::<Vec<_>>();
+        let roles = snapshots
+            .iter()
+            .map(|snapshot| snapshot.role.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            ["architect", "implementer", "tester", "reviewer", "browser"]
+        );
+        assert!(snapshots[1].dependencies.contains(&ids[0]));
+        assert!(snapshots[2].dependencies.contains(&ids[1]));
+        assert!(snapshots[3].dependencies.contains(&ids[1]));
+        assert!(snapshots[4].dependencies.contains(&ids[2]));
+        assert!(!snapshots[3].unrestricted);
+        assert!(snapshots[0].prompt.contains("Do not implement"));
+        assert!(snapshots[3].prompt.contains("cannot write"));
+        assert!(matches!(
+            snapshots[4].verification,
+            VerificationRequirement::BrowserWorkflow { .. }
+        ));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

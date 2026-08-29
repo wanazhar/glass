@@ -187,6 +187,46 @@ impl DevelopmentWorkspace {
         self.tasks.create(&mut self.agents, spec)
     }
 
+    /// Queue the overnight factory crew in a confined worktree when Git is available.
+    pub fn create_crew(&mut self, goal: &str) -> DevelopmentResult<Vec<TaskSnapshot>> {
+        if !self.trust.permits_project_execution() {
+            return Err(crate::development::DevelopmentError::Conflict(
+                "task execution is blocked until the workspace is trusted".into(),
+            ));
+        }
+        let checkpoint_name = {
+            let mut name = format!("before-crew:{goal}");
+            name.truncate(256);
+            name
+        };
+        let _ = self
+            .project
+            .create_editor_checkpoint(checkpoint_name, crate::development::Actor::local());
+        let worktree = self.prepare_crew_worktree(goal)?;
+        let unrestricted = self.agents.default_unrestricted();
+        let ids = self
+            .tasks
+            .create_crew(&mut self.agents, goal, worktree, unrestricted)?;
+        ids.into_iter()
+            .map(|id| self.tasks.snapshot(&mut self.agents, &id))
+            .collect()
+    }
+
+    fn prepare_crew_worktree(&mut self, goal: &str) -> DevelopmentResult<Option<PathBuf>> {
+        let slug = crew_slug(goal);
+        let parent = self.root.join(".glass").join("worktrees");
+        std::fs::create_dir_all(&parent)?;
+        let path = parent.join(&slug);
+        if let Some(git) = self.git.as_ref() {
+            let branch = format!("glass/crew/{slug}");
+            if git.create_worktree(&path, &branch, true).is_ok() {
+                return Ok(Some(path.canonicalize().unwrap_or(path)));
+            }
+        }
+        std::fs::create_dir_all(&path)?;
+        Ok(Some(path.canonicalize().unwrap_or(path)))
+    }
+
     pub fn tasks(&mut self) -> DevelopmentResult<Vec<TaskSnapshot>> {
         let snapshots = self.tasks.list(&mut self.agents)?;
         let mut collected = false;
@@ -655,6 +695,26 @@ impl DevelopmentWorkspace {
         self.trusted_configuration_active = true;
         Ok(())
     }
+}
+
+fn crew_slug(goal: &str) -> String {
+    let mut slug = goal
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() { "crew" } else { slug };
+    let slug = slug.chars().take(24).collect::<String>();
+    format!("{slug}-{}", std::process::id())
 }
 
 fn validate_service_name(name: &str) -> DebugResult<()> {

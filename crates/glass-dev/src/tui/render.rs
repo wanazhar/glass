@@ -893,7 +893,7 @@ fn help_content(surface: DevSurface) -> String {
     let global = "KEYS\n  Ctrl-P   open file\n  Ctrl-K   command palette\n  :        command palette\n  Ctrl-Shift-P  command palette\n  Tab      next surface\n  ←/→      surface\n  ↑/↓      move or scroll\n  Enter    open / run / chat\n  Esc      back\n  ?        help\n  Ctrl-C   quit confirmation";
     let current = match surface {
         DevSurface::Agent | DevSurface::Trust => {
-            "AGENT\n  Enter    start or continue a conversation\n  Shift-Enter  newline in composer\n  ↑        previous prompt\n  Ctrl-D   steer the active turn\n  Ctrl-X   abort the selected agent\n  :agent setup / doctor / new\n  :review  review current changes\n  :harness list / start NAME"
+            "AGENT\n  Enter    start or continue a conversation\n  Shift-Enter  newline in composer\n  ↑        previous prompt\n  Ctrl-D   steer the active turn\n  Ctrl-X   abort the selected agent\n  :agent setup / doctor / new\n  :review  show/accept/ship · :task crew GOAL\n  :harness list / start NAME"
         }
         DevSurface::Code => {
             "CODE\n  Ctrl-P   fuzzy-open a file\n  ↑/↓      select a file\n  Enter    open full-screen editor\n  i        edit the focused buffer\n  [ / ]    cycle buffers\n  Ctrl-S   save · Ctrl-Z/Y undo/redo\n  Alt-A    ask Pi with this buffer\n  :open PATH · :project search QUERY"
@@ -2327,6 +2327,10 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
 
 fn render_git_diff_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     if state.git_diff_open {
+        if state.git_diff.starts_with("REVIEW") {
+            render_panel(frame, area, " REVIEW ", &state.git_diff, ACCENT_BRIGHT);
+            return;
+        }
         let path = state.git_diff_path.as_deref().unwrap_or("WORKTREE");
         frame.render_widget(
             Paragraph::new(file_view::render_diff(path, &state.git_diff))

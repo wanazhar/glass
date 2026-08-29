@@ -101,7 +101,7 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
         label: "Review workspace changes",
         command: "review",
         key: ":",
-        description: "prepare an evidence-aware agent review",
+        description: "open the shippable review object",
     },
     SurfaceAction {
         label: "List external harnesses",
@@ -254,6 +254,12 @@ const TASK_ACTIONS: &[SurfaceAction] = &[
         description: "queue a verified task",
     },
     SurfaceAction {
+        label: "Overnight crew",
+        command: "task crew GOAL",
+        key: ":",
+        description: "queue architect, implementer, tester, reviewer, and browser",
+    },
+    SurfaceAction {
         label: "Cancel task",
         command: "task cancel TASK_ID",
         key: ":",
@@ -303,6 +309,12 @@ const GIT_ACTIONS: &[SurfaceAction] = &[
         command: "github ship TITLE",
         key: ":",
         description: "create a PR after one-use confirmation",
+    },
+    SurfaceAction {
+        label: "Review object",
+        command: "review",
+        key: ":",
+        description: "proposals, last verify, and ship",
     },
 ];
 
@@ -672,27 +684,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         "browser" | "workflow" => execute_browser(state, command, parts.collect()),
         "github" | "gh" => execute_github(state, parts.collect()),
         "harness" => execute_harness(state, parts.collect()),
-        "review" => {
-            let proposals = state
-                .editor_proposals
-                .iter()
-                .map(|item| {
-                    (
-                        item.id.clone(),
-                        item.path.clone(),
-                        format!("{:?}", item.state),
-                    )
-                })
-                .collect::<Vec<_>>();
-            state.editor = super::editor::review_object(
-                &state.github.summary(),
-                &state.github_review,
-                &proposals,
-                state.last_verify.as_deref(),
-            );
-            state.surface = DevSurface::Git;
-            execute_review(state, parts.collect())
-        }
+        "review" => execute_review(state, parts.collect()),
         "debug" => execute_debug(state, parts.collect()),
         "kernel" => execute_kernel(state, parts.collect()),
         "git" => execute_git(state, parts.collect()),
@@ -772,13 +764,51 @@ fn execute_github(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
 }
 
 fn execute_review(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    if parts.iter().any(|part| *part != "changes") {
-        return Err("review accepts no arguments (or the alias `review changes`)".into());
+    match parts.first().copied().unwrap_or("show") {
+        "show" | "changes" => {
+            state.surface = DevSurface::Git;
+            state.refresh_review_object();
+            Ok("Review object ready · accept ID · reject ID · ship TITLE · ask".into())
+        }
+        "ask" => {
+            require_trusted(state)?;
+            state.surface = DevSurface::Agent;
+            state.prepare_review_prompt();
+            Ok("Review prompt prepared in the Agent composer".into())
+        }
+        "accept" => {
+            require_trusted(state)?;
+            state.accept_review_proposal(parts.get(1).copied())
+        }
+        "reject" => {
+            require_trusted(state)?;
+            state.reject_review_proposal(parts.get(1).copied())
+        }
+        "ship" => {
+            require_trusted(state)?;
+            let mut title_parts = parts.get(1..).unwrap_or_default().to_vec();
+            let draft = title_parts.last().copied() == Some("--draft");
+            if draft {
+                title_parts.pop();
+            }
+            let title = title_parts.join(" ");
+            if title.is_empty() {
+                return Err("review ship requires TITLE; append --draft for a draft PR".into());
+            }
+            let body = state.review_object_text();
+            let result = run_tool(
+                state,
+                "glass.github.ship",
+                json!({"title":title,"body":body,"draft":draft}),
+                true,
+            )?;
+            state.surface = DevSurface::Git;
+            Ok(compact_result("glass.github.ship", &result))
+        }
+        _ => {
+            Err("review actions: show, accept [ID], reject [ID], ship TITLE [--draft], ask".into())
+        }
     }
-    require_trusted(state)?;
-    state.surface = DevSurface::Agent;
-    state.prepare_review_prompt();
-    Ok("Review prompt prepared in the Agent composer".into())
 }
 
 fn execute_harness(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
@@ -1747,6 +1777,20 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             false,
             DevSurface::Tasks,
         ),
+        "crew" => {
+            require_trusted(state)?;
+            let goal = parts.get(1..).unwrap_or_default().join(" ");
+            if goal.is_empty() {
+                return Err("task crew requires GOAL".into());
+            }
+            execute_named_tool(
+                state,
+                "glass.task.crew",
+                json!({"goal": goal}),
+                true,
+                DevSurface::Tasks,
+            )
+        }
         "create" | "create-after" => {
             require_trusted(state)?;
             let offset = usize::from(action == "create-after");
@@ -1832,7 +1876,7 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
                 DevSurface::Tasks,
             )
         }
-        _ => Err("task actions: list, get, inspect, create, create-after, pause, resume, cancel, retry, reassign, override, evidence, verify".into()),
+        _ => Err("task actions: list, get, inspect, create, create-after, crew, pause, resume, cancel, retry, reassign, override, evidence, verify".into()),
     }
 }
 
@@ -2894,8 +2938,8 @@ mod tests {
         assert_eq!(state.surface, DevSurface::Agent);
         state.surface = DevSurface::Code;
         execute(&mut state, "review").expect("review route");
-        assert_eq!(state.surface, DevSurface::Agent);
-        assert!(state.composer_mode);
+        assert_eq!(state.surface, DevSurface::Git);
+        assert!(state.git_diff.starts_with("REVIEW"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2930,9 +2974,49 @@ mod tests {
     fn review_route_prefills_evidence_aware_agent_prompt() {
         let (mut state, root) = test_state("review");
         let output = execute(&mut state, "review").expect("review route");
-        assert!(output.contains("Review prompt prepared"));
+        assert!(output.contains("Review object ready"));
+        assert!(state.git_diff.starts_with("REVIEW"));
+        assert!(state.git_diff.contains("PROPOSALS"));
+        assert_eq!(state.surface, DevSurface::Git);
+        let asked = execute(&mut state, "review ask").expect("review ask");
+        assert!(asked.contains("Review prompt prepared"));
         assert!(state.composer_mode);
         assert!(state.composer_input.contains("Git diff"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn review_ship_attaches_the_review_object_body() {
+        let (mut state, root) = test_state("review-ship");
+        execute(&mut state, "review").expect("open review");
+        execute(&mut state, "review ship overnight-crew").expect("queue review ship");
+        let ship = state
+            .pending_confirmation
+            .take()
+            .expect("ship confirmation");
+        assert_eq!(ship.call.name, "glass.github.ship");
+        assert_eq!(ship.call.arguments["title"], "overnight-crew");
+        assert!(
+            ship.call.arguments["body"]
+                .as_str()
+                .expect("ship body")
+                .contains("PROPOSALS")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_crew_queues_the_factory_loop() {
+        let (mut state, root) = test_state("task-crew");
+        execute(&mut state, "task crew add settings toggle").expect("queue crew");
+        let call = state
+            .pending_confirmation
+            .as_ref()
+            .map(|item| &item.call)
+            .or_else(|| state.queued_tool_request.as_ref().map(|(call, _)| call))
+            .expect("crew request");
+        assert_eq!(call.name, "glass.task.crew");
+        assert_eq!(call.arguments["goal"], "add settings toggle");
         let _ = fs::remove_dir_all(root);
     }
 

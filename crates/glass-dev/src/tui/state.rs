@@ -1414,6 +1414,95 @@ impl DevTuiState {
         );
     }
 
+    pub fn review_object_text(&self) -> String {
+        let proposals = self
+            .editor_proposals
+            .iter()
+            .map(|item| {
+                (
+                    item.id.clone(),
+                    item.path.clone(),
+                    format!("{:?}", item.state),
+                )
+            })
+            .collect::<Vec<_>>();
+        let checkpoint = self
+            .editor_checkpoints
+            .last()
+            .map(|item| item.name.as_str());
+        let diff = if self.git_diff.starts_with("REVIEW") {
+            None
+        } else {
+            Some(self.git_diff.as_str()).filter(|diff| !diff.trim().is_empty())
+        };
+        super::editor::review_object(
+            &self.github.summary(),
+            &self.github_review,
+            &proposals,
+            self.last_verify.as_deref(),
+            diff,
+            Some(self.tasks.as_str()).filter(|tasks| !tasks.trim().is_empty()),
+            checkpoint,
+        )
+    }
+
+    pub fn refresh_review_object(&mut self) {
+        let text = self.review_object_text();
+        self.editor = text.clone();
+        self.git_diff = text;
+        self.git_diff_path = Some("REVIEW".into());
+        self.git_diff_open = true;
+        self.status = "REVIEW · :review accept · reject · ship TITLE · ask".into();
+    }
+
+    pub fn accept_review_proposal(&mut self, id: Option<&str>) -> Result<String, String> {
+        let id = self.resolve_review_proposal_id(id)?;
+        self.auto_checkpoint("before-review-accept");
+        match self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .accept_editor_proposal(&id, crate::development::Actor::local())
+                .map(|_| ())
+        }) {
+            Some(Ok(())) => {
+                self.refresh_editor_hunks();
+                self.refresh_review_object();
+                Ok(format!("Accepted proposal {id}"))
+            }
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("Accept failed · workspace busy".into()),
+        }
+    }
+
+    pub fn reject_review_proposal(&mut self, id: Option<&str>) -> Result<String, String> {
+        let id = self.resolve_review_proposal_id(id)?;
+        match self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .reject_editor_proposal(&id, crate::development::Actor::local())
+                .map(|_| ())
+        }) {
+            Some(Ok(())) => {
+                self.refresh_editor_hunks();
+                self.refresh_review_object();
+                Ok(format!("Rejected proposal {id}"))
+            }
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("Reject failed · workspace busy".into()),
+        }
+    }
+
+    fn resolve_review_proposal_id(&self, id: Option<&str>) -> Result<String, String> {
+        if let Some(id) = id {
+            return Ok(id.to_string());
+        }
+        self.editor_proposals
+            .iter()
+            .find(|item| item.state == crate::development::EditorProposalState::Pending)
+            .map(|item| item.id.clone())
+            .ok_or_else(|| "No pending editor proposal".into())
+    }
+
     /// Prepare an editable review prompt using the current workspace evidence.
     pub fn prepare_review_prompt(&mut self) {
         self.composer_input = "Review the current workspace changes. Inspect the Git diff, changed files, diagnostics, and latest test results. Report concrete correctness, security, regression, and missing-test risks. Do not edit files until I approve a fix.".into();

@@ -1256,6 +1256,13 @@ impl DevelopmentToolRouter {
                 let spec = serde_json::from_value::<TaskSpec>(call.arguments.clone())?;
                 Ok(serde_json::to_value(workspace.create_task(spec)?)?)
             }
+            "glass.task.crew" => {
+                let goal = string("goal")?;
+                Ok(serde_json::json!({
+                    "goal": goal,
+                    "crew": workspace.create_crew(goal)?,
+                }))
+            }
             "glass.task.list" => Ok(serde_json::to_value(workspace.tasks()?)?),
             "glass.task.get" | "glass.task.inspect" => {
                 let id = TaskId::parse(string("taskId")?)?;
@@ -1646,6 +1653,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.switch-session",
         "glass.agent.name",
         "glass.task.create",
+        "glass.task.crew",
         "glass.task.pause",
         "glass.task.resume",
         "glass.task.cancel",
@@ -2815,6 +2823,7 @@ mod tests {
             "glass.agent.stats",
             "glass.agent.name",
             "glass.task.create",
+            "glass.task.crew",
             "glass.task.list",
             "glass.task.get",
             "glass.task.inspect",

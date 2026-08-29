@@ -477,6 +477,9 @@ pub fn review_object(
     github_review: &str,
     proposals: &[(String, String, String)],
     last_verify: Option<&str>,
+    git_diff: Option<&str>,
+    tasks: Option<&str>,
+    checkpoint: Option<&str>,
 ) -> String {
     let mut lines = vec![
         "REVIEW".to_string(),
@@ -496,7 +499,27 @@ pub fn review_object(
         lines.push(String::new());
         lines.push(format!("LAST VERIFY\n{verify}"));
     }
-    lines.push("\nEnter accept focused proposal · n reject · Esc back".into());
+    if let Some(diff) = git_diff.filter(|diff| !diff.trim().is_empty()) {
+        lines.push(String::new());
+        lines.push("DIFF".into());
+        for line in diff.lines().take(40) {
+            lines.push(format!("  {line}"));
+        }
+    }
+    if let Some(tasks) = tasks.filter(|tasks| !tasks.trim().is_empty()) {
+        lines.push(String::new());
+        lines.push("CREW".into());
+        for line in tasks.lines().take(16) {
+            lines.push(format!("  {line}"));
+        }
+    }
+    if let Some(checkpoint) = checkpoint.filter(|checkpoint| !checkpoint.is_empty()) {
+        lines.push(String::new());
+        lines.push(format!("CHECKPOINT {checkpoint}"));
+    }
+    lines.push(
+        "\n:review accept [ID] · :review reject [ID] · :review ship TITLE · :review ask".into(),
+    );
     lines.join("\n")
 }
 

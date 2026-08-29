@@ -1400,6 +1400,7 @@ command = '''{command}'''
             testers[0].worktree.as_deref(),
             testers[1].worktree.as_deref()
         );
+        drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }
 

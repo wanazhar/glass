@@ -568,6 +568,28 @@ impl ProjectWorkspace {
         Ok(buffer)
     }
 
+    pub fn accept_pending_editor_proposals(
+        &mut self,
+        actor: Actor,
+    ) -> DevelopmentResult<Vec<super::EditorBuffer>> {
+        let ids = self
+            .proposals
+            .values()
+            .filter(|proposal| proposal.state == super::EditorProposalState::Pending)
+            .map(|proposal| proposal.id.clone())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Err(DevelopmentError::NotFound(
+                "no pending editor proposals".into(),
+            ));
+        }
+        let mut buffers = Vec::new();
+        for id in ids {
+            buffers.push(self.accept_editor_proposal(&id, actor.clone())?);
+        }
+        Ok(buffers)
+    }
+
     pub fn reject_editor_proposal(
         &mut self,
         id: &str,
@@ -2284,6 +2306,56 @@ mod tests {
             project.editor_proposals()[0].state,
             crate::development::EditorProposalState::Stale
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accept_pending_editor_proposals_applies_the_pack() {
+        let root = fixture();
+        fs::write(root.join("src/lib.rs"), "pub fn old() {}\n").unwrap();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        project.open_buffer("src/lib.rs", Actor::local()).unwrap();
+        project
+            .propose_editor_change(
+                "src/main.rs",
+                "fn main() {}\n".into(),
+                "fn main() { println!(\"one\"); }\n".into(),
+                "first".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        project
+            .propose_editor_change(
+                "src/lib.rs",
+                "pub fn old() {}\n".into(),
+                "pub fn next() {}\n".into(),
+                "second".into(),
+                Actor::local(),
+            )
+            .unwrap();
+        let buffers = project
+            .accept_pending_editor_proposals(Actor::local())
+            .unwrap();
+        assert_eq!(buffers.len(), 2);
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().content,
+            "fn main() { println!(\"one\"); }\n"
+        );
+        assert_eq!(
+            project.buffer("src/lib.rs").unwrap().content,
+            "pub fn next() {}\n"
+        );
+        assert!(
+            project
+                .editor_proposals()
+                .iter()
+                .all(|proposal| proposal.state == crate::development::EditorProposalState::Accepted)
+        );
+        assert!(matches!(
+            project.accept_pending_editor_proposals(Actor::local()),
+            Err(DevelopmentError::NotFound(_))
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

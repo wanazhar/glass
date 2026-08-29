@@ -369,6 +369,11 @@ impl DevelopmentToolRouter {
                     .project_mut()
                     .accept_editor_proposal(string("id")?, context.authorization.actor.clone()),
             ),
+            "glass.editor.proposal.accept_pack" => map_service(
+                workspace
+                    .project_mut()
+                    .accept_pending_editor_proposals(context.authorization.actor.clone()),
+            ),
             "glass.editor.proposal.reject" => map_service(
                 workspace
                     .project_mut()
@@ -1685,6 +1690,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.editor.comment.resolve",
         "glass.editor.proposal.create",
         "glass.editor.proposal.accept",
+        "glass.editor.proposal.accept_pack",
         "glass.editor.proposal.reject",
         "glass.editor.checkpoint.create",
         "glass.editor.checkpoint.restore",
@@ -2764,6 +2770,7 @@ mod tests {
             "glass.editor.comment.resolve",
             "glass.editor.proposal.create",
             "glass.editor.proposal.accept",
+            "glass.editor.proposal.accept_pack",
             "glass.editor.proposal.reject",
             "glass.editor.checkpoint.create",
             "glass.editor.checkpoint.restore",

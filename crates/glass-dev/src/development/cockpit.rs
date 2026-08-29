@@ -776,7 +776,7 @@ fn cockpit_state(
     workspace: &crate::SharedDevelopmentWorkspace,
     github_probe: &mut crate::github::GitHubProbeCache,
 ) -> DevelopmentResult<serde_json::Value> {
-    let (root, generation, revision, trust, agents, tasks, git) = {
+    let (root, generation, revision, trust, agents, tasks, git, proposals) = {
         let mut locked = workspace.lock()?;
         let root = locked.root().display().to_string();
         let generation = locked.generation();
@@ -787,7 +787,23 @@ fn cockpit_state(
         let git = locked
             .git()
             .map(|git| git.status().map_err(|error| error.to_string()));
-        (root, generation, revision, trust, agents, tasks, git)
+        let proposals = locked
+            .project()
+            .editor_proposals()
+            .into_iter()
+            .take(32)
+            .map(|proposal| {
+                serde_json::json!({
+                    "id": proposal.id,
+                    "path": proposal.path,
+                    "summary": proposal.summary,
+                    "state": proposal.state,
+                })
+            })
+            .collect::<Vec<_>>();
+        (
+            root, generation, revision, trust, agents, tasks, git, proposals,
+        )
     };
     let github = github_probe.probe(Path::new(&root));
     let agents = match agents {
@@ -813,6 +829,7 @@ fn cockpit_state(
         "tasks": tasks,
         "git": git,
         "github": github,
+        "proposals": proposals,
     }))
 }
 fn cockpit_command(
@@ -906,28 +923,59 @@ body{{font:15px/1.45 system-ui,sans-serif;background:#10131a;color:#e8edf5;margi
 pre{{background:#181d27;padding:1rem;border-radius:.6rem;white-space:pre-wrap}}
 button,input{{font:inherit;padding:.45rem .7rem;margin:.2rem 0}}
 button{{cursor:pointer}} code{{color:#9ad1ff}}
+#proposals div{{display:flex;gap:.6rem;align-items:center;margin:.35rem 0;flex-wrap:wrap}}
 </style>
 <h1>Glass private cockpit</h1>
 <p>Loopback-only workspace state. Mutations remain governed by Glass trust and revision checks.</p>
-<p><button id="refresh">Refresh</button>
-<button id="review">Review GitHub PR</button></p>
+<p>
+<button id="refresh">Refresh</button>
+<button id="review">Review GitHub PR</button>
+<button id="accept-pack">Accept pack</button>
+</p>
+<div id="proposals"></div>
 <pre id="state">Loading…</pre>
+<script>
 const base = "{}";
 const state = document.querySelector("#state");
+const proposalsEl = document.querySelector("#proposals");
+let lastState = {{}};
 async function load() {{
   const response = await fetch(base + "v1/state", {{cache:"no-store"}});
-  state.textContent = JSON.stringify(await response.json(), null, 2);
+  lastState = await response.json();
+  renderProposals(lastState.proposals || []);
+  state.textContent = JSON.stringify(lastState, null, 2);
 }}
-async function command(name, argumentsValue={{}}) {{
+function renderProposals(proposals) {{
+  const pending = proposals.filter((item) => item.state === "pending");
+  document.querySelector("#accept-pack").disabled = pending.length === 0;
+  proposalsEl.innerHTML = pending.length
+    ? pending.map((item) => `<div><code>${{item.path}}</code> ${{item.summary}} <button data-accept="${{item.id}}">Accept</button> <button data-reject="${{item.id}}">Reject</button></div>`).join("")
+    : "<p>No pending proposals</p>";
+  proposalsEl.querySelectorAll("[data-accept]").forEach((button) => {{
+    button.onclick = () => command("glass.editor.proposal.accept", {{id: button.dataset.accept}}, true);
+  }});
+  proposalsEl.querySelectorAll("[data-reject]").forEach((button) => {{
+    button.onclick = () => command("glass.editor.proposal.reject", {{id: button.dataset.reject}}, true);
+  }});
+}}
+async function command(name, argumentsValue={{}}, mutate=false) {{
   const response = await fetch(base + "v1/command", {{
     method:"POST", headers:{{"content-type":"application/json"}},
-    body:JSON.stringify({{name, arguments:argumentsValue}})
+    body:JSON.stringify({{
+      name,
+      arguments: argumentsValue,
+      allowMutation: mutate,
+      confirmed: mutate,
+      expectedGeneration: lastState.generation,
+      expectedProjectRevision: lastState.projectRevision
+    }})
   }});
   state.textContent = JSON.stringify(await response.json(), null, 2);
   await load();
 }}
 document.querySelector("#refresh").onclick = load;
 document.querySelector("#review").onclick = () => command("glass.github.review");
+document.querySelector("#accept-pack").onclick = () => command("glass.editor.proposal.accept_pack", {{}}, true);
 load();
 </script>"##,
         base
@@ -1102,6 +1150,107 @@ mod tests {
         let authorized_response = String::from_utf8_lossy(&authorized_response);
         assert!(authorized_response.starts_with("HTTP/1.1 200 OK"));
         assert!(authorized_response.contains("{\"ok\":true}"));
+        drop(cockpit);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_cockpit_accepts_the_pending_proposal_pack() {
+        let root = fixture("accept-pack");
+        fs::write(root.join("src.rs"), "fn main() {}\n").unwrap();
+        let workspace = crate::SharedDevelopmentWorkspace::open(&root).unwrap();
+        {
+            let mut locked = workspace.lock().unwrap();
+            locked
+                .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
+                .unwrap();
+            locked
+                .project_mut()
+                .open_buffer("src.rs", Actor::local())
+                .unwrap();
+            locked
+                .project_mut()
+                .propose_editor_change(
+                    "src.rs",
+                    "fn main() {}\n".into(),
+                    "fn main() { 1 }\n".into(),
+                    "add one".into(),
+                    Actor::local(),
+                )
+                .unwrap();
+        }
+        let cockpit = LocalCockpit::start(workspace.clone()).unwrap();
+
+        let html_request = format!(
+            "GET /{}/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            cockpit.token()
+        );
+        let mut html_stream = TcpStream::connect(cockpit.address()).unwrap();
+        html_stream.write_all(html_request.as_bytes()).unwrap();
+        html_stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut html = Vec::new();
+        html_stream.read_to_end(&mut html).unwrap();
+        let html = String::from_utf8_lossy(&html);
+        assert!(html.contains("Accept pack"));
+        assert!(html.contains("glass.editor.proposal.accept_pack"));
+
+        let state_request = format!(
+            "GET /{}/v1/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            cockpit.token()
+        );
+        let mut state_stream = TcpStream::connect(cockpit.address()).unwrap();
+        state_stream.write_all(state_request.as_bytes()).unwrap();
+        state_stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut state_body = Vec::new();
+        state_stream.read_to_end(&mut state_body).unwrap();
+        let state_body = String::from_utf8_lossy(&state_body);
+        assert!(state_body.contains("\"path\":\"src.rs\""));
+        assert!(state_body.contains("\"state\":\"pending\""));
+        assert!(!state_body.contains("fn main() { 1 }"));
+
+        let denied = serde_json::json!({"name":"glass.editor.proposal.accept_pack"}).to_string();
+        let denied_request = format!(
+            "POST /{}/v1/command HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{denied}",
+            cockpit.token(),
+            denied.len()
+        );
+        let mut denied_stream = TcpStream::connect(cockpit.address()).unwrap();
+        denied_stream.write_all(denied_request.as_bytes()).unwrap();
+        denied_stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut denied_body = Vec::new();
+        denied_stream.read_to_end(&mut denied_body).unwrap();
+        let denied_body = String::from_utf8_lossy(&denied_body);
+        assert!(denied_body.contains("409") || denied_body.contains("mutation authority"));
+
+        let accepted = serde_json::json!({
+            "name":"glass.editor.proposal.accept_pack",
+            "allowMutation":true,
+            "confirmed":true
+        })
+        .to_string();
+        let accept_request = format!(
+            "POST /{}/v1/command HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{accepted}",
+            cockpit.token(),
+            accepted.len()
+        );
+        let mut accept_stream = TcpStream::connect(cockpit.address()).unwrap();
+        accept_stream.write_all(accept_request.as_bytes()).unwrap();
+        accept_stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut accept_body = Vec::new();
+        accept_stream.read_to_end(&mut accept_body).unwrap();
+        let accept_body = String::from_utf8_lossy(&accept_body);
+        assert!(accept_body.starts_with("HTTP/1.1 200 OK"), "{accept_body}");
+
+        let locked = workspace.lock().unwrap();
+        assert_eq!(
+            locked.project().buffer("src.rs").unwrap().content,
+            "fn main() { 1 }\n"
+        );
+        assert_eq!(
+            locked.project().editor_proposals()[0].state,
+            crate::development::EditorProposalState::Accepted
+        );
+        drop(locked);
         drop(cockpit);
         let _ = fs::remove_dir_all(root);
     }

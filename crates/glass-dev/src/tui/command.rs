@@ -235,6 +235,12 @@ const APP_ACTIONS: &[SurfaceAction] = &[
         key: ":",
         description: "navigate to the detected loopback URL",
     },
+    SurfaceAction {
+        label: "Record click path",
+        command: "workflow record start",
+        key: ":",
+        description: "capture App activations as a reviewable workflow draft",
+    },
 ];
 
 const TERMINAL_ACTIONS: &[SurfaceAction] = &[
@@ -749,6 +755,30 @@ fn execute_cockpit(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
             Ok("Private cockpit stopped".into())
         }
         _ => Err("cockpit actions: start, status, stop".into()),
+    }
+}
+
+fn execute_workflow_record(state: &mut DevTuiState, parts: &[&str]) -> Result<String, String> {
+    match parts.first().copied().unwrap_or("status") {
+        "start" => {
+            let name = if parts.len() > 1 {
+                parts[1..].join("-")
+            } else {
+                "click-path".into()
+            };
+            state.start_workflow_recording(&name)
+        }
+        "type" => {
+            let input = parts
+                .get(1)
+                .copied()
+                .ok_or("workflow record type requires INPUT_NAME")?;
+            state.record_workflow_type(input)
+        }
+        "verify" => state.record_workflow_verify(),
+        "stop" | "save" => state.stop_workflow_recording(),
+        "status" | "show" => Ok(state.workflow_recording_status()),
+        _ => Err("workflow record actions: start [NAME], type INPUT, verify, stop, status".into()),
     }
 }
 
@@ -2293,6 +2323,9 @@ fn execute_browser(
         return Ok(format!("Opened resident {command}"));
     };
     let (tool, arguments, mutating) = if command == "workflow" {
+        if action == "record" {
+            return execute_workflow_record(state, &parts[1..]);
+        }
         match action {
             "run" => ("glass.workflow.run", json!({"definition":read_project_json(state, parts.get(1).ok_or("workflow run requires DEFINITION.json")?)?,"inputs":parse_inline_json(parts.get(2), json!({}))?}), true),
             "pause" => ("glass.workflow.pause", json!({}), true),
@@ -2300,7 +2333,7 @@ fn execute_browser(
             "list" => ("glass.workflow.list", json!({}), false),
             "cancel" => ("glass.workflow.cancel", json!({}), true),
             "verify" => ("glass.workflow.verify", json!({}), false),
-            _ => return Err("workflow actions: list, run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON], cancel, verify".into()),
+            _ => return Err("workflow actions: list, run DEFINITION.json [INPUTS_JSON], pause, resume DEFINITION.json CHECKPOINT.json [INPUTS_JSON], cancel, verify, record start [NAME]".into()),
         }
     } else {
         if matches!(action, "human" | "takeover") {
@@ -2372,15 +2405,26 @@ fn execute_browser(
             "navigate" => ("glass.browser.navigate", json!({"url":parts.get(1).ok_or("browser navigate requires URL")?,"browserRevision":visible_revision}), true),
             "back" | "forward" | "reload" | "stop-loading" => ("glass.browser.act", json!({"action":if action == "stop-loading" { "stopLoading" } else { action },"browserRevision":visible_revision}), true),
             "click" => {
-                let selected = state.browser_workspace.state().selected();
-                let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser click requires a target or semantic selection")?;
-                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
+                let (target, revision) = {
+                    let selected = state.browser_workspace.state().selected();
+                    let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser click requires a target or semantic selection")?;
+                    let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
+                    (target.to_string(), revision)
+                };
+                let _ = state.capture_workflow_click();
                 ("glass.browser.act", json!({"action":"click","target":target,"browserRevision":revision}), true)
             },
             "type" => {
-                let selected = state.browser_workspace.state().selected();
-                let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser type requires a target or semantic selection")?;
-                let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
+                let (target, revision, input_name) = {
+                    let selected = state.browser_workspace.state().selected();
+                    let target = parts.get(1).copied().or_else(|| selected.map(|entity| entity.reference.as_str())).ok_or("browser type requires a target or semantic selection")?;
+                    let revision = selected.filter(|entity| entity.reference == target).map(|entity| entity.revision).unwrap_or(visible_revision);
+                    let input_name = selected.map(|entity| entity.name.clone());
+                    (target.to_string(), revision, input_name)
+                };
+                if state.workflow_recording.is_some() {
+                    let _ = state.record_workflow_type(input_name.as_deref().unwrap_or("value"));
+                }
                 ("glass.browser.act", json!({"action":"type","target":target,"browserRevision":revision,"text":parts.get(2..).unwrap_or_default().join(" ")}), true)
             },
             "scroll" => ("glass.browser.act", json!({"action":"scroll","dx":parts.get(1).and_then(|value| value.parse::<f64>().ok()).unwrap_or(0.0),"dy":parts.get(2).and_then(|value| value.parse::<f64>().ok()).unwrap_or(600.0),"browserRevision":visible_revision}), true),
@@ -3185,6 +3229,33 @@ mod tests {
         execute(&mut state, "cockpit stop").expect("stop cockpit");
         assert!(state.private_cockpit.is_none());
         assert!(state.private_cockpit_status().contains("not running"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_record_start_stop_writes_a_locator_draft() {
+        let (mut state, root) = test_state("workflow-record");
+        state.browser_workspace.replace_entities(
+            3,
+            vec![glass_browser::browser_workspace::BrowserWorkspaceEntity {
+                reference: "r3:continue".into(),
+                role: "button".into(),
+                name: "Continue".into(),
+                actionable: true,
+                revision: 3,
+            }],
+        );
+        let started = execute(&mut state, "workflow record start checkout").expect("start");
+        assert!(started.contains("Recording checkout"));
+        assert_eq!(state.surface, DevSurface::App);
+        state.queue_browser_intent(
+            glass_browser::browser_workspace::BrowserWorkspaceIntent::ActivateSelected,
+        );
+        let stopped = execute(&mut state, "workflow record stop").expect("stop");
+        assert!(stopped.contains("1 step"));
+        let draft =
+            fs::read_to_string(root.join(".glass/workflows/checkout.draft.json")).expect("draft");
+        assert!(draft.contains("role=button;name=Continue"));
         let _ = fs::remove_dir_all(root);
     }
     #[test]

@@ -9,7 +9,9 @@ use super::editor::{
 use super::parse::IncrementalSyntax;
 use crate::development::TextSelection;
 use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
+use glass_browser::browser::WorkflowRecorder;
 use glass_browser::browser::policy::PolicyPreset;
+use glass_browser::browser::session::VerificationPredicate;
 use glass_browser::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAction, BrowserWorkspaceAdapterKind,
     BrowserWorkspaceController, BrowserWorkspaceEntity, BrowserWorkspaceIntent,
@@ -28,6 +30,20 @@ pub struct PendingConfirmation {
     pub call: crate::development::ToolCall,
     pub context: crate::tools::DevelopmentToolContext,
     pub summary: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TuiWorkflowRecording {
+    pub name: String,
+    pub recorder: WorkflowRecorder,
+    step: usize,
+}
+
+impl TuiWorkflowRecording {
+    fn next_id(&mut self) -> String {
+        self.step += 1;
+        format!("step-{}", self.step)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -324,6 +340,7 @@ pub struct DevTuiState {
     pub experiments: String,
     pub cockpit_url: String,
     pub private_cockpit: Option<crate::development::LocalCockpit>,
+    pub workflow_recording: Option<TuiWorkflowRecording>,
 }
 
 impl DevTuiState {
@@ -566,6 +583,7 @@ impl DevTuiState {
             experiments: "No experiments. :experiment create ID BRANCH [PORT]".into(),
             cockpit_url: String::new(),
             private_cockpit: None,
+            workflow_recording: None,
         };
         if initial_refresh {
             state.refresh();
@@ -663,6 +681,157 @@ impl DevTuiState {
             .as_ref()
             .map(|cockpit| format!("running · {}", cockpit.local_url()))
             .unwrap_or_else(|| "not running · use `cockpit start`".into())
+    }
+
+    pub fn start_workflow_recording(&mut self, name: &str) -> Result<String, String> {
+        if let Some(recording) = &self.workflow_recording {
+            return Err(format!(
+                "already recording {} · :workflow record stop first",
+                recording.name
+            ));
+        }
+        let name = workflow_slug(name);
+        self.workflow_recording = Some(TuiWorkflowRecording {
+            name: name.clone(),
+            recorder: WorkflowRecorder::new(name.clone(), "1.0.0"),
+            step: 0,
+        });
+        self.surface = DevSurface::App;
+        self.refresh_workflow_recording_status();
+        self.status = format!("Recording {name} · Enter activates and records locators");
+        Ok(self.status.clone())
+    }
+
+    pub fn workflow_recording_status(&self) -> String {
+        match &self.workflow_recording {
+            Some(recording) => format!(
+                "recording {} · {} step(s)",
+                recording.name,
+                recording.recorder.draft().steps.len()
+            ),
+            None => "not recording · :workflow record start NAME".into(),
+        }
+    }
+
+    pub fn capture_workflow_click(&mut self) -> Result<bool, String> {
+        if self.workflow_recording.is_none() {
+            return Ok(false);
+        }
+        let selected = self
+            .browser_workspace
+            .state()
+            .selected()
+            .cloned()
+            .filter(|entity| entity.actionable)
+            .ok_or("no actionable semantic entity is selected")?;
+        let Some(recording) = self.workflow_recording.as_mut() else {
+            return Ok(false);
+        };
+        let id = recording.next_id();
+        recording
+            .recorder
+            .record_click(id, selected.role, selected.name, None)
+            .map_err(|error| error.to_string())?;
+        self.refresh_workflow_recording_status();
+        Ok(true)
+    }
+
+    pub fn record_workflow_type(&mut self, input_name: &str) -> Result<String, String> {
+        let selected = self
+            .browser_workspace
+            .state()
+            .selected()
+            .cloned()
+            .ok_or("no semantic entity is selected")?;
+        let recording = self
+            .workflow_recording
+            .as_mut()
+            .ok_or("start a recording first")?;
+        let id = recording.next_id();
+        let input = workflow_slug(input_name);
+        recording
+            .recorder
+            .record_type_input(id, selected.role, selected.name, input.clone())
+            .map_err(|error| error.to_string())?;
+        let steps = recording.recorder.draft().steps.len();
+        self.refresh_workflow_recording_status();
+        self.status = format!("REC {steps} · typed ${{inputs.{input}}}");
+        Ok(self.status.clone())
+    }
+
+    pub fn record_workflow_verify(&mut self) -> Result<String, String> {
+        let value = self
+            .pending_verify
+            .clone()
+            .ok_or("no pending prove-it predicate to attach")?;
+        let expect: VerificationPredicate = serde_json::from_value(value)
+            .map_err(|error| format!("pending verify is not a workflow predicate: {error}"))?;
+        let recording = self
+            .workflow_recording
+            .as_mut()
+            .ok_or("start a recording first")?;
+        recording
+            .recorder
+            .attach_expect_to_last(expect)
+            .map_err(|error| error.to_string())?;
+        let steps = recording.recorder.draft().steps.len();
+        self.refresh_workflow_recording_status();
+        self.status = format!("REC {steps} · attached prove-it to the last step");
+        Ok(self.status.clone())
+    }
+
+    pub fn stop_workflow_recording(&mut self) -> Result<String, String> {
+        let recording = self
+            .workflow_recording
+            .take()
+            .ok_or("no click-path recording is active")?;
+        let draft = recording.recorder.draft();
+        if draft.steps.is_empty() {
+            self.workflow = "No workflow evidence yet".into();
+            return Err("recording had no steps · activate entities before stop".into());
+        }
+        let dir = Path::new(&self.snapshot_root)
+            .join(".glass")
+            .join("workflows");
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        let path = dir.join(format!("{}.draft.json", recording.name));
+        let encoded = serde_json::to_vec_pretty(draft).map_err(|error| error.to_string())?;
+        std::fs::write(&path, &encoded).map_err(|error| error.to_string())?;
+        self.workflow = format!(
+            "Draft {} · {} step(s) · {}",
+            recording.name,
+            draft.steps.len(),
+            path.display()
+        );
+        self.status = format!(
+            "Recorded {} step(s) · {}",
+            draft.steps.len(),
+            path.display()
+        );
+        Ok(self.status.clone())
+    }
+
+    fn refresh_workflow_recording_status(&mut self) {
+        if let Some(recording) = &self.workflow_recording {
+            self.workflow = format!(
+                "REC {} · {} step(s) · :workflow record stop",
+                recording.name,
+                recording.recorder.draft().steps.len()
+            );
+        }
+    }
+
+    fn capture_workflow_type_from_selection(&mut self) {
+        if self.workflow_recording.is_none() {
+            return;
+        }
+        let input = self
+            .browser_workspace
+            .state()
+            .selected()
+            .map(|entity| slug_input_name(&entity.name))
+            .unwrap_or_else(|| "value".into());
+        let _ = self.record_workflow_type(&input);
     }
 
     /// Run the selected command-center launcher. Keyboard hints apply
@@ -1483,35 +1652,27 @@ impl DevTuiState {
     }
 
     pub fn accept_review_pack(&mut self) -> Result<String, String> {
-        let ids = self
-            .editor_proposals
-            .iter()
-            .filter(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
-            .map(|proposal| proposal.id.clone())
-            .collect::<Vec<_>>();
-        if ids.is_empty() {
-            return Err("No pending proposals in the wake pack".into());
-        }
         self.auto_checkpoint("before-review-accept");
-        for id in &ids {
-            match self.locked(|workspace| {
-                workspace
-                    .project_mut()
-                    .accept_editor_proposal(id, crate::development::Actor::local())
-                    .map(|_| ())
-            }) {
-                Some(Ok(())) => {}
-                Some(Err(error)) => return Err(error.to_string()),
-                None => return Err("Accept failed · workspace busy".into()),
+        match self.locked(|workspace| {
+            workspace
+                .project_mut()
+                .accept_pending_editor_proposals(crate::development::Actor::local())
+        }) {
+            Some(Ok(buffers)) => {
+                self.refresh_editor_hunks();
+                self.refresh_editor_projection();
+                self.refresh_review_object();
+                Ok(format!(
+                    "Accepted {} proposal(s) from the wake pack",
+                    buffers.len()
+                ))
             }
+            Some(Err(crate::development::DevelopmentError::NotFound(_))) => {
+                Err("No pending proposals in the wake pack".into())
+            }
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("Accept failed · workspace busy".into()),
         }
-        self.refresh_editor_hunks();
-        self.refresh_editor_projection();
-        self.refresh_review_object();
-        Ok(format!(
-            "Accepted {} proposal(s) from the wake pack",
-            ids.len()
-        ))
     }
 
     pub fn accept_review_proposal(&mut self, id: Option<&str>) -> Result<String, String> {
@@ -5891,18 +6052,24 @@ impl DevTuiState {
             BrowserWorkspaceAction::Click {
                 target,
                 expected_revision,
-            } => (
-                "glass.browser.act",
-                serde_json::json!({"action":"click", "target": target, "browserRevision": expected_revision}),
-            ),
+            } => {
+                let _ = self.capture_workflow_click();
+                (
+                    "glass.browser.act",
+                    serde_json::json!({"action":"click", "target": target, "browserRevision": expected_revision}),
+                )
+            }
             BrowserWorkspaceAction::Type {
                 target,
                 text,
                 expected_revision,
-            } => (
-                "glass.browser.act",
-                serde_json::json!({"action":"type", "target": target, "text": text, "browserRevision": expected_revision}),
-            ),
+            } => {
+                self.capture_workflow_type_from_selection();
+                (
+                    "glass.browser.act",
+                    serde_json::json!({"action":"type", "target": target, "text": text, "browserRevision": expected_revision}),
+                )
+            }
             BrowserWorkspaceAction::Scroll {
                 dx,
                 dy,
@@ -6395,6 +6562,30 @@ fn parse_lsp_symbols(value: &serde_json::Value) -> Vec<(String, u32)> {
         symbols.push((name, line));
     }
     symbols
+}
+
+fn workflow_slug(name: &str) -> String {
+    let mut slug = String::new();
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if matches!(character, '-' | '_' | ' ' | '.')
+            && !slug.is_empty()
+            && !slug.ends_with('-')
+        {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "click-path".into()
+    } else {
+        slug
+    }
+}
+
+fn slug_input_name(name: &str) -> String {
+    workflow_slug(name).replace('-', "_")
 }
 
 fn editor_offset(content: &str, line: u32, column: u32) -> usize {
@@ -7053,6 +7244,46 @@ mod tests {
             state.focused_editor_content, "fn main() { 1 }\n",
             "pack accept must write the proposed buffer"
         );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn app_enter_records_role_name_locators_into_a_workflow_draft() {
+        let root =
+            std::env::temp_dir().join(format!("glass-workflow-record-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.browser_workspace.replace_entities(
+            7,
+            vec![BrowserWorkspaceEntity {
+                reference: "r7:save".into(),
+                role: "button".into(),
+                name: "Save settings".into(),
+                actionable: true,
+                revision: 7,
+            }],
+        );
+        state
+            .start_workflow_recording("Save Settings")
+            .expect("start recording");
+        state.queue_browser_intent(BrowserWorkspaceIntent::ActivateSelected);
+        let draft = serde_json::to_string(
+            state
+                .workflow_recording
+                .as_ref()
+                .expect("recording")
+                .recorder
+                .draft(),
+        )
+        .expect("serialize draft");
+        assert!(draft.contains("role=button;name=Save settings"));
+        let stopped = state.stop_workflow_recording().expect("stop recording");
+        assert!(stopped.contains("1 step"));
+        let path = root.join(".glass/workflows/save-settings.draft.json");
+        let persisted = std::fs::read_to_string(&path).expect("read draft");
+        assert!(persisted.contains("role=button;name=Save settings"));
+        assert!(persisted.contains("\"reviewRequired\": true"));
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

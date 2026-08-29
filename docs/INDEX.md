@@ -6,7 +6,7 @@ Status: Current 0.3.14 source behavior; release documentation is dated
 These guides describe the complete Glass product in the current `0.3.14`
 source checkout. The `0.3.14` release notes and migration guide route the
 current source contract; the signed `v0.3.13` release and its migration record
-remain historical. Published docs.rs pages currently match crate `0.3.13`.
+remain historical. Published docs.rs pages currently match crate `0.3.14`.
 The empty working-tree changelog `Unreleased` section is reserved for changes
 after this release. `Local only` means a capability exists in the checkout but
 is not part of an external release record.

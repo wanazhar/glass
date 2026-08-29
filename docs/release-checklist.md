@@ -14,21 +14,21 @@ certification; native browser/PTY support is not certified.
 ## 0.3.14 release
 
 This section is the active release record for the exact 0.3.14 source and
-2026-08-29 release date. Every gate remains open until its evidence is
-recorded in [`release-evidence.md`](release-evidence.md).
+2026-08-29 release date. Every gate is closed and its evidence is recorded in
+[`release-evidence.md`](release-evidence.md).
 
 ### Gate 0 — approval and one candidate version
 
-- [ ] Obtain explicit approval for the exact `VERSION`, source push, signed tag,
-      crates.io publication, GitHub Release, and issue update.
-- [ ] Choose one stable `VERSION` and release date. Do not reuse a failed
-      candidate tag or silently change the version during the run.
-- [ ] Update the workspace/package versions, `Cargo.lock`, Rust client metadata,
+- [x] Obtain explicit approval for the exact `VERSION`, source push, signed tag,
+      crates.io publication, GitHub Release, and issue update. The release
+      request explicitly authorized these actions.
+- [x] Choose one stable `VERSION` and release date. `0.3.14` / `2026-08-29`
+      used one immutable tag and did not reuse a failed candidate tag.
+- [x] Update the workspace/package versions, `Cargo.lock`, Rust client metadata,
       changelog, release notes, release evidence, feature-parity metadata, and
       every current-version assertion in the validation scripts.
-- [ ] Confirm the release notes contain the required headings and no
-      pre-publication wording such as “unpublished”, “candidate”, “not ready”,
-      or “do not publish”. Run the release-note generator and validator before
+- [x] Confirm the generated release notes contain the required headings and no
+      pre-publication wording; the generator and validator passed before
       tagging.
 
 ### Gate 1 — validate the candidate source before any tag
@@ -54,10 +54,10 @@ cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets
 scripts/release-validate.sh
 ```
 
-- [ ] Run the recorded live-browser and PTY suites where the release evidence
-      requires them; record the target, architecture, browser, Rust toolchain,
-      and exact commands.
-- [ ] Package both crates and inspect their file lists:
+- [x] Run the recorded live-browser and PTY suites where the release evidence
+      requires them; local and exact-tag/native evidence is recorded in
+      [`release-evidence.md`](release-evidence.md).
+- [x] Package both crates and inspect their file lists:
 
 ```console
 cargo package --package glass-browser --locked
@@ -65,7 +65,7 @@ cargo package --package glass-dev --locked --no-verify \
   --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
 ```
 
-- [ ] Run both crates.io publish dry runs without uploading:
+- [x] Run both crates.io publish dry runs without uploading:
 
 ```console
 cargo publish --package glass-browser --locked --dry-run --no-verify
@@ -73,26 +73,29 @@ cargo publish --package glass-dev --locked --dry-run --no-verify \
   --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
 ```
 
-- [ ] Run the clean-install/upgrade smoke test from the previous published
-      version. Do not treat a local `cargo install --path` as a registry test.
-- [ ] Confirm the working tree contains no generated profiles, screenshots,
-      logs, package archives, or unrelated changes.
+- [x] Run the clean-install/upgrade smoke test from the previous published
+      version. The exact-tag release job performed registry installs, not just
+      local `cargo install --path`.
+- [x] Confirm the working tree contains no generated profiles, screenshots,
+      logs, package archives, or unrelated changes. The only interim output was
+      the known regenerable validation directory, removed after closure.
 
 ### Gate 2 — commit and prove the exact source
 
-- [ ] Commit the candidate with the release metadata and documentation only
-      after Gate 1 passes.
-- [ ] Push the release commit to `main`; capture `SOURCE_SHA` and verify
-      `origin/main` resolves to that exact SHA.
-- [ ] Wait for the complete main CI workflow for `SOURCE_SHA`. Query the run's
-      `headSha` and `conclusion`; do not accept “the latest CI is green” when it
-      tested a different commit.
-- [ ] If CI fails and is rerun, record both the original failed run and the
-      successful rerun. A successful rerun does not erase the original failure.
+- [x] Commit the candidate with the release metadata, documentation, and the
+      final scheduler-independent test repair after Gate 1 passed.
+- [x] Push the release source to `main`; `SOURCE_SHA` is
+      `9cfbdae280af1622717f82eac5d6f93dbb0aacd1`, and `origin/main` matched it
+      before tagging.
+- [x] Wait for the complete main CI workflow for `SOURCE_SHA`. Run
+      [`33256738153`](https://github.com/wanazhar/glass/actions/runs/33256738153)
+      reports the exact `headSha` and `success` across all five jobs.
+- [x] Record the earlier rejected pre-tag candidate failures and the final
+      exact-source success in [`release-evidence.md`](release-evidence.md).
 
 ### Gate 3 — generate, sign, and push exactly one tag
 
-- [ ] Generate the tagged release notes from `SOURCE_SHA`:
+- [x] Generate the tagged release notes from `SOURCE_SHA`:
 
 ```console
 python3 scripts/generate-release-notes.py \
@@ -104,59 +107,61 @@ python3 scripts/generate-release-notes.py \
   --output "/tmp/glass-release-notes-$VERSION.md"
 ```
 
-- [ ] Re-run the release-documentation and release-note validators after
+- [x] Re-run the release-documentation and release-note validators after
       generating the notes.
-- [ ] Create a signed annotated tag on `SOURCE_SHA`, verify it locally with
-      `git tag -v`, and verify GitHub reports the tag signature as valid.
-- [ ] Push the tag only after the source CI and signature checks pass. Never
-      move, delete, or force-update a published or failed release tag.
+- [x] Create the signed annotated tag `v0.3.14` on `SOURCE_SHA`; local
+      `git tag -v` and GitHub verification both report a valid signature.
+- [x] Push the tag only after the source CI and signature checks passed. The
+      immutable tag was never moved, deleted, or force-updated.
 
 ### Gate 4 — let the exact-tag workflow publish
 
-- [ ] Confirm that `v$VERSION` triggered
+- [x] Confirm that `v$VERSION` triggered
       `.github/workflows/crates-release.yml`; capture its exact run ID.
-- [ ] Watch the entire run to a terminal `success` conclusion:
+- [x] Watch the entire run to a terminal `success` conclusion:
 
 ```console
 gh run watch "$RELEASE_RUN_ID" --exit-status --interval 15
 gh run view "$RELEASE_RUN_ID" --json status,conclusion,headSha,jobs
 ```
 
-- [ ] Confirm the workflow completed validation, package checks, dry runs,
+- [x] Confirm the workflow completed validation, package checks, dry runs,
       registry-state checks, ordered publication (`glass-browser` first,
-      `glass-dev` second), clean registry installs, and GitHub Release creation.
-- [ ] Do not run a separate `cargo publish`, `gh release create`, or manual
-      registry upload while the exact-tag workflow is running. If the workflow
-      fails, stop and use the recovery rules below.
+      `glass-dev` second), clean registry installs, and GitHub Release creation
+      in run `33257268006`.
+- [x] Do not run a separate `cargo publish`, `gh release create`, or manual
+      registry upload while the exact-tag workflow was running; all publication
+      was performed by the exact-tag workflow.
 
 ### Gate 5 — verify public publication and native evidence
 
-- [ ] Query the exact crates.io version endpoint for both crates with an
-      explicit user agent. Require HTTP 200, the exact version, and
+- [x] Query the exact crates.io version endpoint for both crates with an
+      explicit user agent. Both returned HTTP 200, the exact version, and
       `yanked: false`.
-- [ ] Search for and clean-install both exact registry versions, then run the
-      installed `glass`, `glass-browser`, and `glass-dev` help smoke checks.
-- [ ] Verify the GitHub Release for `v$VERSION` is non-draft, non-prerelease,
-      marked latest, source-only, and attached to the exact signed tag.
-- [ ] Dispatch native certification for the exact tag and exact
-      `EXPECTED_SHA`; record the run ID and every job result.
-- [ ] Record the fuzz workflow run that tested the release source. If it tested
-      a different commit, label it as non-exact-source evidence rather than
-      claiming exact-tag fuzz coverage.
+- [x] Search for and clean-install both exact registry versions, then run the
+      installed `glass`, `glass-browser`, and full-product help smoke checks in
+      release job `99114789765`.
+- [x] Verify the GitHub Release for `v0.3.14` is non-draft, non-prerelease,
+      marked latest, source-only, asset-free, and attached to the exact signed
+      tag.
+- [x] Dispatch native certification for the exact tag and exact
+      `EXPECTED_SHA`; run `33258459561` passed both native jobs.
+- [x] Record exact-source fuzz runs `33256738131` and `33257268010`; all six
+      targets passed on the release SHA.
 
 ### Gate 6 — record and close
 
-- [ ] Add the source SHA, signed tag, CI run, release run, publication
+- [x] Add the source SHA, signed tag, CI run, release run, publication
       timestamps, crate states, clean-install result, native run, fuzz run, and
       GitHub Release URL to `docs/release-evidence.md`.
-- [ ] Mark the versioned checklist section complete only after every Gate 0–5
-      proof is recorded.
-- [ ] Run `python3 scripts/check-github-releases.py` and the documentation
+- [x] Mark the versioned checklist section complete only after every Gate 0–5
+      proof was recorded.
+- [x] Run `python3 scripts/check-github-releases.py` and the documentation
       validators against the final tree.
-- [ ] Confirm `git status --short` is clean and `main` is synchronized with
-      `origin/main`.
-- [ ] Only now announce the release, close the issue, or start the next
-      version.
+- [x] Confirm `git status --short` is clean and `main` is synchronized with
+      `origin/main` after the post-release evidence commit.
+- [x] The release is now ready to announce. No issue closure or next-version
+      work was started as part of this release operation.
 
 
 ## 0.3.13 release (historical)

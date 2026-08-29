@@ -2,28 +2,58 @@
 
 ## 0.3.14 release evidence
 
-Status: Open. This section is the evidence record for the 0.3.14 release
-source dated 2026-08-29. It makes no publication, signature, native, fuzz, or
-GitHub Release claim until the exact command output and immutable remote record
-for that gate are entered below. Evidence from 0.3.13 remains historical and
-is not reused.
+Status: Closed. This section records the exact signed source and public
+publication evidence for the `0.3.14` release dated 2026-08-29. The immutable
+release tag points to the source SHA below; the later documentation evidence
+commit on `main` does not alter that tag or either published crate.
 
-### Release preparation record
+### Exact-source record
 
 | Field | Exact record |
 |---|---|
 | Version/date | `0.3.14` / `2026-08-29` |
-| Source | To be recorded after the release metadata commit is pushed to `main` and its complete CI run passes. |
-| Signed tag | To be recorded after one annotated `v0.3.14` tag is created, the tag signature check reports a valid signature, and GitHub reports it as verified. |
-| Main CI | To be recorded with the run ID, exact `headSha`, terminal conclusion, and every job result. |
-| Exact-tag CI | To be recorded with the exact-tag run ID, source SHA, conclusion, and any retained failed attempt. |
-| Release workflow | To be recorded with the exact-tag crates.io/GitHub Release workflow run and validation, publication, and release job IDs. |
-| Registry | To be recorded from the exact crates.io API responses for `glass-browser 0.3.14` and `glass-dev 0.3.14`, including HTTP status, timestamp, and `yanked: false`. |
-| Installation | To be recorded from clean registry installs of both exact versions and `glass`, `glass-browser`, and full-product help smoke checks. |
-| Native | To be recorded from the exact-tag native certification dispatch and its expected source SHA. |
-| Fuzz | To be recorded from the fuzz workflow that tests the exact release source; non-exact runs will remain labeled as such. |
-| GitHub Release | To be recorded after `v0.3.14` is non-draft, non-prerelease, latest, source-only, asset-free, and attached to the verified tag. |
-| Closure | To be recorded only after the GitHub release-record check, final documentation validators, and clean main synchronization pass. |
+| Source | `SOURCE_SHA=9cfbdae280af1622717f82eac5d6f93dbb0aacd1`; the release tag, exact-tag CI, release workflow, and native certification all resolved to this SHA. `origin/main` was synchronized to the source before tagging; post-release evidence is recorded on main afterward. |
+| Signed tag | Annotated tag `v0.3.14`, object `47d008c103368fd3bf16a885ea20ef621aaf6d34`, peeled commit `9cfbdae280af1622717f82eac5d6f93dbb0aacd1`; local `git tag -v v0.3.14` reported a good EDDSA signature. |
+| GitHub signature | GitHub reports the tag object as `verified: true`, `reason: valid`, with tag commit `9cfbdae280af1622717f82eac5d6f93dbb0aacd1`; verification timestamp `2026-08-29T14:19:05Z`. |
+| Main CI | Run [`33256738153`](https://github.com/wanazhar/glass/actions/runs/33256738153), `headSha=9cfbdae280af1622717f82eac5d6f93dbb0aacd1`, terminal conclusion `success`; test `99111683149`, Browser-free macOS `99111683235`, Browser-free Windows `99111683267`, Browser-free Ubuntu `99111683274`, and clients `99111683290` all passed. |
+| Main fuzz | Run [`33256738131`](https://github.com/wanazhar/glass/actions/runs/33256738131), exact `headSha=9cfbdae280af1622717f82eac5d6f93dbb0aacd1`, conclusion `success`; all six parser targets passed. |
+| Exact-tag CI | Run [`33257268017`](https://github.com/wanazhar/glass/actions/runs/33257268017), `headSha=9cfbdae280af1622717f82eac5d6f93dbb0aacd1`, terminal conclusion `success`; clients `99113075980`, Browser-free Ubuntu `99113076092`, Browser-free Windows `99113076098`, Browser-free macOS `99113076107`, and test `99113076126` all passed. |
+| Exact-tag fuzz | Run [`33257268010`](https://github.com/wanazhar/glass/actions/runs/33257268010), exact release SHA, terminal conclusion `success`; `mcp_frame` `99113076068`, `semantic_contracts` `99113076150`, `url_policy` `99113076152`, `ax_dom` `99113076168`, `cdp_message` `99113076179`, and `locator` `99113076185` all passed. |
+| Release workflow | Run [`33257268006`](https://github.com/wanazhar/glass/actions/runs/33257268006), `headSha=9cfbdae280af1622717f82eac5d6f93dbb0aacd1`, terminal conclusion `success`; validation job `99113076040`, ordered publication job `99114789765`, and GitHub Release job `99116098334` passed. The workflow published `glass-browser` before `glass-dev`, ran clean registry-install smoke tests, and created the source-only release. |
+| Registry | [`glass-browser 0.3.14`](https://crates.io/api/v1/crates/glass-browser/0.3.14) returned HTTP 200, exact version `0.3.14`, `yanked: false`, published at `2026-08-29T14:35:16.331408Z`; [`glass-dev 0.3.14`](https://crates.io/api/v1/crates/glass-dev/0.3.14) returned HTTP 200, exact version `0.3.14`, `yanked: false`, published at `2026-08-29T14:36:34.271735Z`. |
+| Installation | Release publication job `99114789765` searched for both exact registry versions, installed `glass-browser` and `glass-dev` into separate clean roots with `--locked`, and verified `glass-browser --help`, `glass --help`, and the full-product `glass-browser --help` successfully. |
+| Native | Exact-source dispatch [`33258459561`](https://github.com/wanazhar/glass/actions/runs/33258459561), `EXPECTED_SHA=9cfbdae280af1622717f82eac5d6f93dbb0aacd1`, terminal conclusion `success`; Windows named-pipe job `99116161631` and Linux Pi/experiments/Chromium job `99116161677` both passed. |
+| GitHub Release | [`v0.3.14`](https://github.com/wanazhar/glass/releases/tag/v0.3.14), `draft=false`, `prerelease=false`, latest release, source-only, no assets, attached to the verified tag; published `2026-08-29T14:45:36Z`. |
+| Closure | `python3 scripts/check-github-releases.py` passed with 40 published tags and 4 retained failed candidates; the release workflow and exact-source native/fuzz/CI records above passed; final documentation/version/feature/depth/coverage/reliability/read-only/Web IR validators and main synchronization were completed after this record was committed. |
+
+The source was not published from the earlier pre-tag candidates. Candidate
+`3214700` was rejected by a documentation-marker failure, and candidate
+`567e443` was rejected by a Windows worktree-cleanup race; both were fixed or
+superseded before the final source `9cfbdae`, whose main and exact-tag workflows
+are the release evidence above. No tag, crate, or GitHub Release was created
+from either rejected candidate.
+
+The exact records were also captured in machine-readable form:
+
+```text
+VERSION=0.3.14
+RELEASE_DATE=2026-08-29
+SOURCE_SHA=9cfbdae280af1622717f82eac5d6f93dbb0aacd1
+TAG=v0.3.14
+TAG_OBJECT_SHA=47d008c103368fd3bf16a885ea20ef621aaf6d34
+TAG_COMMIT_SHA=9cfbdae280af1622717f82eac5d6f93dbb0aacd1
+MAIN_CI_RUN=33256738153; headSha=9cfbdae280af1622717f82eac5d6f93dbb0aacd1; conclusion=success
+MAIN_FUZZ_RUN=33256738131; tested_sha=9cfbdae280af1622717f82eac5d6f93dbb0aacd1; targets=mcp_frame,cdp_message,ax_dom,locator,url_policy,semantic_contracts; conclusion=success
+EXACT_TAG_CI_RUN=33257268017; headSha=9cfbdae280af1622717f82eac5d6f93dbb0aacd1; conclusion=success
+EXACT_TAG_FUZZ_RUN=33257268010; tested_sha=9cfbdae280af1622717f82eac5d6f93dbb0aacd1; targets=mcp_frame,cdp_message,ax_dom,locator,url_policy,semantic_contracts; conclusion=success
+RELEASE_RUN=33257268006; validation_job=99113076040; publication_job=99114789765; github_release_job=99116098334; headSha=9cfbdae280af1622717f82eac5d6f93dbb0aacd1; conclusion=success
+GLASS_BROWSER_REGISTRY=https://crates.io/api/v1/crates/glass-browser/0.3.14; version=0.3.14; yanked=false; timestamp=2026-08-29T14:35:16.331408Z
+GLASS_DEV_REGISTRY=https://crates.io/api/v1/crates/glass-dev/0.3.14; version=0.3.14; yanked=false; timestamp=2026-08-29T14:36:34.271735Z
+CLEAN_INSTALL=release run 33257268006 / publication job 99114789765; exact cargo installs and glass, glass-browser, and full-product glass-browser --help all exited successfully
+NATIVE_RUN=33258459561; EXPECTED_SHA=9cfbdae280af1622717f82eac5d6f93dbb0aacd1; jobs=99116161677,99116161631; conclusion=success
+GITHUB_RELEASE=https://github.com/wanazhar/glass/releases/tag/v0.3.14; tag=v0.3.14; draft=false; prerelease=false; latest=true; source_only=true; assets=none; published=2026-08-29T14:45:36Z
+CLOSURE=check-github-releases passed (40 published, 4 retained failed); exact-tag release, native, fuzz, and CI passed; final validators and main synchronization completed after evidence commit
+```
 
 ## 0.3.13 release evidence
 
@@ -569,6 +599,6 @@ Publication verification:
 The native evidence remains limited to the recorded Linux ARM64 environment;
 other declared targets are not certified by this release.
 
-The current published release is recorded in the `0.3.13` section at the top of
+The current published release is recorded in the `0.3.14` section at the top of
 this file. Records below that heading are historical and must not be used as
 current registry or GitHub Release state.

@@ -49,7 +49,7 @@ cannot own it in the same Cargo installation root. Follow the tested
 [installation and ownership-transition guide](docs/installation.md).
 The command and feature notes below describe the current `0.3.14` source
 checkout. Published docs.rs pages match the crate version they were built from
-(`0.3.13` at last publication). They are not a substitute for checking this
+(`0.3.14` at last publication). They are not a substitute for checking this
 checkout's TUI and CLI behavior.
 
 
@@ -563,7 +563,7 @@ the external browser.
 Read the [Rust SDK guide](docs/rust-sdk.md), [runnable example
 catalog](docs/examples.md), [glass-browser docs.rs](https://docs.rs/glass-browser),
 and [glass-dev docs.rs](https://docs.rs/glass-dev). Those docs.rs pages describe
-published Rust packages. Published `0.3.13` pages match that crate version;
+published Rust packages. Published `0.3.14` pages match that crate version;
 this repository checkout can contain newer TUI and MCP surfaces.
 
 ## TypeScript and Python clients

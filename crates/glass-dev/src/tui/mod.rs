@@ -1,7 +1,20 @@
 //! Decomposed full Glass Dev terminal application.
+//!
+//! The event loop keeps overlays above surface keys: quit, editor exit, help,
+//! menus, pickers, recovery, agent approval, mutation confirmation, the
+//! full-screen editor, composer dock, then the command palette. Git workbench
+//! keys stay live while a diff is open, but they do not trap confirm or
+//! palette input. `Ctrl-C` opens quit confirmation from editor input; an
+//! already-open unsaved-exit prompt keeps its save/discard/stay choices. Clean
+//! `Esc` from NORMAL leaves the editor; unsaved work still asks.
 
+mod bindings;
 mod command;
+mod editor;
 mod file_view;
+mod parse;
+mod playbooks;
+mod pointer;
 mod projection;
 /// Rendering primitives and frame composition for the development TUI.
 pub mod render;
@@ -319,6 +332,7 @@ pub fn run(
     let mut last_visual = Instant::now();
     let mut last_render = Instant::now() - Duration::from_millis(33);
     let mut previous_overlay_mask = 0_u16;
+    let mut pointer = pointer::PointerState::default();
     loop {
         let size = guard.terminal.size()?;
         let overlay_mask = terminal_overlay_mask(&state);
@@ -352,11 +366,6 @@ pub fn run(
                         }
                     } else if state.editor_exit_prompt.is_some() {
                         state.handle_editor_exit_key(key.code);
-                    } else if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                        && state.code_edit_mode
-                    {
-                        state.request_editor_exit();
                     } else if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
@@ -447,20 +456,6 @@ pub fn run(
                             }
                             _ => {}
                         }
-                    } else if state.git_diff_open && state.surface == DevSurface::Git {
-                        match key.code {
-                            KeyCode::Esc => state.close_git_diff(),
-                            KeyCode::Up | KeyCode::Char('k') => state.scroll_surface(-1),
-                            KeyCode::Down | KeyCode::Char('j') => state.scroll_surface(1),
-                            KeyCode::Enter | KeyCode::Char('d') => {
-                                state.queue_git_diff(&mut worker)
-                            }
-                            KeyCode::PageUp => state.scroll_surface(-10),
-                            KeyCode::PageDown => state.scroll_surface(10),
-                            KeyCode::Home => state.scroll_home(),
-                            KeyCode::End => state.scroll_end(),
-                            _ => {}
-                        }
                     } else if state.pending_agent_approval.is_some() {
                         match key.code {
                             KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
@@ -481,16 +476,82 @@ pub fn run(
                             }
                             _ => {}
                         }
-                    } else if state.code_edit_mode {
-                        match key.code {
-                            KeyCode::Esc => state.request_editor_exit(),
+                    } else if state.code_edit_mode && !state.composer_mode {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Char('l'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.focus_composer_dock();
+                            }
+                            (KeyCode::Char('g'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.jump_to_app_keep_dock();
+                            }
+                            (KeyCode::Esc, _) => state.handle_editor_escape(),
                             _ => state.edit_code_key(key.code, key.modifiers),
+                        }
+                    } else if state.file_picker_open {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => state.close_file_picker(),
+                            (KeyCode::Char('p'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.close_file_picker();
+                            }
+                            (KeyCode::Enter, _) => state.submit_file_picker(),
+                            (KeyCode::Backspace, _) => state.file_picker_backspace(),
+                            (KeyCode::Char('u'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.file_picker_query.clear();
+                                state.file_picker_cursor = 0;
+                                state.file_picker_selection = 0;
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                                state.move_file_picker_selection(-1)
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                                state.move_file_picker_selection(1)
+                            }
+                            (KeyCode::Char(character), _) => {
+                                state.insert_file_picker_char(character)
+                            }
+                            _ => {}
+                        }
+                    } else if state.session_picker_open {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => state.close_session_picker(),
+                            (KeyCode::Enter, _) => state.submit_session_picker(&mut worker),
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                                state.move_session_picker_selection(-1)
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                                state.move_session_picker_selection(1)
+                            }
+                            _ => {}
                         }
                     } else if state.composer_mode {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_composer(),
+                            (KeyCode::Enter, value) if value.contains(KeyModifiers::SHIFT) => {
+                                state.insert_composer_newline();
+                            }
                             (KeyCode::Enter, _) => state.submit_composer(&mut worker),
+                            (KeyCode::Tab, _) => state.complete_composer_mention(),
                             (KeyCode::Backspace, _) => state.composer_backspace(),
+                            (KeyCode::Up, _) => state.navigate_composer_history(true),
+                            (KeyCode::Down, _) => state.navigate_composer_history(false),
+                            (KeyCode::Char('p'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.navigate_composer_history(true);
+                            }
+                            (KeyCode::Char('n'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.navigate_composer_history(false);
+                            }
                             (KeyCode::Char('u'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
@@ -521,6 +582,17 @@ pub fn run(
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
                                 state.toggle_composer_steer();
+                            }
+                            (KeyCode::Char('a'), value)
+                                if value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.cycle_composer_run_mode();
+                            }
+                            (KeyCode::Char('g'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.jump_to_app_keep_dock();
                             }
                             (KeyCode::Left, _) => state.move_composer_cursor(false),
                             (KeyCode::Right, _) => state.move_composer_cursor(true),
@@ -595,6 +667,43 @@ pub fn run(
                         }
                     } else {
                         match (key.code, key.modifiers) {
+                            (KeyCode::Char('l'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.focus_composer_dock();
+                            }
+                            (KeyCode::Char('a'), value)
+                                if value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.cycle_composer_run_mode();
+                            }
+                            (KeyCode::Char('g'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.jump_to_app_keep_dock();
+                            }
+                            (KeyCode::Char('p'), value)
+                                if value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.open_palette();
+                            }
+                            (KeyCode::Char('p'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.open_file_picker();
+                            }
+                            (KeyCode::Char('k'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.open_palette();
+                            }
+                            (KeyCode::Esc, _)
+                                if state.git_diff_open && state.surface == DevSurface::Git =>
+                            {
+                                state.close_git_diff();
+                            }
                             (KeyCode::Esc, _) if state.running_tool_job.is_some() => {
                                 state.status =
                                     "Background operation is bounded · Ctrl-C opens quit confirmation"
@@ -603,8 +712,61 @@ pub fn run(
                             (KeyCode::Char('s'), _) if state.surface == DevSurface::Terminal => {
                                 state.request_detected_dev();
                             }
+                            (KeyCode::Char('u'), _) if state.surface == DevSurface::Terminal => {
+                                match state.attach_selected_process_url() {
+                                    Ok(message) => state.status = message,
+                                    Err(error) => state.status = error,
+                                }
+                            }
+                            (KeyCode::Char('x'), _)
+                                if state.surface == DevSurface::Terminal
+                                    && !state.composer_mode =>
+                            {
+                                state.stop_selected_process();
+                            }
+                            (KeyCode::Char('g'), _)
+                                if state.surface == DevSurface::App && !state.code_edit_mode =>
+                            {
+                                state.jump_source_from_page();
+                            }
                             (KeyCode::Char('d'), _) if state.surface == DevSurface::Git => {
                                 state.queue_git_diff(&mut worker);
+                            }
+                            (KeyCode::Char('c'), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.compose_git_commit();
+                            }
+                            (KeyCode::Char('o'), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.open_selected_git_file();
+                            }
+                            (KeyCode::Char('x'), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.discard_selected_git_file();
+                            }
+                            (KeyCode::Char('r'), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.queue_github_review(&mut worker);
+                            }
+                            (KeyCode::Char(' '), _)
+                                if state.surface == DevSurface::Git && !state.composer_mode =>
+                            {
+                                state.toggle_selected_git_stage();
+                            }
+                            (KeyCode::Char(' '), _)
+                                if state.surface == DevSurface::Terminal
+                                    && !state.composer_mode =>
+                            {
+                                state.restart_selected_process();
+                            }
+                            (KeyCode::Char(' '), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.continue_selected_debug();
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Agent => {
                                 state.start_agent_interaction();
@@ -621,6 +783,94 @@ pub fn run(
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Git => {
                                 state.queue_git_diff(&mut worker);
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Terminal =>
+                            {
+                                state.move_process_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Terminal =>
+                            {
+                                state.move_process_selection(1);
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::Terminal => {
+                                state.queue_selected_process_logs(&mut worker);
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Debug =>
+                            {
+                                state.move_debug_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Debug =>
+                            {
+                                state.move_debug_selection(1);
+                            }
+                            (KeyCode::Char(']'), _) if state.surface == DevSurface::Debug => {
+                                state.cycle_debug_pane(1);
+                            }
+                            (KeyCode::Char('['), _) if state.surface == DevSurface::Debug => {
+                                state.cycle_debug_pane(-1);
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::Debug => {
+                                state.activate_debug_selection(&mut worker);
+                            }
+                            (KeyCode::Char('n'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.step_selected_debug("over");
+                            }
+                            (KeyCode::Char('i'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.step_selected_debug("in");
+                            }
+                            (KeyCode::Char('o'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.step_selected_debug("out");
+                            }
+                            (KeyCode::Char('p'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.pause_selected_debug();
+                            }
+                            (KeyCode::Char('b'), _)
+                                if state.surface == DevSurface::Debug && !state.composer_mode =>
+                            {
+                                state.breakpoint_focused_line();
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Tasks =>
+                            {
+                                state.move_todo_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Tasks =>
+                            {
+                                state.move_todo_selection(1);
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::Tasks => {
+                                state.complete_selected_todo();
+                            }
+                            (KeyCode::Char(' '), _)
+                                if state.surface == DevSurface::Tasks && !state.composer_mode =>
+                            {
+                                state.activate_selected_todo();
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::More =>
+                            {
+                                state.move_more_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::More =>
+                            {
+                                state.move_more_selection(1);
+                            }
+                            (KeyCode::Enter, _) if state.surface == DevSurface::More => {
+                                state.activate_more_selection();
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::Code => {
                                 state.open_selected_file_for_edit();
@@ -639,6 +889,9 @@ pub fn run(
                             }
                             (KeyCode::Char('T' | 't'), _) if state.surface == DevSurface::App => {
                                 state.queue_browser_targets(&mut worker);
+                            }
+                            (KeyCode::Char('C'), _) if state.surface == DevSurface::App => {
+                                state.comment_selected_app_entity();
                             }
                             (KeyCode::Enter, _) if state.surface == DevSurface::App => {
                                 state.queue_browser_intent(BrowserWorkspaceIntent::ActivateSelected)
@@ -674,6 +927,28 @@ pub fn run(
                                     && state.surface == DevSurface::App =>
                             {
                                 state.queue_browser_intent(BrowserWorkspaceIntent::Reload)
+                            }
+                            (KeyCode::Char('f'), _) if state.surface == DevSurface::Agent => {
+                                state.fork_selected_transcript(&mut worker);
+                            }
+                            (KeyCode::Char('r'), _) if state.surface == DevSurface::Agent => {
+                                state.rewind_selected_transcript(&mut worker);
+                            }
+                            (KeyCode::Char('e'), _) if state.surface == DevSurface::Agent => {
+                                state.edit_last_user_message();
+                            }
+                            (KeyCode::Char('o'), _) if state.surface == DevSurface::Agent => {
+                                state.toggle_transcript_expand();
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Agent =>
+                            {
+                                state.move_transcript_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Agent =>
+                            {
+                                state.move_transcript_selection(1);
                             }
                             (KeyCode::Up, _) | (KeyCode::Char('k'), _)
                                 if state.surface == DevSurface::Code =>
@@ -720,38 +995,23 @@ pub fn run(
                 }
                 Event::Paste(text) if state.command_mode => state.insert_palette_text(&text),
                 Event::Paste(text) if state.composer_mode => state.insert_composer_text(&text),
-                Event::Mouse(mouse) => match mouse.kind {
-                    crossterm::event::MouseEventKind::ScrollUp => state.scroll_surface(-3),
-                    crossterm::event::MouseEventKind::ScrollDown => state.scroll_surface(3),
-                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
-                        if !state.quit_confirmation
-                            && state.editor_exit_prompt.is_none()
-                            && !state.help_open
-                            && !state.menu_open
-                            && !state.command_mode
-                            && !state.composer_mode
-                            && !state.code_edit_mode
-                            && state.pending_confirmation.is_none()
-                            && state.pending_agent_approval.is_none()
-                            && !state.browser_target_picker
-                            && state.browser_recovery.is_none()
-                            && !state.git_diff_open =>
+                Event::Mouse(mouse) => {
+                    if !state.quit_confirmation
+                        && state.editor_exit_prompt.is_none()
+                        && state.pending_confirmation.is_none()
+                        && state.pending_agent_approval.is_none()
+                        && !state.browser_target_picker
+                        && state.browser_recovery.is_none()
                     {
-                        let responsive =
-                            state.responsive_class(state.terminal_width, state.terminal_height);
-                        let header_height = if state.composer_mode { 3 } else { 2 };
-                        if let Some(surface) = navigation_surface_at(
-                            responsive,
-                            header_height,
-                            mouse.column,
-                            mouse.row,
-                        ) {
-                            state.surface = surface;
-                            state.status = format!("{} selected", surface.label());
+                        pointer.handle(&mut state, mouse, Instant::now());
+                    } else {
+                        match mouse.kind {
+                            crossterm::event::MouseEventKind::ScrollUp => state.scroll_surface(-3),
+                            crossterm::event::MouseEventKind::ScrollDown => state.scroll_surface(3),
+                            _ => {}
                         }
                     }
-                    _ => {}
-                },
+                }
                 Event::FocusLost => {
                     let _ = state
                         .browser_workspace
@@ -761,6 +1021,7 @@ pub fn run(
                 Event::Key(_) | Event::Paste(_) | Event::FocusGained => {}
             }
         }
+        pointer.poll(&mut state, Instant::now());
         if state.agent_login_requested {
             state.agent_login_requested = false;
             run_agent_login(&mut state, &mut guard);
@@ -798,9 +1059,51 @@ pub fn run(
                 HerdrEvent::Connected | HerdrEvent::Stopped => {}
             }
         }
+        state.flush_pending_trust();
+        state.flush_pending_open_file();
         if state.git_diff_requested {
             state.git_diff_requested = false;
             state.queue_git_diff(&mut worker);
+        }
+        if state.process_logs_requested {
+            state.process_logs_requested = false;
+            state.queue_selected_process_logs(&mut worker);
+        }
+        if state.debug_threads_requested {
+            state.debug_threads_requested = false;
+            state.queue_debug_threads(&mut worker);
+        }
+        if state.debug_stack_requested {
+            state.debug_stack_requested = false;
+            state.queue_debug_stack(&mut worker);
+        }
+        if state.debug_scopes_requested {
+            state.debug_scopes_requested = false;
+            state.queue_debug_scopes(&mut worker);
+        }
+        if state.debug_variables_requested {
+            state.debug_variables_requested = false;
+            state.queue_debug_variables(&mut worker);
+        }
+        if state.github_review_requested {
+            state.github_review_requested = false;
+            state.queue_github_review(&mut worker);
+        }
+        if state.queued_tool_request.is_some()
+            && state.pending_confirmation.is_none()
+            && !state.browser_target_picker_requested
+        {
+            state.submit_queued_tool(&mut worker);
+        }
+        if state.tick_pair_apply() {
+            last_render = Instant::now()
+                .checked_sub(Duration::from_millis(33))
+                .unwrap_or_else(Instant::now);
+        }
+        if state.tick_fim() {
+            last_render = Instant::now()
+                .checked_sub(Duration::from_millis(33))
+                .unwrap_or_else(Instant::now);
         }
         if last_refresh.elapsed() >= Duration::from_millis(250) {
             worker.request_refresh();
@@ -830,7 +1133,9 @@ pub fn run(
             let browser_start = result.tool == "glass.browser.start" && result.result.is_ok();
             let browser_observe = result.tool == "glass.browser.observe" && result.result.is_ok();
             state.apply_tool_job_result(result);
-            if browser_start {
+            if state.pending_verify.is_some() {
+                state.submit_pending_verify(&mut worker);
+            } else if browser_start {
                 state.continue_pending_browser_navigation(&mut worker);
             } else if browser_observe && state.pending_browser_navigation.is_some() {
                 state.submit_pending_browser_navigation(&mut worker);
@@ -918,6 +1223,8 @@ pub fn run(
         if let Some(snapshot) = worker.take_pending() {
             state.apply_snapshot(&snapshot);
         }
+        state.flush_pending_trust();
+        state.flush_pending_open_file();
     }
 
     let kitty_cleanup = visual.shutdown();
@@ -968,6 +1275,7 @@ fn terminal_overlay_mask(state: &DevTuiState) -> u16 {
 
 /// Map a left-click on the desktop or compact navigation column to a surface.
 /// The caller supplies the rendered header height so composer mode stays aligned.
+#[cfg(test)]
 fn navigation_surface_at(
     responsive: ResponsiveClass,
     header_height: u16,

@@ -55,7 +55,8 @@ The phone layout uses the same keyboard and authority rules as desktop:
 | `:browser view` | toggle the selected Herdr, Kitty, or ANSI live backend |
 | `H` / `G` on App | take human control / reconcile Glass control |
 | `Esc` | close the active menu, composer, palette, editor, diff, recovery sheet, or confirmation |
-| `Ctrl-C` | quit from navigation; in the editor, open the exit prompt |
+| `Ctrl-L` | open the shared composer dock |
+| `Ctrl-C` | open Glass quit confirmation, including from the editor |
 | `:review` | prefill an evidence-aware review prompt |
 | `:harness list` | show installed external coding harnesses |
 | `:harness start NAME` | hand the terminal to one installed harness, then resume Glass |
@@ -64,9 +65,11 @@ In the full-screen Code editor, `Alt-W` toggles soft wrapping (off by default);
 on, lines wrap at whitespace where possible with continuation gutters and
 synchronized cursor/selection/highlighting; off horizontally scrolls source
 columns. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo, and `Alt-A` sends the
-focused editor context to Pi with a do-not-edit prompt. `Esc` or `Ctrl-C` opens
-the exit prompt: clean buffers accept `Enter`/`Q`/`Y`; unsaved buffers offer
-`S` save, `D` discard, `Q` discard-and-quit, or `Esc`/`N` stay.
+focused editor context to Pi with a do-not-edit prompt. The editor starts in
+INSERT. `Esc` returns to NORMAL. `Esc` from NORMAL on a clean buffer leaves the
+editor. Unsaved buffers offer `S` save, `D` discard, `Q` discard-and-quit, or
+`Esc`/`N` stay. `Ctrl-C` opens Glass quit confirmation from editor input; an
+already-open unsaved-exit prompt keeps its save/discard/stay choices.
 The composer, palette, and editor keep printable characters such as `?` as text.
 Action-menu commands remove documentation placeholders such as `NAME` and
 `QUERY` before opening the editable palette input. If a background operation is

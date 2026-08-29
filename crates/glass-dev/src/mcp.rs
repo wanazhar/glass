@@ -127,6 +127,7 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
                 actor: Actor::external(actor),
                 allow_mutation: authorized,
                 confirmed: authorized,
+                unrestricted: false,
             },
             initiator: None,
             expected_generation: metadata

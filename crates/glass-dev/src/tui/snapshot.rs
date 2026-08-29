@@ -9,7 +9,7 @@
 //! without ever blocking on the workspace lock, and a latency budget keeps
 //! slow git repositories from freezing key handling.
 
-use crate::tui::state::DevTuiState;
+use crate::tui::state::{DebugSessionRow, DevTuiState, ProcessRow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -65,6 +65,15 @@ pub enum BrowserHealth {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentChrome {
+    pub id: crate::AgentId,
+    pub status: crate::AgentStatus,
+    pub model: Option<String>,
+    pub thinking: Option<String>,
+    pub session_file: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DisplaySnapshot {
     pub version: u64,
@@ -74,17 +83,26 @@ pub struct DisplaySnapshot {
     pub agent_states: Vec<(crate::AgentId, crate::AgentStatus)>,
     pub harnesses: String,
     pub agent_conversation: String,
+    pub conversation_items: Vec<super::projection::ConversationEntry>,
+    pub agent_chrome: Vec<AgentChrome>,
     pub tasks: String,
     pub editor: String,
     pub lsp: String,
     pub processes: String,
+    pub process_entries: Vec<ProcessRow>,
     pub git: String,
     pub git_entries: Vec<crate::git::GitStatusEntry>,
+    pub git_branch: String,
+    pub git_dirty: bool,
+    pub git_ahead: u64,
+    pub git_behind: u64,
+    pub git_conflicts: Vec<String>,
     pub github: crate::github::GitHubStatus,
     pub github_review: String,
     pub tests: String,
     pub kernels: String,
     pub debugger: String,
+    pub debug_sessions: Vec<DebugSessionRow>,
     pub replay: String,
     pub workflow: String,
     pub workspace_status: String,
@@ -374,14 +392,19 @@ fn worker_loop(
                         .max()
                         .unwrap_or(cursor);
                     conversation_events.extend(events);
-                    let rendered = crate::tui::projection::conversation(&conversation_events);
-                    conversation_tail = if rendered.is_empty() {
+                    let items = crate::tui::projection::conversation_entries(&conversation_events);
+                    conversation_tail = if items.is_empty() {
                         "No conversation yet. Press Enter or start typing to compose a message."
                             .into()
                     } else {
-                        rendered
+                        crate::tui::projection::conversation(&conversation_events)
                     };
                     conversation_cursor.store(highest, Ordering::Release);
+                    if let Ok(mut slot) = snapshots.lock()
+                        && let Some(snapshot) = slot.as_mut()
+                    {
+                        snapshot.conversation_items = items;
+                    }
                 }
                 if let Ok(mut slot) = snapshots.lock()
                     && let Some(snapshot) = slot.as_mut()
@@ -446,13 +469,14 @@ fn worker_loop(
                     .and_then(|mut locked| locked.agents().history(0))
                 {
                     conversation_events = latest;
-                    let rendered = crate::tui::projection::conversation(&conversation_events);
-                    conversation_tail = if rendered.is_empty() {
+                    let items = crate::tui::projection::conversation_entries(&conversation_events);
+                    conversation_tail = if items.is_empty() {
                         "No conversation yet. Press Enter or start typing to compose a message."
                             .into()
                     } else {
-                        rendered
+                        crate::tui::projection::conversation(&conversation_events)
                     };
+                    snapshot.conversation_items = items;
                     if let Some(highest) =
                         conversation_events.iter().map(|event| event.sequence).max()
                     {
@@ -506,6 +530,21 @@ fn compute_snapshot(
                 .collect()
         })
         .unwrap_or_default();
+    snapshot.agent_chrome = agent_snapshots
+        .as_ref()
+        .map(|agents| {
+            agents
+                .iter()
+                .map(|agent| AgentChrome {
+                    id: agent.id.clone(),
+                    status: agent.status,
+                    model: agent.model.clone(),
+                    thinking: agent.thinking.clone(),
+                    session_file: agent.session_file.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     snapshot.agents = match agent_snapshots {
         Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
         Ok(agents) => agents
@@ -543,9 +582,13 @@ fn compute_snapshot(
     };
     snapshot.agent_conversation = match locked.agents().history(0) {
         Ok(events) if events.is_empty() => {
+            snapshot.conversation_items.clear();
             "No conversation yet. Press Enter or start typing to compose a message.".into()
         }
-        Ok(events) => crate::tui::projection::conversation(&events),
+        Ok(events) => {
+            snapshot.conversation_items = crate::tui::projection::conversation_entries(&events);
+            crate::tui::projection::conversation(&events)
+        }
         Err(error) => format!("Conversation unavailable: {error}"),
     };
     snapshot.tasks = match locked.tasks() {
@@ -600,12 +643,10 @@ fn compute_snapshot(
             .join("\n\n"),
         Err(error) => format!("Task scheduler failed: {error}"),
     };
-    snapshot.processes = locked
-        .project_mut()
-        .processes()
-        .list_checked()
-        .map(|items| {
-            if items.is_empty() {
+    match locked.project_mut().processes().list_checked() {
+        Ok(items) => {
+            snapshot.process_entries = items.iter().map(ProcessRow::from_snapshot).collect();
+            snapshot.processes = if items.is_empty() {
                 "No managed terminals. Start the detected development command from More.".into()
             } else {
                 items
@@ -629,9 +670,13 @@ fn compute_snapshot(
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n")
-            }
-        })
-        .unwrap_or_else(|error| format!("Process state failed: {error}"));
+            };
+        }
+        Err(error) => {
+            snapshot.process_entries.clear();
+            snapshot.processes = format!("Process state failed: {error}");
+        }
+    }
     snapshot.lsp = {
         let language = locked.language();
         let servers = language.names().collect::<Vec<_>>();
@@ -693,18 +738,31 @@ fn compute_snapshot(
         .debugger_names()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    snapshot.debugger = if debugger_names.is_empty() {
+    let debug_rows = debugger_names
+        .iter()
+        .filter_map(|name| {
+            locked
+                .debugger_mut(name)
+                .ok()
+                .and_then(|debugger| debugger.snapshot().ok())
+                .map(|value| (name.clone(), value))
+        })
+        .collect::<Vec<_>>();
+    snapshot.debug_sessions = debug_rows
+        .iter()
+        .map(|(name, value)| DebugSessionRow {
+            name: name.clone(),
+            state: value.state,
+            pid: value.adapter_process_id,
+            breakpoints: value.breakpoints.values().map(Vec::len).sum::<usize>(),
+            watches: value.watches.len(),
+        })
+        .collect();
+    snapshot.debugger = if debug_rows.is_empty() {
         "No debugger sessions. :debug start NAME COMMAND [ARGS...]".into()
     } else {
-        debugger_names
+        debug_rows
             .iter()
-            .filter_map(|name| {
-                locked
-                    .debugger_mut(name)
-                    .ok()
-                    .and_then(|debugger| debugger.snapshot().ok())
-                    .map(|value| (name, value))
-            })
             .map(|(name, value)| {
                 format!(
                     "● {} · {} · pid {} · {} breakpoints · {} watches · {} threads/processes",
@@ -774,9 +832,14 @@ fn compute_snapshot(
             }
         })
         .unwrap_or_else(|error| format!("Browser state failed: {error}"));
-    let (git, git_entries) = git_projection(&mut locked);
-    snapshot.git = git;
-    snapshot.git_entries = git_entries;
+    let git = git_projection(&mut locked);
+    snapshot.git = git.text;
+    snapshot.git_entries = git.entries;
+    snapshot.git_branch = git.branch;
+    snapshot.git_dirty = git.dirty;
+    snapshot.git_ahead = git.ahead;
+    snapshot.git_behind = git.behind;
+    snapshot.git_conflicts = git.conflicts;
     snapshot.workspace_status = workspace_status_projection(&mut locked);
     snapshot.trust_label = locked.trust().label().into();
     snapshot.trust_inspection = locked.trust_inspection();
@@ -792,14 +855,22 @@ fn compute_snapshot(
     snapshot
 }
 
-fn git_projection(
-    workspace: &mut crate::DevelopmentWorkspace,
-) -> (String, Vec<crate::git::GitStatusEntry>) {
+struct GitProjection {
+    text: String,
+    entries: Vec<crate::git::GitStatusEntry>,
+    branch: String,
+    dirty: bool,
+    ahead: u64,
+    behind: u64,
+    conflicts: Vec<String>,
+}
+
+fn git_projection(workspace: &mut crate::DevelopmentWorkspace) -> GitProjection {
     workspace
         .git()
         .map(|git| match git.status() {
             Ok(status) => {
-                let entries = status.entries.clone();
+                let entries = status.sorted_entries();
                 let header = format!(
                     "branch {} · ↑{} ↓{} · upstream {}",
                     status.branch.as_deref().unwrap_or("detached"),
@@ -807,8 +878,7 @@ fn git_projection(
                     status.behind,
                     status.upstream.as_deref().unwrap_or("none")
                 );
-                let lines = status
-                    .entries
+                let lines = entries
                     .iter()
                     .map(|entry| {
                         format!(
@@ -829,11 +899,42 @@ fn git_projection(
                 } else {
                     format!("{header}\n{}", lines.join("\n"))
                 };
-                (text, entries)
+                GitProjection {
+                    text,
+                    entries,
+                    branch: status.branch.unwrap_or_else(|| "detached".into()),
+                    dirty: !status.conflicts.is_empty()
+                        || status.ahead > 0
+                        || status.behind > 0
+                        || status.entries.iter().any(|entry| {
+                            entry.untracked
+                                || entry.index_status != ' '
+                                || entry.worktree_status != ' '
+                        }),
+                    ahead: status.ahead,
+                    behind: status.behind,
+                    conflicts: status.conflicts,
+                }
             }
-            Err(error) => (format!("Git state failed: {error}"), Vec::new()),
+            Err(error) => GitProjection {
+                text: format!("Git state failed: {error}"),
+                entries: Vec::new(),
+                branch: String::new(),
+                dirty: false,
+                ahead: 0,
+                behind: 0,
+                conflicts: Vec::new(),
+            },
         })
-        .unwrap_or_else(|| ("Not a Git repository".into(), Vec::new()))
+        .unwrap_or(GitProjection {
+            text: "Not a Git repository".into(),
+            entries: Vec::new(),
+            branch: String::new(),
+            dirty: false,
+            ahead: 0,
+            behind: 0,
+            conflicts: Vec::new(),
+        })
 }
 
 fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> String {

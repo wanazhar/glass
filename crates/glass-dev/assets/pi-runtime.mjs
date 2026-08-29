@@ -98,8 +98,10 @@ const glassTool = {
   description: "Call one governed Glass capability by its exact glass.* name and JSON arguments. Use this for browser, Git, processes, tests, debugging, workflows, and other Glass services.",
   promptSnippet: "glass_tool({name, arguments}): governed Glass workspace/browser capability",
   promptGuidelines: [
-    "Use the familiar Glass-backed coding tools for local source work; use glass_tool for browser, Git, process, test, debugger, and evidence operations.",
+    "Use the familiar Glass-backed coding tools for local source work; use glass_tool for browser, Git, process, test, debugger, editor review, task, and evidence operations.",
     "Example: glass_tool({name: \"glass.browser.observe\", arguments: {}}).",
+    "Canonical glass_tool names include glass.browser.verify, glass.editor.fim, glass.editor.proposal.accept_pack, glass.task.crew, glass.github.ship, glass.git.merge, glass.git.rebase, glass.git.push, glass.todo.write, glass.lsp.inlay_hints, glass.file.search, and glass.workflow.record.",
+    "Follow context.playbook: editor uses glass.editor.*; browser observe/act/verify; git uses glass.git.* and glass.github.review — never bash git.",
     "Do not claim a mutation succeeded until the Glass tool result confirms it.",
   ],
   parameters: Type.Object({
@@ -311,6 +313,67 @@ async function confinedSessionPath(path) {
   return canonical;
 }
 
+function lastAssistantText(target) {
+  const messages = target.messages || [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    const parts = Array.isArray(message.content) ? message.content : [];
+    const text = parts
+      .filter((part) => part?.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("");
+    if (text.trim()) return text;
+  }
+  return "";
+}
+
+async function completeFill(parent, params = {}) {
+  const prefix = String(params.prefix || "");
+  const suffix = String(params.suffix || "");
+  const prompt = `Fill in the middle of this source. Reply with ONLY the inserted text. No markdown fences, no explanation, and do not repeat PREFIX or SUFFIX.
+
+PREFIX:
+${prefix}
+
+SUFFIX:
+${suffix}`;
+  const loader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    systemPrompt: "Return only the inserted source text.",
+  });
+  await loader.reload();
+  let sessionManager;
+  try {
+    sessionManager = SessionManager.inMemory(cwd);
+  } catch {
+    sessionManager = SessionManager.inMemory();
+  }
+  const ghost = await createAgentSession({
+    cwd,
+    sessionManager,
+    resourceLoader: loader,
+    noTools: "builtin",
+    tools: [],
+    customTools: [],
+    thinkingLevel: "off",
+    model: parent.model,
+    modelRuntime: parent.modelRuntime,
+  });
+  try {
+    await ghost.session.prompt(prompt);
+    return { text: lastAssistantText(ghost.session).trim() };
+  } finally {
+    ghost.session.dispose();
+  }
+}
+
 async function attachContext(context, deliverAs = "nextTurn") {
   if (!context || typeof context !== "object") return;
   const text = JSON.stringify(safe(context));
@@ -333,7 +396,7 @@ async function operation(name, params = {}) {
         protocol: "glass-pi-sdk-v1",
         sdk: "AgentSession",
         capabilities: [
-          "prompt", "steer", "followUp", "abort", "compact", "models",
+          "prompt", "steer", "followUp", "complete", "abort", "compact", "models",
           "thinking", "newSession", "cloneSession", "rewind", "fork",
           "switchSession", "messages", "entries", "tree", "stats", "name",
           "glassTool",
@@ -344,6 +407,8 @@ async function operation(name, params = {}) {
       await attachContext(params.context);
       await session.prompt(params.text);
       return snapshot();
+    case "complete":
+      return await completeFill(session, params);
     case "steer":
       await attachContext(params.context, "steer");
       await session.steer(params.text);
@@ -452,8 +517,10 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
-const initialManager = process.env.GLASS_PI_RESUME
-  ? SessionManager.continueRecent(cwd, sessionDir)
-  : SessionManager.create(cwd, sessionDir);
+const initialManager = process.env.GLASS_PI_FORK_FROM
+  ? SessionManager.forkFrom(process.env.GLASS_PI_FORK_FROM, cwd, sessionDir)
+  : process.env.GLASS_PI_RESUME
+    ? SessionManager.continueRecent(cwd, sessionDir)
+    : SessionManager.create(cwd, sessionDir);
 bind(await create(initialManager));
 send({ type: "ready", state: snapshot() });

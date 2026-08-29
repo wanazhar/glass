@@ -5,8 +5,8 @@ use crate::browser::BrowserService;
 use crate::customization::Customization;
 use crate::debugger::{DebugAdapterConfig, DebugError, DebugResult, DebuggerSession};
 use crate::development::{
-    Actor, ActorConnection, ActorKind, DevelopmentResult, ProjectWorkspace, ToolAuthorization,
-    ToolCall,
+    Actor, ActorConnection, ActorKind, DevelopmentResult, EditorProposalState, ProjectWorkspace,
+    ToolAuthorization, ToolCall,
 };
 use crate::experiments::ExperimentManager;
 use crate::git::GitService;
@@ -15,7 +15,8 @@ use crate::kernels::{KernelError, KernelExecution, KernelManager, KernelToolCall
 use crate::lsp::LanguageService;
 use crate::pi_runtime::PiToolExecutor;
 use crate::tasks::{
-    TaskId, TaskScheduler, TaskSnapshot, TaskSpec, TaskState, VerificationRequirement,
+    CrewWake, CrewWakeLiveEvidence, CrewWakeMember, TaskId, TaskScheduler, TaskSnapshot, TaskSpec,
+    TaskState, VerificationRequirement, persist_crew_wake,
 };
 use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
@@ -52,6 +53,54 @@ pub struct DevelopmentWorkspace {
     trust_store: WorkspaceTrustStore,
     trusted_configuration_active: bool,
     generation: u64,
+    agent_turn_mode: AgentTurnMode,
+}
+
+/// Per-turn composer personality for the shared chat dock.
+///
+/// Ask inspects only. Plan writes a bounded numbered plan and does not mutate.
+/// Agent is the default and is the only mode that may edit, run, or act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTurnMode {
+    Ask,
+    Plan,
+    #[default]
+    Agent,
+}
+
+impl AgentTurnMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask",
+            Self::Plan => "Plan",
+            Self::Agent => "Agent",
+        }
+    }
+
+    pub fn allows_mutation(self) -> bool {
+        matches!(self, Self::Agent)
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Ask => Self::Plan,
+            Self::Plan => Self::Agent,
+            Self::Agent => Self::Ask,
+        }
+    }
+
+    pub fn instruction(self) -> &'static str {
+        match self {
+            Self::Ask => {
+                "[Glass Ask mode: read-only. Inspect evidence only. Do not edit files, run mutating commands, or act in the browser.]"
+            }
+            Self::Plan => {
+                "[Glass Plan mode: inspect only. Write a bounded numbered plan with files, risks, and verify predicates. Do not edit, click, or deploy until the human accepts.]"
+            }
+            Self::Agent => "",
+        }
+    }
 }
 
 impl DevelopmentWorkspace {
@@ -147,6 +196,7 @@ impl DevelopmentWorkspace {
             trust_store,
             trusted_configuration_active: false,
             generation: 1,
+            agent_turn_mode: AgentTurnMode::Agent,
         };
         if trust.permits_project_execution() {
             workspace.activate_trusted_configuration()?;
@@ -178,6 +228,47 @@ impl DevelopmentWorkspace {
         &mut self.agents
     }
 
+    pub fn todos(&self) -> crate::SessionTodoList {
+        crate::SessionTodoList::load(&self.root)
+    }
+
+    pub fn write_todos(
+        &mut self,
+        items: Vec<crate::SessionTodo>,
+    ) -> crate::development::DevelopmentResult<crate::SessionTodoList> {
+        let mut list = self.todos();
+        list.write(items, &self.root)?;
+        Ok(list)
+    }
+
+    pub fn complete_todo(
+        &mut self,
+        id: &str,
+    ) -> crate::development::DevelopmentResult<crate::SessionTodo> {
+        let mut list = self.todos();
+        let item = list.complete(id, &self.root)?;
+        Ok(item)
+    }
+
+    pub fn activate_todo(
+        &mut self,
+        id: &str,
+    ) -> crate::development::DevelopmentResult<crate::SessionTodo> {
+        let mut list = self.todos();
+        let item = list.activate(id, &self.root)?;
+        Ok(item)
+    }
+
+    pub fn seed_todos_from_plan(
+        &mut self,
+        goal: &str,
+        body: &str,
+    ) -> crate::development::DevelopmentResult<crate::SessionTodoList> {
+        let mut list = self.todos();
+        list.seed_from_plan(goal, body, &self.root)?;
+        Ok(list)
+    }
+
     pub fn create_task(&mut self, spec: TaskSpec) -> DevelopmentResult<TaskId> {
         if !self.trust.permits_project_execution() {
             return Err(crate::development::DevelopmentError::Conflict(
@@ -185,6 +276,131 @@ impl DevelopmentWorkspace {
             ));
         }
         self.tasks.create(&mut self.agents, spec)
+    }
+
+    /// Queue the overnight factory crew in a confined worktree when Git is available.
+    pub fn create_crew(&mut self, goal: &str) -> DevelopmentResult<CrewWake> {
+        if !self.trust.permits_project_execution() {
+            return Err(crate::development::DevelopmentError::Conflict(
+                "task execution is blocked until the workspace is trusted".into(),
+            ));
+        }
+        let checkpoint_name = {
+            let mut name = format!("before-crew:{goal}");
+            name.truncate(256);
+            name
+        };
+        let _ = self
+            .project
+            .create_editor_checkpoint(checkpoint_name.clone(), crate::development::Actor::local());
+        let slug = crew_slug(goal);
+        let worktree = self.prepare_crew_worktree(&slug)?;
+        let implementer_trees = ["a", "b"]
+            .into_iter()
+            .filter_map(|label| {
+                self.prepare_crew_worktree(&format!("{slug}-{label}"))
+                    .ok()
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        let unrestricted = self.agents.default_unrestricted();
+        let ids = self.tasks.create_crew(
+            &mut self.agents,
+            goal,
+            worktree.clone(),
+            implementer_trees,
+            unrestricted,
+        )?;
+        let tasks = ids
+            .into_iter()
+            .map(|id| {
+                self.tasks
+                    .snapshot(&mut self.agents, &id)
+                    .map(|snapshot| CrewWakeMember {
+                        id: snapshot.id.as_str().to_string(),
+                        role: snapshot.role,
+                        title: snapshot.title,
+                        state: snapshot.state.label().to_string(),
+                        worktree: Some(snapshot.worktree.display().to_string()),
+                    })
+            })
+            .collect::<DevelopmentResult<Vec<_>>>()?;
+        let wake = CrewWake {
+            id: slug,
+            goal: goal.to_string(),
+            worktree: worktree.map(|path| path.display().to_string()),
+            checkpoint: checkpoint_name,
+            created_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0),
+            tasks,
+            ..CrewWake::default()
+        };
+        persist_crew_wake(&self.root, &wake)?;
+        Ok(wake)
+    }
+
+    /// Latest overnight crew wake written under `.glass/crew`.
+    pub fn latest_crew_wake(&self) -> Option<CrewWake> {
+        crate::load_latest_crew_wake(&self.root)
+    }
+
+    /// Fold live git/test/verify/page evidence into the persisted crew wake.
+    pub fn refresh_crew_wake(
+        &mut self,
+        live: CrewWakeLiveEvidence,
+    ) -> DevelopmentResult<Option<CrewWake>> {
+        let Some(mut wake) = self.latest_crew_wake() else {
+            return Ok(None);
+        };
+        for member in &mut wake.tasks {
+            if let Ok(id) = TaskId::parse(&member.id)
+                && let Ok(snapshot) = self.tasks.snapshot(&mut self.agents, &id)
+            {
+                member.state = snapshot.state.label().to_string();
+            }
+        }
+        wake.diff = self
+            .git
+            .as_ref()
+            .and_then(|git| git.diff(false, None).ok())
+            .map(truncate_wake_text)
+            .unwrap_or_default();
+        wake.tests = format_last_test_run(&self.tests);
+        if let Some(verify) = live.verify.filter(|value| !value.trim().is_empty()) {
+            wake.verify = truncate_wake_text(verify);
+        }
+        if let Some(page) = live.page.filter(|value| !value.trim().is_empty()) {
+            wake.page = truncate_wake_text(page);
+        }
+        wake.accept = live
+            .accept
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                self.project
+                    .editor_proposals()
+                    .into_iter()
+                    .find(|proposal| proposal.state == EditorProposalState::Pending)
+                    .map(|proposal| proposal.id)
+                    .unwrap_or_else(|| "none".into())
+            });
+        persist_crew_wake(&self.root, &wake)?;
+        Ok(Some(wake))
+    }
+
+    fn prepare_crew_worktree(&mut self, slug: &str) -> DevelopmentResult<Option<PathBuf>> {
+        let parent = self.root.join(".glass").join("worktrees");
+        std::fs::create_dir_all(&parent)?;
+        let path = parent.join(slug);
+        if let Some(git) = self.git.as_ref() {
+            let branch = format!("glass/crew/{slug}");
+            if git.create_worktree(&path, &branch, true).is_ok() {
+                return Ok(Some(path.canonicalize().unwrap_or(path)));
+            }
+        }
+        std::fs::create_dir_all(&path)?;
+        Ok(Some(path.canonicalize().unwrap_or(path)))
     }
 
     pub fn tasks(&mut self) -> DevelopmentResult<Vec<TaskSnapshot>> {
@@ -561,6 +777,7 @@ impl DevelopmentWorkspace {
                         actor: executor.clone(),
                         allow_mutation: authorization.allow_mutation && policy.mutation_authority,
                         confirmed: authorization.confirmed && policy.mutation_authority,
+                        unrestricted: policy.mutation_authority && authorization.confirmed,
                     },
                     initiator: Some(initiator.clone()),
                     expected_generation: generation,
@@ -595,8 +812,35 @@ impl DevelopmentWorkspace {
         call: &crate::development::ToolCall,
         context: &DevelopmentToolContext,
     ) -> DevelopmentResult<serde_json::Value> {
+        let mutating = crate::tools::tool_requires_mutation(&call.name)
+            || self
+                .tools
+                .descriptors()
+                .iter()
+                .any(|descriptor| descriptor.name == call.name && descriptor.mutating);
+        if !self.agent_turn_mode.allows_mutation()
+            && matches!(
+                context.authorization.actor.kind,
+                crate::development::ActorKind::EmbeddedAgent
+            )
+            && mutating
+        {
+            return Err(crate::development::DevelopmentError::Conflict(format!(
+                "{} mode blocks {} until you switch to Agent",
+                self.agent_turn_mode.label(),
+                call.name
+            )));
+        }
         let router = self.tools.clone();
         router.execute(self, call, context)
+    }
+
+    pub fn agent_turn_mode(&self) -> AgentTurnMode {
+        self.agent_turn_mode
+    }
+
+    pub fn set_agent_turn_mode(&mut self, mode: AgentTurnMode) {
+        self.agent_turn_mode = mode;
     }
 
     /// Return task-loop state while allowing the scheduler to refresh its
@@ -656,6 +900,72 @@ impl DevelopmentWorkspace {
     }
 }
 
+fn crew_slug(goal: &str) -> String {
+    let mut slug = goal
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() { "crew" } else { slug };
+    let slug = slug.chars().take(24).collect::<String>();
+    format!("{slug}-{}", std::process::id())
+}
+
+fn truncate_wake_text(mut text: String) -> String {
+    const LIMIT: usize = 24 * 1024;
+    if text.len() > LIMIT {
+        text.truncate(LIMIT);
+        text.push_str("\n…truncated");
+    }
+    text
+}
+
+fn format_last_test_run(tests: &crate::testing::TestService) -> String {
+    let Some(run) = tests.results().next_back() else {
+        return String::new();
+    };
+    let mut lines = vec![format!(
+        "{} {} · {} ms · exit {}",
+        run.suite_id,
+        run.state.label(),
+        run.duration_ms.unwrap_or(0),
+        run.exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "—".into())
+    )];
+    for case in run.cases.iter().take(12) {
+        let label = match case.state {
+            crate::testing::TestCaseState::Passed => "pass",
+            crate::testing::TestCaseState::Failed => "fail",
+            crate::testing::TestCaseState::Ignored => "skip",
+        };
+        lines.push(format!("{label} {}", case.name));
+    }
+    let tail = run
+        .output
+        .lines()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !tail.is_empty() {
+        lines.push(tail);
+    }
+    truncate_wake_text(lines.join("\n"))
+}
+
 fn validate_service_name(name: &str) -> DebugResult<()> {
     if name.is_empty()
         || name.len() > 64
@@ -699,11 +1009,13 @@ impl SharedDevelopmentWorkspace {
                     "development workspace lock was poisoned".into(),
                 )
             })?;
+            let unrestricted = workspace.agents().default_unrestricted();
             let context = DevelopmentToolContext {
                 authorization: ToolAuthorization {
                     actor: Actor::embedded(),
                     allow_mutation,
                     confirmed,
+                    unrestricted,
                 },
                 initiator: None,
                 expected_generation: workspace.generation(),
@@ -903,6 +1215,7 @@ command = '''{command}'''
                 actor: Actor::external("security-test"),
                 allow_mutation: true,
                 confirmed: true,
+                unrestricted: false,
             },
             initiator: None,
             expected_generation: workspace.generation(),
@@ -1006,6 +1319,138 @@ command = '''{command}'''
             WorkspaceTrustStore::at(root.with_extension("trust.json")),
         );
         assert!(result.is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refresh_crew_wake_folds_live_evidence() {
+        let root = test_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='wake-fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        crate::persist_crew_wake(
+            &root,
+            &crate::CrewWake {
+                id: "wake-1".into(),
+                goal: "toggle".into(),
+                checkpoint: "before".into(),
+                ..crate::CrewWake::default()
+            },
+        )
+        .unwrap();
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
+        let wake = workspace
+            .refresh_crew_wake(crate::CrewWakeLiveEvidence {
+                verify: Some("PROOF ✓\n  url /settings".into()),
+                page: Some("url http://localhost:3000".into()),
+                accept: Some("proposal-1".into()),
+            })
+            .unwrap()
+            .expect("wake");
+        let rendered = wake.render();
+        assert!(rendered.contains("VERIFY"));
+        assert!(rendered.contains("PAGE"));
+        assert!(rendered.contains("accept proposal-1"));
+        assert_eq!(wake.accept, "proposal-1");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_crew_isolates_implementers_in_separate_worktrees() {
+        let root = test_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='crew-trees'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
+        workspace
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
+            .unwrap();
+        let wake = workspace.create_crew("add settings toggle").unwrap();
+        let implementers = wake
+            .tasks
+            .iter()
+            .filter(|task| task.role == "implementer")
+            .collect::<Vec<_>>();
+        assert_eq!(implementers.len(), 2);
+        let trees = implementers
+            .iter()
+            .filter_map(|task| task.worktree.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(trees.len(), 2);
+        assert_ne!(trees[0], trees[1]);
+        assert!(
+            trees
+                .iter()
+                .all(|path| Path::new(path).starts_with(&canonical_root))
+        );
+        let testers = wake
+            .tasks
+            .iter()
+            .filter(|task| task.role == "tester")
+            .collect::<Vec<_>>();
+        assert_eq!(testers.len(), 2);
+        assert_ne!(
+            testers[0].worktree.as_deref(),
+            testers[1].worktree.as_deref()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ask_mode_blocks_embedded_mutations() {
+        let root = test_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='ask-mode'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn ok() {}\n").unwrap();
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
+        workspace
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
+            .unwrap();
+        workspace.set_agent_turn_mode(AgentTurnMode::Ask);
+        let context = DevelopmentToolContext {
+            authorization: ToolAuthorization {
+                actor: Actor::embedded(),
+                allow_mutation: true,
+                confirmed: true,
+                unrestricted: false,
+            },
+            initiator: None,
+            expected_generation: workspace.generation(),
+            expected_project_revision: workspace.project().revision(),
+        };
+        let error = workspace
+            .execute_tool(
+                &ToolCall {
+                    id: "ask-write".into(),
+                    name: "glass.file.write".into(),
+                    arguments: serde_json::json!({"path":"src/lib.rs","content":"nope\n"}),
+                },
+                &context,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Ask mode blocks"));
+        workspace.set_agent_turn_mode(AgentTurnMode::Agent);
+        workspace
+            .execute_tool(
+                &ToolCall {
+                    id: "agent-write".into(),
+                    name: "glass.file.write".into(),
+                    arguments: serde_json::json!({"path":"src/lib.rs","content":"pub fn ok() {}\n"}),
+                },
+                &context,
+            )
+            .unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

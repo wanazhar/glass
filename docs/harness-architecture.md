@@ -90,14 +90,15 @@ The development TUI uses these global routes:
 | `:actions` | Open guided actions for the current surface |
 | `Enter` | Open/run the selected item or start/continue Agent composition |
 | `Tab` | Move to the next product surface outside editor mode |
-| `Ctrl-C` | Open or handle the global quit confirmation; editor unsaved state remains modal |
+| `Ctrl-L` | Open the shared composer dock on the current surface |
+| `Ctrl-C` | Open Glass quit confirmation, including from the editor |
 | `Ctrl-X` | Abort the selected resident agent |
 | `Ctrl-D` | Toggle steer/follow-up mode in the agent composer |
 | `[` / `]` | Switch editor buffers |
 | `Alt-A` | Prepare an Agent prompt from the focused editor |
 | `Alt-W` | Toggle editor soft wrapping |
 
-The full-screen editor renders a header, source block, and footer. It preserves source-line cursor/selection coordinates while mapping the cursor to a visual row. Soft-wrap ON reflows lines to the available cell width and resets horizontal scrolling. Soft-wrap OFF keeps one source line per row and scrolls horizontally. Continuation rows retain gutter width, Unicode cell widths are measured, and an end-of-line cursor is rendered as a cursor cell. `Esc` opens an exit prompt when needed; it does not silently discard a dirty buffer.
+The full-screen editor renders a header, source block, and footer. It preserves source-line cursor/selection coordinates while mapping the cursor to a visual row. Soft-wrap ON reflows lines to the available cell width and resets horizontal scrolling. Soft-wrap OFF keeps one source line per row and scrolls horizontally. Continuation rows retain gutter width, Unicode cell widths are measured, and an end-of-line cursor is rendered as a cursor cell. The editor starts in INSERT. `Esc` returns to NORMAL. `Esc` from NORMAL on a clean buffer leaves the editor. Unsaved work still asks; it does not silently discard a dirty buffer.
 
 Editor comments, proposals, checkpoints, and explicit collaboration claims are workspace state. The snapshot worker only projects them. Opening or saving a buffer does not automatically create a collaboration claim. Overlapping write claims are rejected only when a caller explicitly invokes the collaboration claim API. See [Development Runtime](development-runtime.md#native-editor-and-conflict-rules).
 

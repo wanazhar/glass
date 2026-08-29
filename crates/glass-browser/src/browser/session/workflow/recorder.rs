@@ -308,6 +308,18 @@ impl WorkflowRecorder {
         &self.draft
     }
 
+    /// Attach a postcondition to the most recently recorded step.
+    pub fn attach_expect_to_last(
+        &mut self,
+        expect: VerificationPredicate,
+    ) -> Result<(), WorkflowValidationError> {
+        let last = self.draft.steps.last_mut().ok_or_else(|| {
+            WorkflowValidationError::new("expect", "record a step before attaching a postcondition")
+        })?;
+        last.expect = Some(expect);
+        Ok(())
+    }
+
     /// Infer declarations for the placeholders observed in the draft.
     ///
     /// No value is retained. Names that look sensitive are marked sensitive;

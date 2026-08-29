@@ -5,6 +5,32 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Shared composer dock on every surface (`Ctrl-L`, `Alt-A` from the editor)
+  with Ask/Plan/Agent modes. Default mode is Agent. Ask and Plan are
+  fail-closed for mutations.
+- Workspace-local Agent todos (`glass.todo.list` / `write` / `complete`) on
+  Agent and Tasks, persisted at `.glass/todos/session.json`. These are not the
+  overnight task DAG.
+- Git workbench auto-diff on surface enter, plus governed `glass.git.fetch`,
+  `pull`, `merge`, and `rebase` tools.
+
+### Changed
+
+- Editor modal flow: INSERT `Esc` returns to NORMAL; NORMAL `Esc` leaves a
+  clean buffer. `Ctrl-C` opens Glass quit confirmation unless an already-open
+  unsaved-exit prompt is handling its save/discard/stay choices.
+- TUI discovery is dock, `:`, and `a`. Help lists power-user chords as silent
+  aliases. Desktop inner workbenches stay side-by-side.
+- More `doctor` stays on More. Code preview and Trust `T` queue while the
+  workspace lock is busy.
+
+### Fixed
+
+- Git overlay keys no longer trap confirm or palette input.
+- Porcelain v2 unmodified dots no longer mis-stage files.
+
 ## [0.3.13] - 2026-08-27
 
 ### Added

@@ -10,6 +10,13 @@
 //! versioned snapshots, keeps drafts and modal state local, and restores the
 //! terminal without waiting for an active bounded job.
 //!
+//! Desktop destinations are Agent, Code, App, Terminal, Tasks, Git, Debug, and
+//! More. The shared composer dock is available on every surface. Per-turn
+//! [`AgentTurnMode`] is Ask, Plan, or Agent (default Agent). Ask and Plan are
+//! fail-closed for mutations. [`SessionTodoList`] is the workspace-local Agent
+//! checklist persisted at `.glass/todos/session.json`; it is not the overnight
+//! task DAG.
+//!
 //! ## Public API
 //!
 //! [`DevelopmentWorkspace`] owns the resident project runtime and its trust
@@ -21,8 +28,12 @@
 //! The focused browser-only API lives in
 //! [`glass_browser`](https://docs.rs/glass-browser).
 //!
-//! The docs.rs page documents the Rust library API; installed command behavior
-//! is specified in the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md).
+//! The docs.rs page documents the Rust library API. Published pages match the
+//! crate version they were built from. Installed command behavior is specified
+//! in the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md).
+//! Current-checkout TUI behavior is specified in the
+//! [Development TUI architecture](https://github.com/wanazhar/glass/blob/main/docs/architecture/development-tui.md)
+//! guide.
 //!
 //! ## Quick start
 //!
@@ -62,6 +73,8 @@ pub mod development;
 pub mod experiments;
 /// One-shot adapters for installed external coding agents.
 pub mod external_agents;
+/// Configured fill-in-the-middle provider for editor ghosts.
+pub mod fim;
 /// Governed Git workspace operations.
 pub mod git;
 /// GitHub status, review, and pull-request shipping operations.
@@ -82,6 +95,8 @@ pub mod pi_runtime;
 pub mod tasks;
 /// Test execution and result collection.
 pub mod testing;
+/// Workspace-local Agent todos persisted at `.glass/todos/session.json` (not the overnight task DAG).
+pub mod todos;
 /// Governed development-tool routing.
 pub mod tools;
 /// Workspace trust decisions and persistence.
@@ -119,15 +134,18 @@ pub use pi_runtime::{
 };
 /// Task scheduling, retry, evidence, and verification types.
 pub use tasks::{
-    RetryPolicy, TaskBudget, TaskEvidence, TaskId, TaskScheduler, TaskSnapshot, TaskSpec,
-    TaskState, VerificationRequirement,
+    CrewWake, CrewWakeLiveEvidence, CrewWakeMember, RetryPolicy, TaskBudget, TaskEvidence, TaskId,
+    TaskScheduler, TaskSnapshot, TaskSpec, TaskState, VerificationRequirement,
+    load_latest_crew_wake, persist_crew_wake,
 };
+/// Workspace-local Agent todos persisted at `.glass/todos/session.json` (not the overnight task DAG).
+pub use todos::{SessionTodo, SessionTodoList, TodoStatus};
 /// Governed tool execution context and router.
 pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
 /// Workspace trust identities, decisions, and persistence.
 pub use trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
-/// Workspace owners and thread-safe handles.
-pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
+/// Shared workspace handle and per-turn Ask, Plan, or Agent composer mode.
+pub use workspace::{AgentTurnMode, DevelopmentWorkspace, SharedDevelopmentWorkspace};
 
 /// Dispatch the full Glass Development Environment.
 ///
@@ -341,6 +359,7 @@ async fn dispatch_external_tool(
             actor: Actor::external("cli"),
             allow_mutation,
             confirmed,
+            unrestricted: allow_mutation && confirmed,
         },
         initiator: None,
         expected_generation: workspace.generation(),

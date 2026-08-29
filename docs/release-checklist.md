@@ -17,6 +17,15 @@ This section is the active release record for the exact 0.3.14 source and
 2026-08-29 release date. Every gate is closed and its evidence is recorded in
 [`release-evidence.md`](release-evidence.md).
 
+### Process correction recorded after publication
+
+The first pre-tag documentation audit missed a stale current-publication claim
+in `docs/features.md`: it said the last published docs.rs version was `0.3.13`
+after `0.3.14` had been published. The claim was corrected in post-release
+commit `6fedb65`. This was a documentation-audit failure, not a release-artifact
+change; the mandatory semantic audit below exists to prevent a structurally
+valid but semantically stale sentence from passing the release gates again.
+
 ### Gate 0 — approval and one candidate version
 
 - [x] Obtain explicit approval for the exact `VERSION`, source push, signed tag,
@@ -219,6 +228,49 @@ tag, dry run, or green partial job is not publication proof.
       or “do not publish”. Run the release-note generator and validator before
       tagging.
 
+### Gate 0A — semantic current-documentation audit
+
+Structural validators and link checks do not prove that a prose statement about
+the current release is true. Complete this audit before the candidate is pushed
+or tagged. A clean result from the existing validators is not a substitute.
+
+- [ ] Derive `VERSION` from `cargo metadata` and identify the immediately prior
+      published version from the release records. Do not rely on memory or on
+      the newest tag name alone.
+- [ ] Enumerate the public current-document set and record it in the evidence:
+      `README.md`, crate/client READMEs, and every `docs/**/*.md` file except
+      immutable `docs/releases/`, `docs/migration/`, `docs/plan/`, and
+      `docs/design/` records. Do not exclude a current guide merely because it
+      contains a historical subsection; classify that subsection separately.
+- [ ] Search that complete set for version-sensitive and navigation claims:
+
+```console
+git grep -n -i -E \
+  "$PREVIOUS_VERSION|last publication|latest published|current release|current version|current users|docs\\.rs|published|publication|shortcut|key bindings?|Ctrl-|Alt-" \
+  -- README.md docs crates/*/README.md clients/*/README.md || true
+```
+
+- [ ] Review every hit, including hits in a document that is otherwise
+      current. Mark each as `CURRENT`, `HISTORICAL`, or `TEST/EXAMPLE` and
+      record the disposition. Every `CURRENT` publication/version claim must
+      name `VERSION` and agree with package metadata, registry state, and the
+      release evidence. Every `HISTORICAL` hit must be visibly scoped and must
+      not be phrased as the current/latest release.
+- [ ] Compare user-facing shortcut/key tables and help text against the
+      implementation and tests (`crates/glass-dev/src/tui/`), including
+      responsive phone routes, aliases, palette keys, editor keys, and browser
+      history keys. Update README, architecture guides, and in-app help as one
+      surface; do not audit only the README.
+- [ ] Resolve every current-document link and run the structural validators
+      after the semantic review. The required commands are
+      `check-release-documentation.py`, `check-documentation-depth.py`,
+      `check-documentation-coverage.py`, `check-version-sync.py`, and
+      `git diff --check`.
+- [ ] Record the exact source set, search command, hit count, classifications,
+      unresolved count (`0`), and validator output in
+      `docs/release-evidence.md` before Gate 1. “No matches” is not evidence
+      unless the searched file set and exclusions are recorded.
+
 ### Gate 1 — validate the candidate source before any tag
 
 Run the complete local gate set, not a narrowed substitute:
@@ -265,6 +317,9 @@ cargo publish --package glass-dev --locked --dry-run --no-verify \
       version. Do not treat a local `cargo install --path` as a registry test.
 - [ ] Confirm the working tree contains no generated profiles, screenshots,
       logs, package archives, or unrelated changes.
+- [ ] Re-run Gate 0A after the final documentation/release-note edits and before
+      committing the source. Any later change to a current guide, README, help
+      text, or shortcut table invalidates this proof and requires a fresh audit.
 
 ### Gate 2 — commit and prove the exact source
 
@@ -294,6 +349,8 @@ python3 scripts/generate-release-notes.py \
 
 - [ ] Re-run the release-documentation and release-note validators after
       generating the notes.
+- [ ] Re-run the complete Gate 0A semantic documentation audit after generating
+      the notes; the exact audited tree must be the tree that is tagged.
 - [ ] Create a signed annotated tag on `SOURCE_SHA`, verify it locally with
       `git tag -v`, and verify GitHub reports the tag signature as valid.
 - [ ] Push the tag only after the source CI and signature checks pass. Never

@@ -516,6 +516,18 @@ pub fn run(
                             }
                             _ => {}
                         }
+                    } else if state.session_picker_open {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => state.close_session_picker(),
+                            (KeyCode::Enter, _) => state.submit_session_picker(&mut worker),
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                                state.move_session_picker_selection(-1)
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                                state.move_session_picker_selection(1)
+                            }
+                            _ => {}
+                        }
                     } else if state.composer_mode {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_composer(),
@@ -747,6 +759,28 @@ pub fn run(
                                     && state.surface == DevSurface::App =>
                             {
                                 state.queue_browser_intent(BrowserWorkspaceIntent::Reload)
+                            }
+                            (KeyCode::Char('f'), _) if state.surface == DevSurface::Agent => {
+                                state.fork_selected_transcript(&mut worker);
+                            }
+                            (KeyCode::Char('r'), _) if state.surface == DevSurface::Agent => {
+                                state.rewind_selected_transcript(&mut worker);
+                            }
+                            (KeyCode::Char('e'), _) if state.surface == DevSurface::Agent => {
+                                state.edit_last_user_message();
+                            }
+                            (KeyCode::Char('o'), _) if state.surface == DevSurface::Agent => {
+                                state.toggle_transcript_expand();
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if state.surface == DevSurface::Agent =>
+                            {
+                                state.move_transcript_selection(-1);
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if state.surface == DevSurface::Agent =>
+                            {
+                                state.move_transcript_selection(1);
                             }
                             (KeyCode::Up, _) | (KeyCode::Char('k'), _)
                                 if state.surface == DevSurface::Code =>

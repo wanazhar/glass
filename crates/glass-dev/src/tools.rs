@@ -3241,4 +3241,88 @@ mod tests {
         );
         assert!(tool_requires_mutation("glass.agent.delegate"));
     }
+
+    const AGENT_HIDDEN_TOOLS: &[&str] = &[
+        "glass.workspace.list",
+        "glass.workspace.inspect",
+        "glass.workspace.suspend",
+        "glass.workspace.resume",
+        "glass.workspace.delete",
+        "glass.daemon.start",
+        "glass.daemon.stop",
+        "glass.daemon.status",
+        "glass.daemon.doctor",
+        "glass.daemon.logs",
+        "glass.workspace.trust.status",
+        "glass.workspace.trust.inspect",
+        "glass.project.attach",
+        "glass.agent.setup",
+    ];
+
+    #[test]
+    fn pi_named_catalog_covers_agent_visible_glass_tools() {
+        let tools = include_str!("../assets/pi-glass-tools.ts");
+        let prompt = include_str!("../assets/pi-glass-system.md");
+        let runtime = include_str!("../assets/pi-runtime.mjs");
+        for required in [
+            "glass.browser.verify",
+            "glass.editor.fim",
+            "glass.editor.proposal.accept_pack",
+            "glass.task.crew",
+            "glass.github.ship",
+            "glass.file.search",
+            "glass.lsp.inlay_hints",
+        ] {
+            assert!(
+                tools.contains(&format!("\"{required}\"")),
+                "Pi named catalog missing {required}"
+            );
+            assert!(
+                prompt.contains(required),
+                "system prompt missing {required}"
+            );
+        }
+        assert!(runtime.contains("glass.browser.verify"));
+        assert!(runtime.contains("glass.task.crew"));
+        let registered = registered_glass_names(tools);
+        for descriptor in service_descriptors() {
+            if AGENT_HIDDEN_TOOLS.contains(&descriptor.name.as_str()) {
+                continue;
+            }
+            assert!(
+                registered.contains(&descriptor.name),
+                "Pi named catalog missing agent-visible {}",
+                descriptor.name
+            );
+        }
+    }
+
+    fn registered_glass_names(source: &str) -> std::collections::BTreeSet<String> {
+        let mut names = std::collections::BTreeSet::new();
+        let mut rest = source;
+        while let Some(start) = rest.find("register(") {
+            rest = &rest[start + 9..];
+            let Some(first) = quoted_string(rest) else {
+                continue;
+            };
+            let after_first = rest
+                .find(&format!("\"{first}\""))
+                .map(|index| index + first.len() + 2)
+                .unwrap_or(0);
+            let Some(glass) = quoted_string(&rest[after_first..]) else {
+                continue;
+            };
+            if glass.starts_with("glass.") {
+                names.insert(glass);
+            }
+        }
+        names
+    }
+
+    fn quoted_string(source: &str) -> Option<String> {
+        let start = source.find('"')?;
+        let rest = &source[start + 1..];
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
+    }
 }

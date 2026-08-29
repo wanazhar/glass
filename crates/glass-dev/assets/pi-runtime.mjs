@@ -98,8 +98,9 @@ const glassTool = {
   description: "Call one governed Glass capability by its exact glass.* name and JSON arguments. Use this for browser, Git, processes, tests, debugging, workflows, and other Glass services.",
   promptSnippet: "glass_tool({name, arguments}): governed Glass workspace/browser capability",
   promptGuidelines: [
-    "Use the familiar Glass-backed coding tools for local source work; use glass_tool for browser, Git, process, test, debugger, and evidence operations.",
+    "Use the familiar Glass-backed coding tools for local source work; use glass_tool for browser, Git, process, test, debugger, editor review, task, and evidence operations.",
     "Example: glass_tool({name: \"glass.browser.observe\", arguments: {}}).",
+    "Canonical glass_tool names include glass.browser.verify, glass.editor.fim, glass.editor.proposal.accept_pack, glass.task.crew, glass.github.ship, glass.lsp.inlay_hints, glass.file.search, and glass.workflow.record.",
     "Do not claim a mutation succeeded until the Glass tool result confirms it.",
   ],
   parameters: Type.Object({

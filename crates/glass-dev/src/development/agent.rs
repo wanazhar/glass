@@ -2488,6 +2488,8 @@ mod tests {
         assert!(prompt.contains("Structured browser observation is the default"));
         assert!(prompt.contains("per-call approval"));
         assert!(prompt.contains("glass.editor.proposal.create"));
+        assert!(prompt.contains("glass.browser.verify"));
+        assert!(prompt.contains("glass.task.crew"));
         assert!(prompt.contains("stale proposal"));
         assert!(prompt.contains("queued, running, indeterminate, stale, or background"));
         assert!(prompt.contains("300 seconds"));
@@ -2508,6 +2510,12 @@ mod tests {
             "glass_editor_comments",
             "glass_editor_proposal_create",
             "glass_editor_proposal_accept",
+            "glass_editor_proposal_accept_pack",
+            "glass_editor_fim",
+            "glass_browser_verify",
+            "glass_task_crew",
+            "glass_github_ship",
+            "glass_file_search",
             "glass_editor_checkpoint_create",
             "\"read\"",
             "\"write\"",

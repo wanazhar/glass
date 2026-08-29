@@ -65,6 +65,15 @@ pub enum BrowserHealth {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentChrome {
+    pub id: crate::AgentId,
+    pub status: crate::AgentStatus,
+    pub model: Option<String>,
+    pub thinking: Option<String>,
+    pub session_file: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DisplaySnapshot {
     pub version: u64,
@@ -74,6 +83,8 @@ pub struct DisplaySnapshot {
     pub agent_states: Vec<(crate::AgentId, crate::AgentStatus)>,
     pub harnesses: String,
     pub agent_conversation: String,
+    pub conversation_items: Vec<super::projection::ConversationEntry>,
+    pub agent_chrome: Vec<AgentChrome>,
     pub tasks: String,
     pub editor: String,
     pub lsp: String,
@@ -376,14 +387,19 @@ fn worker_loop(
                         .max()
                         .unwrap_or(cursor);
                     conversation_events.extend(events);
-                    let rendered = crate::tui::projection::conversation(&conversation_events);
-                    conversation_tail = if rendered.is_empty() {
+                    let items = crate::tui::projection::conversation_entries(&conversation_events);
+                    conversation_tail = if items.is_empty() {
                         "No conversation yet. Press Enter or start typing to compose a message."
                             .into()
                     } else {
-                        rendered
+                        crate::tui::projection::conversation(&conversation_events)
                     };
                     conversation_cursor.store(highest, Ordering::Release);
+                    if let Ok(mut slot) = snapshots.lock()
+                        && let Some(snapshot) = slot.as_mut()
+                    {
+                        snapshot.conversation_items = items;
+                    }
                 }
                 if let Ok(mut slot) = snapshots.lock()
                     && let Some(snapshot) = slot.as_mut()
@@ -448,13 +464,14 @@ fn worker_loop(
                     .and_then(|mut locked| locked.agents().history(0))
                 {
                     conversation_events = latest;
-                    let rendered = crate::tui::projection::conversation(&conversation_events);
-                    conversation_tail = if rendered.is_empty() {
+                    let items = crate::tui::projection::conversation_entries(&conversation_events);
+                    conversation_tail = if items.is_empty() {
                         "No conversation yet. Press Enter or start typing to compose a message."
                             .into()
                     } else {
-                        rendered
+                        crate::tui::projection::conversation(&conversation_events)
                     };
+                    snapshot.conversation_items = items;
                     if let Some(highest) =
                         conversation_events.iter().map(|event| event.sequence).max()
                     {
@@ -508,6 +525,21 @@ fn compute_snapshot(
                 .collect()
         })
         .unwrap_or_default();
+    snapshot.agent_chrome = agent_snapshots
+        .as_ref()
+        .map(|agents| {
+            agents
+                .iter()
+                .map(|agent| AgentChrome {
+                    id: agent.id.clone(),
+                    status: agent.status,
+                    model: agent.model.clone(),
+                    thinking: agent.thinking.clone(),
+                    session_file: agent.session_file.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     snapshot.agents = match agent_snapshots {
         Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
         Ok(agents) => agents
@@ -545,9 +577,13 @@ fn compute_snapshot(
     };
     snapshot.agent_conversation = match locked.agents().history(0) {
         Ok(events) if events.is_empty() => {
+            snapshot.conversation_items.clear();
             "No conversation yet. Press Enter or start typing to compose a message.".into()
         }
-        Ok(events) => crate::tui::projection::conversation(&events),
+        Ok(events) => {
+            snapshot.conversation_items = crate::tui::projection::conversation_entries(&events);
+            crate::tui::projection::conversation(&events)
+        }
         Err(error) => format!("Conversation unavailable: {error}"),
     };
     snapshot.tasks = match locked.tasks() {

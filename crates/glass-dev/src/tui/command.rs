@@ -59,13 +59,19 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
         label: "List Pi sessions",
         command: "agent sessions",
         key: ":",
-        description: "discover resumable conversations",
+        description: "pick a persisted conversation",
     },
     SurfaceAction {
         label: "Inspect Pi session tree",
         command: "agent tree",
         key: ":",
         description: "inspect branchable conversation entries",
+    },
+    SurfaceAction {
+        label: "Compact conversation",
+        command: "agent compact",
+        key: ":",
+        description: "summarize the selected Pi session in place",
     },
     SurfaceAction {
         label: "Rewind Pi session",
@@ -1762,6 +1768,17 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             }
             let result = run_tool(state, tool, arguments, false)?;
             state.surface = DevSurface::Agent;
+            if matches!(action, "sessions" | "list-sessions") {
+                state.open_session_picker(&result);
+                return Ok(state.status.clone());
+            }
+            if action == "stats" {
+                state.agent_token_summary = super::projection::first_meaningful(&result)
+                    .lines()
+                    .next()
+                    .unwrap_or("stats")
+                    .to_string();
+            }
             Ok(compact_result(tool, &result))
         }
         _ => Err("agent actions: doctor, status, setup [login], hello, models, spawn, prompt, steer, follow-up, cancel, abort, compact, model, set-model, thinking, set-thinking, new, new-session, clone, clone-session, rewind, fork, switch, sessions, tree, messages, entries, stats".into()),

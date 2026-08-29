@@ -90,6 +90,12 @@ pub enum ChatMessageState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionPickerItem {
+    pub path: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingChatMessage {
     pub text: String,
     pub state: ChatMessageState,
@@ -264,6 +270,16 @@ pub struct DevTuiState {
     pub file_picker_query: String,
     pub file_picker_cursor: usize,
     pub file_picker_selection: usize,
+    pub transcript_selection: usize,
+    pub transcript_expanded: bool,
+    pub session_picker_open: bool,
+    pub session_picker_items: Vec<SessionPickerItem>,
+    pub session_picker_selection: usize,
+    pub conversation_items: Vec<super::projection::ConversationEntry>,
+    pub agent_model: String,
+    pub agent_thinking: String,
+    pub agent_session_name: String,
+    pub agent_token_summary: String,
     pub git_branch: String,
     pub git_dirty: bool,
     pub pending_chat_messages: Vec<PendingChatMessage>,
@@ -509,6 +525,16 @@ impl DevTuiState {
             file_picker_query: String::new(),
             file_picker_cursor: 0,
             file_picker_selection: 0,
+            transcript_selection: 0,
+            transcript_expanded: false,
+            session_picker_open: false,
+            session_picker_items: Vec::new(),
+            session_picker_selection: 0,
+            conversation_items: Vec::new(),
+            agent_model: String::new(),
+            agent_thinking: String::new(),
+            agent_session_name: String::new(),
+            agent_token_summary: String::new(),
             git_branch: String::new(),
             git_dirty: false,
             pending_chat_messages: Vec::new(),
@@ -1506,6 +1532,240 @@ impl DevTuiState {
         conversation
     }
 
+    pub fn conversation_entries_view(&self) -> Vec<super::projection::ConversationEntry> {
+        let mut entries = self.conversation_items.clone();
+        if entries.is_empty() && !self.agent_conversation.starts_with("No conversation yet.") {
+            entries = parse_conversation_view(&self.agent_conversation);
+        }
+        let mut observed = std::collections::BTreeMap::<String, usize>::new();
+        for message in &self.pending_chat_messages {
+            if message.state != ChatMessageState::Failed {
+                let seen = observed.entry(message.text.clone()).or_default();
+                let existing = entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.kind == super::projection::ConversationKind::User
+                            && entry.text == message.text
+                    })
+                    .count();
+                if *seen < existing {
+                    *seen += 1;
+                    continue;
+                }
+            }
+            let suffix = match message.state {
+                ChatMessageState::Sending => "· sending…",
+                ChatMessageState::Sent => "· sent · Glass Agent is thinking…",
+                ChatMessageState::Failed => "× send failed · press Enter to retry",
+            };
+            entries.push(super::projection::ConversationEntry {
+                kind: super::projection::ConversationKind::User,
+                text: format!("{}\n{suffix}", message.text),
+                streaming: false,
+                entry_id: None,
+                tool_name: None,
+            });
+        }
+        entries
+    }
+
+    pub fn composer_context_chips(&self) -> String {
+        let mut chips = Vec::new();
+        if !self.focused_editor_path.is_empty() {
+            chips.push(format!("@{}", self.focused_editor_path));
+        } else if let Some(path) = self.files.get(self.selected_file) {
+            chips.push(format!("@{path}"));
+        }
+        if self.focused_editor_selection.is_some() {
+            chips.push("selection".into());
+        }
+        if let Some(entity) = self.browser_workspace.state().selected() {
+            chips.push(format!("app {}", entity.name));
+        }
+        if self.pending_verify.is_some() {
+            chips.push("prove-it".into());
+        }
+        if self.composer_steer {
+            chips.push("steer".into());
+        }
+        chips.join(" · ")
+    }
+
+    pub fn agent_chrome_line(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.agent_model.is_empty() {
+            parts.push(self.agent_model.clone());
+        }
+        if !self.agent_thinking.is_empty() {
+            parts.push(format!("think {}", self.agent_thinking));
+        }
+        if !self.agent_session_name.is_empty() {
+            parts.push(self.agent_session_name.clone());
+        }
+        if !self.agent_token_summary.is_empty() {
+            parts.push(self.agent_token_summary.clone());
+        }
+        let queued = self
+            .pending_chat_messages
+            .iter()
+            .filter(|message| matches!(message.state, ChatMessageState::Sending))
+            .count();
+        if queued > 0 {
+            parts.push(format!("queued {queued}"));
+        }
+        parts.join(" · ")
+    }
+
+    pub fn move_transcript_selection(&mut self, delta: i32) {
+        let len = self.conversation_entries_view().len();
+        if len == 0 {
+            self.scroll_surface(delta);
+            return;
+        }
+        let next = self.transcript_selection as i32 + delta;
+        self.transcript_selection = next.clamp(0, len as i32 - 1) as usize;
+        self.transcript_expanded = false;
+        self.status = format!(
+            "Bubble {}/{} · f fork · r rewind · e edit last · o expand",
+            self.transcript_selection + 1,
+            len
+        );
+    }
+
+    pub fn toggle_transcript_expand(&mut self) {
+        self.transcript_expanded = !self.transcript_expanded;
+        self.status = if self.transcript_expanded {
+            "Expanded tool card · o collapse".into()
+        } else {
+            "Collapsed · o expand".into()
+        };
+    }
+
+    pub fn fork_selected_transcript(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        self.branch_selected_transcript("glass.agent.fork", worker);
+    }
+
+    pub fn rewind_selected_transcript(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        self.branch_selected_transcript("glass.agent.rewind", worker);
+    }
+
+    fn branch_selected_transcript(
+        &mut self,
+        tool: &str,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        let Some(entry) = self
+            .conversation_entries_view()
+            .get(self.transcript_selection)
+            .cloned()
+        else {
+            self.status = "No transcript bubble to branch".into();
+            return;
+        };
+        let Some(entry_id) = entry.entry_id.clone() else {
+            self.status = "Selected bubble has no Pi entry · send a turn first".into();
+            return;
+        };
+        let mut arguments = serde_json::json!({"entryId": entry_id});
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        match self.tool_request(tool, arguments, true) {
+            Ok((call, context)) => match worker.submit_tool(call, context) {
+                Ok(_) => {
+                    self.status = format!("{tool} · branching at {entry_id}");
+                    worker.request_conversation();
+                }
+                Err(error) => self.status = format!("Could not {tool}: {error}"),
+            },
+            Err(error) => self.status = format!("Could not {tool}: {error}"),
+        }
+    }
+
+    pub fn edit_last_user_message(&mut self) {
+        let entries = self.conversation_entries_view();
+        let Some(entry) = entries
+            .iter()
+            .rev()
+            .find(|entry| entry.kind == super::projection::ConversationKind::User)
+        else {
+            self.status = "No user message to edit".into();
+            return;
+        };
+        let text = entry
+            .text
+            .lines()
+            .next()
+            .unwrap_or(entry.text.as_str())
+            .to_string();
+        self.composer_input = text;
+        self.composer_cursor = self.composer_input.len();
+        self.composer_steer = false;
+        self.open_composer();
+        if let Some(entry_id) = entry.entry_id.clone() {
+            self.status = format!("Editing last user message · rewind {entry_id} on send");
+        } else {
+            self.status = "Editing last user message · Enter resends".into();
+        }
+    }
+
+    pub fn open_session_picker(&mut self, value: &serde_json::Value) {
+        self.session_picker_items = parse_session_picker_items(value);
+        self.session_picker_selection = 0;
+        self.session_picker_open = !self.session_picker_items.is_empty();
+        self.status = if self.session_picker_open {
+            format!(
+                "{} Pi session(s) · Enter switch · Esc close",
+                self.session_picker_items.len()
+            )
+        } else {
+            "No persisted Pi sessions".into()
+        };
+    }
+
+    pub fn close_session_picker(&mut self) {
+        self.session_picker_open = false;
+    }
+
+    pub fn move_session_picker_selection(&mut self, delta: i32) {
+        if self.session_picker_items.is_empty() {
+            return;
+        }
+        let next = self.session_picker_selection as i32 + delta;
+        self.session_picker_selection =
+            next.clamp(0, self.session_picker_items.len() as i32 - 1) as usize;
+    }
+
+    pub fn submit_session_picker(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(item) = self.session_picker_items.get(self.session_picker_selection) else {
+            self.status = "No session selected".into();
+            return;
+        };
+        let mut arguments = serde_json::json!({"path": item.path});
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        match self.tool_request("glass.agent.switch-session", arguments, true) {
+            Ok((call, context)) => match worker.submit_tool(call, context) {
+                Ok(_) => {
+                    self.agent_session_name = item.label.clone();
+                    self.session_picker_open = false;
+                    self.status = format!("Switching to {}", item.label);
+                    worker.request_conversation();
+                }
+                Err(error) => self.status = format!("Could not switch session: {error}"),
+            },
+            Err(error) => self.status = format!("Could not switch session: {error}"),
+        }
+    }
+
+    fn composer_send_blocked(&self) -> bool {
+        self.pending_confirmation.is_some()
+            || self.pending_agent_approval.is_some()
+            || self.queued_tool_request.is_some()
+            || (self.running_tool_job.is_some() && self.agent_send_job.is_none())
+    }
+
     fn reconcile_pending_chat(&mut self) {
         let conversation = self.agent_conversation.clone();
         let mut confirmed = std::collections::BTreeMap::<String, usize>::new();
@@ -2151,12 +2411,12 @@ impl DevTuiState {
     }
 
     pub fn submit_composer(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        if self.background_action_running() {
-            self.status = if self.agent_send_job.is_some() {
-                "Sending the previous message · keep typing, then press Enter again".into()
-            } else {
-                "Background operation running · message kept in composer".into()
-            };
+        if self.composer_input.trim_start().starts_with('/') {
+            self.submit_composer_slash(worker);
+            return;
+        }
+        if self.composer_send_blocked() {
+            self.status = "Background operation running · message kept in composer".into();
             return;
         }
         if self.snapshot_trust_label == "untrusted" {
@@ -2183,6 +2443,7 @@ impl DevTuiState {
         self.remember_composer_history(&text);
         let prove = compile_prove_it(&text);
         let steer = self.composer_steer;
+        let queued_follow_up = self.agent_send_job.is_some();
         self.composer_cursor = 0;
         self.composer_steer = false;
         self.composer_mode = true;
@@ -2238,6 +2499,8 @@ impl DevTuiState {
                 });
                 self.status = if steer {
                     "Sent · steering Glass Agent…".into()
+                } else if queued_follow_up {
+                    "Queued follow-up · Glass Agent will continue".into()
                 } else {
                     "Sent · Glass Agent is thinking…".into()
                 };
@@ -2248,6 +2511,82 @@ impl DevTuiState {
                 self.composer_cursor = self.composer_input.len();
                 self.status = format!("Message unavailable · edit and retry: {error}");
             }
+        }
+    }
+
+    fn submit_composer_slash(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let raw = self.composer_input.trim().to_string();
+        let mut parts = raw.trim_start_matches('/').split_whitespace();
+        let Some(command) = parts.next() else {
+            self.status = "Empty slash command".into();
+            return;
+        };
+        let rest = parts.collect::<Vec<_>>();
+        let mut arguments = serde_json::json!({});
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        let (tool, mutating) = match command {
+            "compact" => {
+                if !rest.is_empty() {
+                    arguments["instructions"] = serde_json::Value::String(rest.join(" "));
+                }
+                ("glass.agent.compact", true)
+            }
+            "model" => {
+                let provider = rest.first().copied().unwrap_or("");
+                let model = rest.get(1).copied().unwrap_or("");
+                if provider.is_empty() || model.is_empty() {
+                    self.status = "/model requires PROVIDER MODEL".into();
+                    return;
+                }
+                arguments["provider"] = serde_json::Value::String(provider.into());
+                arguments["modelId"] = serde_json::Value::String(model.into());
+                self.agent_model = format!("{provider}/{model}");
+                ("glass.agent.model", true)
+            }
+            "think" | "thinking" => {
+                let level = rest.first().copied().unwrap_or("");
+                if level.is_empty() {
+                    self.status = "/think requires LEVEL".into();
+                    return;
+                }
+                arguments["level"] = serde_json::Value::String(level.into());
+                self.agent_thinking = level.into();
+                ("glass.agent.thinking", true)
+            }
+            "new" => ("glass.agent.new-session", true),
+            "clone" => ("glass.agent.clone-session", true),
+            "name" => {
+                let name = rest.join(" ");
+                if name.is_empty() {
+                    self.status = "/name requires TITLE".into();
+                    return;
+                }
+                arguments["name"] = serde_json::Value::String(name.clone());
+                self.agent_session_name = name;
+                ("glass.agent.name", true)
+            }
+            "stats" => ("glass.agent.stats", false),
+            "sessions" => ("glass.agent.sessions", false),
+            "tree" => ("glass.agent.tree", false),
+            _ => {
+                self.status = format!("Unknown slash command /{command}");
+                return;
+            }
+        };
+        match self.tool_request(tool, arguments, mutating) {
+            Ok((call, context)) => match worker.submit_tool(call, context) {
+                Ok(id) => {
+                    self.running_tool_job = Some(id);
+                    self.remember_composer_history(&raw);
+                    self.composer_input.clear();
+                    self.composer_cursor = 0;
+                    self.status = format!("{tool} · queued from composer");
+                }
+                Err(error) => self.status = format!("{tool} failed: {error}"),
+            },
+            Err(error) => self.status = format!("{tool} unavailable: {error}"),
         }
     }
 
@@ -2506,6 +2845,15 @@ impl DevTuiState {
         self.running_tool_job = None;
         match result.result {
             Ok(value) => {
+                if result.tool == "glass.agent.sessions" {
+                    self.open_session_picker(&value);
+                    return;
+                }
+                if result.tool == "glass.agent.stats" {
+                    self.agent_token_summary = stats_summary(&value);
+                    self.status = format!("Session stats · {}", self.agent_token_summary);
+                    return;
+                }
                 if result.tool == "glass.browser.verify" {
                     let ok = value.get("status").and_then(serde_json::Value::as_str)
                         == Some("satisfied");
@@ -5339,6 +5687,37 @@ impl DevTuiState {
         self.harnesses = snapshot.harnesses.clone();
         self.agents = snapshot.agents.clone();
         self.agent_conversation = snapshot.agent_conversation.clone();
+        self.conversation_items = snapshot.conversation_items.clone();
+        if let Some(chrome) = self
+            .selected_agent
+            .as_ref()
+            .and_then(|selected| {
+                snapshot
+                    .agent_chrome
+                    .iter()
+                    .find(|item| item.id == *selected)
+            })
+            .or_else(|| snapshot.agent_chrome.first())
+        {
+            if self.selected_agent.is_none() {
+                self.selected_agent = Some(chrome.id.clone());
+            }
+            self.agent_model = chrome.model.clone().unwrap_or_default();
+            self.agent_thinking = chrome.thinking.clone().unwrap_or_default();
+            if let Some(path) = chrome.session_file.as_deref() {
+                self.agent_session_name = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path)
+                    .to_string();
+            }
+        }
+        let entry_count = self.conversation_entries_view().len();
+        if entry_count == 0 {
+            self.transcript_selection = 0;
+        } else {
+            self.transcript_selection = self.transcript_selection.min(entry_count - 1);
+        }
         self.reconcile_pending_chat();
         if self.agent_send_job.is_none()
             && self.pending_chat_messages.is_empty()
@@ -6705,6 +7084,99 @@ fn format_editor_buffers(buffers: &[crate::development::EditorBuffer]) -> String
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn parse_conversation_view(conversation: &str) -> Vec<super::projection::ConversationEntry> {
+    let mut entries = Vec::new();
+    for block in conversation.split("\n\n") {
+        let mut lines = block.lines();
+        let Some(first) = lines.next() else {
+            continue;
+        };
+        let body = lines.collect::<Vec<_>>().join("\n");
+        let (kind, text) = match first.trim() {
+            "YOU" => (super::projection::ConversationKind::User, body),
+            "GLASS AGENT" => (super::projection::ConversationKind::Assistant, body),
+            "ALERT" => (super::projection::ConversationKind::Alert, body),
+            "ERROR" => (super::projection::ConversationKind::Error, body),
+            "SYSTEM" => (super::projection::ConversationKind::System, body),
+            _ => continue,
+        };
+        entries.push(super::projection::ConversationEntry {
+            kind,
+            text,
+            streaming: false,
+            entry_id: None,
+            tool_name: None,
+        });
+    }
+    entries
+}
+
+fn parse_session_picker_items(value: &serde_json::Value) -> Vec<SessionPickerItem> {
+    let items = value
+        .as_array()
+        .or_else(|| value.get("sessions").and_then(serde_json::Value::as_array))
+        .cloned()
+        .unwrap_or_default();
+    items
+        .into_iter()
+        .filter_map(|item| {
+            if let Some(path) = item.as_str() {
+                return Some(SessionPickerItem {
+                    label: std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(path)
+                        .to_string(),
+                    path: path.to_string(),
+                });
+            }
+            let path = item
+                .get("path")
+                .or_else(|| item.get("file"))
+                .or_else(|| item.get("sessionFile"))
+                .and_then(serde_json::Value::as_str)?;
+            let label = item
+                .get("name")
+                .or_else(|| item.get("sessionName"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(path)
+                        .to_string()
+                });
+            Some(SessionPickerItem {
+                path: path.to_string(),
+                label,
+            })
+        })
+        .collect()
+}
+
+fn stats_summary(value: &serde_json::Value) -> String {
+    let input = value
+        .pointer("/inputTokens")
+        .or_else(|| value.pointer("/tokens/input"))
+        .or_else(|| value.get("input"))
+        .and_then(serde_json::Value::as_u64);
+    let output = value
+        .pointer("/outputTokens")
+        .or_else(|| value.pointer("/tokens/output"))
+        .or_else(|| value.get("output"))
+        .and_then(serde_json::Value::as_u64);
+    match (input, output) {
+        (Some(input), Some(output)) => format!("{input} in · {output} out"),
+        (Some(input), None) => format!("{input} tokens"),
+        _ => super::projection::first_meaningful(value)
+            .lines()
+            .next()
+            .unwrap_or("stats")
+            .to_string(),
+    }
 }
 
 fn format_pi_readiness(readiness: &crate::PiReadiness) -> String {
@@ -8109,6 +8581,123 @@ mod tests {
         phone.next_surface();
         assert_eq!(phone.surface, DevSurface::Agent);
 
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_queues_follow_up_while_a_send_is_in_flight() {
+        let root = std::env::temp_dir().join(format!("glass-follow-up-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.surface = DevSurface::Agent;
+        state.snapshot_trust_label = "trusted".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.agent_send_job = Some(9);
+        state.open_composer();
+        state.composer_input = "keep going".into();
+        state.composer_cursor = state.composer_input.len();
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_composer(&mut worker);
+        assert_ne!(
+            state.status,
+            "Background operation running · message kept in composer"
+        );
+        assert!(
+            state.status.contains("Queued follow-up")
+                || state.status.contains("thinking")
+                || state.status.contains("retry")
+                || state.status.contains("Sent")
+        );
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_slash_compact_routes_to_pi_compact() {
+        let root = std::env::temp_dir().join(format!("glass-slash-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.surface = DevSurface::Agent;
+        state.snapshot_trust_label = "trusted".into();
+        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.open_composer();
+        state.composer_input = "/compact keep the review".into();
+        state.composer_cursor = state.composer_input.len();
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_composer(&mut worker);
+        assert!(
+            state.status.contains("glass.agent.compact")
+                || state.status.contains("unavailable")
+                || state.status.contains("failed")
+        );
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn transcript_fork_uses_selected_entry_id() {
+        let root = std::env::temp_dir().join(format!("glass-fork-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.conversation_items = vec![super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::User,
+            text: "ship the review".into(),
+            streaming: false,
+            entry_id: Some("entry-7".into()),
+            tool_name: None,
+        }];
+        state.transcript_selection = 0;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.fork_selected_transcript(&mut worker);
+        assert!(
+            state.status.contains("entry-7")
+                || state.status.contains("glass.agent.fork")
+                || state.status.contains("branch")
+        );
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn agent_chrome_and_session_picker_and_context_chips() {
+        let root = std::env::temp_dir().join(format!("glass-chrome-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.agent_model = "xai/grok".into();
+        state.agent_thinking = "medium".into();
+        state.agent_session_name = "review".into();
+        state.agent_token_summary = "12 in · 40 out".into();
+        state.focused_editor_path = "src/lib.rs".into();
+        state.composer_steer = true;
+        let chrome = state.agent_chrome_line();
+        assert!(chrome.contains("xai/grok"));
+        assert!(chrome.contains("think medium"));
+        assert!(chrome.contains("review"));
+        assert!(chrome.contains("12 in"));
+        assert!(state.composer_context_chips().contains("@src/lib.rs"));
+        assert!(state.composer_context_chips().contains("steer"));
+        state.open_session_picker(&serde_json::json!([
+            {"path": "/tmp/alpha.jsonl", "name": "alpha"},
+            {"path": "/tmp/beta.jsonl"}
+        ]));
+        assert!(state.session_picker_open);
+        assert_eq!(state.session_picker_items[0].label, "alpha");
+        assert_eq!(state.session_picker_items[1].label, "beta.jsonl");
+        state.edit_last_user_message();
+        state.conversation_items = vec![super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::User,
+            text: "previous prompt\n· sending…".into(),
+            streaming: false,
+            entry_id: Some("entry-1".into()),
+            tool_name: None,
+        }];
+        state.edit_last_user_message();
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "previous prompt");
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 }

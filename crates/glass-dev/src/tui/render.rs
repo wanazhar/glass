@@ -272,6 +272,9 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     if state.file_picker_open {
         render_file_picker(frame, state, area);
     }
+    if state.session_picker_open {
+        render_session_picker(frame, state, area);
+    }
 }
 fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
@@ -645,6 +648,79 @@ fn render_file_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 palette_row_text(&format!("{marker}{path}"), inner.width),
                 style,
             )));
+        }
+    }
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+            .block(block),
+        modal,
+    );
+}
+
+fn render_session_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4).min(104);
+    let height = area.height.saturating_sub(6).max(5).min(area.height);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + 1,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(" PI SESSIONS · Enter switch · Esc close ")
+        .title_style(
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(modal);
+    let mut lines = vec![palette_fixed_line(
+        format!("SESSIONS · {}", state.session_picker_items.len()),
+        inner.width,
+        Style::default()
+            .fg(ACCENT_BRIGHT)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if state.session_picker_items.is_empty() {
+        lines.push(palette_fixed_line(
+            "No persisted Pi sessions",
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    } else {
+        let visible = inner.height.saturating_sub(1) as usize;
+        let start = state
+            .session_picker_selection
+            .saturating_sub(visible.saturating_sub(1));
+        for (index, item) in state
+            .session_picker_items
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible)
+        {
+            let selected = index == state.session_picker_selection;
+            let marker = if selected { "▸ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .bg(ACTIVE_BACKGROUND)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT).bg(PANEL_BACKGROUND)
+            };
+            lines.push(palette_fixed_line(
+                format!("{marker}{} · {}", item.label, item.path),
+                inner.width,
+                style,
+            ));
         }
     }
     frame.render_widget(Clear, modal);
@@ -1472,10 +1548,16 @@ fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
         .map_or(app_summary.clone(), |summary| {
             format!("APP (optional) · {summary}")
         });
+    let chrome = state.agent_chrome_line();
+    let second = if chrome.is_empty() {
+        app_summary
+    } else {
+        format!("{chrome} · {app_summary}")
+    };
     format!(
         "{}\n{}",
         compact_line(runtime_state, width),
-        compact_line(&app_summary, width)
+        compact_line(&second, width)
     )
 }
 #[derive(Clone, Copy)]
@@ -1508,6 +1590,35 @@ fn wrap_bubble_line(line: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
+fn conversation_entry_lines(
+    entries: &[super::projection::ConversationEntry],
+    selected: usize,
+    expanded: bool,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut rendered = String::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if !rendered.is_empty() {
+            rendered.push_str("\n\n");
+        }
+        let mut block = if !expanded && entry.tool_name.is_some() {
+            let heading = match entry.kind {
+                super::projection::ConversationKind::Alert => "ALERT",
+                super::projection::ConversationKind::Error => "ERROR",
+                _ => "SYSTEM",
+            };
+            format!("{heading}\n{}", entry.card_line())
+        } else {
+            entry.render()
+        };
+        if index == selected {
+            block = format!("▸ {block}");
+        }
+        rendered.push_str(&block);
+    }
+    conversation_bubble_lines(&rendered, width)
+}
+
 fn conversation_bubble_lines(content: &str, width: u16) -> Vec<Line<'static>> {
     let available = usize::from(width).max(24);
     let mut lines = Vec::new();
@@ -1517,6 +1628,10 @@ fn conversation_bubble_lines(content: &str, width: u16) -> Vec<Line<'static>> {
         }
         let mut block_lines = block.lines();
         let first = block_lines.next().unwrap_or_default().trim();
+        let (selected_bubble, first) = first
+            .strip_prefix("▸ ")
+            .map(|rest| (true, rest))
+            .unwrap_or((false, first));
         let (kind, label, body) = match first {
             "YOU" => (
                 ConversationBubbleKind::User,
@@ -1557,6 +1672,11 @@ fn conversation_bubble_lines(content: &str, width: u16) -> Vec<Line<'static>> {
         } else {
             0
         };
+        let label = if selected_bubble {
+            format!("▸ {label}")
+        } else {
+            label.to_string()
+        };
         let label_width = label.chars().count();
         let rule = "─".repeat(inner_width.saturating_sub(label_width + 1));
         let prefix = " ".repeat(indent);
@@ -1592,18 +1712,38 @@ fn conversation_bubble_lines(content: &str, width: u16) -> Vec<Line<'static>> {
 }
 
 fn agent_conversation_text(state: &DevTuiState, landing: &str, width: u16) -> Text<'static> {
-    let conversation = state.conversation_view();
-    let mut lines = if conversation.starts_with("No conversation yet.") {
+    let entries = state.conversation_entries_view();
+    let mut lines = if entries.is_empty() {
         panel_text(landing).lines
     } else {
-        conversation_bubble_lines(&conversation, width)
+        conversation_entry_lines(
+            &entries,
+            state.transcript_selection,
+            state.transcript_expanded,
+            width,
+        )
     };
     if !state.composer_mode {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Enter to chat",
+            "Enter to chat · j/k bubbles · f fork · r rewind · e edit last",
             Style::default().fg(MUTED),
         )));
+    } else {
+        let chips = state.composer_context_chips();
+        if !chips.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("Context · {chips}"),
+                Style::default().fg(MUTED),
+            )));
+        }
+        if state.composer_steer {
+            lines.push(Line::from(Span::styled(
+                "Steer · Ctrl-D follow-up · Ctrl-X abort",
+                Style::default().fg(WARNING),
+            )));
+        }
     }
     Text::from(lines)
 }
@@ -3257,7 +3397,8 @@ mod tests {
     fn command_palette_keeps_bottom_selection_visible_and_highlighted() {
         let mut palette_state = state(TuiLayout::Mobile);
         palette_state.open_palette();
-        for _ in 0..16 {
+        let last = palette_state.surface_actions().len().saturating_sub(1);
+        while palette_state.palette_selection < last {
             palette_state.move_palette_selection(1);
         }
 

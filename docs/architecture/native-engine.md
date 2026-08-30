@@ -2,9 +2,10 @@
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
-viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius
-slices, including bounded style inheritance, paint clipping, solid/dashed/dotted
-border painting, rounded fill/border masks, and content-box geometry,
+viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
+bounded-inline-flow slices, including bounded style inheritance, paint clipping,
+solid/dashed/dotted border painting, rounded fill/border masks, inline-box line
+placement, and content-box geometry,
 plus feature-gated
 runtime/CLI integration; not a stable browser compatibility or security
 boundary.
@@ -26,8 +27,9 @@ normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
 display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden` paint
 clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
-bounded circular border radii, and bounded outer/content box geometry with
-explicit root viewport scrolling. The engine does not yet own
+bounded circular border radii, bounded outer/content box geometry, explicit root
+viewport scrolling, and bounded inline-box line placement. The engine does not
+yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
@@ -237,6 +239,15 @@ root-scroll translation. Percentages, slash-separated elliptical radii,
 corner longhands, rounded descendant overflow clips, anti-aliasing, and
 browser corner-join fidelity remain unsupported.
 
+The 021 bounded-inline-flow boundary fixes placement of adjacent supported
+inline element boxes by preflighting their integer outer width and margins
+against the remaining line width before creating their layout boxes. It keeps
+whole inline boxes atomic, preserves fixed line-height flow, and feeds the
+same document-space coordinates to display-list, hit-test, and root-scroll
+consumers. Font metrics/shaping, word-aware text fragments, whitespace
+collapsing, baselines, bidi, floats, replaced elements, flex/grid, and general
+inline-formatting parity remain unsupported.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -415,6 +426,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded one-to-four-value physical border-radius shorthand expansion,
   conservative concrete-box normalization, rounded fill/border replay, and
   rounded point hit testing with explicit rejection of unsupported radius forms.
+- bounded inline-box preflight line placement, deterministic line-height flow,
+  and consistent layout/display-list/hit-test coordinates for adjacent inline
+  elements.
 - bounded logical-surface PNG encoding, capture-byte enforcement, read-only
   revision behavior, real native backend dispatch, and explicit JPEG/PDF
   denials.

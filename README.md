@@ -336,6 +336,8 @@ for nested content, bounded paint clips, bounded side-specific solid/dashed/dott
 physical circular border radii, bounded inline-box line placement, bounded
 fixed pixel line-height flow, bounded direct-text flow fragments and
 source-order text paint, bounded word-aware wrapping, bounded
+source-whitespace boundaries across sibling direct text and supported inline
+flow items, bounded
 PNG capture through the explicit backend operation, and Rust-only
 display-list/software-surface artifacts. A
 `native-engine` feature build exposes the explicit local

@@ -181,6 +181,14 @@ content origins and normal-flow margins. Logical sides, invalid/negative/
 percentage/`auto` values, margin collapsing, and general CSS layout remain
 outside the native capability claim.
 
+The completed whitespace-boundaries slice is
+[native-engine-026](tasks/native-engine-026.md). It preserves bounded source
+whitespace boundaries across sibling direct text, `display:contents`, and
+supported inline flow items, paints consumed separators through the existing
+text-fragment path, and drops separators at wrapped line starts. CSS
+`white-space` modes, typography, and cross-owner inline parity remain outside
+the native capability claim.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

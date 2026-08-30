@@ -79,7 +79,8 @@ viewport scrolling, inherited text color, bounded paint clips, bounded
   side-specific solid/dashed/dotted-border paint, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow, bounded direct-text flow fragments and source-order text
-  paint, bounded word-aware wrapping, a deterministic
+  paint, bounded word-aware wrapping, bounded source-whitespace boundaries
+  across sibling text and supported inline items, a deterministic
   clear/fill/text/border display list, a
 logical RGBA software surface, and
 bounded PNG capture through the explicit backend operation;

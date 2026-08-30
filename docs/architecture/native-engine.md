@@ -4,7 +4,8 @@ Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
-bounded-word-wrap/bounded-physical-box-edges slices,
+bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries
+slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -33,8 +34,9 @@ clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
 bounded circular border radii, bounded outer/content box geometry, explicit root
 viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
 line-height flow, bounded direct-text fragments at actual flow origins,
-source-order text paint, bounded word-aware wrapping, and bounded physical
-four-side padding/margin edges. The engine does not
+source-order text paint, bounded word-aware wrapping, bounded physical
+four-side padding/margin edges, and bounded source-whitespace boundaries.
+The engine does not
 yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
@@ -271,8 +273,8 @@ the display list no longer re-derives aggregate direct text at an element's
 content origin. Fragments use the containing element's computed color and
 ancestor clip and remain subject to root-scroll translation. CSS whitespace
 modes, CSS word-breaking variants, font metrics/shaping, baselines, bidi,
-whitespace joining across nodes, and browser inline-formatting parity remain
-unsupported.
+At that checkpoint, whitespace joining across nodes and inline descendants,
+and browser inline-formatting parity, remained unsupported.
 
 The 024 bounded-word-wrap boundary consumes the 023 collapsed text fragments
 as ASCII-space-separated words. A complete word plus its separator stays on the
@@ -281,7 +283,8 @@ fresh line without that separator, and a word wider than the full line is
 split by fixed character capacity. This improves fixture readability without
 adding CSS whitespace modes, word-break/overflow-wrap behavior, hyphenation,
 font metrics/shaping, baselines, bidi, cross-node whitespace joining, or
-browser inline-formatting parity.
+browser inline-formatting parity. At that checkpoint, source whitespace
+boundaries across separate flow items remained unsupported.
 
 The 025 bounded-physical-box-edges boundary extends the 016 uniform box-model
 seed with one-to-four-value physical `padding` and `margin` shorthands plus
@@ -293,6 +296,17 @@ and root-scroll projections. Values remain bounded non-negative integer pixels;
 invalid, negative, percentage, unitless, `auto`, logical-side, and more than
 four-value declarations are ignored. Margin collapsing, positioning, flex,
 grid, and general CSS layout remain unsupported.
+
+The 026 bounded-whitespace-boundaries boundary retains whether each direct
+text node begins or ends with author whitespace and shares one pending
+separator across sibling direct text, `display:contents`, and supported inline
+flow items. It paints a consumed separator through the existing containing
+element text-fragment path, drops leading whitespace at a fresh line, and
+drops a separator when the next inline item or word must wrap. Direct text with
+no source boundary remains adjacent. CSS `white-space` modes, preserved
+tabs/newlines, `word-spacing`, Unicode line breaking, bidi, font
+metrics/shaping, anonymous inline boxes, whitespace joining across independent
+nested flow owners, and browser inline-formatting parity remain unsupported.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -486,6 +500,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded physical padding/margin cascade, content-box/border-box sizing,
   outer/content layout rectangles, side-aware margin flow, and content-origin
   text paint.
+- bounded source-whitespace boundaries across direct text, `display:contents`,
+  and supported inline flow items, including source-order separator paint and
+  drop-on-wrap behavior.
 - bounded root viewport scrolling, content-height/max-offset derivation,
   viewport-to-document hit-test mapping, translated software replay/capture,
   clamping, and revision/effect behavior for moved scroll actions.

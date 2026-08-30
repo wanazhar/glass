@@ -61,7 +61,8 @@ source-behavior reference.
   clips, side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow, bounded direct-text flow fragments and source-order text
-  paint, bounded word-aware wrapping, a display list, a logical RGBA software
+  paint, bounded word-aware wrapping, bounded source-whitespace boundaries
+  across supported inline flow, a display list, a logical RGBA software
   surface,
   and bounded PNG capture; these are not screenshot-containing evidence.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
@@ -243,7 +244,8 @@ bounded presentation, inherited text color, paint clips, side-specific
 solid/dashed/dotted-border paint, bounded physical circular border radii,
 bounded inline-box line placement, bounded fixed pixel line-height flow,
 bounded direct-text flow fragments and source-order text paint, bounded
-word-aware wrapping,
+word-aware wrapping, bounded source-whitespace boundaries across supported
+inline flow,
   normal-flow outer/content box geometry with physical four-side padding/margin
   shorthands and longhands,
 explicit box sizing, and bounded vertical viewport scrolling,

@@ -804,6 +804,111 @@ fn native_text_fragments_wrap_words_and_split_only_wide_words() {
 }
 
 #[test]
+fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
+    let adjacent = NativeDocument::parse(
+        "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 48,
+        device_scale_factor_milli: 1000,
+    };
+    let container = adjacent.resolve_target("id=container").unwrap();
+    let layout = adjacent.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(container).unwrap().height, 20);
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "A"),
+            (NativePoint { x: 8, y: 0 }, "B"),
+        ]
+    );
+
+    let separated = NativeDocument::parse(
+        "<div id='container' style='width:40px'>A <span id='middle' style='display:inline'>B</span> C</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let container = separated.resolve_target("id=container").unwrap();
+    let middle = separated.resolve_target("id=middle").unwrap();
+    let layout = separated
+        .layout(Viewport {
+            width: 48,
+            height: 48,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(layout.box_for(container).unwrap().height, 20);
+    assert_eq!(
+        layout.box_for(middle),
+        Some(NativeRect {
+            x: 16,
+            y: 0,
+            width: 8,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .map(|run| (run.node_id, run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (container, NativePoint { x: 0, y: 0 }, "A"),
+            (container, NativePoint { x: 8, y: 0 }, " "),
+            (middle, NativePoint { x: 16, y: 0 }, "B"),
+            (container, NativePoint { x: 24, y: 0 }, " C"),
+        ]
+    );
+}
+
+#[test]
+fn native_text_boundary_separator_drops_when_inline_item_wraps() {
+    let document = NativeDocument::parse(
+        "<div id='container' style='width:16px'>A <span id='middle' style='display:inline'>B</span> C</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let container = document.resolve_target("id=container").unwrap();
+    let middle = document.resolve_target("id=middle").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(container).unwrap().height, 60);
+    assert_eq!(
+        layout.box_for(middle),
+        Some(NativeRect {
+            x: 0,
+            y: 20,
+            width: 8,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .map(|run| (run.node_id, run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (container, NativePoint { x: 0, y: 0 }, "A"),
+            (middle, NativePoint { x: 0, y: 20 }, "B"),
+            (container, NativePoint { x: 0, y: 40 }, "C"),
+        ]
+    );
+}
+
+#[test]
 fn native_box_model_lays_out_content_padding_border_and_margin() {
     let document = NativeDocument::parse(
         "<style>#outer { width: 20px; height: 10px; padding: 2px; border: 1px solid red; } #child { display: block; width: 4px; height: 4px; margin: 3px; } #fixed { width: 20px; height: 10px; padding: 2px; border: 1px solid blue; box-sizing: border-box; }</style><div id='outer'><div id='child'>A</div></div><div id='fixed'>B</div>",

@@ -70,6 +70,12 @@ hit-testing, and the native `point=x,y` click-target extension. It does not
 add screenshots, paint, scrolling, general CSS, or geometry to the stable
 transport evidence contract.
 
+The completed display-list slice is
+[native-engine-010](tasks/native-engine-010.md). It adds a deterministic,
+Rust-only clear/fill/text display list from the current layout revision and a
+bounded solid-color CSS subset. It does not add rasterization, screenshots,
+fonts, images, or a paint capability to the stable backend contract.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -268,12 +268,13 @@ pub use browser::{
 
 #[cfg(feature = "native-engine")]
 pub use browser::{
-    DeterministicClock, DeterministicScheduler, NATIVE_CONTEXT_ID, NativeBrowsingContext,
-    NativeDocument, NativeEngine, NativeEngineBackend, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEngineSnapshot, NativeFixture, NativeHistory, NativeHistoryEntry,
-    NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode, NativeNodeId,
-    NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource, NativeResourceLoader,
-    NativeTask, ScheduledTask, Viewport,
+    DeterministicClock, DeterministicScheduler, MAX_NATIVE_DISPLAY_COMMANDS, NATIVE_CONTEXT_ID,
+    NativeBrowsingContext, NativeColor, NativeDisplayCommand, NativeDisplayList, NativeDocument,
+    NativeEngine, NativeEngineBackend, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
+    NativeEngineSnapshot, NativeFixture, NativeHistory, NativeHistoryEntry, NativeLayoutBox,
+    NativeLayoutSnapshot, NativeLifecycleState, NativeNode, NativeNodeId, NativeNodeKind,
+    NativeOrigin, NativePoint, NativeRect, NativeResource, NativeResourceLoader, NativeTask,
+    ScheduledTask, Viewport,
 };
 
 pub use task_protocol::{

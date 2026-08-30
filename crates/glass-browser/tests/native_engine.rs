@@ -2,8 +2,9 @@
 
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
-    NativeAction, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeRect, Viewport,
+    NativeAction, NativeColor, NativeDisplayCommand, NativeDocument, NativeEngine,
+    NativeEngineConfig, NativeEngineError, NativeEngineLimits, NativeEventKind,
+    NativeLifecycleState, NativeRect, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -113,6 +114,80 @@ fn native_layout_excludes_hidden_boxes_and_hit_testing_is_viewport_bound() {
     );
     assert!(layout.hit_test(-1, 0).is_err());
     assert!(layout.hit_test(320, 0).is_err());
+}
+
+#[test]
+fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
+    let document = NativeDocument::parse(
+        "<style>#card { background-color: #102030; color: rgb(1, 2, 3); }</style><main><div id='card'>Hello <span>child</span></div><div id='hidden' style='display:none;background-color:red'>Hidden</div></main>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 320,
+        height: 200,
+        device_scale_factor_milli: 1000,
+    };
+    let card = document.resolve_target("id=card").unwrap();
+    let hidden = document.resolve_target("id=hidden").unwrap();
+
+    let list = document.display_list(viewport).unwrap();
+    assert_eq!(list.revision, document.revision());
+    assert_eq!(list.viewport, viewport);
+    assert!(matches!(
+        list.commands.first(),
+        Some(NativeDisplayCommand::Clear { color }) if *color == NativeColor::WHITE
+    ));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, color, .. }
+                if *node_id == card
+                    && *color == NativeColor { red: 16, green: 32, blue: 48, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun { text, color, .. }
+                if text == "Hello"
+                    && *color == NativeColor { red: 1, green: 2, blue: 3, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun { text, color, .. }
+                if text == "child" && *color == NativeColor::BLACK
+        )
+    }));
+    assert!(!list.commands.iter().any(|command| match command {
+        NativeDisplayCommand::FillRect { node_id, .. }
+        | NativeDisplayCommand::TextRun { node_id, .. } => *node_id == hidden,
+        NativeDisplayCommand::Clear { .. } => false,
+    }));
+    assert_eq!(list, document.display_list(viewport).unwrap());
+}
+
+#[test]
+fn native_engine_display_list_revision_tracks_accepted_actions() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://paint", "<button id='save'>Save</button>")
+        .unwrap()
+        .with_initial_url("fixture://paint");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let initial = engine.display_list().unwrap();
+    assert_eq!(initial.revision, 1);
+    engine
+        .action(NativeAction::Click {
+            target: "id=save".into(),
+        })
+        .unwrap();
+    let after_action = engine.display_list().unwrap();
+    assert_eq!(after_action.revision, 2);
+    assert_ne!(initial, after_action);
 }
 
 #[test]

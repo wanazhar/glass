@@ -3,6 +3,7 @@ use super::css::NativeStylesheet;
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
 use super::layout::NativeLayoutSnapshot;
+use super::paint::NativeDisplayList;
 use super::{config::Viewport, css::NativeComputedStyle};
 use std::collections::BTreeMap;
 
@@ -354,6 +355,12 @@ impl NativeDocument {
         y: i64,
     ) -> Result<Option<NativeNodeId>, NativeEngineError> {
         self.layout(viewport)?.hit_test(x, y)
+    }
+
+    /// Derive an immutable display list from the current layout revision.
+    pub fn display_list(&self, viewport: Viewport) -> Result<NativeDisplayList, NativeEngineError> {
+        let layout = self.layout(viewport)?;
+        NativeDisplayList::build(self, &layout)
     }
 
     /// Resolve one explicit semantic locator to exactly one current element.
@@ -796,6 +803,24 @@ impl NativeDocument {
         self.element_text(id, MAX_LOCATOR_BYTES)
             .map(|(text, _)| u32::try_from(text.chars().count()).unwrap_or(u32::MAX))
             .unwrap_or_default()
+    }
+
+    pub(crate) fn direct_text(&self, id: NativeNodeId) -> (String, bool) {
+        let mut text = String::new();
+        let children = self
+            .node(id)
+            .map(|node| node.children().to_vec())
+            .unwrap_or_default();
+        for child_id in children {
+            if let Some(NativeNode {
+                kind: NativeNodeKind::Text(value),
+                ..
+            }) = self.node(child_id)
+            {
+                text.push_str(value);
+            }
+        }
+        collapse_text(&text, MAX_LOCATOR_BYTES)
     }
 
     pub(crate) fn nearest_clickable_ancestor(&self, id: NativeNodeId) -> Option<NativeNodeId> {

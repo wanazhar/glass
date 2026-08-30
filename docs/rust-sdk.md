@@ -62,10 +62,47 @@ APIs.
 |---|---:|---|
 | `visual-compare` | no | PNG comparison helpers for explicit screenshot checks |
 | `fuzzing` | no | Fuzz-only hooks; do not enable in normal applications |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser engine; explicit Rust backend path only |
 
 docs.rs builds all features. The default `glass-browser` library remains
 browser-focused; development runtime dependencies such as PTY integration are
 in `glass-dev`, not optional browser features.
+
+### Native engine (experimental)
+
+The native engine is an explicit, default-off backend inside `glass-browser`.
+It currently supports only local `about:blank`, bounded `data:text/html`, and
+registered `fixture://` documents. Construct it through the backend factory;
+do not treat it as a replacement for `BrowserSession` or Chromium:
+
+```rust,no_run
+#[cfg(feature = "native-engine")]
+use glass_browser::browser::native_engine::NativeEngineConfig;
+#[cfg(feature = "native-engine")]
+use glass_browser::browser_backend::BrowserBackendDispatcher;
+#[cfg(feature = "native-engine")]
+use glass_browser::BackendFactory;
+
+#[cfg(feature = "native-engine")]
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let backend = BackendFactory::native(NativeEngineConfig::default())?;
+let dispatcher = BrowserBackendDispatcher::new(&backend);
+dispatcher.initialize().await?;
+let page = dispatcher
+    .navigate(glass_browser::browser_backend::NavigationRequest {
+        url: "about:blank".into(),
+    })
+    .await?;
+assert_eq!(page.revision, 1);
+dispatcher.close().await?;
+# Ok(())
+# }
+```
+
+The backend profile declares lifecycle, navigation, one context, and bounded
+evidence only. Actions, effects, scripts, captures, storage, prompts, and
+downloads are omitted and fail through the dispatcher. The feature adds no
+dependency and is never included in automatic backend selection.
 
 ## Session ownership
 

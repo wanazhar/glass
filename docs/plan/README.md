@@ -24,6 +24,20 @@ version claims.
 | Kitty/live browser presentation | 0.3.14; [Mobile and remote](../mobile-remote.md) and [browser connection](../architecture/browser-connection.md) |
 | Pi runtime and external harness workflow | Current checkout with Pi SDK 0.84.4; [Native Pi SDK runtime](../pi-sdk-runtime.md), [Development Runtime](../development-runtime.md), and [CLI](../cli.md) |
 
+## Active plan: Glass native browser engine (issue #40)
+
+Status: Phase 0/Phase 1 checkpoint complete locally; later engine phases remain
+in progress. The authoritative epic is
+[issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
+module decomposition, integration enumeration, and tradeoffs are in the
+[native-engine architecture](../architecture/native-engine.md) and
+[native-engine analysis](analysis/native-engine.md).
+
+The first dependency-ordered checkpoint is
+[native-engine-001](tasks/native-engine-001.md): a default-off,
+fixture/data-URL-only, one-context engine kernel and explicit semantic backend.
+It does not claim browser parity or remote-content safety.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

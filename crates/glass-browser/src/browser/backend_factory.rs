@@ -6,6 +6,10 @@
 
 use super::backend_adapter::CdpBrowserBackend;
 use super::bidi_backend::{BidiBackendConfig, BidiBrowserBackend};
+#[cfg(feature = "native-engine")]
+use super::native_backend::{NATIVE_ENGINE_BACKEND_ID, NativeEngineBackend};
+#[cfg(feature = "native-engine")]
+use super::native_engine::NativeEngineConfig;
 use super::proof_backend::ProofBackend;
 use super::webdriver_backend::{WebDriverBackendConfig, WebDriverBrowserBackend};
 use crate::browser_backend::{
@@ -20,6 +24,8 @@ pub enum BackendStartup {
     Bidi(Box<BidiBrowserBackend>),
     WebDriver(Box<WebDriverBrowserBackend>),
     Proof(Box<ProofBackend>),
+    #[cfg(feature = "native-engine")]
+    Native(Box<NativeEngineBackend>),
 }
 
 impl BackendStartup {
@@ -29,6 +35,8 @@ impl BackendStartup {
             Self::Bidi(backend) => backend.profile(),
             Self::WebDriver(backend) => backend.profile(),
             Self::Proof(backend) => backend.profile(),
+            #[cfg(feature = "native-engine")]
+            Self::Native(backend) => backend.profile(),
         }
     }
 
@@ -52,6 +60,8 @@ impl BrowserBackend for BackendStartup {
             Self::Bidi(backend) => backend.dispatch(operation, request),
             Self::WebDriver(backend) => backend.dispatch(operation, request),
             Self::Proof(backend) => backend.dispatch(operation, request),
+            #[cfg(feature = "native-engine")]
+            Self::Native(backend) => backend.dispatch(operation, request),
         }
     }
 }
@@ -100,6 +110,26 @@ impl BackendFactory {
         if candidates.is_empty() {
             return Err(BrowserBackendError::SelectionFailed {
                 reason: "no backend candidates were registered".into(),
+            });
+        }
+        let candidates = candidates
+            .into_iter()
+            .filter(|_candidate| {
+                #[cfg(feature = "native-engine")]
+                {
+                    _candidate.backend_id() != NATIVE_ENGINE_BACKEND_ID
+                        || request.preferred_backend_id.as_deref() == Some(NATIVE_ENGINE_BACKEND_ID)
+                }
+                #[cfg(not(feature = "native-engine"))]
+                {
+                    let _ = request;
+                    true
+                }
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: "no backend candidates were eligible for automatic selection".into(),
             });
         }
         let profiles = candidates
@@ -153,6 +183,13 @@ impl BackendFactory {
             session,
         )?)))
     }
+
+    #[cfg(feature = "native-engine")]
+    pub fn native(config: NativeEngineConfig) -> Result<BackendStartup, BrowserBackendError> {
+        Ok(BackendStartup::Native(Box::new(NativeEngineBackend::new(
+            config,
+        )?)))
+    }
 }
 
 #[cfg(test)]
@@ -180,5 +217,32 @@ mod tests {
         };
         let started = BackendFactory::start(&request, vec![proof]).unwrap();
         assert_eq!(started.profile().identity.backend_id, "semantic-proof");
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_backend_is_explicit_only() {
+        let native = BackendFactory::native(NativeEngineConfig::default()).unwrap();
+        let automatic = BackendSelectionRequest {
+            schema_version: BROWSER_BACKEND_SCHEMA_VERSION,
+            glass_version: env!("CARGO_PKG_VERSION").into(),
+            preferred_backend_id: None,
+            browser_family: None,
+            browser_version: None,
+            required_capabilities: vec![],
+            minimum_certification: CertificationLevel::Experimental,
+        };
+        assert!(BackendFactory::start(&automatic, vec![native]).is_err());
+
+        let native = BackendFactory::native(NativeEngineConfig::default()).unwrap();
+        let explicit = BackendSelectionRequest {
+            preferred_backend_id: Some(NATIVE_ENGINE_BACKEND_ID.into()),
+            ..automatic
+        };
+        let started = BackendFactory::start(&explicit, vec![native]).unwrap();
+        assert_eq!(
+            started.profile().identity.backend_id,
+            NATIVE_ENGINE_BACKEND_ID
+        );
     }
 }

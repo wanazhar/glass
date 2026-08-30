@@ -8,9 +8,11 @@ Glass is a reusable Rust library plus one `glass` executable from the
 `glass-dev` package that gives local automation clients a semantic execution
 layer over direct Chrome control through raw CDP. It also exposes a bounded
 portable semantic session for externally managed Firefox BiDi and Safari
-WebDriver endpoints. It owns the client and session lifecycle, bounded
-extraction, Web IR reconciliation, deterministic task compilation, and guarded
-execution; the browser remains an external process.
+WebDriver endpoints, plus a feature-gated Glass-owned native-engine
+experiment. It owns the client and session lifecycle, bounded extraction, Web
+IR reconciliation, deterministic task compilation, and guarded execution; CDP,
+BiDi, and WebDriver browsers remain external processes, while the native engine
+is an explicitly selected in-process experiment.
 
 ## Product constraints
 
@@ -32,6 +34,7 @@ MCP ─────┼───────────────────�
 TUI ─────┘                                        │
                                                   ├──> Profile/Chrome lifecycle
                                                   └──> bounded PageContext
+Native Rust API ──────────────────────────────────> NativeEngineBackend (opt-in)
 ```
 
 `BrowserSession` owns browser semantics. Frontends do not issue raw CDP
@@ -75,10 +78,13 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
 - Browser-free CLI, MCP, protocol, and Rust helpers use the same stable Web IR,
   Task Protocol, and compiler contracts as live execution.
 - The TUI preserves its current layout, but browser I/O runs in a worker task rather than the render/input loop.
+- The native engine is default-off, fixture/data-URL-only in its first phase,
+  and never enters automatic backend selection.
 
 ## Module index
 
 - [Browser data plane](browser.md)
+- [Native browser engine](native-engine.md)
 - [Automation contracts](automation.md)
 - [Semantic execution](../semantic-execution.md)
 - [Semantic core hardening](semantic-core-hardening.md)

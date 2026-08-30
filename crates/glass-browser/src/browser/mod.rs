@@ -39,6 +39,12 @@ pub mod connection;
 pub mod dom;
 /// Mouse movement engine with bounded smooth pointer paths.
 pub mod mouse;
+/// Feature-gated Glass-owned native browser engine backend.
+#[cfg(feature = "native-engine")]
+pub mod native_backend;
+/// Feature-gated Glass-owned native browser engine kernel.
+#[cfg(feature = "native-engine")]
+pub mod native_engine;
 /// Named local browser sessions that outlive one-shot CLI invocations.
 pub mod persistent;
 /// Security policy engine with capability-based operation gating.
@@ -58,6 +64,18 @@ pub(crate) use backend_adapter::CdpSessionBackend;
 pub use backend_factory::{BackendFactory, BackendStartup, StartedBackend};
 /// WebDriver BiDi backend and endpoint configuration.
 pub use bidi_backend::{BidiBackendConfig, BidiBrowserBackend};
+/// Glass-owned native browser engine backend.
+#[cfg(feature = "native-engine")]
+pub use native_backend::NativeEngineBackend;
+/// Glass-owned native browser engine kernel types.
+#[cfg(feature = "native-engine")]
+pub use native_engine::{
+    DeterministicClock, DeterministicScheduler, NATIVE_CONTEXT_ID, NativeBrowsingContext,
+    NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
+    NativeEngineSnapshot, NativeFixture, NativeHistory, NativeHistoryEntry, NativeLifecycleState,
+    NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativeResource, NativeResourceLoader,
+    NativeTask, ScheduledTask, Viewport,
+};
 /// Browser-free deterministic backend used for semantic conformance tests.
 pub use proof_backend::ProofBackend;
 /// Alternative browser runtime and portable semantic session.

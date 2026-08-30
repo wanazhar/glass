@@ -165,6 +165,7 @@ jobs:
               "Browser-free ubuntu-latest",
               "Browser-free macos-latest",
               "Browser-free windows-latest",
+              "Native engine core",
           }
           if certification.get("git_sha") != expected_sha:
               raise SystemExit("CI certification SHA does not match the release source")

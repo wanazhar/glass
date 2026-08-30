@@ -96,6 +96,23 @@ untrusted-mcp, and polite network policy modes currently require the full
 Chromium session because alternative drivers do not yet provide Glass's
 request-interception and robots gates.
 
+### Native engine (feature-gated Rust path)
+
+The Glass-owned native engine is not yet a CLI `--browser-runtime` value. Phase
+1 is available only through the explicitly enabled Rust backend path:
+
+```console
+cargo test -p glass-browser --features native-engine --test native_engine --locked
+```
+
+It is a deterministic, headless fixture/data-URL engine with one context and
+bounded URL/title/visible-text evidence. It has no network, JavaScript,
+CSS/layout/paint, storage, screenshots, prompts, downloads, or DOM actions.
+It is experimental, in-process, and not safe for hostile remote content. The
+native backend never enters automatic selection or silently falls back to
+Chromium; a user-facing CLI/runtime contract will be added only in a later
+certified task.
+
 Place global options before or after the subcommand.
 Compatibility spellings are limited to the aliases defined by Clap:
 `--chrome` for `--chrome-path` and `--semantic-level` for `observe --level`.

@@ -222,9 +222,12 @@ servers must remain private.
 
 CDP is the production backend for the full session. Firefox WebDriver BiDi and
 Safari W3C WebDriver are experimental bounded adapters for the portable
-semantic session. The proof backend is browser-free and only certifies
-protocol conformance. Capability omission or incompatibility is a typed
-denial, never a fallback to raw transport.
+semantic session. The feature-gated native engine is an experimental,
+fixture/data-URL-only Glass-owned backend exposed through the explicit Rust
+factory; it is not a CLI runtime or remote-content security boundary yet. The
+proof backend is browser-free and only certifies protocol conformance.
+Capability omission or incompatibility is a typed denial, never a fallback to
+raw transport or another backend.
 
 Surface contracts describe document, frame, shadow, SVG, canvas, media,
 embedded, PDF, browser-native, remote-stream, terminal, and extension

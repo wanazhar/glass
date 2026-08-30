@@ -12,6 +12,7 @@ mod engine;
 mod error;
 mod history;
 mod interaction;
+mod layout;
 mod lifecycle;
 mod origin;
 mod resource_loader;
@@ -28,6 +29,7 @@ pub use engine::{NativeActionResult, NativeEffectsSnapshot, NativeEngine, Native
 pub use error::NativeEngineError;
 pub use history::{NativeHistory, NativeHistoryEntry};
 pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
+pub use layout::{NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect};
 pub use lifecycle::NativeLifecycleState;
 pub use origin::NativeOrigin;
 pub use resource_loader::{NativeResource, NativeResourceLoader};

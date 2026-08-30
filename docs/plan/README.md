@@ -53,15 +53,22 @@ RCDATA handling. They remain semantic-only: CSS/layout hit testing,
 JavaScript, network, and raw form-value evidence are not claimed.
 [native-engine-007](tasks/native-engine-007.md), which adds a narrow
 CSS-presentation model for selector-driven `display`/`visibility` state.
-General CSS, layout, and paint remain unimplemented.
+General CSS, scrolling/stacking layout, and paint remain unimplemented.
 
-The active runtime integration slice is
+The completed runtime integration slice is
 [native-engine-008](tasks/native-engine-008.md). It adds a feature-gated
 `BrowserRuntime::Native`, an explicit Rust session constructor, and a local
 one-shot CLI path for navigate/click/type/text/observe/targets. The CLI default
 configuration accepts only `about:blank` and bounded `data:text/html`; it does
 not register fixtures or contact endpoints. Unsupported flags, remote URLs,
 script/evaluate, MCP, and TUI remain fail-closed.
+
+The completed layout/input slice is
+[native-engine-009](tasks/native-engine-009.md). It owns bounded integer-pixel
+normal-flow geometry, Rust-only layout inspection, deterministic point
+hit-testing, and the native `point=x,y` click-target extension. It does not
+add screenshots, paint, scrolling, general CSS, or geometry to the stable
+transport evidence contract.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

@@ -71,6 +71,11 @@ JavaScript, and form values are explicit operations and may require policy
 capabilities. Locators must resolve exactly one current target; stale revisions
 fail before browser input.
 
+The feature-gated native engine additionally derives bounded integer-pixel
+normal-flow rectangles and accepts native `point=x,y` click targets through its
+Rust API/CLI path. This is experimental local-content behavior, not a CSS/layout
+or screenshot compatibility claim.
+
 The standalone browser TUI starts structured-only by default. Its first screen
 offers `l` to launch a local browser, `a` to attach a verified DevTools port,
 `n` to navigate, `t` to type, `j`/`k` to select semantic entities, and `Enter`
@@ -134,7 +139,7 @@ does not own or close the external browser.
 | Knowledge | `KnowledgeStore` | Scoped advisory persistence and freshness assessment |
 | Backend interface | `browser_backend` | Capability-evidenced semantic backend dispatch |
 | Alternative runtimes | `BrowserRuntimeSession` | Portable Firefox BiDi and Safari WebDriver session; feature-gated native local session |
-| Native engine | `BackendFactory::native`, `BrowserRuntimeSession::connect_native` (feature-gated) | Experimental local fixture/data-URL engine; native CLI is explicit and local-only |
+| Native engine | `BackendFactory::native`, `BrowserRuntimeSession::connect_native` (feature-gated) | Experimental local fixture/data-URL engine with bounded layout/point input; native CLI is explicit and local-only |
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -146,7 +151,7 @@ does not own or close the external browser.
 |---|---:|---|
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
-| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded layout/point input |
 
 ## MCP
 
@@ -174,8 +179,8 @@ agreement reports exact schema and capability status.
   transport.
 - The native engine is experimental, default-off, fixture/data-URL-only, and
   available through the explicit Rust backend factory and feature-gated local
-  CLI runtime. Its current semantic slice supports bounded click/type actions
-  and revision effects for local controls. The CLI default configuration
+  CLI runtime. Its current semantic slice supports bounded layout/point input,
+  click/type actions, and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary
   for hostile remote content.

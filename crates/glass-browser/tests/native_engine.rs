@@ -3,7 +3,7 @@
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
     NativeAction, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEventKind, NativeLifecycleState,
+    NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeRect, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -37,6 +37,180 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
     let script_error = session.script("1 + 1").await.unwrap_err().to_string();
     assert!(script_error.contains("capability"));
     session.close().await.unwrap();
+}
+
+#[test]
+fn native_layout_is_deterministic_and_uses_bounded_pixel_dimensions() {
+    let document = NativeDocument::parse(
+        "<style>button { width: 120px; height: 32px; }</style><main><button id='first'>First</button><button id='second' style='display:block;width:140px'>Second</button><p id='below'>Below</p></main>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 320,
+        height: 200,
+        device_scale_factor_milli: 1000,
+    };
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let below = document.resolve_target("id=below").unwrap();
+    let expected_first = NativeRect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 32,
+    };
+    let expected_second = NativeRect {
+        x: 0,
+        y: 32,
+        width: 140,
+        height: 32,
+    };
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.revision, 1);
+    assert_eq!(layout.box_for(first), Some(expected_first));
+    assert_eq!(layout.box_for(second), Some(expected_second));
+    assert_eq!(
+        layout.box_for(below),
+        Some(NativeRect {
+            x: 0,
+            y: 64,
+            width: 320,
+            height: 20,
+        })
+    );
+    assert_eq!(layout, document.layout(viewport).unwrap());
+}
+
+#[test]
+fn native_layout_excludes_hidden_boxes_and_hit_testing_is_viewport_bound() {
+    let document = NativeDocument::parse(
+        "<style>.gone { display:none } .also-gone { visibility:hidden }</style><main><button class='gone' id='hidden'>Hidden</button><button class='also-gone' id='also-hidden'>Also hidden</button><button id='shown'>Shown</button></main>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 320,
+        height: 200,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(document.resolve_target("id=hidden").unwrap()),
+        None
+    );
+    assert_eq!(
+        layout.box_for(document.resolve_target("id=also-hidden").unwrap()),
+        None
+    );
+    let shown = document.resolve_target("id=shown").unwrap();
+    let shown_rect = layout.box_for(shown).unwrap();
+    assert_eq!(
+        layout
+            .hit_test(i64::from(shown_rect.x), i64::from(shown_rect.y))
+            .unwrap(),
+        Some(shown)
+    );
+    assert!(layout.hit_test(-1, 0).is_err());
+    assert!(layout.hit_test(320, 0).is_err());
+}
+
+#[test]
+fn native_point_click_hits_nested_content_and_preserves_state_on_rejection() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://layout",
+            "<main><button id='save'><span>Save</span></button><p>Other</p></main>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://layout");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let button = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Save")
+        .unwrap();
+    let rect = engine.layout().unwrap().box_for(button.node_id).unwrap();
+    let point_target = format!("point={},{}", rect.x + 1, rect.y + 1);
+    let clicked = engine
+        .action(NativeAction::Click {
+            target: point_target,
+        })
+        .unwrap();
+    assert_eq!(clicked.revision, 2);
+    assert!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .into_iter()
+            .find(|node| node.node_id == button.node_id)
+            .unwrap()
+            .focused
+    );
+
+    let rejected = engine
+        .action(NativeAction::Click {
+            target: "point=319,199".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(
+        rejected,
+        NativeEngineError::TargetNotActionable { .. }
+    ));
+    assert_eq!(engine.revision(), 2);
+}
+
+#[tokio::test]
+async fn native_point_click_uses_the_real_backend_dispatcher() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://point-dispatch",
+            "<button id='save'>Save</button>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://point-dispatch");
+    let backend = NativeEngineBackend::new(config).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+
+    let clicked = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Click {
+                target: "point=1,1".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(clicked.revision, 2);
+    assert!(clicked.accepted);
+
+    let outside = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Click {
+                target: "point=319,199".into(),
+            },
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        outside,
+        glass_browser::browser_backend::BrowserBackendError::UnsupportedOperation {
+            operation, ..
+        } if operation == "action"
+    ));
+    let evidence = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(evidence.revision, 2);
+    dispatcher.close().await.unwrap();
 }
 
 #[tokio::test]

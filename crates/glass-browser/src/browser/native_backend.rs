@@ -66,7 +66,9 @@ impl NativeEngineBackend {
                     vec!["bounded URL, title, and visible text only; no DOM or pixels".into()]
                 }
                 BrowserCapability::Action => {
-                    vec!["semantic click/type for supported local controls; no CSS/layout hit testing".into()]
+                    vec![
+                        "semantic click/type plus bounded native point targets for supported local controls; no scrolling".into(),
+                    ]
                 }
                 BrowserCapability::Effects => {
                     vec![
@@ -107,8 +109,8 @@ impl NativeEngineBackend {
                     limitations: vec![
                         "Phase 2 is a deterministic local-content engine, not browser parity".into(),
                         "in-process execution is not a security boundary for hostile content".into(),
-                        "network, JavaScript, CSS, layout, paint, storage, coordinate input, and default browser behavior are unavailable".into(),
-                        "actions are limited to semantic click/type for supported local controls".into(),
+                        "network, JavaScript, general CSS, scrolling/stacking layout, paint, storage, and default browser behavior are unavailable".into(),
+                        "actions are limited to semantic click/type and bounded native point targets for supported local controls".into(),
                     ],
                 },
             },

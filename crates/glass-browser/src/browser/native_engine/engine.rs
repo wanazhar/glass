@@ -4,6 +4,7 @@ use super::dom::NativeDocument;
 use super::error::NativeEngineError;
 use super::history::NativeHistory;
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
+use super::layout::NativeLayoutSnapshot;
 use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
 use super::resource_loader::{NativeResource, NativeResourceLoader};
@@ -139,6 +140,23 @@ impl NativeEngine {
         Ok(self.document.semantic_nodes())
     }
 
+    /// Return the current document's derived integer-pixel layout.
+    pub fn layout(&self) -> Result<NativeLayoutSnapshot, NativeEngineError> {
+        self.require_running("layout")?;
+        self.document.layout(self.config.viewport)
+    }
+
+    /// Hit test one point in the configured viewport without scrolling or
+    /// adjusting the requested coordinates.
+    pub fn hit_test(
+        &self,
+        x: i64,
+        y: i64,
+    ) -> Result<Option<super::dom::NativeNodeId>, NativeEngineError> {
+        self.require_running("hit testing")?;
+        self.document.hit_test(self.config.viewport, x, y)
+    }
+
     /// Apply one semantic action and advance the document revision exactly
     /// once. Target resolution and actionability checks happen before state
     /// mutation, so rejected actions leave the document unchanged.
@@ -147,17 +165,23 @@ impl NativeEngine {
         action: NativeAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.require_running("action")?;
-        let next_revision = self.next_revision()?;
         let events = match action {
             NativeAction::Click { target } => {
-                let id = self.document.resolve_target(&target)?;
+                let id = self.resolve_click_target(&target)?;
+                if !self.document.is_hidden_for_layout(id) {
+                    self.require_layout_actionable(id)?;
+                }
                 self.document.apply_click(id)?
             }
             NativeAction::Type { target, text } => {
                 let id = self.document.resolve_target(&target)?;
+                if !self.document.is_hidden_for_layout(id) {
+                    self.require_layout_actionable(id)?;
+                }
                 self.document.apply_type(id, &text)?
             }
         };
+        let next_revision = self.next_revision()?;
         self.document.set_revision(next_revision);
         self.revision = next_revision;
         self.record_effects(events);
@@ -264,6 +288,43 @@ impl NativeEngine {
         })
     }
 
+    fn resolve_click_target(
+        &self,
+        target: &str,
+    ) -> Result<super::dom::NativeNodeId, NativeEngineError> {
+        let Some((x, y)) = parse_point_target(target)? else {
+            return self.document.resolve_target(target);
+        };
+        let hit = self.document.hit_test(self.config.viewport, x, y)?;
+        let hit = hit.ok_or_else(|| NativeEngineError::TargetNotActionable {
+            reason: "point hit no visible element".into(),
+        })?;
+        self.document
+            .nearest_clickable_ancestor(hit)
+            .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                reason: "point hit no actionable semantic control".into(),
+            })
+    }
+
+    fn require_layout_actionable(
+        &self,
+        id: super::dom::NativeNodeId,
+    ) -> Result<(), NativeEngineError> {
+        let layout = self.document.layout(self.config.viewport)?;
+        let visible = layout.box_for(id).is_some_and(|rect| {
+            rect.width > 0
+                && rect.height > 0
+                && rect.x < self.config.viewport.width
+                && rect.y < self.config.viewport.height
+        });
+        if visible {
+            return Ok(());
+        }
+        Err(NativeEngineError::TargetNotActionable {
+            reason: "target has no visible layout box in the native viewport".into(),
+        })
+    }
+
     fn record_effects(&mut self, events: Vec<(super::dom::NativeNodeId, NativeEventKind)>) {
         for (node_id, kind) in events {
             while self.effects.len() >= MAX_NATIVE_EFFECTS {
@@ -296,4 +357,35 @@ impl NativeEngine {
 struct PreparedNavigation {
     resource: NativeResource,
     document: NativeDocument,
+}
+
+fn parse_point_target(target: &str) -> Result<Option<(i64, i64)>, NativeEngineError> {
+    let Some(value) = target.strip_prefix("point=") else {
+        return Ok(None);
+    };
+    let Some((x, y)) = value.split_once(',') else {
+        return Err(NativeEngineError::invalid(
+            "action locator",
+            "point target must use point=<unsigned-x>,<unsigned-y>",
+        ));
+    };
+    if x.is_empty() || y.is_empty() || y.contains(',') {
+        return Err(NativeEngineError::invalid(
+            "action locator",
+            "point target must use point=<unsigned-x>,<unsigned-y>",
+        ));
+    }
+    let x = x.parse::<u32>().map_err(|_| {
+        NativeEngineError::invalid(
+            "action locator",
+            "point coordinates must be unsigned integers",
+        )
+    })?;
+    let y = y.parse::<u32>().map_err(|_| {
+        NativeEngineError::invalid(
+            "action locator",
+            "point coordinates must be unsigned integers",
+        )
+    })?;
+    Ok(Some((i64::from(x), i64::from(y))))
 }

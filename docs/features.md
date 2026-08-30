@@ -229,9 +229,10 @@ Safari W3C WebDriver are experimental bounded adapters for the portable
 semantic session. The feature-gated native engine is an experimental,
 fixture/data-URL-only Glass-owned backend exposed through the explicit Rust
 factory and local one-shot runtime. Its current semantic surface includes
-local click/type actions and a revision/changed effects signal; it is not a
-remote-content security boundary. The proof backend is browser-free and only certifies
-protocol conformance.
+bounded presentation/normal-flow geometry, native point hit testing, local
+click/type actions, and a revision/changed effects signal; it is not a
+remote-content security boundary. The proof backend is browser-free and only
+certifies protocol conformance.
 Capability omission or incompatibility is a typed denial, never a fallback to
 raw transport or another backend.
 

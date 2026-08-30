@@ -114,15 +114,16 @@ does not read fixture files. Native supports only the local command set:
 
 ```text
 navigate URL
-click SEMANTIC_LOCATOR
+click SEMANTIC_LOCATOR_OR_POINT
 type TEXT --target SEMANTIC_LOCATOR
 text
 observe
 targets
 ```
 
-Native locators use `ref`, `id`, `role`, `name`, or `text` forms; CSS selectors
-are not accepted. Endpoint and external lifecycle flags, remote URLs,
+Native locators use `ref`, `id`, `role`, `name`, or `text` forms. Native clicks
+may additionally use `point=<unsigned-x>,<unsigned-y>` for the bounded viewport
+hit-test path; CSS selectors are not accepted. Endpoint and external lifecycle flags, remote URLs,
 script/evaluate, MCP, TUI, profiles, screenshots, storage, downloads, prompts,
 and other Chromium-only operations fail closed. The backend is experimental,
 in-process, and not a security boundary for hostile content. It never enters

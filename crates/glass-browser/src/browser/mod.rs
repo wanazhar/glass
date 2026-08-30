@@ -74,8 +74,9 @@ pub use native_engine::{
     NativeAction, NativeActionResult, NativeBrowsingContext, NativeDocument, NativeEffect,
     NativeEffectsSnapshot, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
     NativeEngineSnapshot, NativeEventKind, NativeFixture, NativeHistory, NativeHistoryEntry,
-    NativeLifecycleState, NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativeResource,
-    NativeResourceLoader, NativeSemanticNode, NativeTask, ScheduledTask, Viewport,
+    NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode, NativeNodeId,
+    NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource, NativeResourceLoader,
+    NativeSemanticNode, NativeTask, ScheduledTask, Viewport,
 };
 /// Browser-free deterministic backend used for semantic conformance tests.
 pub use proof_backend::ProofBackend;

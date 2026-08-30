@@ -1,8 +1,9 @@
 # Native browser engine
 
-Status: Experimental Phase 2 semantic DOM/interaction slices, an initial
-Phase 3 presentation slice, and feature-gated runtime/CLI integration; not a
-stable browser compatibility or security boundary.
+Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
+presentation and bounded layout/hit-testing slices, and feature-gated
+runtime/CLI integration; not a stable browser compatibility or security
+boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -16,9 +17,10 @@ current slices own lifecycle, one browsing context, local document resources,
 HTML-to-DOM parsing, history, revisions, bounded semantic evidence, and a small
 revisioned semantic interaction/effects model for text, checkbox, radio, and
 single-select controls, plus bounded visibility/actionability and raw-text/RCDATA
-parser gates and a narrow CSS presentation subset. The engine does not yet own
-general CSS, layout, painting, hit testing, JavaScript, network access,
-storage, downloads, prompts, or platform windows.
+parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
+normal-flow geometry with point hit testing. The engine does not yet own
+general CSS, scrolling/stacking layout, painting, hit-test visuals, JavaScript,
+network access, storage, downloads, prompts, or platform windows.
 
 ```text
 BrowserBackendDispatcher
@@ -28,11 +30,11 @@ NativeEngineBackend       <- semantic backend profile and lifecycle adapter
             |
             v
 NativeEngine              <- the only mutable page-state owner
-    +-------+--------+----------------+
-    |       |        |                |
-  DOM   history  scheduler      resource loader
-    |       |        |                |
-    +--- semantic projection ---------+
+    +-------+--------+----------------+----------+
+    |       |        |                |          |
+  DOM   history  scheduler      resource loader layout
+    |       |        |                |          |
+    +--- semantic projection ---------+---- hit test
     |       |        |                |
     +-------+--------+----------------+
             |
@@ -92,8 +94,9 @@ storage, download, prompt, script/evaluate, MCP, and TUI paths fail closed.
 
 `NativeEngineConfig` contains an initial URL, a viewport descriptor, fixture
 documents, and `NativeEngineLimits`. The viewport is recorded now so future
-layout and paint work has a stable owner; it does not imply that the current
-engine performs layout.
+layout and paint work has a stable owner. The current 009 slice derives a
+bounded Rust-only layout snapshot from it; it does not imply general browser
+layout or painting.
 
 The default limits are intentionally bounded:
 
@@ -154,11 +157,11 @@ queue. It commits navigation in a reproducible order. Interaction mutation is
 synchronous and single-owner; the scheduler does not spawn threads, sleep, or
 execute arbitrary callbacks.
 
-## Phase 2 semantic DOM/interaction, initial Phase 3 presentation, and runtime slice
+## Phase 2 semantic DOM/interaction, initial Phase 3 presentation/layout, and runtime slice
 
 The current Phase 2 slice intentionally exposes a narrow semantic surface
-without pretending to implement general CSS selectors, layout, or a browser
-event loop.
+without pretending to implement general CSS selectors, general layout, or a
+browser event loop.
 `NativeDocument::semantic_nodes` projects supported native roles and bounded
 names in source order. Supported role inference includes buttons, links with
 `href`, text-like inputs, textareas, checkboxes, radios, selects, options, and
@@ -176,8 +179,16 @@ The initial presentation subset reads bounded `style` elements and inline
 attribute-presence/exact-value selectors and cascades `display` and
 `visibility` by specificity, source order, and inline precedence. Unsupported
 selectors and declarations are ignored. This state feeds text exclusion and
-semantic actionability; it does not imply general CSS, inheritance, layout,
-geometry, hit testing, or paint.
+semantic actionability; it does not imply general CSS, inheritance, or paint.
+
+The 009 layout seed derives integer-pixel rectangles from the current
+presentation state and configured viewport using normal block/inline flow.
+Only bounded `width:Npx` and `height:Npx` declarations affect geometry;
+percentages, margins, padding, borders, positioning, flex, grid, transforms,
+and font metrics remain unsupported. Layout is recomputed as a Rust-only
+derived view. `display:none`, explicit hidden signals, and
+`visibility:hidden` remove boxes; `display:contents` preserves eligible
+descendants without creating its own box.
 
 The native locator grammar is explicit and bounded:
 
@@ -188,6 +199,7 @@ role=<role>
 role=<role>[name=<normalized-name>]
 name=<normalized-accessible-name>
 text=<normalized-element-text>
+point=<unsigned-x>,<unsigned-y>
 ```
 
 Resolution must produce exactly one current element. Unknown locator forms,
@@ -195,19 +207,22 @@ missing targets, duplicate matches, stale references, and non-element
 references fail explicitly. Actionability checks for disabled controls,
 read-only textboxes, and unsupported action roles also fail before mutation.
 The grammar is a semantic locator contract, not a CSS selector implementation;
-CSS selectors belong to the later CSS/layout phase.
+general CSS selector coverage belongs to a later CSS/layout phase.
 
-The native backend accepts only semantic `Click` and `Type` actions in this
-slice. Click focuses supported buttons, links, checkboxes, radios, textboxes,
-and comboboxes; checkbox and radio state changes are retained in the document
-owner. Clicking an option in a single-select combobox selects it and clears its
-siblings. Type replaces private state for native `input` and `textarea`
-textboxes. A bounded visibility gate recognizes `hidden`,
-`aria-hidden="true"`, and inline `display:none`/`visibility:hidden`; hidden
-subtrees are omitted from text and hidden action targets fail before mutation.
-Links do not perform default navigation, and no action performs keyboard
-navigation, multi-select, coordinate hit testing, or JavaScript execution. Each
-accepted action advances the document revision exactly once, so earlier
+The native backend accepts semantic `Click` and `Type` actions plus the native
+`point=<x>,<y>` click-target extension. A point is checked against the
+viewport, resolved to the deepest visible layout box, and walked to the
+nearest actionable semantic ancestor before focus or control state changes.
+There is no implicit scrolling or nearest-target adjustment. Click focuses
+supported buttons, links, checkboxes, radios, textboxes, and comboboxes;
+checkbox and radio state changes are retained in the document owner. Clicking
+an option in a single-select combobox selects it and clears its siblings. Type
+replaces private state for native `input` and `textarea` textboxes. A bounded
+visibility gate recognizes `hidden`, `aria-hidden="true"`, and computed
+`display:none`/`visibility:hidden`; hidden subtrees are omitted from text,
+layout, and hit testing. Links do not perform default navigation, and no
+action performs keyboard navigation, multi-select, or JavaScript execution.
+Each accepted action advances the document revision exactly once, so earlier
 references must be re-observed. The effects operation returns the current
 revision and changed bit; bounded native event metadata remains an internal
 Rust inspection surface.
@@ -222,7 +237,7 @@ The native profile is `experimental` and declares:
 | navigation | available | local `about`, `data`, and registered fixture URLs |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
-| action | available | semantic click/type for supported local controls and single-select options; no coordinates or default browser behavior |
+| action | available | semantic click/type plus bounded native point targets for supported local controls; no scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | omitted | JavaScript is unavailable |
 | capture | omitted | no screenshots or pixels |
@@ -281,6 +296,11 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   including unterminated-element behavior.
 - bounded stylesheet/inline selector matching and display/visibility cascade
   feeding visible text and semantic actionability.
+- deterministic integer-pixel normal-flow layout, bounded width/height
+  declarations, hidden-box exclusion, and Rust-only layout inspection.
+- point hit testing with viewport bounds, deepest-hit ordering, actionable
+  ancestor resolution, and pre-mutation rejection for empty/out-of-viewport
+  points.
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local URL shapes, including rejection of remote endpoints and unsupported
   browser-only flags.
@@ -290,6 +310,7 @@ for arbitrary remote content until CSS/layout, security policy, process
 isolation, cancellation, conformance, and platform evidence exist.
 
 Future phases may split the DOM parser into tokenizer/tree-builder modules and
-add general CSS, layout, paint, full event-loop, script, storage, and process
-boundaries. Those changes require updates to this document, the epic, and
-their dependency-ordered task files before implementation.
+add general CSS, scrolling/stacking layout, paint, full event-loop, script,
+storage, and process boundaries. Those changes require updates to this
+document, the epic, and their dependency-ordered task files before
+implementation.

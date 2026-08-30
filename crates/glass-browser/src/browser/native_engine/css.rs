@@ -1,3 +1,4 @@
+use super::config::MAX_NATIVE_VIEWPORT_DIMENSION;
 use super::dom::NativeNode;
 use super::error::NativeEngineError;
 
@@ -5,14 +6,39 @@ pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 const MAX_SELECTOR_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum DisplayValue {
+    #[default]
+    Auto,
+    None,
+    Block,
+    Inline,
+    Contents,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeComputedStyle {
-    display_hidden: bool,
+    display: DisplayValue,
     visibility_hidden: bool,
+    width: Option<u32>,
+    height: Option<u32>,
 }
 
 impl NativeComputedStyle {
     pub(crate) const fn hidden(self) -> bool {
-        self.display_hidden || self.visibility_hidden
+        matches!(self.display, DisplayValue::None) || self.visibility_hidden
+    }
+
+    pub(crate) const fn display(self) -> DisplayValue {
+        self.display
+    }
+
+    pub(crate) const fn width(self) -> Option<u32> {
+        self.width
+    }
+
+    pub(crate) const fn height(self) -> Option<u32> {
+        self.height
     }
 }
 
@@ -36,6 +62,8 @@ impl NativeStylesheet {
     pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
         let mut display = None;
         let mut visibility = None;
+        let mut width = None;
+        let mut height = None;
         for rule in &self.rules {
             if !rule.selector.matches(node) {
                 continue;
@@ -54,6 +82,26 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, visibility)
             {
                 visibility = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.width
+                && wins(rule.selector.specificity, rule.order, false, width)
+            {
+                width = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.height
+                && wins(rule.selector.specificity, rule.order, false, height)
+            {
+                height = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -84,20 +132,36 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.width
+                && wins(u16::MAX, usize::MAX, true, width)
+            {
+                width = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
+            if let Some(value) = declarations.height
+                && wins(u16::MAX, usize::MAX, true, height)
+            {
+                height = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
         }
 
         NativeComputedStyle {
-            display_hidden: display.is_some_and(|value| value.value == DisplayValue::None),
+            display: display.map_or(DisplayValue::Auto, |value| value.value),
             visibility_hidden: visibility
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
+            width: width.map(|value| value.value),
+            height: height.map(|value| value.value),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DisplayValue {
-    None,
-    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +188,8 @@ fn wins<T>(specificity: u16, order: usize, inline: bool, current: Option<Cascade
 struct NativeDeclarations {
     display: Option<DisplayValue>,
     visibility: Option<VisibilityValue>,
+    width: Option<u32>,
+    height: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,7 +262,11 @@ fn parse_source(
         };
         let close = open + 1 + close_relative;
         let declarations = parse_declarations(&source[open + 1..close]);
-        if declarations.display.is_some() || declarations.visibility.is_some() {
+        if declarations.display.is_some()
+            || declarations.visibility.is_some()
+            || declarations.width.is_some()
+            || declarations.height.is_some()
+        {
             for selector_text in source[cursor..open].split(',') {
                 let Some(selector) = parse_selector(selector_text) else {
                     continue;
@@ -240,6 +310,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "visibility" => {
                 declarations.visibility = parse_visibility(value);
             }
+            "width" => {
+                declarations.width = parse_dimension(value);
+            }
+            "height" => {
+                declarations.height = parse_dimension(value);
+            }
             _ => {}
         }
     }
@@ -249,10 +325,22 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
 fn parse_display(value: &str) -> Option<DisplayValue> {
     match value.to_ascii_lowercase().as_str() {
         "none" => Some(DisplayValue::None),
-        "block" | "contents" | "flex" | "flow-root" | "grid" | "inline" | "inline-block"
-        | "inline-flex" | "inline-grid" | "list-item" | "table" => Some(DisplayValue::Other),
+        "block" | "flow-root" | "list-item" | "table" => Some(DisplayValue::Block),
+        "inline" | "inline-block" | "inline-flex" | "inline-grid" => Some(DisplayValue::Inline),
+        "contents" => Some(DisplayValue::Contents),
+        "flex" | "grid" => Some(DisplayValue::Other),
         _ => None,
     }
+}
+
+fn parse_dimension(value: &str) -> Option<u32> {
+    let value = value.trim().to_ascii_lowercase();
+    let value = value.strip_suffix("px")?.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let value = value.parse::<u32>().ok()?;
+    (value <= MAX_NATIVE_VIEWPORT_DIMENSION).then_some(value)
 }
 
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
@@ -418,10 +506,13 @@ mod tests {
 
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
-        let declarations =
-            parse_declarations("color: red; display: none !important; visibility: visible");
+        let declarations = parse_declarations(
+            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px",
+        );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
+        assert_eq!(declarations.width, Some(240));
+        assert_eq!(declarations.height, Some(30));
     }
 
     #[test]
@@ -432,5 +523,13 @@ mod tests {
         .unwrap();
         let node = node("<button id='shown' style='display:none'>Shown</button>");
         assert!(stylesheet.computed_for(&node).hidden());
+    }
+
+    #[test]
+    fn dimension_parser_rejects_non_pixel_or_unbounded_values() {
+        assert_eq!(parse_dimension("240px"), Some(240));
+        assert_eq!(parse_dimension("240"), None);
+        assert_eq!(parse_dimension("50%"), None);
+        assert_eq!(parse_dimension("20000px"), None);
     }
 }

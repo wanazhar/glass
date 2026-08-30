@@ -2,6 +2,8 @@ use super::config::NativeEngineLimits;
 use super::css::NativeStylesheet;
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
+use super::layout::NativeLayoutSnapshot;
+use super::{config::Viewport, css::NativeComputedStyle};
 use std::collections::BTreeMap;
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
@@ -336,6 +338,22 @@ impl NativeDocument {
             .iter()
             .filter_map(|node| self.semantic_node(node.id))
             .collect()
+    }
+
+    /// Derive the current document's bounded integer-pixel layout.
+    pub fn layout(&self, viewport: Viewport) -> Result<NativeLayoutSnapshot, NativeEngineError> {
+        NativeLayoutSnapshot::compute(self, viewport)
+    }
+
+    /// Hit test one point in the supplied viewport without scrolling or
+    /// adjusting the requested coordinates.
+    pub fn hit_test(
+        &self,
+        viewport: Viewport,
+        x: i64,
+        y: i64,
+    ) -> Result<Option<NativeNodeId>, NativeEngineError> {
+        self.layout(viewport)?.hit_test(x, y)
     }
 
     /// Resolve one explicit semantic locator to exactly one current element.
@@ -762,6 +780,38 @@ impl NativeDocument {
             required: self.is_required(id),
             focused: node.state.focused,
         })
+    }
+
+    pub(crate) fn computed_style_for_layout(&self, id: NativeNodeId) -> NativeComputedStyle {
+        self.node(id)
+            .map(|node| self.stylesheet.computed_for(node))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn is_hidden_for_layout(&self, id: NativeNodeId) -> bool {
+        self.is_hidden(id)
+    }
+
+    pub(crate) fn layout_text_width(&self, id: NativeNodeId) -> u32 {
+        self.element_text(id, MAX_LOCATOR_BYTES)
+            .map(|(text, _)| u32::try_from(text.chars().count()).unwrap_or(u32::MAX))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn nearest_clickable_ancestor(&self, id: NativeNodeId) -> Option<NativeNodeId> {
+        let mut current = Some(id);
+        while let Some(current_id) = current {
+            if let Some(semantic) = self.semantic_node(current_id)
+                && matches!(
+                    semantic.role.as_str(),
+                    "button" | "link" | "checkbox" | "radio" | "textbox" | "combobox" | "option"
+                )
+            {
+                return Some(current_id);
+            }
+            current = self.node(current_id).and_then(NativeNode::parent);
+        }
+        None
     }
 
     fn semantic_role(&self, id: NativeNodeId) -> Option<&'static str> {

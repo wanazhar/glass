@@ -76,7 +76,8 @@ The external portable command set is navigation, one active context, compact
 script-derived evidence, script evaluation, CSS click/type actions, and
 revision effects. The native command set is local navigation, one active
 context, bounded URL/title/visible-text evidence, semantic click/type actions,
-and revision effects; it does not execute script. Screenshots, storage,
+and bounded native point hit testing plus revision effects; it does not execute
+script. Screenshots, storage,
 prompts, downloads, keyboard, scrolling, multi-window control, profiles, MCP,
 TUI, and the full locator/Web IR pipeline remain capability-denied on these
 adapters.
@@ -94,14 +95,15 @@ Protocol references:
 
 ## Native browser feasibility
 
-The native-engine program now has a real Phase 2 semantic interaction slice
-behind the default-off `native-engine` feature. It owns one deterministic
-in-process context, local `about:blank`, `data:text/html`, and registered
-`fixture://` resources, a small DOM/text projection, history, revisions,
-semantic click/type actions for local controls, and a bounded effects signal.
-It does not yet provide CSS/layout, painting, JavaScript, network/security
-policy, cookies/storage, coordinate hit testing, downloads, or platform
-windowing.
+The native-engine program now has real Phase 2 semantic interaction and
+initial Phase 3 presentation/layout slices behind the default-off
+`native-engine` feature. It owns one deterministic in-process context, local
+`about:blank`, `data:text/html`, and registered `fixture://` resources, a small
+DOM/text projection, history, revisions, bounded CSS presentation, integer
+normal-flow rectangles, point hit testing, semantic click/type actions for
+local controls, and a bounded effects signal. It does not yet provide general
+CSS/scrolling/stacking layout, painting, JavaScript, network/security policy,
+cookies/storage, screenshots, downloads, or platform windowing.
 
 `BrowserRuntimeSession` remains the transport adapter for externally managed
 Firefox and Safari. With the `native-engine` feature, the native backend is

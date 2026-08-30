@@ -102,11 +102,13 @@ dispatcher.close().await?;
 ```
 
 The backend profile declares lifecycle, navigation, one context, bounded
-evidence, semantic click/type actions, and revision effects. Scripts, captures,
-storage, prompts, and downloads are omitted and fail through the dispatcher.
+evidence, semantic click/type actions, native point hit testing, and revision
+effects. Scripts, captures, storage, prompts, and downloads are omitted and
+fail through the dispatcher.
 The feature adds no dependency and is never included in automatic backend
-selection. Native action targets are semantic and local-only; coordinate input,
-default link navigation, and raw form values are not part of this API.
+selection. Native action targets are semantic and local-only, with the bounded
+`point=x,y` click extension; default link navigation and raw form values are
+not part of this API.
 
 ## Session ownership
 

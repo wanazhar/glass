@@ -79,8 +79,9 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
   Task Protocol, and compiler contracts as live execution.
 - The TUI preserves its current layout, but browser I/O runs in a worker task rather than the render/input loop.
 - The native engine is default-off, fixture/data-URL-only in its current phase,
-  is exposed only through explicit Rust or feature-gated local CLI paths, and
-  never enters automatic backend selection.
+  exposes bounded presentation/normal-flow geometry and native point hit
+  testing through explicit Rust or feature-gated local CLI paths, and never
+  enters automatic backend selection.
 
 ## Module index
 

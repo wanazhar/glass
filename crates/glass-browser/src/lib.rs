@@ -271,8 +271,9 @@ pub use browser::{
     DeterministicClock, DeterministicScheduler, NATIVE_CONTEXT_ID, NativeBrowsingContext,
     NativeDocument, NativeEngine, NativeEngineBackend, NativeEngineConfig, NativeEngineError,
     NativeEngineLimits, NativeEngineSnapshot, NativeFixture, NativeHistory, NativeHistoryEntry,
-    NativeLifecycleState, NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativeResource,
-    NativeResourceLoader, NativeTask, ScheduledTask, Viewport,
+    NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode, NativeNodeId,
+    NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource, NativeResourceLoader,
+    NativeTask, ScheduledTask, Viewport,
 };
 
 pub use task_protocol::{

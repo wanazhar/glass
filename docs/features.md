@@ -57,7 +57,7 @@ source-behavior reference.
   Rust-only presentation artifacts include bounded outer/content box layout with
   uniform padding/margin and explicit box sizing, bounded vertical viewport scrolling,
   inherited text color, paint
-  clips, uniform solid borders, a display list, a logical RGBA software surface,
+  clips, side-specific solid borders, a display list, a logical RGBA software surface,
   and bounded PNG capture; these are not screenshot-containing evidence.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
   its profile, launch flags, or shutdown.
@@ -234,8 +234,8 @@ Safari W3C WebDriver are experimental bounded adapters for the portable
 semantic session. The feature-gated native engine is an experimental,
 fixture/data-URL-only Glass-owned backend exposed through the explicit Rust
 factory and local one-shot runtime. Its current semantic surface includes
-bounded presentation, inherited text color, paint clips, uniform solid-border
-paint, normal-flow outer/content box geometry with uniform padding/margin,
+bounded presentation, inherited text color, paint clips, side-specific
+solid-border paint, normal-flow outer/content box geometry with uniform padding/margin,
 explicit box sizing, and bounded vertical viewport scrolling,
 native point hit testing, local click/type actions, and a revision/changed
 effects signal; its Rust-only

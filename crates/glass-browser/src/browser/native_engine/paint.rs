@@ -7,6 +7,41 @@ use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 /// Maximum number of immutable commands retained in one native display list.
 pub const MAX_NATIVE_DISPLAY_COMMANDS: usize = MAX_NATIVE_NODES.saturating_mul(2).saturating_add(1);
 
+/// One physical border side carried by a native display-list border command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeBorderPaintSide {
+    pub width: u32,
+    pub color: NativeColor,
+}
+
+/// Bounded physical border paint data for the top, right, bottom, and left
+/// sides of one outer layout box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeBorderPaint {
+    pub top: NativeBorderPaintSide,
+    pub right: NativeBorderPaintSide,
+    pub bottom: NativeBorderPaintSide,
+    pub left: NativeBorderPaintSide,
+}
+
+impl NativeBorderPaint {
+    pub(crate) fn from_style(border: super::css::NativeBorder) -> Self {
+        Self {
+            top: Self::side_from_style(border.top()),
+            right: Self::side_from_style(border.right()),
+            bottom: Self::side_from_style(border.bottom()),
+            left: Self::side_from_style(border.left()),
+        }
+    }
+
+    const fn side_from_style(side: super::css::NativeBorderSide) -> NativeBorderPaintSide {
+        NativeBorderPaintSide {
+            width: side.width(),
+            color: side.color(),
+        }
+    }
+}
+
 /// One bounded command consumed by the native software rasterizer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeDisplayCommand {
@@ -22,8 +57,7 @@ pub enum NativeDisplayCommand {
     BorderRect {
         node_id: NativeNodeId,
         rect: NativeRect,
-        width: u32,
-        color: NativeColor,
+        borders: NativeBorderPaint,
         clip: Option<NativeRect>,
     },
     TextRun {
@@ -79,15 +113,15 @@ impl NativeDisplayList {
                 )?;
             }
             if let Some(border) = style.border()
-                && border.width() > 0
+                && border.any_width()
             {
+                let borders = NativeBorderPaint::from_style(border);
                 push_command(
                     &mut commands,
                     NativeDisplayCommand::BorderRect {
                         node_id: layout_box.node_id,
                         rect: layout_box.rect,
-                        width: border.width(),
-                        color: border.color(),
+                        borders,
                         clip,
                     },
                 )?;

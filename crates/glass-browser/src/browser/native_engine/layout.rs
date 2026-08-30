@@ -391,10 +391,22 @@ impl<'a> LayoutBuilder<'a> {
         }
 
         let is_block = display == DisplayValue::Block;
-        let border = style.border().map_or(0, |border| border.width());
-        let inset = border.saturating_add(style.padding());
-        let horizontal_inset = inset.saturating_mul(2);
-        let vertical_inset = horizontal_inset;
+        let padding = style.padding();
+        let (border_top, border_right, border_bottom, border_left) =
+            style.border().map_or((0, 0, 0, 0), |border| {
+                (
+                    border.top().width(),
+                    border.right().width(),
+                    border.bottom().width(),
+                    border.left().width(),
+                )
+            });
+        let left_inset = border_left.saturating_add(padding);
+        let right_inset = border_right.saturating_add(padding);
+        let top_inset = border_top.saturating_add(padding);
+        let bottom_inset = border_bottom.saturating_add(padding);
+        let horizontal_inset = left_inset.saturating_add(right_inset);
+        let vertical_inset = top_inset.saturating_add(bottom_inset);
         let default_outer_width = if is_block {
             available_width
         } else {
@@ -424,8 +436,8 @@ impl<'a> LayoutBuilder<'a> {
                 height: vertical_inset.saturating_add(default_content_height),
             },
             content_rect: NativeRect {
-                x: x.saturating_add(inset),
-                y: y.saturating_add(inset),
+                x: x.saturating_add(left_inset),
+                y: y.saturating_add(top_inset),
                 width: width.saturating_sub(horizontal_inset),
                 height: default_content_height,
             },
@@ -435,8 +447,8 @@ impl<'a> LayoutBuilder<'a> {
         let content_width = width.saturating_sub(horizontal_inset);
         let children = self.layout_children(
             id,
-            x.saturating_add(inset),
-            y.saturating_add(inset),
+            x.saturating_add(left_inset),
+            y.saturating_add(top_inset),
             content_width,
             depth + 1,
         );
@@ -454,8 +466,8 @@ impl<'a> LayoutBuilder<'a> {
         let content_height = height.saturating_sub(vertical_inset);
         self.boxes[box_index].rect.height = height;
         self.boxes[box_index].content_rect = NativeRect {
-            x: x.saturating_add(inset),
-            y: y.saturating_add(inset),
+            x: x.saturating_add(left_inset),
+            y: y.saturating_add(top_inset),
             width: content_width,
             height: content_height,
         };

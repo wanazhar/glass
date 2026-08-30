@@ -35,7 +35,10 @@ pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEven
 pub use layout::{NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect};
 pub use lifecycle::NativeLifecycleState;
 pub use origin::NativeOrigin;
-pub use paint::{MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList};
+pub use paint::{
+    MAX_NATIVE_DISPLAY_COMMANDS, NativeBorderPaint, NativeBorderPaintSide, NativeDisplayCommand,
+    NativeDisplayList,
+};
 pub use raster::{MAX_NATIVE_SURFACE_PIXELS, NativeSurface};
 pub use resource_loader::{NativeResource, NativeResourceLoader};
 pub use scheduler::{DeterministicClock, DeterministicScheduler, NativeTask, ScheduledTask};

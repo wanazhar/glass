@@ -2,8 +2,9 @@
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
-viewport-scroll slices, including bounded style inheritance, paint clipping,
-uniform solid-border painting, and content-box geometry, plus feature-gated
+viewport-scroll/side-specific-border slices, including bounded style
+inheritance, paint clipping, solid-border painting, and content-box geometry,
+plus feature-gated
 runtime/CLI integration; not a stable browser compatibility or security
 boundary.
 
@@ -23,7 +24,7 @@ parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
 normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
 display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden` paint
-clipping, a uniform solid-border paint primitive, and bounded outer/content
+clipping, bounded side-specific solid-border paint primitives, and bounded outer/content
 box geometry and explicit root viewport scrolling. The engine does not yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
@@ -207,6 +208,15 @@ rectangles/points into viewport coordinates. Scroll deltas are explicit native
 actions, clamp at the document edges, and never scroll a semantic target
 implicitly into view.
 
+The 018 side-specific-border boundary keeps the existing uniform `border:`
+shorthand and adds independently cascaded physical `border-top`,
+`border-right`, `border-bottom`, and `border-left` declarations in the same
+bounded `Npx solid <color>` grammar. Each side contributes its own outer/content
+inset and paint data; software replay uses a deterministic corner precedence
+after ancestor clipping and root-scroll translation. Non-solid styles, radii,
+border images, gradients, logical writing-mode sides, and browser corner joins
+remain unsupported.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -376,8 +386,11 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded `overflow:hidden` ancestor intersections on fill/text commands and
   software-surface clipping with no nested scrolling or screenshot-evidence
   capability.
-- bounded uniform solid-border parsing, deterministic `BorderRect` command
-  ordering, inside-the-box border replay, and clip/source-over enforcement.
+- bounded solid-border parsing, deterministic `BorderRect` command ordering,
+  inside-the-box border replay, and clip/source-over enforcement.
+- independently cascaded physical side-specific solid borders, side-aware
+  content-box/border-box insets, deterministic side paint data, corner
+  precedence, ancestor clipping, and root-scroll replay.
 - bounded logical-surface PNG encoding, capture-byte enforcement, read-only
   revision behavior, real native backend dispatch, and explicit JPEG/PDF
   denials.

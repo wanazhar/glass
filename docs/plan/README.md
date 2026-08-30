@@ -129,6 +129,12 @@ scrolling across layout hit testing,
 display-list replay, capture, and revisioned action effects; horizontal,
 nested, smooth, and keyboard scrolling remain outside the current claim.
 
+The completed side-specific-border slice is
+[native-engine-018](tasks/native-engine-018.md). It adds independently
+cascaded physical solid borders, side-aware box-model insets, and deterministic
+clipped/scrolled display replay; non-solid styles, radii, logical writing-mode
+sides, and browser corner-join fidelity remain outside the current claim.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

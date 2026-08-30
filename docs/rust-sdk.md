@@ -106,7 +106,7 @@ evidence, semantic click/type actions, native point hit testing, and revision
 effects. Rust callers can additionally inspect the native layout's outer and
 content rectangles, bounded uniform padding/margin and explicit box sizing,
 bounded vertical viewport scrolling, inherited text color, bounded paint clips,
-uniform solid-border paint,
+side-specific solid-border paint,
 deterministic display list, bounded logical RGBA software surface, and bounded PNG capture
 through the native backend directly; screenshot-containing evidence, JPEG/PDF,
 and physical-pixel capture remain unavailable. Scripts,

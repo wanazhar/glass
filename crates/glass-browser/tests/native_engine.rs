@@ -158,7 +158,8 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
         matches!(
             command,
             NativeDisplayCommand::TextRun { text, color, .. }
-                if text == "child" && *color == NativeColor::BLACK
+                if text == "child"
+                    && *color == NativeColor { red: 1, green: 2, blue: 3, alpha: 255 }
         )
     }));
     assert!(!list.commands.iter().any(|command| match command {
@@ -167,6 +168,40 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
         NativeDisplayCommand::Clear { .. } => false,
     }));
     assert_eq!(list, document.display_list(viewport).unwrap());
+}
+
+#[test]
+fn native_display_list_inherits_text_color_and_preserves_transparent_override() {
+    let document = NativeDocument::parse(
+        "<style>#parent { color: blue; }</style><div id='parent'><span id='child'>Child</span><span id='transparent' style='color:transparent'>Clear</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 320,
+        height: 200,
+        device_scale_factor_milli: 1000,
+    };
+    let child = document.resolve_target("id=child").unwrap();
+    let transparent = document.resolve_target("id=transparent").unwrap();
+    let list = document.display_list(viewport).unwrap();
+
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun { node_id, color, .. }
+                if *node_id == child
+                    && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun { node_id, color, .. }
+                if *node_id == transparent
+                    && *color == NativeColor { red: 0, green: 0, blue: 0, alpha: 0 }
+        )
+    }));
 }
 
 #[test]

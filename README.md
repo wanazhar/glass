@@ -329,7 +329,8 @@ inside `glass-browser`. Its current Phase 2 and initial Phase 3 slices are
 deterministic and limited to `about:blank`, `data:text/html`, and registered
 local fixtures, with bounded presentation, normal-flow geometry, point
 hit-testing, semantic click/type actions, revisioned effects for supported
-local controls, and Rust-only display-list/software-surface artifacts. A
+local controls, inherited text color for nested content, and Rust-only
+display-list/software-surface artifacts. A
 `native-engine` feature build exposes the explicit local
 `--browser-runtime native` one-shot path; its default CLI configuration does
 not register fixture files or contact endpoints. It is not a browser-parity

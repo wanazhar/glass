@@ -1,9 +1,9 @@
 # Native browser engine
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
-presentation/layout/display-list and bounded software-surface slices, and
-feature-gated runtime/CLI integration; not a stable browser compatibility or
-security boundary.
+presentation/layout/display-list/software-surface slices, including bounded
+style inheritance, plus feature-gated runtime/CLI integration; not a stable
+browser compatibility or security boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -19,7 +19,8 @@ revisioned semantic interaction/effects model for text, checkbox, radio, and
 single-select controls, plus bounded visibility/actionability and raw-text/RCDATA
 parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
 normal-flow geometry with point hit testing, a Rust-only clear/fill/text display
-list, and a bounded logical RGBA software surface. The engine does not yet own
+list, a bounded logical RGBA software surface, and inherited text color through
+DOM parent links. The engine does not yet own
 general CSS, scrolling/stacking layout, screenshot capture, font/image
 fidelity, hit-test visuals, JavaScript,
 network access, storage, downloads, prompts, or platform windows.
@@ -197,6 +198,12 @@ surface using integer source-over blending and a fixed 5x7 ASCII glyph subset.
 Both are Rust inspection artifacts only; there is no PNG/screenshot transport,
 font engine, image decoder, or GPU path.
 
+The 012 style boundary resolves only `color` through parsed DOM parent
+links. Explicit child declarations remain authoritative, while absent values
+inherit the nearest resolved ancestor color and otherwise use opaque black.
+Other CSS inheritance and all user-agent/font/color-management behavior remain
+unsupported.
+
 The native locator grammar is explicit and bounded:
 
 ```text
@@ -312,6 +319,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   commands and explicit unsupported-paint boundaries.
 - deterministic bounded RGBA surface replay, source-over blending, fixed-glyph
   text drawing, viewport clipping, and explicit surface-allocation limits.
+- bounded inherited text-color resolution through DOM parent links, with
+  explicit child overrides feeding deterministic text-run commands.
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local URL shapes, including rejection of remote endpoints and unsupported
   browser-only flags.

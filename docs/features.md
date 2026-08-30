@@ -58,8 +58,8 @@ source-behavior reference.
   uniform padding/margin and explicit box sizing, bounded vertical viewport scrolling,
   inherited text color, paint
   clips, side-specific solid/dashed/dotted borders, bounded physical circular
-  border radii, bounded inline-box line placement, a display list, a logical
-  RGBA software surface,
+  border radii, bounded inline-box line placement, bounded fixed pixel
+  line-height flow, a display list, a logical RGBA software surface,
   and bounded PNG capture; these are not screenshot-containing evidence.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
   its profile, launch flags, or shutdown.
@@ -238,7 +238,8 @@ fixture/data-URL-only Glass-owned backend exposed through the explicit Rust
 factory and local one-shot runtime. Its current semantic surface includes
 bounded presentation, inherited text color, paint clips, side-specific
 solid/dashed/dotted-border paint, bounded physical circular border radii,
-bounded inline-box line placement, normal-flow outer/content box geometry with uniform padding/margin,
+bounded inline-box line placement, bounded fixed pixel line-height flow,
+normal-flow outer/content box geometry with uniform padding/margin,
 explicit box sizing, and bounded vertical viewport scrolling,
 native point hit testing, local click/type actions, and a revision/changed
 effects signal; its Rust-only

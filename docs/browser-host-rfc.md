@@ -104,6 +104,7 @@ bounded CSS presentation, integer normal-flow rectangles, point hit testing,
 semantic click/type actions for local controls, a bounded effects signal,
 bounded inherited text color, paint clips, side-specific solid/dashed/dotted-border paint,
 bounded physical circular border radii, bounded inline-box line placement,
+bounded fixed pixel line-height flow,
 bounded outer/content box geometry with uniform padding/margin and explicit
 box sizing, bounded vertical viewport scrolling, and bounded PNG capture through the explicit backend operation,
 plus Rust-only display-list/software-surface artifacts. It does not yet provide

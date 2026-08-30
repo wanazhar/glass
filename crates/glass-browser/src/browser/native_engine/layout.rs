@@ -295,6 +295,7 @@ struct FlowCursor {
     available_width: u32,
     x: u32,
     y: u32,
+    minimum_line_height: u32,
     line_height: u32,
     line_has_content: bool,
     max_right: u32,
@@ -302,13 +303,14 @@ struct FlowCursor {
 }
 
 impl FlowCursor {
-    fn new(x: u32, y: u32, available_width: u32) -> Self {
+    fn new(x: u32, y: u32, available_width: u32, minimum_line_height: u32) -> Self {
         Self {
             start_x: x,
             start_y: y,
             available_width,
             x,
             y,
+            minimum_line_height,
             line_height: 0,
             line_has_content: false,
             max_right: x,
@@ -320,7 +322,7 @@ impl FlowCursor {
         if self.line_has_content {
             self.y = self
                 .y
-                .saturating_add(self.line_height.max(DEFAULT_LINE_HEIGHT));
+                .saturating_add(self.line_height.max(self.minimum_line_height));
             self.max_bottom = self.max_bottom.max(self.y);
             self.x = self.start_x;
             self.line_height = 0;
@@ -342,7 +344,7 @@ impl FlowCursor {
             self.flush_line();
         }
         self.x = self.x.saturating_add(width);
-        self.line_height = self.line_height.max(height.max(DEFAULT_LINE_HEIGHT));
+        self.line_height = self.line_height.max(height.max(self.minimum_line_height));
         self.line_has_content = true;
         self.max_right = self.max_right.max(self.x);
         self.max_bottom = self.max_bottom.max(self.y.saturating_add(self.line_height));
@@ -372,7 +374,12 @@ impl<'a> LayoutBuilder<'a> {
         available_width: u32,
         depth: usize,
     ) -> FlowSize {
-        let mut flow = FlowCursor::new(x, y, available_width);
+        let minimum_line_height = self
+            .document
+            .computed_style_for_layout(parent)
+            .line_height()
+            .unwrap_or(DEFAULT_LINE_HEIGHT);
+        let mut flow = FlowCursor::new(x, y, available_width, minimum_line_height);
         self.process_children(parent, &mut flow, depth);
         let bottom = flow.max_bottom;
         let start_y = y;
@@ -493,10 +500,11 @@ impl<'a> LayoutBuilder<'a> {
         let horizontal_inset = left_inset.saturating_add(right_inset);
         let vertical_inset = top_inset.saturating_add(bottom_inset);
         let width = self.outer_width(id, style, is_block, available_width);
+        let minimum_line_height = style.line_height().unwrap_or(DEFAULT_LINE_HEIGHT);
         let default_content_height = if is_block {
-            DEFAULT_LINE_HEIGHT
+            minimum_line_height
         } else {
-            self.intrinsic_inline_height(id)
+            self.intrinsic_inline_height(id).max(minimum_line_height)
         };
         let box_index = self.boxes.len();
         self.boxes.push(NativeLayoutBox {

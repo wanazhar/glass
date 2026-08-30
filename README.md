@@ -333,6 +333,7 @@ border-box sizing, outer/content layout rectangles, bounded vertical viewport
 scrolling, semantic click/type actions, revisioned effects for supported local controls, inherited text color
 for nested content, bounded paint clips, bounded side-specific solid/dashed/dotted-border paint, bounded
 physical circular border radii, bounded inline-box line placement, bounded
+fixed pixel line-height flow, bounded
 PNG capture through the explicit backend operation, and Rust-only
 display-list/software-surface artifacts. A
 `native-engine` feature build exposes the explicit local

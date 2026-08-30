@@ -156,6 +156,12 @@ line placement using the same bounded integer outer-width calculation as final
 layout, preserving deterministic line height and hit/paint coordinates while
 leaving typography and general inline formatting unsupported.
 
+The completed bounded line-height slice is
+[native-engine-022](tasks/native-engine-022.md). It adds a positive fixed pixel
+`line-height` property as a local flow minimum while preserving explicit height
+precedence and leaving font metrics, general inheritance, and browser
+line-layout behavior unsupported.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

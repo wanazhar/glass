@@ -96,7 +96,7 @@ expands this boundary.
 The completed paint-clipping slice is
 [native-engine-013](tasks/native-engine-013.md). It adds bounded
 `overflow:hidden` clip rectangles to fill/text display commands and enforces
-them during Rust-only surface replay. It does not add scrolling, stacking,
+them during Rust-only surface replay. It does not add nested scrolling, stacking,
 borders, transforms, screenshots, or capture transport. The next renderer slice
 must be documented and committed separately before it expands this boundary.
 
@@ -122,6 +122,12 @@ The completed box-model slice is
 padding and margin, explicit content-box/border-box sizing, outer/content
 layout rectangles, and content-origin child/text placement. General box-model
 and layout behavior remains explicitly outside the native capability claim.
+
+The completed viewport-scroll slice is
+[native-engine-017](tasks/native-engine-017.md) adds bounded vertical root
+scrolling across layout hit testing,
+display-list replay, capture, and revisioned action effects; horizontal,
+nested, smooth, and keyboard scrolling remain outside the current claim.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

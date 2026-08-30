@@ -329,8 +329,8 @@ inside `glass-browser`. Its current Phase 2 and initial Phase 3 slices are
 deterministic and limited to `about:blank`, `data:text/html`, and registered
 local fixtures, with bounded presentation, normal-flow geometry, point
 hit-testing, uniform non-negative padding/margin, explicit content-box or
-border-box sizing, outer/content layout rectangles, semantic click/type
-actions, revisioned effects for supported local controls, inherited text color
+border-box sizing, outer/content layout rectangles, bounded vertical viewport
+scrolling, semantic click/type actions, revisioned effects for supported local controls, inherited text color
 for nested content, bounded paint clips, uniform solid-border paint, bounded
 PNG capture through the explicit backend operation, and Rust-only
 display-list/software-surface artifacts. A
@@ -658,7 +658,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts; explicit Rust or feature-gated local CLI path |
+| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts, including root vertical viewport scrolling; explicit Rust or feature-gated local CLI path |
 | WebKit / iPhone Safari | No direct Glass browser backend; iPhone Safari is a forwarded viewing client |
 | `glass-browser 0.3.14`, `glass-dev 0.3.14` | Current release source; public registry state is recorded in release evidence |
 | `0.3.13` | Previous published stable release |

@@ -1,10 +1,11 @@
 # Native browser engine
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
-presentation/layout/display-list/software-surface/PNG-capture/box-model
-slices, including bounded style inheritance, paint clipping, uniform
-solid-border painting, and content-box geometry, plus feature-gated runtime/CLI
-integration; not a stable browser compatibility or security boundary.
+presentation/layout/display-list/software-surface/PNG-capture/box-model/
+viewport-scroll slices, including bounded style inheritance, paint clipping,
+uniform solid-border painting, and content-box geometry, plus feature-gated
+runtime/CLI integration; not a stable browser compatibility or security
+boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -23,8 +24,9 @@ normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
 display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden` paint
 clipping, a uniform solid-border paint primitive, and bounded outer/content
-box geometry. The engine does not yet own general CSS, scrolling/stacking
-layout, screenshot semantics, font/image
+box geometry and explicit root viewport scrolling. The engine does not yet own
+general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
+screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
 network access, storage, downloads, prompts, or platform windows.
 
@@ -97,10 +99,9 @@ storage, download, prompt, script/evaluate, MCP, and TUI paths fail closed.
 ## Configuration and limits
 
 `NativeEngineConfig` contains an initial URL, a viewport descriptor, fixture
-documents, and `NativeEngineLimits`. The viewport is recorded now so future
-layout and paint work has a stable owner. The current 009 slice derives a
-bounded Rust-only layout snapshot from it; it does not imply general browser
-layout or painting.
+documents, and `NativeEngineLimits`. The viewport is the stable owner for
+bounded layout, root scrolling, and logical paint output; it does not imply
+general browser layout or painting.
 
 The default limits are intentionally bounded:
 
@@ -197,6 +198,15 @@ Rust-only derived view. `display:none`, explicit hidden signals, and
 `visibility:hidden` remove boxes; `display:contents` preserves eligible
 descendants without creating its own box.
 
+The 017 viewport-scroll boundary derives bounded document content height and a
+single vertical maximum offset. `NativeLayoutSnapshot` keeps its boxes in
+document coordinates and exposes the offset/max-scroll metadata; point hit
+testing adds the offset before resolving a deepest visible box. The display
+list carries the same offset and software replay translates its bounded
+rectangles/points into viewport coordinates. Scroll deltas are explicit native
+actions, clamp at the document edges, and never scroll a semantic target
+implicitly into view.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -214,7 +224,8 @@ unsupported.
 
 The 013 paint boundary carries the intersection of bounded `overflow:hidden`
 ancestor rectangles on fill/text commands and rechecks that intersection at
-software replay. It does not create scroll offsets or a general clip stack.
+software replay. It does not create nested scroll containers or a general clip
+stack; the later 017 boundary owns only the root viewport offset.
 
 The 014 paint boundary accepts only a uniform `border:Npx solid <color>`
 declaration from the existing bounded CSS grammar. It adds one immutable
@@ -237,8 +248,8 @@ and `margin:Npx` values plus `box-sizing:content-box|border-box`. It keeps
 rectangle after border and padding insets; child flow and direct text begin at
 that content origin. Uniform margins consume normal-flow space without margin
 collapsing. Percentages, negative/auto values, four-side shorthands, min/max
-constraints, positioning, flex/grid, fractional metrics, and scrolling remain
-unsupported.
+constraints, positioning, flex/grid, fractional metrics, and nested or
+horizontal scrolling remain unsupported.
 
 The native locator grammar is explicit and bounded:
 
@@ -259,11 +270,14 @@ read-only textboxes, and unsupported action roles also fail before mutation.
 The grammar is a semantic locator contract, not a CSS selector implementation;
 general CSS selector coverage belongs to a later CSS/layout phase.
 
-The native backend accepts semantic `Click` and `Type` actions plus the native
-`point=<x>,<y>` click-target extension. A point is checked against the
+The native backend accepts semantic `Click`, `Type`, and bounded vertical
+`Scroll` actions plus the native `point=<x>,<y>` click-target extension. A
+point is checked against the
 viewport, resolved to the deepest visible layout box, and walked to the
 nearest actionable semantic ancestor before focus or control state changes.
-There is no implicit scrolling or nearest-target adjustment. Click focuses
+There is no implicit scrolling or nearest-target adjustment. Explicit scroll
+changes the root viewport only; horizontal deltas are denied and edge/no-op
+scrolls do not mutate the revision. Click focuses
 supported buttons, links, checkboxes, radios, textboxes, and comboboxes;
 checkbox and radio state changes are retained in the document owner. Clicking
 an option in a single-select combobox selects it and clears its siblings. Type
@@ -272,8 +286,8 @@ visibility gate recognizes `hidden`, `aria-hidden="true"`, and computed
 `display:none`/`visibility:hidden`; hidden subtrees are omitted from text,
 layout, and hit testing. Links do not perform default navigation, and no
 action performs keyboard navigation, multi-select, or JavaScript execution.
-Each accepted action advances the document revision exactly once, so earlier
-references must be re-observed. The effects operation returns the current
+Each accepted mutating action advances the document revision exactly once, so
+earlier references must be re-observed. The effects operation returns the current
 revision and changed bit; bounded native event metadata remains an internal
 Rust inspection surface.
 
@@ -287,7 +301,7 @@ The native profile is `experimental` and declares:
 | navigation | available | local `about`, `data`, and registered fixture URLs |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
-| action | available | semantic click/type plus bounded native point targets for supported local controls; no scrolling or default browser behavior |
+| action | available | semantic click/type, bounded vertical root scrolling, plus native point targets for supported local controls; no nested scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | omitted | JavaScript is unavailable |
 | capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
@@ -360,7 +374,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden` ancestor intersections on fill/text commands and
-  software-surface clipping with no scrolling or screenshot-evidence
+  software-surface clipping with no nested scrolling or screenshot-evidence
   capability.
 - bounded uniform solid-border parsing, deterministic `BorderRect` command
   ordering, inside-the-box border replay, and clip/source-over enforcement.
@@ -369,6 +383,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   denials.
 - bounded uniform padding/margin cascade, content-box/border-box sizing,
   outer/content layout rectangles, margin flow, and content-origin text paint.
+- bounded root viewport scrolling, content-height/max-offset derivation,
+  viewport-to-document hit-test mapping, translated software replay/capture,
+  clamping, and revision/effect behavior for moved scroll actions.
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local URL shapes, including rejection of remote endpoints and unsupported
   browser-only flags.
@@ -378,7 +395,7 @@ for arbitrary remote content until CSS/layout/paint, security policy, process
 isolation, cancellation, conformance, and platform evidence exist.
 
 Future phases may split the DOM parser into tokenizer/tree-builder modules and
-add general CSS, scrolling/stacking layout, paint, full event-loop, script,
+add general CSS, nested/scrolling/stacking layout, paint, full event-loop, script,
 storage, and process boundaries. Those changes require updates to this
 document, the epic, and their dependency-ordered task files before
 implementation.

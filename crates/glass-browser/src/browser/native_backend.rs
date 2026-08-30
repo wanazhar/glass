@@ -69,7 +69,7 @@ impl NativeEngineBackend {
                 }
                 BrowserCapability::Action => {
                     vec![
-                        "semantic click/type plus bounded native point targets for supported local controls; no scrolling".into(),
+                        "semantic click/type, bounded vertical root scrolling, and native point targets for supported local controls; no nested scrolling".into(),
                     ]
                 }
                 BrowserCapability::Effects => {
@@ -117,7 +117,7 @@ impl NativeEngineBackend {
                         "Phase 2 and initial Phase 3 are deterministic local-content slices, not browser parity".into(),
                         "in-process execution is not a security boundary for hostile content".into(),
                         "network, JavaScript, general CSS, scrolling/stacking layout, font/image fidelity, storage, and default browser behavior are unavailable".into(),
-                        "actions are limited to semantic click/type and bounded native point targets for supported local controls".into(),
+                        "actions are limited to semantic click/type, bounded vertical root scrolling, and native point targets for supported local controls".into(),
                     ],
                 },
             },
@@ -210,13 +210,16 @@ impl BrowserBackend for NativeEngineBackend {
                         SemanticAction::Type { target, text } => {
                             NativeAction::Type { target, text }
                         }
-                        SemanticAction::KeyPress { .. } | SemanticAction::Scroll { .. } => {
+                        SemanticAction::KeyPress { .. } => {
                             return Err(BrowserBackendError::UnsupportedOperation {
                                 operation: "action".into(),
                                 reason:
-                                    "native engine supports only semantic click and type actions"
+                                    "native engine supports semantic click/type and bounded vertical scroll actions"
                                         .into(),
                             });
+                        }
+                        SemanticAction::Scroll { delta_x, delta_y } => {
+                            NativeAction::Scroll { delta_x, delta_y }
                         }
                     };
                     let outcome = engine.action(action).map_err(native_error)?;

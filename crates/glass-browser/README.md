@@ -73,9 +73,10 @@ fail before browser input.
 
 The feature-gated native engine additionally derives bounded integer-pixel
 normal-flow rectangles, uniform non-negative padding/margin, explicit
-content-box or border-box sizing, outer/content rectangles, inherited text
-color, bounded paint clips, uniform solid-border paint, a deterministic
-clear/fill/text/border display list, a logical RGBA software surface, and
+content-box or border-box sizing, outer/content rectangles, bounded vertical
+viewport scrolling, inherited text color, bounded paint clips, uniform
+solid-border paint, a deterministic clear/fill/text/border display list, a
+logical RGBA software surface, and
 bounded PNG capture through the explicit backend operation;
 it accepts native
 `point=x,y` click targets
@@ -146,7 +147,7 @@ does not own or close the external browser.
 | Knowledge | `KnowledgeStore` | Scoped advisory persistence and freshness assessment |
 | Backend interface | `browser_backend` | Capability-evidenced semantic backend dispatch |
 | Alternative runtimes | `BrowserRuntimeSession` | Portable Firefox BiDi and Safari WebDriver session; feature-gated native local session |
-| Native engine | `BackendFactory::native`, `BrowserRuntimeSession::connect_native` (feature-gated) | Experimental local fixture/data-URL engine with bounded layout/point input and Rust-only display/raster artifacts; native CLI is explicit and local-only |
+| Native engine | `BackendFactory::native`, `BrowserRuntimeSession::connect_native` (feature-gated) | Experimental local fixture/data-URL engine with bounded layout/point input, root vertical viewport scrolling, and Rust-only display/raster artifacts; native CLI is explicit and local-only |
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -158,7 +159,7 @@ does not own or close the external browser.
 |---|---:|---|
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
-| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded layout/point input and Rust-only display/raster artifacts |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded layout/point input, root vertical viewport scrolling, and Rust-only display/raster artifacts |
 
 ## MCP
 
@@ -187,7 +188,7 @@ agreement reports exact schema and capability status.
 - The native engine is experimental, default-off, fixture/data-URL-only, and
   available through the explicit Rust backend factory and feature-gated local
   CLI runtime. Its current semantic slice supports bounded box-model layout,
-  point input, click/type actions, and revision effects for local controls. The CLI default configuration
+  vertical viewport scrolling, point input, click/type actions, and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary
   for hostile remote content.

@@ -41,6 +41,8 @@ pub enum NativeDisplayCommand {
 pub struct NativeDisplayList {
     pub revision: u64,
     pub viewport: super::config::Viewport,
+    /// The root viewport offset used when replaying document-space commands.
+    pub scroll_offset: NativePoint,
     pub commands: Vec<NativeDisplayCommand>,
 }
 
@@ -111,6 +113,7 @@ impl NativeDisplayList {
         Ok(Self {
             revision: document.revision(),
             viewport: layout.viewport,
+            scroll_offset: layout.scroll_offset,
             commands,
         })
     }

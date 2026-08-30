@@ -34,6 +34,7 @@ pub(crate) struct NativeElementState {
     value: Option<String>,
     checked: bool,
     focused: bool,
+    selected: bool,
 }
 
 impl NativeElementState {
@@ -42,6 +43,7 @@ impl NativeElementState {
             value: (name == "input").then(|| attributes.get("value").cloned().unwrap_or_default()),
             checked: attributes.contains_key("checked"),
             focused: false,
+            selected: attributes.contains_key("selected"),
         }
     }
 }
@@ -122,6 +124,7 @@ pub struct NativeSemanticNode {
     pub input_type: Option<String>,
     pub empty: Option<bool>,
     pub checked: Option<bool>,
+    pub selected: Option<bool>,
     pub disabled: bool,
     pub read_only: bool,
     pub required: bool,
@@ -250,6 +253,7 @@ impl NativeDocument {
                 }
             }
         }
+        document.normalize_select_defaults();
         Ok(document)
     }
 
@@ -360,10 +364,24 @@ impl NativeDocument {
         }
         if !matches!(
             semantic.role.as_str(),
-            "button" | "link" | "checkbox" | "radio" | "textbox" | "combobox"
+            "button" | "link" | "checkbox" | "radio" | "textbox" | "combobox" | "option"
         ) {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "only supported semantic controls accept click".into(),
+            });
+        }
+        let option_select_id = if semantic.role == "option" {
+            Some(self.single_select_for_option(id)?)
+        } else {
+            None
+        };
+        if semantic.role == "combobox"
+            && self
+                .node(id)
+                .is_some_and(|node| node.attribute("multiple").is_some())
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "multiple select controls are not supported".into(),
             });
         }
 
@@ -406,6 +424,29 @@ impl NativeDocument {
                             .checked = should_be_checked;
                         events.push((radio_id, NativeEventKind::Change));
                     }
+                }
+            }
+            "option" => {
+                let select_id = option_select_id.ok_or(NativeEngineError::DetachedTarget)?;
+                let option_ids = self.select_option_ids(select_id);
+                let mut selection_changed = false;
+                for option_id in option_ids {
+                    let should_be_selected = option_id == id;
+                    let was_selected = self
+                        .node(option_id)
+                        .ok_or(NativeEngineError::DetachedTarget)?
+                        .state
+                        .selected;
+                    if was_selected != should_be_selected {
+                        self.node_mut(option_id)
+                            .ok_or(NativeEngineError::DetachedTarget)?
+                            .state
+                            .selected = should_be_selected;
+                        selection_changed = true;
+                    }
+                }
+                if selection_changed {
+                    events.push((select_id, NativeEventKind::Change));
                 }
             }
             _ => {}
@@ -529,6 +570,83 @@ impl NativeDocument {
             .flatten()
     }
 
+    fn normalize_select_defaults(&mut self) {
+        let select_ids = self
+            .nodes
+            .iter()
+            .filter(|node| node.element_name() == Some("select"))
+            .map(NativeNode::id)
+            .collect::<Vec<_>>();
+        for select_id in select_ids {
+            let option_ids = self.select_option_ids(select_id);
+            let selected_id = option_ids
+                .iter()
+                .find(|option_id| {
+                    self.node(**option_id)
+                        .is_some_and(|node| node.state.selected)
+                })
+                .copied()
+                .or_else(|| option_ids.first().copied());
+            for option_id in option_ids {
+                if let Some(node) = self.node_mut(option_id) {
+                    node.state.selected = selected_id == Some(option_id);
+                }
+            }
+        }
+    }
+
+    fn single_select_for_option(
+        &self,
+        option_id: NativeNodeId,
+    ) -> Result<NativeNodeId, NativeEngineError> {
+        let select_id = self
+            .find_ancestor_element(option_id, "select")
+            .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                reason: "option must belong to a single-select control".into(),
+            })?;
+        if self
+            .node(select_id)
+            .is_some_and(|node| node.attribute("multiple").is_some())
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "multiple select controls are not supported".into(),
+            });
+        }
+        Ok(select_id)
+    }
+
+    fn select_option_ids(&self, select_id: NativeNodeId) -> Vec<NativeNodeId> {
+        self.nodes
+            .iter()
+            .filter(|node| self.semantic_role(node.id()) == Some("option"))
+            .filter(|node| self.is_descendant_of(node.id(), select_id))
+            .map(NativeNode::id)
+            .collect()
+    }
+
+    fn is_descendant_of(&self, id: NativeNodeId, ancestor: NativeNodeId) -> bool {
+        let mut parent = self.node(id).and_then(NativeNode::parent);
+        while let Some(parent_id) = parent {
+            if parent_id == ancestor {
+                return true;
+            }
+            parent = self.node(parent_id).and_then(NativeNode::parent);
+        }
+        false
+    }
+
+    fn find_ancestor_element(&self, id: NativeNodeId, wanted: &str) -> Option<NativeNodeId> {
+        let mut parent = self.node(id).and_then(NativeNode::parent);
+        while let Some(parent_id) = parent {
+            let parent_node = self.node(parent_id)?;
+            if parent_node.element_name() == Some(wanted) {
+                return Some(parent_id);
+            }
+            parent = parent_node.parent();
+        }
+        None
+    }
+
     fn focus_element(&mut self, id: NativeNodeId) -> Vec<(NativeNodeId, NativeEventKind)> {
         let focused_ids = self
             .nodes
@@ -591,6 +709,7 @@ impl NativeDocument {
         let empty = matches!(role.as_str(), "textbox" | "combobox")
             .then(|| self.current_value(id).is_none_or(|value| value.is_empty()));
         let checked = matches!(role.as_str(), "checkbox" | "radio").then(|| node.state.checked);
+        let selected = (role == "option").then_some(node.state.selected);
         Some(NativeSemanticNode {
             node_id: id,
             reference: self.node_reference(id)?,
@@ -601,6 +720,7 @@ impl NativeDocument {
             input_type,
             empty,
             checked,
+            selected,
             disabled: self.is_disabled(id),
             read_only: self.is_read_only(id),
             required: self.is_required(id),
@@ -710,7 +830,25 @@ impl NativeDocument {
                 self.collect_raw_text(id, &mut text);
                 Some(text)
             }),
-            "select" => Some(String::new()),
+            "select" => {
+                let option_ids = self.select_option_ids(id);
+                let option_id = option_ids
+                    .iter()
+                    .copied()
+                    .find(|option_id| {
+                        self.node(*option_id)
+                            .is_some_and(|option| option.state.selected)
+                    })
+                    .or_else(|| option_ids.first().copied());
+                let Some(option_id) = option_id else {
+                    return Some(String::new());
+                };
+                let option = self.node(option_id)?;
+                option.attribute("value").map(str::to_owned).or_else(|| {
+                    self.element_text(option_id, MAX_LOCATOR_BYTES)
+                        .map(|(value, _)| value)
+                })
+            }
             _ => None,
         }
     }
@@ -732,6 +870,11 @@ impl NativeDocument {
                 break;
             };
             if parent_node.element_name() == Some("fieldset")
+                && parent_node.attribute("disabled").is_some()
+            {
+                return true;
+            }
+            if parent_node.element_name() == Some("select")
                 && parent_node.attribute("disabled").is_some()
             {
                 return true;

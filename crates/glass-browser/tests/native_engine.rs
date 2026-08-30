@@ -360,7 +360,7 @@ fn native_actions_update_state_and_reject_unsafe_targets_before_mutation() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://controls",
-            "<label for='name'>Name</label><input id='name' type='text'><input id='remember' type='checkbox'><input id='first' type='radio' name='choice'><input id='second' type='radio' name='choice' checked><input id='disabled' type='text' disabled><input id='readonly' type='text' readonly><button id='save'>Save</button><button id='other'>Other</button><p id='plain'>Plain</p>",
+            "<label for='name'>Name</label><input id='name' type='text'><input id='remember' type='checkbox'><input id='first' type='radio' name='choice'><input id='second' type='radio' name='choice' checked><input id='disabled' type='text' disabled><input id='readonly' type='text' readonly><button id='save'>Save</button><button id='other'>Other</button><p id='plain'>Plain</p><select id='country'><option id='one' value='one'>One</option><option id='two' value='two'>Two</option></select><select id='many' multiple><option id='many-one'>Many One</option></select>",
         )
         .unwrap()
         .with_initial_url("fixture://controls");
@@ -441,6 +441,50 @@ fn native_actions_update_state_and_reject_unsafe_targets_before_mutation() {
         Some(false)
     );
 
+    let options = engine.semantic_nodes().unwrap();
+    assert_eq!(
+        options
+            .iter()
+            .find(|node| node.name == "One")
+            .and_then(|node| node.selected),
+        Some(true)
+    );
+    assert_eq!(
+        options
+            .iter()
+            .find(|node| node.name == "Two")
+            .and_then(|node| node.selected),
+        Some(false)
+    );
+    assert_eq!(
+        options
+            .iter()
+            .find(|node| node.role == "combobox" && node.tag_name == "select")
+            .and_then(|node| node.empty),
+        Some(false)
+    );
+    let selected = engine
+        .action(NativeAction::Click {
+            target: "id=two".into(),
+        })
+        .unwrap();
+    assert_eq!(selected.revision, 5);
+    let selected_options = engine.semantic_nodes().unwrap();
+    assert_eq!(
+        selected_options
+            .iter()
+            .find(|node| node.name == "One")
+            .and_then(|node| node.selected),
+        Some(false)
+    );
+    assert_eq!(
+        selected_options
+            .iter()
+            .find(|node| node.name == "Two")
+            .and_then(|node| node.selected),
+        Some(true)
+    );
+
     let revision_before_rejections = engine.revision();
     assert!(matches!(
         engine.action(NativeAction::Click {
@@ -451,6 +495,12 @@ fn native_actions_update_state_and_reject_unsafe_targets_before_mutation() {
     assert!(matches!(
         engine.action(NativeAction::Click {
             target: "id=plain".into(),
+        }),
+        Err(glass_browser::NativeEngineError::TargetNotActionable { .. })
+    ));
+    assert!(matches!(
+        engine.action(NativeAction::Click {
+            target: "id=many-one".into(),
         }),
         Err(glass_browser::NativeEngineError::TargetNotActionable { .. })
     ));

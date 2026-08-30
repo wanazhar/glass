@@ -1,7 +1,7 @@
 # Native engine Phase 1/Phase 2 analysis
 
 Status: Active implementation analysis for issue #40; Phase 0/1 and the first
-Phase 2 semantic/action slices are committed locally.
+Phase 2 semantic/action/form-control slices are committed locally.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -56,7 +56,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history | committed URL/revision | bounded entries/current index | native limits |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::dom` | arena DOM, semantic projection, and bounded control mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
+| `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
 | `native_engine::interaction` | action/effect types and bounded effect records | semantic action and event kind | revisioned interaction metadata | native DOM IDs |
 | `native_engine::engine` | sole mutable page-state coordinator | lifecycle/navigation/action requests | snapshots/context/history/effects | all engine modules |
 | `browser::native_backend` | semantic adapter/profile | backend requests | typed backend responses/errors | engine + `browser_backend` |
@@ -104,6 +104,7 @@ identity is established before mutation can consume it:
 |---|---|---|---|
 | `native-engine-002` | supported role/name projection, bounded attributes, explicit semantic locators, revision-bound references | `native-engine-001` | CSS selectors, layout, hit testing, raw form values |
 | `native-engine-003` | click/type/focus mutation for supported controls, checkbox/radio state, revisioned native effects, action/effects backend dispatch | `native-engine-002` | JavaScript, default navigation, coordinate input, full event loop |
+| `native-engine-004` | deterministic single-select/option state and semantic option clicks | `native-engine-003` | keyboard navigation, multi-select, submission, network, layout hit testing |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -122,6 +123,9 @@ Phase 2 integration chains added by these slices are:
 4. Dispatcher effects request -> native engine revision/effect state -> bounded
    `EffectsResult`.
 5. Disabled/read-only/ambiguous/unsupported targets fail before mutation.
+6. Single-select parsing establishes a deterministic option state; an option
+   click updates that group, invalidates its prior reference, and records a
+   bounded change effect.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving geometry ownership to Phase 3.
@@ -137,6 +141,7 @@ clicking a link performs browser navigation.
 | fixture/data-only loader | deterministic, no SSRF/filesystem risk, fast tests | no real web navigation or network behavior | typed unsupported URL errors and later security workstream |
 | in-process single owner | simple revision/history invariants and reproducible tests | no crash isolation or hostile-content safety | keep content local-only; process isolation is a promotion gate |
 | no async task callbacks | deterministic scheduler with no hidden sleeps/threads | no script/event-loop realism | typed task kinds and test clock establish the future seam |
+| single-select only | useful basic form semantics with a small deterministic state model | no keyboard, multi-select, or submission behavior | reject unsupported variants explicitly and keep values private |
 | profile exposes six capabilities | accurate discovery and fail-closed operations | no user-facing native CLI path yet; semantic actions are intentionally narrow | public Rust factory first; CLI/runtime integration is a later task |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 

@@ -122,9 +122,10 @@ controls, and a revision/changed effects signal through the existing backend
 dispatcher.
 
 The action surface focuses supported controls, toggles checkbox/radio state,
-and replaces private text state for `input`/`textarea` controls. Explicit
-references are revision-bound; ambiguous, stale, disabled, read-only, and
-unsupported targets fail before mutation. It does not provide network access,
+selects an option in a single-select control, and replaces private text state
+for `input`/`textarea` controls. Explicit references are revision-bound;
+ambiguous, stale, disabled, read-only, and unsupported targets fail before
+mutation. It does not provide network access,
 filesystem navigation, CSS/layout/paint, JavaScript, storage, screenshots,
 prompts, downloads, coordinate hit testing, default link navigation, or raw
 form-value evidence. The backend is explicit-only and never silently falls

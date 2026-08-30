@@ -235,6 +235,36 @@ fn native_error(error: NativeEngineError) -> BrowserBackendError {
             field: "native scheduler".into(),
             reason,
         },
+        NativeEngineError::TargetNotFound => BrowserBackendError::UnsupportedOperation {
+            operation: "action".into(),
+            reason: "native action target was not found".into(),
+        },
+        NativeEngineError::AmbiguousTarget { matches } => {
+            BrowserBackendError::UnsupportedOperation {
+                operation: "action".into(),
+                reason: format!(
+                    "native action target matched {matches} elements; exactly one is required"
+                ),
+            }
+        }
+        NativeEngineError::DetachedTarget => BrowserBackendError::UnsupportedOperation {
+            operation: "action".into(),
+            reason: "native action target is stale or detached; observe again".into(),
+        },
+        NativeEngineError::TargetNotActionable { reason } => {
+            BrowserBackendError::UnsupportedOperation {
+                operation: "action".into(),
+                reason: format!("native action target is not actionable: {reason}"),
+            }
+        }
+        NativeEngineError::DisabledTarget => BrowserBackendError::UnsupportedOperation {
+            operation: "action".into(),
+            reason: "native action target is disabled".into(),
+        },
+        NativeEngineError::ReadOnlyTarget => BrowserBackendError::UnsupportedOperation {
+            operation: "action".into(),
+            reason: "native action target is read-only".into(),
+        },
     }
 }
 

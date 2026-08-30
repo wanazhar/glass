@@ -26,8 +26,9 @@ version claims.
 
 ## Active plan: Glass native browser engine (issue #40)
 
-Status: Phase 0/Phase 1 checkpoint complete locally; later engine phases remain
-in progress. The authoritative epic is
+Status: Phase 0/Phase 1 checkpoint and the first Phase 2 semantic/action slices
+are being delivered locally; later engine phases remain in progress. The
+authoritative epic is
 [issue #40](https://github.com/wanazhar/glass/issues/40). The design contract,
 module decomposition, integration enumeration, and tradeoffs are in the
 [native-engine architecture](../architecture/native-engine.md) and
@@ -37,6 +38,14 @@ The first dependency-ordered checkpoint is
 [native-engine-001](tasks/native-engine-001.md): a default-off,
 fixture/data-URL-only, one-context engine kernel and explicit semantic backend.
 It does not claim browser parity or remote-content safety.
+
+The next dependency-ordered slices are
+[native-engine-002](tasks/native-engine-002.md), which adds bounded semantic
+DOM projection and revision-bound locators, and
+[native-engine-003](tasks/native-engine-003.md), which adds the first
+revisioned click/type/focus mutation path and effects signal. They remain
+semantic-only: CSS/layout hit testing, JavaScript, network, and raw form-value
+evidence are not claimed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

@@ -3,6 +3,11 @@ use super::error::NativeEngineError;
 use std::collections::BTreeMap;
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
+const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
+
+const SUPPORTED_ROLES: [&str; 8] = [
+    "button", "link", "textbox", "checkbox", "radio", "combobox", "option", "heading",
+];
 
 /// Generational identity for one node in a native document arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,6 +23,25 @@ impl NativeNodeId {
 
     pub const fn index(self) -> u32 {
         self.index
+    }
+}
+
+/// Mutable state associated with a native element. Raw values remain inside
+/// the document owner and are not included in semantic projections.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NativeElementState {
+    value: Option<String>,
+    checked: bool,
+    focused: bool,
+}
+
+impl NativeElementState {
+    fn initial(name: &str, attributes: &BTreeMap<String, String>) -> Self {
+        Self {
+            value: (name == "input").then(|| attributes.get("value").cloned().unwrap_or_default()),
+            checked: attributes.contains_key("checked"),
+            focused: false,
+        }
     }
 }
 
@@ -39,6 +63,7 @@ pub struct NativeNode {
     parent: Option<NativeNodeId>,
     children: Vec<NativeNodeId>,
     kind: NativeNodeKind,
+    state: NativeElementState,
 }
 
 impl NativeNode {
@@ -57,12 +82,56 @@ impl NativeNode {
     pub const fn kind(&self) -> &NativeNodeKind {
         &self.kind
     }
+
+    /// Return the element's attribute map, or `None` for document/text nodes.
+    pub fn attributes(&self) -> Option<&BTreeMap<String, String>> {
+        match &self.kind {
+            NativeNodeKind::Element { attributes, .. } => Some(attributes),
+            NativeNodeKind::Document | NativeNodeKind::Text(_) => None,
+        }
+    }
+
+    /// Return a case-insensitive attribute value for an element.
+    pub fn attribute(&self, name: &str) -> Option<&str> {
+        self.attributes()?.iter().find_map(|(attribute, value)| {
+            attribute
+                .eq_ignore_ascii_case(name)
+                .then_some(value.as_str())
+        })
+    }
+
+    /// Return the lower-case element name, or `None` for document/text nodes.
+    pub fn element_name(&self) -> Option<&str> {
+        match &self.kind {
+            NativeNodeKind::Element { name, .. } => Some(name),
+            NativeNodeKind::Document | NativeNodeKind::Text(_) => None,
+        }
+    }
+}
+
+/// Bounded semantic projection of one supported native element.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeSemanticNode {
+    pub node_id: NativeNodeId,
+    pub reference: String,
+    pub tag_name: String,
+    pub role: String,
+    pub name: String,
+    pub name_truncated: bool,
+    pub input_type: Option<String>,
+    pub empty: Option<bool>,
+    pub checked: Option<bool>,
+    pub disabled: bool,
+    pub read_only: bool,
+    pub required: bool,
+    pub focused: bool,
 }
 
 /// A parsed document owned by one engine generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeDocument {
     generation: u32,
+    revision: u64,
     root: NativeNodeId,
     nodes: Vec<NativeNode>,
 }
@@ -94,12 +163,14 @@ impl NativeDocument {
         };
         let mut document = Self {
             generation,
+            revision: u64::from(generation),
             root,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
                 children: Vec::new(),
                 kind: NativeNodeKind::Document,
+                state: NativeElementState::default(),
             }],
         };
         let mut stack = vec![root];
@@ -188,18 +259,25 @@ impl NativeDocument {
         };
         Self {
             generation: 1,
+            revision: 0,
             root,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
                 children: Vec::new(),
                 kind: NativeNodeKind::Document,
+                state: NativeElementState::default(),
             }],
         }
     }
 
     pub const fn generation(&self) -> u32 {
         self.generation
+    }
+
+    /// Return the revision represented by this document's semantic references.
+    pub const fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub const fn root(&self) -> NativeNodeId {
@@ -214,6 +292,51 @@ impl NativeDocument {
 
     pub const fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Return a revision-bound reference for a current arena node.
+    pub fn node_reference(&self, id: NativeNodeId) -> Option<String> {
+        self.node(id)
+            .map(|_| format!("ref=r{}:n{}", self.revision, id.index))
+    }
+
+    /// Return a bounded semantic projection in deterministic document order.
+    pub fn semantic_nodes(&self) -> Vec<NativeSemanticNode> {
+        self.nodes
+            .iter()
+            .filter_map(|node| self.semantic_node(node.id))
+            .collect()
+    }
+
+    /// Resolve one explicit semantic locator to exactly one current element.
+    pub fn resolve_target(&self, locator: &str) -> Result<NativeNodeId, NativeEngineError> {
+        let locator = parse_locator(locator)?;
+        match locator {
+            NativeLocator::Reference { revision, index } => {
+                if revision != self.revision {
+                    return Err(NativeEngineError::DetachedTarget);
+                }
+                let id = NativeNodeId {
+                    generation: self.generation,
+                    index,
+                };
+                self.node(id)
+                    .filter(|node| node.element_name().is_some())
+                    .map(|node| node.id())
+                    .ok_or(NativeEngineError::TargetNotFound)
+            }
+            NativeLocator::Id(value) => {
+                self.unique_element_matches(|node| node.attribute("id") == Some(value))
+            }
+            NativeLocator::Role { role, name } => self.unique_semantic_matches(|node| {
+                node.role == role && name.is_none_or(|expected| node.name == expected)
+            }),
+            NativeLocator::Name(value) => self.unique_semantic_matches(|node| node.name == value),
+            NativeLocator::Text(value) => self.unique_semantic_matches(|node| {
+                self.element_text(node.node_id, MAX_LOCATOR_BYTES)
+                    .is_some_and(|(text, truncated)| !truncated && text == value)
+            }),
+        }
     }
 
     pub fn title(&self, max_bytes: usize) -> (String, bool) {
@@ -255,11 +378,18 @@ impl NativeDocument {
             generation: self.generation,
             index,
         };
+        let state = match &kind {
+            NativeNodeKind::Element { name, attributes } => {
+                NativeElementState::initial(name, attributes)
+            }
+            NativeNodeKind::Document | NativeNodeKind::Text(_) => NativeElementState::default(),
+        };
         self.nodes.push(NativeNode {
             id,
             parent: Some(parent),
             children: Vec::new(),
             kind,
+            state,
         });
         let Some(parent_node) = self.node_mut(parent) else {
             return Err(NativeEngineError::Parse {
@@ -275,6 +405,227 @@ impl NativeDocument {
         (id.generation == self.generation)
             .then(|| self.nodes.get_mut(id.index as usize))
             .flatten()
+    }
+
+    fn unique_element_matches(
+        &self,
+        predicate: impl Fn(&NativeNode) -> bool,
+    ) -> Result<NativeNodeId, NativeEngineError> {
+        let matches = self
+            .nodes
+            .iter()
+            .filter(|node| node.element_name().is_some() && predicate(node))
+            .map(NativeNode::id)
+            .collect::<Vec<_>>();
+        unique_match(matches)
+    }
+
+    fn unique_semantic_matches(
+        &self,
+        predicate: impl Fn(&NativeSemanticNode) -> bool,
+    ) -> Result<NativeNodeId, NativeEngineError> {
+        let matches = self
+            .semantic_nodes()
+            .into_iter()
+            .filter(predicate)
+            .map(|node| node.node_id)
+            .collect::<Vec<_>>();
+        unique_match(matches)
+    }
+
+    fn semantic_node(&self, id: NativeNodeId) -> Option<NativeSemanticNode> {
+        let node = self.node(id)?;
+        let tag_name = node.element_name()?.to_string();
+        let role = self.semantic_role(id)?.to_string();
+        let (name, name_truncated) = self.accessible_name(id, &role);
+        let input_type = (tag_name == "input").then(|| {
+            node.attribute("type")
+                .unwrap_or("text")
+                .to_ascii_lowercase()
+        });
+        let empty = matches!(role.as_str(), "textbox" | "combobox")
+            .then(|| self.current_value(id).is_none_or(|value| value.is_empty()));
+        let checked = matches!(role.as_str(), "checkbox" | "radio").then(|| node.state.checked);
+        Some(NativeSemanticNode {
+            node_id: id,
+            reference: self.node_reference(id)?,
+            tag_name,
+            role,
+            name,
+            name_truncated,
+            input_type,
+            empty,
+            checked,
+            disabled: self.is_disabled(id),
+            read_only: self.is_read_only(id),
+            required: self.is_required(id),
+            focused: node.state.focused,
+        })
+    }
+
+    fn semantic_role(&self, id: NativeNodeId) -> Option<&'static str> {
+        let node = self.node(id)?;
+        if let Some(role) = node
+            .attribute("role")
+            .and_then(|role| supported_role(role.trim()))
+        {
+            return Some(role);
+        }
+        let name = node.element_name()?;
+        match name {
+            "button" => Some("button"),
+            "a" if node.attribute("href").is_some() => Some("link"),
+            "textarea" => Some("textbox"),
+            "select" => Some("combobox"),
+            "option" => Some("option"),
+            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => Some("heading"),
+            "input" => match node
+                .attribute("type")
+                .unwrap_or("text")
+                .trim()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "button" | "submit" | "reset" | "image" => Some("button"),
+                "checkbox" => Some("checkbox"),
+                "radio" => Some("radio"),
+                "text" | "email" | "password" | "search" | "tel" | "url" => Some("textbox"),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn accessible_name(&self, id: NativeNodeId, role: &str) -> (String, bool) {
+        let Some(node) = self.node(id) else {
+            return (String::new(), false);
+        };
+        if let Some(value) = node
+            .attribute("aria-label")
+            .filter(|value| !value.is_empty())
+        {
+            return collapse_text(value, MAX_LOCATOR_BYTES);
+        }
+        if let Some(value) = node.attribute("aria-labelledby") {
+            let mut labelled = String::new();
+            for label_id in value.split_ascii_whitespace() {
+                if let Some(label) = self.find_element_by_id(label_id) {
+                    self.collect_raw_text(label, &mut labelled);
+                    labelled.push(' ');
+                }
+            }
+            let collapsed = collapse_text(&labelled, MAX_LOCATOR_BYTES);
+            if !collapsed.0.is_empty() {
+                return collapsed;
+            }
+        }
+        if let Some(value) = node.attribute("id")
+            && let Some(label) = self.find_label_for(value)
+        {
+            let mut text = String::new();
+            self.collect_raw_text(label, &mut text);
+            let collapsed = collapse_text(&text, MAX_LOCATOR_BYTES);
+            if !collapsed.0.is_empty() {
+                return collapsed;
+            }
+        }
+        if let Some(label) = self.find_ancestor_label(id) {
+            let mut text = String::new();
+            self.collect_raw_text(label, &mut text);
+            let collapsed = collapse_text(&text, MAX_LOCATOR_BYTES);
+            if !collapsed.0.is_empty() {
+                return collapsed;
+            }
+        }
+        if role == "textbox"
+            && let Some(value) = node
+                .attribute("placeholder")
+                .filter(|value| !value.is_empty())
+        {
+            return collapse_text(value, MAX_LOCATOR_BYTES);
+        }
+        let mut text = String::new();
+        self.collect_raw_text(id, &mut text);
+        collapse_text(&text, MAX_LOCATOR_BYTES)
+    }
+
+    fn element_text(&self, id: NativeNodeId, max_bytes: usize) -> Option<(String, bool)> {
+        self.node(id)?;
+        let mut text = String::new();
+        self.collect_raw_text(id, &mut text);
+        Some(collapse_text(&text, max_bytes))
+    }
+
+    fn current_value(&self, id: NativeNodeId) -> Option<String> {
+        let node = self.node(id)?;
+        match node.element_name()? {
+            "input" => node.state.value.clone(),
+            "textarea" => node.state.value.clone().or_else(|| {
+                let mut text = String::new();
+                self.collect_raw_text(id, &mut text);
+                Some(text)
+            }),
+            "select" => Some(String::new()),
+            _ => None,
+        }
+    }
+
+    fn is_disabled(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return true;
+        };
+        if has_truthy_boolean_attribute(node, "disabled") {
+            return true;
+        }
+        let mut parent = node.parent();
+        while let Some(parent_id) = parent {
+            let Some(parent_node) = self.node(parent_id) else {
+                break;
+            };
+            if parent_node.element_name() == Some("fieldset")
+                && has_truthy_boolean_attribute(parent_node, "disabled")
+            {
+                return true;
+            }
+            parent = parent_node.parent();
+        }
+        false
+    }
+
+    fn is_read_only(&self, id: NativeNodeId) -> bool {
+        self.node(id)
+            .is_some_and(|node| has_truthy_boolean_attribute(node, "readonly"))
+    }
+
+    fn is_required(&self, id: NativeNodeId) -> bool {
+        self.node(id)
+            .is_some_and(|node| has_truthy_boolean_attribute(node, "required"))
+    }
+
+    fn find_element_by_id(&self, value: &str) -> Option<NativeNodeId> {
+        self.nodes.iter().find_map(|node| {
+            (node.element_name().is_some() && node.attribute("id") == Some(value))
+                .then_some(node.id())
+        })
+    }
+
+    fn find_label_for(&self, value: &str) -> Option<NativeNodeId> {
+        self.nodes.iter().find_map(|node| {
+            (node.element_name() == Some("label") && node.attribute("for") == Some(value))
+                .then_some(node.id())
+        })
+    }
+
+    fn find_ancestor_label(&self, id: NativeNodeId) -> Option<NativeNodeId> {
+        let mut parent = self.node(id)?.parent();
+        while let Some(parent_id) = parent {
+            let parent_node = self.node(parent_id)?;
+            if parent_node.element_name() == Some("label") {
+                return Some(parent_id);
+            }
+            parent = parent_node.parent();
+        }
+        None
     }
 
     fn find_element(&self, id: NativeNodeId, wanted: &str) -> Option<NativeNodeId> {
@@ -341,6 +692,148 @@ impl NativeDocument {
             NativeNodeKind::Text(_) => {}
         }
     }
+}
+
+#[derive(Debug)]
+enum NativeLocator<'a> {
+    Reference {
+        revision: u64,
+        index: u32,
+    },
+    Id(&'a str),
+    Role {
+        role: &'a str,
+        name: Option<&'a str>,
+    },
+    Name(&'a str),
+    Text(&'a str),
+}
+
+fn parse_locator(locator: &str) -> Result<NativeLocator<'_>, NativeEngineError> {
+    if locator.is_empty() {
+        return Err(NativeEngineError::invalid(
+            "action locator",
+            "must not be empty",
+        ));
+    }
+    if locator.len() > MAX_LOCATOR_BYTES {
+        return Err(NativeEngineError::limit(
+            "action locator",
+            MAX_LOCATOR_BYTES,
+            locator.len(),
+        ));
+    }
+    if let Some(value) = locator.strip_prefix("ref=") {
+        let Some(value) = value.strip_prefix('r') else {
+            return Err(NativeEngineError::invalid(
+                "action locator",
+                "reference must use ref=r<revision>:n<arena-index>",
+            ));
+        };
+        let Some((revision, index)) = value.split_once(":n") else {
+            return Err(NativeEngineError::invalid(
+                "action locator",
+                "reference must use ref=r<revision>:n<arena-index>",
+            ));
+        };
+        if revision.is_empty() || index.is_empty() || index.contains(":n") {
+            return Err(NativeEngineError::invalid(
+                "action locator",
+                "reference must use ref=r<revision>:n<arena-index>",
+            ));
+        }
+        let revision = revision.parse::<u64>().map_err(|_| {
+            NativeEngineError::invalid(
+                "action locator",
+                "reference revision must be an unsigned integer",
+            )
+        })?;
+        let index = index.parse::<u32>().map_err(|_| {
+            NativeEngineError::invalid(
+                "action locator",
+                "reference node index must be an unsigned integer",
+            )
+        })?;
+        return Ok(NativeLocator::Reference { revision, index });
+    }
+    if let Some(value) = locator.strip_prefix("id=") {
+        return (!value.is_empty())
+            .then_some(NativeLocator::Id(value))
+            .ok_or_else(|| NativeEngineError::invalid("action locator", "id must not be empty"));
+    }
+    if let Some(value) = locator.strip_prefix("role=") {
+        if let Some((role, name)) = value.split_once("[name=") {
+            if !name.ends_with(']') || name.len() == 1 || role.is_empty() {
+                return Err(NativeEngineError::invalid(
+                    "action locator",
+                    "role/name locator is malformed",
+                ));
+            }
+            let name = &name[..name.len() - 1];
+            if name.is_empty() || !SUPPORTED_ROLES.contains(&role) {
+                return Err(NativeEngineError::invalid(
+                    "action locator",
+                    "role/name locator uses an unsupported or empty value",
+                ));
+            }
+            return Ok(NativeLocator::Role {
+                role,
+                name: Some(name),
+            });
+        }
+        if value.is_empty() || !SUPPORTED_ROLES.contains(&value) {
+            return Err(NativeEngineError::invalid(
+                "action locator",
+                "role locator uses an unsupported or empty role",
+            ));
+        }
+        return Ok(NativeLocator::Role {
+            role: value,
+            name: None,
+        });
+    }
+    if let Some(value) = locator.strip_prefix("name=") {
+        return (!value.is_empty())
+            .then_some(NativeLocator::Name(value))
+            .ok_or_else(|| NativeEngineError::invalid("action locator", "name must not be empty"));
+    }
+    if let Some(value) = locator.strip_prefix("text=") {
+        return (!value.is_empty())
+            .then_some(NativeLocator::Text(value))
+            .ok_or_else(|| NativeEngineError::invalid("action locator", "text must not be empty"));
+    }
+    Err(NativeEngineError::invalid(
+        "action locator",
+        "use ref=, id=, role=, name=, or text=",
+    ))
+}
+
+fn unique_match(matches: Vec<NativeNodeId>) -> Result<NativeNodeId, NativeEngineError> {
+    match matches.as_slice() {
+        [] => Err(NativeEngineError::TargetNotFound),
+        [id] => Ok(*id),
+        _ => Err(NativeEngineError::AmbiguousTarget {
+            matches: matches.len(),
+        }),
+    }
+}
+
+fn supported_role(value: &str) -> Option<&'static str> {
+    let normalized = value.to_ascii_lowercase();
+    SUPPORTED_ROLES
+        .iter()
+        .copied()
+        .find(|role| *role == normalized)
+}
+
+fn has_truthy_boolean_attribute(node: &NativeNode, name: &str) -> bool {
+    let Some(value) = node.attribute(name) else {
+        return false;
+    };
+    value.is_empty()
+        || value.eq_ignore_ascii_case(name)
+        || value.eq_ignore_ascii_case("true")
+        || value == "1"
 }
 
 #[derive(Debug)]
@@ -737,6 +1230,78 @@ mod tests {
         assert!(matches!(
             NativeDocument::parse("<section><p>two</p></section>", &limits),
             Err(NativeEngineError::LimitExceeded { resource, .. }) if resource == "DOM depth"
+        ));
+    }
+
+    #[test]
+    fn semantic_projection_infers_roles_labels_attributes_and_state() {
+        let limits = NativeEngineLimits::default();
+        let document = NativeDocument::parse(
+            r#"<label for="email">Email address</label><input id="email" type="email" placeholder="name@example.com" required><button id="save" aria-label="Save changes">Save</button><a href="/next">Next</a><input id="remember" type="checkbox" checked>"#,
+            &limits,
+        )
+        .unwrap();
+
+        let nodes = document.semantic_nodes();
+        let email = nodes.iter().find(|node| node.tag_name == "input").unwrap();
+        assert_eq!(email.role, "textbox");
+        assert_eq!(email.name, "Email address");
+        assert_eq!(email.input_type.as_deref(), Some("email"));
+        assert_eq!(email.empty, Some(true));
+        assert!(email.required);
+        assert_eq!(
+            email.reference,
+            format!("ref=r1:n{}", email.node_id.index())
+        );
+        assert_eq!(
+            document.node(email.node_id).unwrap().attribute("ID"),
+            Some("email")
+        );
+
+        let save = nodes.iter().find(|node| node.role == "button").unwrap();
+        assert_eq!(save.name, "Save changes");
+        assert_eq!(document.resolve_target("id=save"), Ok(save.node_id));
+        assert_eq!(
+            document.resolve_target("role=button[name=Save changes]"),
+            Ok(save.node_id)
+        );
+
+        let checkbox = nodes.iter().find(|node| node.role == "checkbox").unwrap();
+        assert_eq!(checkbox.checked, Some(true));
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.role == "link" && node.name == "Next")
+        );
+    }
+
+    #[test]
+    fn locators_reject_duplicates_stale_references_and_unknown_forms() {
+        let limits = NativeEngineLimits::default();
+        let mut document = NativeDocument::parse(
+            "<button>Save</button><button>Save</button><input id='name'>",
+            &limits,
+        )
+        .unwrap();
+        assert!(matches!(
+            document.resolve_target("role=button[name=Save]"),
+            Err(NativeEngineError::AmbiguousTarget { matches: 2 })
+        ));
+        let reference = document
+            .semantic_nodes()
+            .into_iter()
+            .find(|node| node.role == "textbox")
+            .unwrap()
+            .reference;
+        assert!(document.resolve_target(&reference).is_ok());
+        document.revision = 2;
+        assert!(matches!(
+            document.resolve_target(&reference),
+            Err(NativeEngineError::DetachedTarget)
+        ));
+        assert!(matches!(
+            document.resolve_target("css=#name"),
+            Err(NativeEngineError::InvalidConfiguration { field, .. }) if field == "action locator"
         ));
     }
 }

@@ -14,9 +14,9 @@ The native engine owns a deterministic, headless browser-platform kernel. The
 current slices own lifecycle, one browsing context, local document resources,
 HTML-to-DOM parsing, history, revisions, bounded semantic evidence, and a small
 revisioned semantic interaction/effects model for text, checkbox, radio, and
-single-select controls, plus a bounded visibility/actionability gate. The
-engine does not yet own CSS, layout, painting, hit testing, JavaScript, network
-access, storage, downloads, prompts, or platform windows.
+single-select controls, plus bounded visibility/actionability and raw-text/RCDATA
+parser gates. The engine does not yet own CSS, layout, painting, hit testing,
+JavaScript, network access, storage, downloads, prompts, or platform windows.
 
 ```text
 BrowserBackendDispatcher
@@ -147,6 +147,12 @@ names in source order. Supported role inference includes buttons, links with
 headings. `aria-label`, `aria-labelledby`, associated/ancestor labels, and
 visible element text are used in that order where applicable.
 
+The tokenizer treats `script` and `style` content as raw text and `title` and
+`textarea` content as RCDATA until their matching end tags. Markup-looking
+content inside those elements cannot create semantic descendants. Unterminated
+content is consumed to the bounded document end; this is parser containment,
+not an HTML5 conformance claim.
+
 The native locator grammar is explicit and bounded:
 
 ```text
@@ -242,9 +248,11 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - focus, checkbox/radio state, text-control state, bounded effects, and
   pre-mutation rejection of stale, disabled, read-only, and unsupported targets;
 - deterministic single-select defaults, option selection, sibling clearing, and
-  rejection of unsupported multi-select behavior.
+  rejection of unsupported multi-select behavior;
 - hidden-subtree text exclusion, semantic hidden metadata, and pre-mutation
   rejection of hidden controls.
+- raw-text/RCDATA containment for script, style, title, and textarea content,
+  including unterminated-element behavior.
 
 This slice is not browser parity. It cannot be promoted or advertised as safe
 for arbitrary remote content until CSS/layout, security policy, process

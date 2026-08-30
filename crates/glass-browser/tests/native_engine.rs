@@ -2,7 +2,7 @@
 
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
-    NativeEngineConfig, NativeEngineLimits, NativeLifecycleState,
+    NativeDocument, NativeEngineConfig, NativeEngineLimits, NativeLifecycleState,
 };
 use glass_browser::browser_backend::{
     BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest, BrowserBackendDispatcher,
@@ -228,4 +228,26 @@ fn lifecycle_state_is_terminal_after_close() {
     assert_eq!(engine.lifecycle(), NativeLifecycleState::Closed);
     assert!(engine.initialize().is_err());
     assert!(engine.close().is_err());
+}
+
+#[test]
+fn semantic_dom_references_and_locators_are_revision_bound() {
+    let document = NativeDocument::parse(
+        "<label for='query'>Query</label><input id='query' type='search'><button id='go'>Go</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let nodes = document.semantic_nodes();
+    let query = nodes.iter().find(|node| node.role == "textbox").unwrap();
+    assert_eq!(query.name, "Query");
+    assert_eq!(document.resolve_target("id=query"), Ok(query.node_id));
+    assert_eq!(
+        document.resolve_target("role=textbox[name=Query]"),
+        Ok(query.node_id)
+    );
+    assert_eq!(
+        query.reference,
+        format!("ref=r1:n{}", query.node_id.index())
+    );
+    assert!(document.resolve_target(&query.reference).is_ok());
 }

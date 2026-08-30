@@ -1,6 +1,7 @@
-# Native engine Phase 1 analysis
+# Native engine Phase 1/Phase 2 analysis
 
-Status: Active implementation analysis for issue #40.
+Status: Active implementation analysis for issue #40; Phase 0/1 is committed
+locally and the first Phase 2 semantic/action slices are being delivered.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 first delivery is a Phase 0/Phase 1 checkpoint, not an attempt to implement a
@@ -90,6 +91,40 @@ The first slice must prove these real call chains:
 - CLI runtime selection, TUI integration, MCP integration, or platform windows;
 - claiming standards compatibility, browser parity, or remote-content safety;
 - adding a third crate or a complete-engine dependency.
+
+## Phase 2 slice decomposition
+
+The next work is deliberately split into two serial slices so that semantic
+identity is established before mutation can consume it:
+
+| Task | Owns | Depends on | Does not claim |
+|---|---|---|---|
+| `native-engine-002` | supported role/name projection, bounded attributes, explicit semantic locators, revision-bound references | `native-engine-001` | CSS selectors, layout, hit testing, raw form values |
+| `native-engine-003` | click/type/focus mutation for supported controls, checkbox/radio state, revisioned native effects, action/effects backend dispatch | `native-engine-002` | JavaScript, default navigation, coordinate input, full event loop |
+
+The DOM remains a single-owner arena. Semantic projections are derived views;
+they do not become a second mutable source of truth. The document's current
+revision is included in every exported native reference. An action resolves
+and validates its locator before any state mutation, then advances the
+revision once and records bounded native effects. This gives stale-reference
+rejection without exposing arena internals through `browser_backend`.
+
+Phase 2 integration chains added by these slices are:
+
+1. HTML parse -> arena attributes/state -> semantic role/name projection.
+2. Current document revision -> native reference generation -> locator
+   resolution and stale/detached rejection.
+3. Dispatcher action request -> native backend -> locator/actionability check
+   -> document mutation -> revision/effect record -> `ActionResult`.
+4. Dispatcher effects request -> native engine revision/effect state -> bounded
+   `EffectsResult`.
+5. Disabled/read-only/ambiguous/unsupported targets fail before mutation.
+
+The semantic action tradeoff is intentional: it provides a real backend path
+for deterministic local fixtures while leaving geometry ownership to Phase 3.
+The engine can therefore test identity, actionability, mutation, and revision
+contracts now, but cannot claim that a target is visually hit-testable or that
+clicking a link performs browser navigation.
 
 ## Tradeoffs and mitigations
 

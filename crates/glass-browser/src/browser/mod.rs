@@ -74,7 +74,7 @@ pub use native_engine::{
     NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
     NativeEngineSnapshot, NativeFixture, NativeHistory, NativeHistoryEntry, NativeLifecycleState,
     NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativeResource, NativeResourceLoader,
-    NativeTask, ScheduledTask, Viewport,
+    NativeSemanticNode, NativeTask, ScheduledTask, Viewport,
 };
 /// Browser-free deterministic backend used for semantic conformance tests.
 pub use proof_backend::ProofBackend;

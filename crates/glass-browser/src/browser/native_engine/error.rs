@@ -28,6 +28,16 @@ pub enum NativeEngineError {
     Scheduler {
         reason: String,
     },
+    TargetNotFound,
+    AmbiguousTarget {
+        matches: usize,
+    },
+    DetachedTarget,
+    TargetNotActionable {
+        reason: String,
+    },
+    DisabledTarget,
+    ReadOnlyTarget,
 }
 
 impl NativeEngineError {
@@ -74,6 +84,20 @@ impl fmt::Display for NativeEngineError {
                 "{resource} exceeds limit {limit} (actual {actual})"
             ),
             Self::Scheduler { reason } => write!(formatter, "scheduler failure: {reason}"),
+            Self::TargetNotFound => write!(formatter, "native action target was not found"),
+            Self::AmbiguousTarget { matches } => write!(
+                formatter,
+                "native action target matched {matches} elements; exactly one is required"
+            ),
+            Self::DetachedTarget => write!(formatter, "native action target is stale or detached"),
+            Self::TargetNotActionable { reason } => {
+                write!(
+                    formatter,
+                    "native action target is not actionable: {reason}"
+                )
+            }
+            Self::DisabledTarget => write!(formatter, "native action target is disabled"),
+            Self::ReadOnlyTarget => write!(formatter, "native action target is read-only"),
         }
     }
 }

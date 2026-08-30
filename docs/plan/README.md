@@ -93,6 +93,13 @@ fonts, images, screenshot/capture transport, or stable backend capabilities.
 The next renderer slice must be documented and committed separately before it
 expands this boundary.
 
+The completed paint-clipping slice is
+[native-engine-013](tasks/native-engine-013.md). It adds bounded
+`overflow:hidden` clip rectangles to fill/text display commands and enforces
+them during Rust-only surface replay. It does not add scrolling, stacking,
+borders, transforms, screenshots, or capture transport. The next renderer slice
+must be documented and committed separately before it expands this boundary.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -56,6 +56,7 @@ pub(crate) struct NativeComputedStyle {
     height: Option<u32>,
     background_color: Option<NativeColor>,
     color: Option<NativeColor>,
+    overflow_hidden: bool,
 }
 
 impl NativeComputedStyle {
@@ -81,6 +82,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn color(self) -> Option<NativeColor> {
         self.color
+    }
+
+    pub(crate) const fn overflow_hidden(self) -> bool {
+        self.overflow_hidden
     }
 }
 
@@ -116,6 +121,7 @@ impl NativeStylesheet {
         let mut height = None;
         let mut background_color = None;
         let mut color = None;
+        let mut overflow = None;
         for rule in &self.rules {
             if !rule.selector.matches(node) {
                 continue;
@@ -179,6 +185,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, color)
             {
                 color = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.overflow
+                && wins(rule.selector.specificity, rule.order, false, overflow)
+            {
+                overflow = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -249,6 +265,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.overflow
+                && wins(u16::MAX, usize::MAX, true, overflow)
+            {
+                overflow = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
         }
 
         NativeComputedStyle {
@@ -259,12 +285,19 @@ impl NativeStylesheet {
             height: height.map(|value| value.value),
             background_color: background_color.map(|value| value.value),
             color: color.map(|value| value.value).or(inherited_color),
+            overflow_hidden: overflow.is_some_and(|value| value.value == OverflowValue::Hidden),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VisibilityValue {
+    Hidden,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverflowValue {
     Hidden,
     Other,
 }
@@ -291,6 +324,7 @@ struct NativeDeclarations {
     height: Option<u32>,
     background_color: Option<NativeColor>,
     color: Option<NativeColor>,
+    overflow: Option<OverflowValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,6 +403,7 @@ fn parse_source(
             || declarations.height.is_some()
             || declarations.background_color.is_some()
             || declarations.color.is_some()
+            || declarations.overflow.is_some()
         {
             for selector_text in source[cursor..open].split(',') {
                 let Some(selector) = parse_selector(selector_text) else {
@@ -424,6 +459,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "color" => {
                 declarations.color = parse_color(value);
+            }
+            "overflow" => {
+                declarations.overflow = parse_overflow(value);
             }
             _ => {}
         }
@@ -528,6 +566,14 @@ fn parse_visibility(value: &str) -> Option<VisibilityValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(VisibilityValue::Hidden),
         "visible" => Some(VisibilityValue::Other),
+        _ => None,
+    }
+}
+
+fn parse_overflow(value: &str) -> Option<OverflowValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "hidden" => Some(OverflowValue::Hidden),
+        "visible" | "auto" | "scroll" => Some(OverflowValue::Other),
         _ => None,
     }
 }
@@ -688,13 +734,16 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px",
+            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.color, Some(NativeColor::RED));
+        assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
+        assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
+        assert_eq!(parse_overflow("clip"), None);
     }
 
     #[test]

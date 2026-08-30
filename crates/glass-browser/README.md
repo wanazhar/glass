@@ -72,8 +72,9 @@ capabilities. Locators must resolve exactly one current target; stale revisions
 fail before browser input.
 
 The feature-gated native engine additionally derives bounded integer-pixel
-normal-flow rectangles, inherited text color, a deterministic clear/fill/text
-display list, and a logical RGBA software surface; it accepts native
+normal-flow rectangles, inherited text color, bounded paint clips, a
+deterministic clear/fill/text display list, and a logical RGBA software surface;
+it accepts native
 `point=x,y` click targets
 through its Rust API/CLI path. These are experimental local-content artifacts,
 not CSS/layout, font, or screenshot compatibility claims.

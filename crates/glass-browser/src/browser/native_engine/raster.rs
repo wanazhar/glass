@@ -1,5 +1,5 @@
 use super::error::NativeEngineError;
-use super::layout::NativeRect;
+use super::layout::{NativePoint, NativeRect};
 use super::paint::{MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList};
 
 /// Maximum number of logical pixels retained by one native software surface.
@@ -56,13 +56,14 @@ impl NativeSurface {
         for command in &display_list.commands {
             match command {
                 NativeDisplayCommand::Clear { color } => surface.clear(*color),
-                NativeDisplayCommand::FillRect { rect, color, .. } => {
-                    surface.fill_rect(*rect, *color)
-                }
+                NativeDisplayCommand::FillRect {
+                    rect, color, clip, ..
+                } => surface.fill_rect(*rect, *color, *clip),
                 NativeDisplayCommand::TextRun {
                     origin,
                     text,
                     color,
+                    clip,
                     ..
                 } => {
                     if text.len() > crate::browser_backend::MAX_TEXT_BYTES {
@@ -72,7 +73,7 @@ impl NativeSurface {
                             text.len(),
                         ));
                     }
-                    surface.draw_text(*origin, text, *color);
+                    surface.draw_text(*origin, text, *color, *clip);
                 }
             }
         }
@@ -110,11 +111,25 @@ impl NativeSurface {
         }
     }
 
-    fn fill_rect(&mut self, rect: NativeRect, color: super::css::NativeColor) {
-        let left = rect.x.min(self.width);
-        let top = rect.y.min(self.height);
-        let right = rect.right().min(self.width);
-        let bottom = rect.bottom().min(self.height);
+    fn fill_rect(
+        &mut self,
+        rect: NativeRect,
+        color: super::css::NativeColor,
+        clip: Option<NativeRect>,
+    ) {
+        let mut left = rect.x.min(self.width);
+        let mut top = rect.y.min(self.height);
+        let mut right = rect.right().min(self.width);
+        let mut bottom = rect.bottom().min(self.height);
+        if let Some(clip) = clip {
+            left = left.max(clip.x.min(self.width));
+            top = top.max(clip.y.min(self.height));
+            right = right.min(clip.right().min(self.width));
+            bottom = bottom.min(clip.bottom().min(self.height));
+        }
+        if left >= right || top >= bottom {
+            return;
+        }
         for y in top..bottom {
             for x in left..right {
                 self.blend_pixel(x, y, color);
@@ -127,6 +142,7 @@ impl NativeSurface {
         origin: super::layout::NativePoint,
         text: &str,
         color: super::css::NativeColor,
+        clip: Option<NativeRect>,
     ) {
         for (index, character) in text.chars().enumerate() {
             let offset = u32::try_from(index)
@@ -149,7 +165,9 @@ impl NativeSurface {
                             continue;
                         }
                         let x = glyph_origin.x.saturating_add(column);
-                        if x < self.width {
+                        if x < self.width
+                            && clip.is_none_or(|clip| clip.contains(NativePoint { x, y }))
+                        {
                             self.blend_pixel(x, y, color);
                         }
                     }
@@ -382,6 +400,7 @@ mod tests {
                         blue: 255,
                         alpha: 128,
                     },
+                    clip: None,
                 },
             ],
             4,
@@ -411,6 +430,7 @@ mod tests {
                     text: "A?".into(),
                     truncated: false,
                     color: NativeColor::RED,
+                    clip: None,
                 },
             ],
             8,
@@ -422,6 +442,41 @@ mod tests {
         assert_eq!(surface.pixel(4, 2), Some([255, 0, 0, 255]));
         assert_eq!(surface.pixel(7, 2), Some([255, 255, 255, 255]));
         assert_eq!(surface.pixel(7, 7), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn surface_enforces_command_clip_rectangles() {
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::FillRect {
+                    node_id: NativeDocument::empty().root(),
+                    rect: NativeRect {
+                        x: 0,
+                        y: 0,
+                        width: 4,
+                        height: 3,
+                    },
+                    color: NativeColor::RED,
+                    clip: Some(NativeRect {
+                        x: 1,
+                        y: 1,
+                        width: 2,
+                        height: 1,
+                    }),
+                },
+            ],
+            4,
+            3,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(0, 0), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+        assert_eq!(surface.pixel(2, 1), Some([255, 0, 0, 255]));
+        assert_eq!(surface.pixel(3, 1), Some([255, 255, 255, 255]));
     }
 
     #[test]

@@ -55,8 +55,8 @@ source-behavior reference.
   `--browser-runtime native`; it accepts only local `about:blank` and bounded
   `data:text/html` from the CLI and never contacts an endpoint. Its current
   Rust-only presentation artifacts include bounded layout, inherited text
-  color, a display list, and a logical RGBA software surface; these are not
-  screenshot or capture output.
+  color, paint clips, a display list, and a logical RGBA software surface;
+  these are not screenshot or capture output.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
   its profile, launch flags, or shutdown.
 - Incognito uses a disposable profile. Named profiles retain browser-managed
@@ -232,9 +232,9 @@ Safari W3C WebDriver are experimental bounded adapters for the portable
 semantic session. The feature-gated native engine is an experimental,
 fixture/data-URL-only Glass-owned backend exposed through the explicit Rust
 factory and local one-shot runtime. Its current semantic surface includes
-bounded presentation, inherited text color, normal-flow geometry, native point
-hit testing, local click/type actions, and a revision/changed effects signal;
-its Rust-only
+bounded presentation, inherited text color, paint clips, normal-flow geometry,
+native point hit testing, local click/type actions, and a revision/changed
+effects signal; its Rust-only
 presentation artifacts include a display list and logical RGBA software
 surface. These are not screenshot/capture output, and the backend is not a
 remote-content security boundary. The proof backend is browser-free and only

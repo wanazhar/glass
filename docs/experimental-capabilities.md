@@ -102,3 +102,26 @@ Do not change a capability from `experimental` to `available` merely because
 one local smoke test passes. Promote it only after its contract, security
 boundary, applicable target environments, and compatibility evidence justify
 the broader claim.
+
+## Native browser engine
+
+The Glass-owned native engine is an experimental `glass-browser` backend from
+[issue #40](https://github.com/wanazhar/glass/issues/40). It is compiled only
+when explicitly requested:
+
+```console
+cargo check -p glass-browser --features native-engine --locked
+cargo test -p glass-browser --features native-engine --test native_engine --locked
+```
+
+Phase 1 is headless and deterministic. It accepts `about:blank`, bounded
+percent-decoded `data:text/html` URLs, and registered `fixture://` documents
+through the Rust API. It exposes lifecycle, navigation, one context, and
+bounded URL/title/visible-text evidence through the existing backend dispatcher.
+
+It does not provide network access, filesystem navigation, CSS/layout/paint,
+JavaScript, storage, screenshots, prompts, downloads, or DOM actions. The
+backend is explicit-only and never silently falls back to Chromium or the
+semantic proof backend. Because it is in-process and incomplete, it is not a
+security boundary and must not be used to claim safe handling of hostile
+remote content.

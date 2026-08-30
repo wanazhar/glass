@@ -1,4 +1,5 @@
-//! Local, revision-safe browser intelligence for Chromium, Firefox, and Safari.
+//! Local, revision-safe browser intelligence for Chromium, Firefox, Safari,
+//! and an experimental Glass-owned native engine.
 //!
 //! `glass-browser` provides an owned/attached Chromium [`BrowserSession`],
 //! structured semantic observation, guarded actions, stable Web IR, Task
@@ -10,7 +11,9 @@
 //! evidence, policy, capabilities, revisions, unique targeting, and bounded
 //! postconditions. CDP is the production backend for the full session. The
 //! portable [`BrowserRuntimeSession`] covers the bounded semantic slice for
-//! Firefox BiDi and Safari WebDriver.
+//! Firefox BiDi and Safari WebDriver. The default-off `native-engine` feature
+//! exposes a deterministic local-content kernel through the explicit backend
+//! factory; it is not a browser-parity or hostile-content security boundary.
 //!
 //! The docs.rs page documents the Rust library API; installed command behavior
 //! is specified in the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md).
@@ -26,6 +29,7 @@
 //! | Share standalone/embedded browser UI state | [`browser_workspace`] |
 //! | Assess scoped historical knowledge | [`KnowledgeStore`] |
 //! | Implement/select a backend | [`browser_backend`] and [`browser::BackendFactory`] |
+//! | Experiment with the native engine | the default-off `native-engine` feature and `NativeEngine` |
 //! | Expose MCP or canonical requests | [`mcp`] and [`protocol`] |
 //! | Present terminal frames | [`presentation`] and [`terminal_graphics`] |
 //!
@@ -122,6 +126,8 @@
 //! - `visual-compare` enables PNG comparison helpers for explicit screenshot
 //!   checks.
 //! - `fuzzing` enables test-only fuzz hooks and is not for normal applications.
+//! - `native-engine` enables the experimental Glass-owned local-content backend;
+//!   it is default-off and adds no dependency.
 //!
 //! docs.rs builds all features. The default library remains browser-focused.
 //!
@@ -141,7 +147,8 @@
 //! # Module map
 //!
 //! - [`browser`] — Chrome lifecycle, CDP client, DOM/accessibility parsing,
-//!   policy, profiles, actions, observations, workflows, and knowledge.
+//!   the feature-gated native engine, policy, profiles, actions, observations,
+//!   workflows, and knowledge.
 //! - [`browser_backend`] — semantic backend capabilities, requests, responses,
 //!   errors, and mandatory dispatcher.
 //! - [`capabilities`] — versioned discovery and negotiation manifest.
@@ -256,6 +263,15 @@ pub use browser::{
     WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
     WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent, WorkflowTransactionClass,
     WorkflowValidationError, WorkflowValueType,
+};
+
+#[cfg(feature = "native-engine")]
+pub use browser::{
+    DeterministicClock, DeterministicScheduler, NATIVE_CONTEXT_ID, NativeBrowsingContext,
+    NativeDocument, NativeEngine, NativeEngineBackend, NativeEngineConfig, NativeEngineError,
+    NativeEngineLimits, NativeEngineSnapshot, NativeFixture, NativeHistory, NativeHistoryEntry,
+    NativeLifecycleState, NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativeResource,
+    NativeResourceLoader, NativeTask, ScheduledTask, Viewport,
 };
 
 pub use task_protocol::{

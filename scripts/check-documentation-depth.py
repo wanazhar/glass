@@ -91,6 +91,12 @@ DEPTH_CONTRACTS = {
         "## Documentation contract", "## Add or change a document",
         "## Validation", "## Review and ownership",
     ),
+    "docs/architecture/native-engine.md": (
+        "## Purpose and boundary", "## Cargo and public entry points",
+        "## Configuration and limits", "## Lifecycle and state ownership",
+        "## Backend capability contract", "## Errors and recovery",
+        "## Tests and promotion boundary",
+    ),
     "docs/workflows.md": (
         "## Definition", "## Retry safety", "## Outputs and evidence",
         "## Checkpoints and resume", "## Authoring",

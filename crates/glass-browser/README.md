@@ -134,6 +134,7 @@ does not own or close the external browser.
 | Knowledge | `KnowledgeStore` | Scoped advisory persistence and freshness assessment |
 | Backend interface | `browser_backend` | Capability-evidenced semantic backend dispatch |
 | Alternative runtimes | `BrowserRuntimeSession` | Portable Firefox BiDi and Safari WebDriver session |
+| Native engine | `BackendFactory::native` (feature-gated) | Experimental local fixture/data-URL engine; explicit Rust path only |
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -145,6 +146,7 @@ does not own or close the external browser.
 |---|---:|---|
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend |
 
 ## MCP
 
@@ -170,6 +172,9 @@ agreement reports exact schema and capability status.
 - Firefox BiDi and Safari WebDriver are experimental and bounded. An
   unavailable capability fails closed rather than falling back to raw
   transport.
+- The native engine is experimental, default-off, fixture/data-URL-only, and
+  available through the explicit Rust backend factory. It is not a CLI runtime,
+  browser-parity claim, or security boundary for hostile remote content.
 - Native extensions require explicit opt-in and a platform sandbox gate.
 
 ## Documentation

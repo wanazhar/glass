@@ -49,7 +49,34 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test --package glass-dev --test development_runtime --locked windows_named_pipe_daemon_lifecycle_reconnect_and_permissions -- --nocapture
       - name: Run glass-browser browser-free contract tests
-        run: cargo test --package glass-browser --tests --all-features --locked
+        run: cargo test --package glass-browser --tests --no-default-features --locked
+
+  native-engine:
+    name: Native engine core
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUST_MIN_STACK: 4194304
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache native engine dependencies and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-${{ github.job }}-
+      - name: Check native engine feature
+        run: cargo check --package glass-browser --features native-engine --locked
+      - name: Test native engine feature
+        run: cargo test --package glass-browser --features native-engine --tests --locked
+      - name: Lint native engine feature
+        run: cargo clippy --package glass-browser --features native-engine --all-targets --locked -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -196,6 +223,7 @@ jobs:
     if: github.event_name == 'push'
     needs:
       - browser-free-platforms
+      - native-engine
       - test
       - clients
     runs-on: ubuntu-latest
@@ -234,6 +262,7 @@ jobs:
                   "Browser-free ubuntu-latest",
                   "Browser-free macos-latest",
                   "Browser-free windows-latest",
+                  "Native engine core",
               ],
               "documentation_report": {
                   "document_count": report["document_count"],

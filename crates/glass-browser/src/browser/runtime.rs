@@ -1,6 +1,6 @@
 //! User-facing alternative browser runtime sessions.
 //!
-//! The existing [`super::session::BrowserSession`] remains the full Chrome/CDP
+//! The existing [`crate::browser::session::BrowserSession`] remains the full Chrome/CDP
 //! API. This module exposes the portable semantic slice for Firefox BiDi and
 //! Safari WebDriver without pretending those runtimes implement every CDP-only
 //! operation.

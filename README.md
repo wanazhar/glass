@@ -324,6 +324,12 @@ The portable command set is `navigate`, `click`, `type`, `text`, `observe`,
 downloads, prompts, workflows, TUI, MCP, and revision-aware high-level
 operations remain on the Chromium session until independently certified.
 
+The feature-gated Glass-owned native engine is a separate experimental Rust
+backend inside `glass-browser`. Its current Phase 1 slice is deterministic and
+limited to `about:blank`, `data:text/html`, and registered local fixtures; it
+is not a CLI runtime, browser-parity implementation, or hostile-content
+security boundary. See the [native engine architecture](docs/architecture/native-engine.md).
+
 Start with structured evidence:
 
 ```console
@@ -642,6 +648,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
+| Native engine | Experimental default-off local-content Rust backend; explicit Rust path only |
 | WebKit / iPhone Safari | No direct Glass browser backend; iPhone Safari is a forwarded viewing client |
 | `glass-browser 0.3.14`, `glass-dev 0.3.14` | Current release source; public registry state is recorded in release evidence |
 | `0.3.13` | Previous published stable release |
@@ -686,6 +693,13 @@ Run the native browser suite only in an environment with supported Chromium:
 ```console
 GLASS_E2E=1 cargo test -p glass-browser --all-features \
   --test browser_smoke --locked -- --nocapture --test-threads=1
+```
+
+Run the feature-gated native-engine kernel separately; it does not require a
+browser process:
+
+```console
+cargo test -p glass-browser --features native-engine --test native_engine --locked
 ```
 
 See [Contributing](CONTRIBUTING.md) for repository structure, focused tests,

@@ -90,17 +90,21 @@ Protocol references:
 
 ## Native browser feasibility
 
-Glass does not currently contain a browser engine. A native runtime would need
-at least HTML parsing, CSS/layout, painting/compositing, JavaScript execution,
-network/security policy, cookies/storage, accessibility, input, downloads, and
-platform windowing. An adapter can reuse a browser protocol; it cannot provide
-those engine responsibilities.
+The native-engine program now has a real Phase 1 kernel behind the default-off
+`native-engine` feature. It owns one deterministic in-process context, local
+`about:blank`, `data:text/html`, and registered `fixture://` resources, a small
+DOM/text projection, history, revisions, and the semantic backend profile. It
+does not yet provide CSS/layout, painting, JavaScript, network/security policy,
+cookies/storage, accessibility, input, downloads, or platform windowing.
 
-The practical boundary is therefore to keep `BrowserRuntimeSession` as a
-transport adapter and treat an in-house engine as a separate multi-year
-architecture project with its own standards conformance, security review, and
-platform certification. No `native` runtime flag is exposed until an actual
-engine exists; the proof backend must never be presented as browser parity.
+`BrowserRuntimeSession` remains the transport adapter for externally managed
+Firefox and Safari. The native backend is constructed through the explicit Rust
+`BackendFactory::native` path in Phase 1; no CLI `--browser-runtime native`
+value is exposed until a public runtime contract and user-facing capability
+surface are certified. The native backend remains a multi-year architecture
+project with its own standards conformance, security review, process
+isolation, and platform certification. The proof backend must never be
+presented as browser parity.
 
 The machine-readable dependency and omission matrix is
 [`backend-capability-matrix.json`](backend-capability-matrix.json).

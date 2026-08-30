@@ -1,5 +1,5 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES};
-use super::css::{NativeBorderStyle, NativeColor};
+use super::css::{NativeBorderRadius, NativeBorderStyle, NativeColor};
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
@@ -53,12 +53,14 @@ pub enum NativeDisplayCommand {
     FillRect {
         node_id: NativeNodeId,
         rect: NativeRect,
+        radius: NativeBorderRadius,
         color: NativeColor,
         clip: Option<NativeRect>,
     },
     BorderRect {
         node_id: NativeNodeId,
         rect: NativeRect,
+        radius: NativeBorderRadius,
         borders: NativeBorderPaint,
         clip: Option<NativeRect>,
     },
@@ -109,6 +111,7 @@ impl NativeDisplayList {
                     NativeDisplayCommand::FillRect {
                         node_id: layout_box.node_id,
                         rect: layout_box.rect,
+                        radius: style.border_radius(),
                         color,
                         clip,
                     },
@@ -123,6 +126,7 @@ impl NativeDisplayList {
                     NativeDisplayCommand::BorderRect {
                         node_id: layout_box.node_id,
                         rect: layout_box.rect,
+                        radius: style.border_radius(),
                         borders,
                         clip,
                     },

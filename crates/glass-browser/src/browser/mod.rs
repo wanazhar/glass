@@ -72,13 +72,13 @@ pub use native_backend::NativeEngineBackend;
 pub use native_engine::{
     DeterministicClock, DeterministicScheduler, MAX_NATIVE_DISPLAY_COMMANDS, MAX_NATIVE_EFFECTS,
     MAX_NATIVE_SURFACE_PIXELS, NATIVE_CONTEXT_ID, NativeAction, NativeActionResult,
-    NativeBorderPaint, NativeBorderPaintSide, NativeBorderStyle, NativeBrowsingContext,
-    NativeColor, NativeDisplayCommand, NativeDisplayList, NativeDocument, NativeEffect,
-    NativeEffectsSnapshot, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
-    NativeEngineSnapshot, NativeEventKind, NativeFixture, NativeHistory, NativeHistoryEntry,
-    NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode, NativeNodeId,
-    NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource, NativeResourceLoader,
-    NativeSemanticNode, NativeSurface, NativeTask, ScheduledTask, Viewport,
+    NativeBorderPaint, NativeBorderPaintSide, NativeBorderRadius, NativeBorderStyle,
+    NativeBrowsingContext, NativeColor, NativeDisplayCommand, NativeDisplayList, NativeDocument,
+    NativeEffect, NativeEffectsSnapshot, NativeEngine, NativeEngineConfig, NativeEngineError,
+    NativeEngineLimits, NativeEngineSnapshot, NativeEventKind, NativeFixture, NativeHistory,
+    NativeHistoryEntry, NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode,
+    NativeNodeId, NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource,
+    NativeResourceLoader, NativeSemanticNode, NativeSurface, NativeTask, ScheduledTask, Viewport,
 };
 /// Browser-free deterministic backend used for semantic conformance tests.
 pub use proof_backend::ProofBackend;

@@ -26,8 +26,8 @@ pub use config::{
     MAX_NATIVE_HISTORY_ENTRIES, MAX_NATIVE_NODES, MAX_NATIVE_SCHEDULER_TASKS,
     MAX_NATIVE_VIEWPORT_DIMENSION, NativeEngineConfig, NativeEngineLimits, NativeFixture, Viewport,
 };
-pub use css::NativeBorderStyle;
 pub use css::NativeColor;
+pub use css::{NativeBorderRadius, NativeBorderStyle};
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
 pub use engine::{NativeActionResult, NativeEffectsSnapshot, NativeEngine, NativeEngineSnapshot};
 pub use error::NativeEngineError;

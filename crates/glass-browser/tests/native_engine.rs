@@ -2,9 +2,9 @@
 
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
-    NativeAction, NativeBorderStyle, NativeColor, NativeDisplayCommand, NativeDocument,
-    NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits, NativeEventKind,
-    NativeLifecycleState, NativePoint, NativeRect, NativeSurface, Viewport,
+    NativeAction, NativeBorderRadius, NativeBorderStyle, NativeColor, NativeDisplayCommand,
+    NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
+    NativeEventKind, NativeLifecycleState, NativePoint, NativeRect, NativeSurface, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -336,10 +336,12 @@ fn native_display_list_emits_uniform_border_after_box_model_layout() {
         NativeDisplayCommand::BorderRect {
             node_id,
             rect,
+            radius,
             borders,
             clip: None,
         } if *node_id == card
             && *rect == NativeRect { x: 0, y: 0, width: 12, height: 12 }
+            && *radius == NativeBorderRadius::default()
             && borders.top.width == 2
             && borders.right.width == 2
             && borders.bottom.width == 2
@@ -486,6 +488,64 @@ fn native_pattern_border_styles_feed_display_list_and_surface() {
     let scrolled = scrolled_list.rasterize().unwrap();
     assert_eq!(scrolled.pixel(8, 0), unscrolled.pixel(8, 1));
     assert_eq!(scrolled.pixel(8, 1), unscrolled.pixel(8, 2));
+}
+
+#[test]
+fn native_border_radius_feeds_layout_hit_testing_and_rounded_replay() {
+    let document = NativeDocument::parse(
+        "<div id='card' style='width:12px;height:10px;border:2px solid blue;background-color:red;border-radius:4px 2px 3px 1px'>Card</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 20,
+        device_scale_factor_milli: 1000,
+    };
+    let card = document.resolve_target("id=card").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let card_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == card)
+        .unwrap();
+    assert_eq!(
+        card_box.border_radius,
+        NativeBorderRadius {
+            top_left: 4,
+            top_right: 2,
+            bottom_right: 3,
+            bottom_left: 1,
+        }
+    );
+    assert_eq!(layout.hit_test(0, 0).unwrap(), None);
+    assert_eq!(layout.hit_test(4, 4).unwrap(), Some(card));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, radius, .. }
+                if *node_id == card && *radius == card_box.border_radius
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::BorderRect { node_id, radius, .. }
+                if *node_id == card && *radius == card_box.border_radius
+        )
+    }));
+
+    let unscrolled = list.rasterize().unwrap();
+    assert_eq!(unscrolled.pixel(0, 0), Some([255, 255, 255, 255]));
+    assert_eq!(unscrolled.pixel(3, 0), Some([0, 0, 255, 255]));
+    assert_eq!(unscrolled.pixel(4, 4), Some([255, 0, 0, 255]));
+
+    let mut scrolled_list = list;
+    scrolled_list.scroll_offset = NativePoint { x: 0, y: 1 };
+    let scrolled = scrolled_list.rasterize().unwrap();
+    assert_eq!(scrolled.pixel(3, 0), unscrolled.pixel(3, 1));
 }
 
 #[test]

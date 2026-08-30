@@ -131,7 +131,8 @@ and unsupported targets fail before mutation. It provides only bounded
 presentation, normal-flow outer/content box geometry with uniform
 non-negative padding/margin and explicit box sizing, bounded vertical viewport
 scrolling, inherited text color,
-bounded paint clips, side-specific solid/dashed/dotted-border paint, bounded PNG capture, and Rust-only
+bounded paint clips, side-specific solid/dashed/dotted-border paint, bounded physical circular
+border radii, bounded PNG capture, and Rust-only
 display-list/software-surface artifacts;
 it does not
 provide network access,

@@ -58,7 +58,9 @@ browser command, MCP surface, or reusable Rust crate.
 ## Choose another tool when
 
 - you need a hosted collaborative IDE, browser fleet, or public remote desktop;
-- you need Firefox, WebKit, Safari, or a fully certified Windows browser release;
+- you need full Firefox, WebKit, or Safari feature parity, or a fully certified
+  Windows browser release; Glass's Firefox/Safari portable semantic slice is
+  experimental and intentionally narrower;
 - you need a complete QA framework with assertions, fixtures, code generation,
   cross-browser matrices, and trace viewers;
 - you require an OS security sandbox for untrusted repository commands;

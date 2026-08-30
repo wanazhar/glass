@@ -2,18 +2,24 @@
 
 ## Requirements
 
-Native browser use requires:
+The full native browser session requires:
 
 - stable Rust for a source build;
 - a Linux or macOS environment with a declared Rust target; and
 - Chrome, Chromium, or Chrome for Testing.
 
-Validate native browser behavior in the environment where you deploy Glass.
+The portable alternative session does not require Chrome: Firefox can expose a
+WebDriver BiDi endpoint, and macOS Safari can be controlled through an
+externally started safaridriver W3C WebDriver endpoint. These runtimes expose
+only the bounded command set documented in the [CLI
+reference](cli.md#alternative-browser-runtimes).
+
+Validate browser behavior in the environment where you deploy Glass.
 
 The release line runs browser-free Windows CI, but native Windows browser,
 PTY, and TUI behavior is not certified. Do not infer deployment support from a
-successful source build. Glass does not install Playwright or another browser
-runtime.
+successful source build. Glass does not install Playwright, Firefox, Safari, or
+another browser runtime.
 
 ## Install from source
 
@@ -300,6 +306,25 @@ does not create a partial installation. When the discovered browser is confined
 Snap Chromium, Glass automatically stores its named browser profiles below
 `~/snap/chromium/common/glass/profiles`, where Chromium can access them. An
 explicit `GLASS_CONFIG_HOME` remains authoritative.
+
+For the portable alternative runtimes, start the browser driver yourself and
+pass its endpoint:
+
+~~~console
+# Firefox (WebDriver BiDi)
+firefox --remote-debugging-port 9222
+glass --browser-runtime firefox \
+  --browser-endpoint ws://127.0.0.1:9222/session \
+  navigate https://example.com
+
+# macOS Safari (W3C WebDriver)
+safaridriver --port 4444
+glass --browser-runtime safari \
+  --browser-endpoint http://127.0.0.1:4444 \
+  navigate https://example.com
+~~~
+
+Glass does not launch or own either alternative browser process.
 
 The installer checks the archive size and digest. It extracts the archive in
 the Glass process. It publishes the browser only after validation. It does not

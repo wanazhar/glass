@@ -54,6 +54,22 @@ fn validate_text(field: &str, value: &str, max: usize) -> Result<(), BrowserBack
     Ok(())
 }
 
+fn validate_optional_text(field: &str, value: &str, max: usize) -> Result<(), BrowserBackendError> {
+    if value.len() > max {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: field.into(),
+            reason: format!("must be at most {max} UTF-8 bytes"),
+        });
+    }
+    if !value.is_char_boundary(value.len()) {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: field.into(),
+            reason: "must be valid UTF-8".into(),
+        });
+    }
+    Ok(())
+}
+
 fn validate_vec_len(field: &str, len: usize, max: usize) -> Result<(), BrowserBackendError> {
     if len > max {
         return Err(invalid(
@@ -124,6 +140,13 @@ where
     D: serde::Deserializer<'de>,
 {
     deserializer.deserialize_str(BoundedStringVisitor::<MAX_TEXT_BYTES, true>)
+}
+
+fn deserialize_bounded_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_str(BoundedStringVisitor::<MAX_TEXT_BYTES, false>)
 }
 fn deserialize_backend_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
@@ -1720,9 +1743,9 @@ pub struct EvidenceResult {
     pub revision: u64,
     #[serde(deserialize_with = "deserialize_bounded_string")]
     pub url: String,
-    #[serde(deserialize_with = "deserialize_bounded_string")]
+    #[serde(deserialize_with = "deserialize_bounded_text")]
     pub title: String,
-    #[serde(deserialize_with = "deserialize_bounded_string")]
+    #[serde(deserialize_with = "deserialize_bounded_text")]
     pub visible_text: String,
     pub complete: bool,
 }
@@ -1941,8 +1964,8 @@ impl BackendContract for EvidenceResult {
     fn validate(&self) -> Result<(), BrowserBackendError> {
         validate_text("context id", &self.context_id, MAX_BACKEND_ID_BYTES)?;
         validate_text("evidence url", &self.url, MAX_TEXT_BYTES)?;
-        validate_text("evidence title", &self.title, MAX_TEXT_BYTES)?;
-        validate_text("visible text", &self.visible_text, MAX_TEXT_BYTES)
+        validate_optional_text("evidence title", &self.title, MAX_TEXT_BYTES)?;
+        validate_optional_text("visible text", &self.visible_text, MAX_TEXT_BYTES)
     }
 }
 
@@ -2811,6 +2834,30 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn evidence_allows_blank_title_and_visible_text() {
+        let evidence = EvidenceResult {
+            context_id: "ctx".into(),
+            revision: 0,
+            url: "about:blank".into(),
+            title: String::new(),
+            visible_text: String::new(),
+            complete: true,
+        };
+        evidence.validate().unwrap();
+        let decoded: EvidenceResult = serde_json::from_value(json!({
+            "contextId": "ctx",
+            "revision": 0,
+            "url": "about:blank",
+            "title": "",
+            "visibleText": "",
+            "complete": true
+        }))
+        .unwrap();
+        assert_eq!(decoded, evidence);
+    }
+
     #[test]
     fn selection_result_deserialization_validates_schema_and_candidate_ids() {
         let selected = profile("cdp", CertificationLevel::Partial);

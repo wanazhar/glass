@@ -6,6 +6,11 @@ interaction and the [Development Runtime guide](../development-runtime.md)
 covers resident lifecycle and shutdown; this document defines connection
 ownership and freshness boundaries.
 
+The ownership tables below describe the full Chromium BrowserSession path.
+Portable Firefox BiDi and Safari WebDriver sessions are externally managed
+one-shot adapters and do not participate in the TUI or resident-worker
+lifecycle; see the [Browser Host RFC](../browser-host-rfc.md#current-browser-runtime-mapping).
+
 ## Ownership and lifecycle
 
 There is no separate Chrome-owning controller in the source. The

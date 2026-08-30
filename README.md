@@ -91,9 +91,11 @@ install. It never installs both packages or guesses between `glass-dev` and
 `glass-browser`; see the [update contract and recovery
 steps](docs/installation.md#update-a-cargo-installation).
 
-Chrome or Chromium is required only for browser-backed operations. Project
-inspection, file operations, task validation, Web IR inspection, policy
-preflight, capability inspection, and many diagnostics are browser-free.
+Chrome or Chromium is required only for the full CDP browser session. The
+portable semantic session can attach to a Firefox WebDriver BiDi endpoint or a
+SafariDriver W3C WebDriver endpoint. Project inspection, file operations, task
+validation, Web IR inspection, policy preflight, capability inspection, and many
+diagnostics are browser-free.
 
 Use `glass install-chromium` when the platform has a supported Chrome for
 Testing archive and no suitable system browser is available. Linux ARM64 uses
@@ -295,10 +297,32 @@ design](docs/architecture/mobile-cockpit.md).
 
 ## Browser verification
 
-Glass drives local Chrome or Chromium through a transport-neutral backend
-contract. Raw Chrome DevTools Protocol (CDP) is the production backend.
-WebDriver BiDi remains a bounded experimental backend. Unsupported operations
-fail closed.
+Glass drives local Chrome or Chromium through the full `BrowserSession` and raw
+Chrome DevTools Protocol (CDP). Firefox and Safari are available through the
+bounded portable semantic session; unsupported operations fail closed.
+
+Start Firefox with its BiDi endpoint and use the portable command set:
+
+```console
+firefox --remote-debugging-port 9222
+glass --browser-runtime firefox \
+  --browser-endpoint ws://127.0.0.1:9222/session \
+  navigate https://example.com
+```
+
+On macOS, start SafariDriver and use its W3C WebDriver endpoint:
+
+```console
+safaridriver --port 4444
+glass --browser-runtime safari \
+  --browser-endpoint http://127.0.0.1:4444 \
+  navigate https://example.com
+```
+
+The portable command set is `navigate`, `click`, `type`, `text`, `observe`,
+`targets`, and `evaluate`. Full Web IR, screenshots, profiles, storage,
+downloads, prompts, workflows, TUI, MCP, and revision-aware high-level
+operations remain on the Chromium session until independently certified.
 
 Start with structured evidence:
 
@@ -616,7 +640,9 @@ workflows.
 | macOS x86-64 / ARM64 | Browser-free CI contract; exact `0.3.14` native runtime certification pending and tracked in [release evidence](docs/release-evidence.md) |
 | Windows | Browser-free CI plus native named-pipe daemon lifecycle capability; exact `0.3.14` native PTY/browser certification pending and tracked in [release evidence](docs/release-evidence.md) |
 | Chrome / Chromium | Supported browser families on environments with native evidence |
-| Firefox / WebKit / Safari automation | Unsupported; iPhone Safari is a forwarded viewing client, not a Glass backend |
+| Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
+| Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
+| WebKit / iPhone Safari | No direct Glass browser backend; iPhone Safari is a forwarded viewing client |
 | `glass-browser 0.3.14`, `glass-dev 0.3.14` | Current release source; public registry state is recorded in release evidence |
 | `0.3.13` | Previous published stable release |
 

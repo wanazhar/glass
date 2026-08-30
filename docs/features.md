@@ -47,6 +47,9 @@ source-behavior reference.
 
 - Owned mode launches Chrome/Chromium, owns its process, selects exactly one
   page target, and closes Chrome explicitly on `BrowserSession::close`.
+- The portable `BrowserRuntimeSession` can connect to an externally started
+  Firefox WebDriver BiDi or SafariDriver W3C WebDriver endpoint for the
+  bounded semantic one-shot command set.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
   its profile, launch flags, or shutdown.
 - Incognito uses a disposable profile. Named profiles retain browser-managed
@@ -217,10 +220,11 @@ servers must remain private.
 
 ## Backends and surfaces
 
-CDP is the production backend. WebDriver BiDi is an experimental bounded
-adapter. The proof backend is browser-free and only certifies protocol
-conformance. Capability omission or incompatibility is a typed denial, never a
-fallback to raw transport.
+CDP is the production backend for the full session. Firefox WebDriver BiDi and
+Safari W3C WebDriver are experimental bounded adapters for the portable
+semantic session. The proof backend is browser-free and only certifies
+protocol conformance. Capability omission or incompatibility is a typed
+denial, never a fallback to raw transport.
 
 Surface contracts describe document, frame, shadow, SVG, canvas, media,
 embedded, PDF, browser-native, remote-stream, terminal, and extension

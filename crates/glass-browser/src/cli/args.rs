@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 use crate::browser::policy::{PolicyCapability, PolicyPreset};
+use crate::browser::runtime::BrowserRuntime;
 use crate::browser::session::{
     BatchMode, InteractionMode, PreflightAction, VisualClip, VisualFormat,
 };
@@ -113,6 +114,20 @@ pub struct Cli {
     #[arg(long = "chrome-path", alias = "chrome", global = true)]
     pub chrome_path: Option<PathBuf>,
 
+    /// Select the browser runtime for portable semantic one-shot operations.
+    /// Chromium remains the default full BrowserSession/CDP runtime.
+    #[arg(
+        long = "browser-runtime",
+        global = true,
+        value_enum,
+        default_value = "chromium"
+    )]
+    pub browser_runtime: BrowserRuntime,
+
+    /// WebDriver BiDi or W3C WebDriver endpoint for a non-Chromium runtime.
+    #[arg(long = "browser-endpoint", global = true, value_name = "URL")]
+    pub browser_endpoint: Option<String>,
+
     /// Run the MCP server over stdio.
     #[arg(long)]
     pub mcp: bool,
@@ -199,6 +214,13 @@ impl Cli {
         if let Some(path) = &self.chrome_path {
             args.push("--chrome-path".into());
             args.push(path.display().to_string());
+        }
+        if self.browser_runtime != BrowserRuntime::Chromium {
+            push_enum_flag(&mut args, "--browser-runtime", self.browser_runtime);
+        }
+        if let Some(endpoint) = &self.browser_endpoint {
+            args.push("--browser-endpoint".into());
+            args.push(endpoint.clone());
         }
         if let Some(viewport) = &self.viewport {
             args.push("--viewport".into());
@@ -1658,6 +1680,33 @@ mod tests {
 
         assert!(cli.prompt.is_none());
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn alternative_runtime_endpoint_flags_parse_and_forward() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "firefox",
+            "--browser-endpoint",
+            "ws://127.0.0.1:9222/session",
+            "navigate",
+            "https://example.test",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.browser_runtime, BrowserRuntime::Firefox);
+        assert_eq!(
+            cli.browser_endpoint.as_deref(),
+            Some("ws://127.0.0.1:9222/session")
+        );
+        let flags = cli.session_cli_flags();
+        assert!(flag_pair(&flags, "--browser-runtime", "firefox"));
+        assert!(flag_pair(
+            &flags,
+            "--browser-endpoint",
+            "ws://127.0.0.1:9222/session"
+        ));
     }
 
     #[test]

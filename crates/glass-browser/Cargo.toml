@@ -10,7 +10,7 @@ documentation = "https://docs.rs/glass-browser"
 homepage.workspace = true
 repository.workspace = true
 autobins = false
-keywords = ["browser-automation", "chrome", "cdp", "mcp", "browser-control"]
+keywords = ["browser-automation", "chrome", "firefox", "safari", "webdriver"]
 categories = ["api-bindings", "command-line-utilities", "development-tools::testing"]
 
 exclude = ["tests/fixtures/screenshots/"]

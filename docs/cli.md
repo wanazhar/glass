@@ -35,6 +35,8 @@ remains the authority for installed flags, defaults, and positional arguments.
 | `--audit` | off | Record bounded high-risk operation metadata. |
 | `--trace-on-error` | off | Write one bounded failure trace to stderr. |
 | `--chrome-path PATH` | discovered | Select the browser executable. |
+| `--browser-runtime` | `chromium` | Select `chromium`, `firefox`, or `safari` portable runtime. |
+| `--browser-endpoint URL` | none | WebDriver BiDi WebSocket/HTTP discovery endpoint for Firefox, or W3C WebDriver base URL for Safari. |
 | `--knowledge-store PATH` | profile-scoped | Select the knowledge store. |
 | `--response-mode minimal\|normal\|diagnostic` | `minimal` | Select the bounded agent-facing result projection. |
 | `--mcp` | off | Start the MCP stdio server. |
@@ -60,6 +62,39 @@ backends; ANSI additionally supports `cover` and `actual`.
 
 `--mcp` is a top-level option (not inherited by subcommands); it starts the
 stdio server and reserves stdout for protocol frames.
+
+### Alternative browser runtimes
+
+The default `chromium` runtime uses the full `BrowserSession` and CDP lifecycle.
+`firefox` connects to Firefox's direct WebDriver BiDi endpoint, while `safari`
+connects to an externally started `safaridriver` W3C WebDriver server. Both
+alternative runtimes are experimental and expose only the portable semantic
+one-shot commands:
+
+```text
+navigate URL
+click CSS_SELECTOR
+type TEXT --target CSS_SELECTOR
+text
+observe
+targets
+evaluate JAVASCRIPT
+```
+
+Example:
+
+```console
+glass-browser --browser-runtime firefox --browser-endpoint ws://127.0.0.1:9222/session observe
+```
+
+Alternative runtimes do not start or own the browser process. The endpoint must
+be private and explicitly supplied. MCP, TUI, profiles, screenshots, storage,
+downloads, prompts, workflows, and the full semantic target resolver remain
+Chromium-only until their capability contracts are certified.
+Development and CI capability/URL checks still apply. Hardened,
+untrusted-mcp, and polite network policy modes currently require the full
+Chromium session because alternative drivers do not yet provide Glass's
+request-interception and robots gates.
 
 Place global options before or after the subcommand.
 Compatibility spellings are limited to the aliases defined by Clap:

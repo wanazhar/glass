@@ -70,11 +70,12 @@ pub use native_backend::NativeEngineBackend;
 /// Glass-owned native browser engine kernel types.
 #[cfg(feature = "native-engine")]
 pub use native_engine::{
-    DeterministicClock, DeterministicScheduler, NATIVE_CONTEXT_ID, NativeBrowsingContext,
-    NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
-    NativeEngineSnapshot, NativeFixture, NativeHistory, NativeHistoryEntry, NativeLifecycleState,
-    NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativeResource, NativeResourceLoader,
-    NativeSemanticNode, NativeTask, ScheduledTask, Viewport,
+    DeterministicClock, DeterministicScheduler, MAX_NATIVE_EFFECTS, NATIVE_CONTEXT_ID,
+    NativeAction, NativeActionResult, NativeBrowsingContext, NativeDocument, NativeEffect,
+    NativeEffectsSnapshot, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
+    NativeEngineSnapshot, NativeEventKind, NativeFixture, NativeHistory, NativeHistoryEntry,
+    NativeLifecycleState, NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativeResource,
+    NativeResourceLoader, NativeSemanticNode, NativeTask, ScheduledTask, Viewport,
 };
 /// Browser-free deterministic backend used for semantic conformance tests.
 pub use proof_backend::ProofBackend;

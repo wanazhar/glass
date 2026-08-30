@@ -5,13 +5,13 @@
 //! `browser_backend` contract.
 
 use super::native_engine::{
-    NATIVE_CONTEXT_ID, NativeEngine, NativeEngineConfig, NativeEngineError,
+    NATIVE_CONTEXT_ID, NativeAction, NativeEngine, NativeEngineConfig, NativeEngineError,
 };
 use crate::browser_backend::{
-    BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
+    ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
-    BrowsingContext, CapabilityDescriptor, CertificationLevel, CertificationProfile, EvidenceLevel,
-    EvidenceRequest, EvidenceResult, NavigationResult, Portability, SupportLevel,
+    BrowsingContext, CapabilityDescriptor, CertificationLevel, CertificationProfile, EffectsResult,
+    EvidenceLevel, EvidenceResult, NavigationResult, Portability, SemanticAction, SupportLevel,
 };
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -53,6 +53,8 @@ impl NativeEngineBackend {
             BrowserCapability::Navigation,
             BrowserCapability::Contexts,
             BrowserCapability::Evidence,
+            BrowserCapability::Action,
+            BrowserCapability::Effects,
         ];
         let mut capabilities = BTreeMap::new();
         for capability in supported {
@@ -62,6 +64,15 @@ impl NativeEngineBackend {
                 }
                 BrowserCapability::Evidence => {
                     vec!["bounded URL, title, and visible text only; no DOM or pixels".into()]
+                }
+                BrowserCapability::Action => {
+                    vec!["semantic click/type for supported local controls; no CSS/layout hit testing".into()]
+                }
+                BrowserCapability::Effects => {
+                    vec![
+                        "bounded changed/revision signal; native event details remain internal"
+                            .into(),
+                    ]
                 }
                 BrowserCapability::Contexts => vec!["one active context only".into()],
                 BrowserCapability::Lifecycle => {
@@ -94,9 +105,10 @@ impl NativeEngineBackend {
                     glass_version: glass_version.into(),
                     tested_capabilities: supported.to_vec(),
                     limitations: vec![
-                        "Phase 1 is a deterministic local-content engine, not browser parity".into(),
+                        "Phase 2 is a deterministic local-content engine, not browser parity".into(),
                         "in-process execution is not a security boundary for hostile content".into(),
-                        "network, JavaScript, CSS, layout, paint, storage, and actions are unavailable".into(),
+                        "network, JavaScript, CSS, layout, paint, storage, coordinate input, and default browser behavior are unavailable".into(),
+                        "actions are limited to semantic click/type for supported local controls".into(),
                     ],
                 },
             },
@@ -160,7 +172,7 @@ impl BrowserBackend for NativeEngineBackend {
                     }]))
                 }
                 (BackendOperation::Evidence, BackendRequest::Evidence(request)) => {
-                    require_context(&request)?;
+                    require_context_id(&request.context_id)?;
                     if matches!(
                         request.level,
                         EvidenceLevel::Screenshot | EvidenceLevel::Combined
@@ -182,6 +194,40 @@ impl BrowserBackend for NativeEngineBackend {
                             && !snapshot.text_truncated,
                     }))
                 }
+                (BackendOperation::Action, BackendRequest::Action(request)) => {
+                    require_context_id(&request.context_id)?;
+                    let action = match request.action {
+                        SemanticAction::Click { target } => NativeAction::Click { target },
+                        SemanticAction::Type { target, text } => {
+                            NativeAction::Type { target, text }
+                        }
+                        SemanticAction::KeyPress { .. } | SemanticAction::Scroll { .. } => {
+                            return Err(BrowserBackendError::UnsupportedOperation {
+                                operation: "action".into(),
+                                reason:
+                                    "native engine supports only semantic click and type actions"
+                                        .into(),
+                            });
+                        }
+                    };
+                    let outcome = engine.action(action).map_err(native_error)?;
+                    Ok(BackendResponse::Action(ActionResult {
+                        context_id: NATIVE_CONTEXT_ID.into(),
+                        revision: outcome.revision,
+                        accepted: outcome.accepted,
+                    }))
+                }
+                (BackendOperation::Effects, BackendRequest::Effects(request)) => {
+                    require_context_id(&request.context_id)?;
+                    let snapshot = engine
+                        .effects_since(request.since_revision)
+                        .map_err(native_error)?;
+                    Ok(BackendResponse::Effects(EffectsResult {
+                        context_id: NATIVE_CONTEXT_ID.into(),
+                        revision: snapshot.revision,
+                        changed: snapshot.changed,
+                    }))
+                }
                 (operation, _) => Err(BrowserBackendError::UnsupportedOperation {
                     operation: operation_name(operation).into(),
                     reason: "native engine does not implement this operation".into(),
@@ -191,8 +237,8 @@ impl BrowserBackend for NativeEngineBackend {
     }
 }
 
-fn require_context(request: &EvidenceRequest) -> Result<(), BrowserBackendError> {
-    if request.context_id == NATIVE_CONTEXT_ID {
+fn require_context_id(context_id: &str) -> Result<(), BrowserBackendError> {
+    if context_id == NATIVE_CONTEXT_ID {
         return Ok(());
     }
     Err(BrowserBackendError::InvalidConfiguration {

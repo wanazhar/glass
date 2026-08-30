@@ -98,20 +98,22 @@ request-interception and robots gates.
 
 ### Native engine (feature-gated Rust path)
 
-The Glass-owned native engine is not yet a CLI `--browser-runtime` value. Phase
-1 is available only through the explicitly enabled Rust backend path:
+The Glass-owned native engine is not yet a CLI `--browser-runtime` value. Its
+Phase 2 semantic slice is available only through the explicitly enabled Rust
+backend path:
 
 ```console
 cargo test -p glass-browser --features native-engine --test native_engine --locked
 ```
 
-It is a deterministic, headless fixture/data-URL engine with one context and
-bounded URL/title/visible-text evidence. It has no network, JavaScript,
-CSS/layout/paint, storage, screenshots, prompts, downloads, or DOM actions.
-It is experimental, in-process, and not safe for hostile remote content. The
-native backend never enters automatic selection or silently falls back to
-Chromium; a user-facing CLI/runtime contract will be added only in a later
-certified task.
+It is a deterministic, headless fixture/data-URL engine with one context,
+bounded URL/title/visible-text evidence, and semantic click/type actions for
+supported local controls. It has no network, JavaScript, CSS/layout/paint,
+storage, screenshots, prompts, downloads, coordinate hit testing, default link
+navigation, or raw form-value evidence. It is experimental, in-process, and
+not safe for hostile remote content. The native backend never enters automatic
+selection or silently falls back to Chromium; a user-facing CLI/runtime
+contract will be added only in a later certified task.
 
 Place global options before or after the subcommand.
 Compatibility spellings are limited to the aliases defined by Clap:

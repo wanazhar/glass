@@ -324,11 +324,12 @@ The portable command set is `navigate`, `click`, `type`, `text`, `observe`,
 downloads, prompts, workflows, TUI, MCP, and revision-aware high-level
 operations remain on the Chromium session until independently certified.
 
-The feature-gated Glass-owned native engine is a separate experimental Rust
-backend inside `glass-browser`. Its current Phase 1 slice is deterministic and
-limited to `about:blank`, `data:text/html`, and registered local fixtures; it
-is not a CLI runtime, browser-parity implementation, or hostile-content
-security boundary. See the [native engine architecture](docs/architecture/native-engine.md).
+The feature-gated Glass-owned native engine is an experimental Rust backend
+inside `glass-browser`. Its current Phase 2 slice is deterministic and limited
+to `about:blank`, `data:text/html`, and registered local fixtures, with
+semantic click/type actions and revisioned effects for supported local
+controls. It is not a CLI runtime, browser-parity implementation, or
+hostile-content security boundary. See the [native engine architecture](docs/architecture/native-engine.md).
 
 Start with structured evidence:
 

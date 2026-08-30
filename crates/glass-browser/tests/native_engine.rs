@@ -2,12 +2,13 @@
 
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
-    NativeDocument, NativeEngineConfig, NativeEngineLimits, NativeLifecycleState,
+    NativeAction, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineLimits,
+    NativeEventKind, NativeLifecycleState,
 };
 use glass_browser::browser_backend::{
-    BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest, BrowserBackendDispatcher,
-    BrowserCapability, CertificationLevel, EvidenceLevel, EvidenceRequest, NavigationRequest,
-    ScriptRequest, SupportLevel,
+    ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
+    BrowserBackendDispatcher, BrowserCapability, CertificationLevel, EffectsRequest, EvidenceLevel,
+    EvidenceRequest, NavigationRequest, ScriptRequest, SemanticAction, SupportLevel,
 };
 use glass_browser::{BackendFactory, NativeEngineBackend};
 
@@ -27,6 +28,20 @@ async fn fixture_navigation_projects_through_the_real_backend_dispatcher() {
     assert_eq!(
         backend.profile().identity.certification.level,
         CertificationLevel::Experimental
+    );
+    assert_eq!(
+        backend
+            .profile()
+            .capability(BrowserCapability::Action)
+            .level,
+        SupportLevel::Available
+    );
+    assert_eq!(
+        backend
+            .profile()
+            .capability(BrowserCapability::Effects)
+            .level,
+        SupportLevel::Available
     );
 
     let dispatcher = BrowserBackendDispatcher::new(&backend);
@@ -192,6 +207,94 @@ async fn data_url_and_limits_are_bounded() {
     dispatcher.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn semantic_actions_and_effects_use_the_backend_contract() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://controls",
+            "<label for='name'>Name</label><input id='name' type='text'><button id='save'>Save</button><input id='remember' type='checkbox'>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://controls");
+    let backend = NativeEngineBackend::new(config).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+
+    let clicked = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Click {
+                target: "id=remember".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(clicked.revision, 2);
+    assert!(clicked.accepted);
+
+    let click_effects = dispatcher
+        .effects(EffectsRequest {
+            context_id: "native-context".into(),
+            since_revision: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(click_effects.revision, 2);
+    assert!(click_effects.changed);
+
+    let typed = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Type {
+                target: "id=name".into(),
+                text: "Glass".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(typed.revision, 3);
+
+    let unchanged = dispatcher
+        .effects(EffectsRequest {
+            context_id: "native-context".into(),
+            since_revision: 3,
+        })
+        .await
+        .unwrap();
+    assert_eq!(unchanged.revision, 3);
+    assert!(!unchanged.changed);
+
+    let keypress = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::KeyPress {
+                key: "Enter".into(),
+            },
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        keypress,
+        glass_browser::browser_backend::BrowserBackendError::UnsupportedOperation {
+            operation, ..
+        } if operation == "action"
+    ));
+
+    let future = dispatcher
+        .effects(EffectsRequest {
+            context_id: "native-context".into(),
+            since_revision: 4,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        future,
+        glass_browser::browser_backend::BrowserBackendError::InvalidConfiguration { field, .. }
+            if field == "since revision"
+    ));
+    dispatcher.close().await.unwrap();
+}
+
 #[test]
 fn native_backend_requires_explicit_factory_selection() {
     let automatic = BackendSelectionRequest {
@@ -250,4 +353,125 @@ fn semantic_dom_references_and_locators_are_revision_bound() {
         format!("ref=r1:n{}", query.node_id.index())
     );
     assert!(document.resolve_target(&query.reference).is_ok());
+}
+
+#[test]
+fn native_actions_update_state_and_reject_unsafe_targets_before_mutation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://controls",
+            "<label for='name'>Name</label><input id='name' type='text'><input id='remember' type='checkbox'><input id='first' type='radio' name='choice'><input id='second' type='radio' name='choice' checked><input id='disabled' type='text' disabled><input id='readonly' type='text' readonly><button id='save'>Save</button><button id='other'>Other</button><p id='plain'>Plain</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://controls");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let initial_nodes = engine.semantic_nodes().unwrap();
+    let remember_reference = initial_nodes
+        .iter()
+        .find(|node| node.role == "checkbox")
+        .map(|node| node.reference.clone())
+        .unwrap();
+    assert_eq!(engine.revision(), 1);
+
+    let click = engine
+        .action(NativeAction::Click {
+            target: "id=remember".into(),
+        })
+        .unwrap();
+    assert_eq!(click.revision, 2);
+    let after_click = engine.semantic_nodes().unwrap();
+    let remember = after_click
+        .iter()
+        .find(|node| node.role == "checkbox")
+        .unwrap();
+    assert_eq!(remember.checked, Some(true));
+    assert!(remember.focused);
+    let click_effects = engine.effects_since(1).unwrap();
+    assert_eq!(
+        click_effects
+            .effects
+            .iter()
+            .map(|effect| effect.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            NativeEventKind::Focus,
+            NativeEventKind::Click,
+            NativeEventKind::Change
+        ]
+    );
+
+    let typed = engine
+        .action(NativeAction::Type {
+            target: "id=name".into(),
+            text: "Glass".into(),
+        })
+        .unwrap();
+    assert_eq!(typed.revision, 3);
+    let after_type = engine.semantic_nodes().unwrap();
+    let name = after_type.iter().find(|node| node.name == "Name").unwrap();
+    let remember = after_type
+        .iter()
+        .find(|node| node.role == "checkbox")
+        .unwrap();
+    assert_eq!(name.empty, Some(false));
+    assert!(name.focused);
+    assert!(!remember.focused);
+
+    engine
+        .action(NativeAction::Click {
+            target: "id=first".into(),
+        })
+        .unwrap();
+    let radios = engine.semantic_nodes().unwrap();
+    assert_eq!(
+        radios
+            .iter()
+            .find(|node| node.role == "radio")
+            .and_then(|node| node.checked),
+        Some(true)
+    );
+    assert_eq!(
+        radios
+            .iter()
+            .filter(|node| node.role == "radio")
+            .nth(1)
+            .and_then(|node| node.checked),
+        Some(false)
+    );
+
+    let revision_before_rejections = engine.revision();
+    assert!(matches!(
+        engine.action(NativeAction::Click {
+            target: "role=button".into(),
+        }),
+        Err(glass_browser::NativeEngineError::AmbiguousTarget { matches: 2 })
+    ));
+    assert!(matches!(
+        engine.action(NativeAction::Click {
+            target: "id=plain".into(),
+        }),
+        Err(glass_browser::NativeEngineError::TargetNotActionable { .. })
+    ));
+    assert!(matches!(
+        engine.action(NativeAction::Click {
+            target: remember_reference,
+        }),
+        Err(glass_browser::NativeEngineError::DetachedTarget)
+    ));
+    assert!(matches!(
+        engine.action(NativeAction::Click {
+            target: "id=disabled".into(),
+        }),
+        Err(glass_browser::NativeEngineError::DisabledTarget)
+    ));
+    assert!(matches!(
+        engine.action(NativeAction::Type {
+            target: "id=readonly".into(),
+            text: "nope".into(),
+        }),
+        Err(glass_browser::NativeEngineError::ReadOnlyTarget)
+    ));
+    assert_eq!(engine.revision(), revision_before_rejections);
 }

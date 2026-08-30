@@ -90,16 +90,18 @@ Protocol references:
 
 ## Native browser feasibility
 
-The native-engine program now has a real Phase 1 kernel behind the default-off
-`native-engine` feature. It owns one deterministic in-process context, local
-`about:blank`, `data:text/html`, and registered `fixture://` resources, a small
-DOM/text projection, history, revisions, and the semantic backend profile. It
-does not yet provide CSS/layout, painting, JavaScript, network/security policy,
-cookies/storage, accessibility, input, downloads, or platform windowing.
+The native-engine program now has a real Phase 2 semantic interaction slice
+behind the default-off `native-engine` feature. It owns one deterministic
+in-process context, local `about:blank`, `data:text/html`, and registered
+`fixture://` resources, a small DOM/text projection, history, revisions,
+semantic click/type actions for local controls, and a bounded effects signal.
+It does not yet provide CSS/layout, painting, JavaScript, network/security
+policy, cookies/storage, coordinate hit testing, downloads, or platform
+windowing.
 
 `BrowserRuntimeSession` remains the transport adapter for externally managed
 Firefox and Safari. The native backend is constructed through the explicit Rust
-`BackendFactory::native` path in Phase 1; no CLI `--browser-runtime native`
+`BackendFactory::native` path in Phase 2; no CLI `--browser-runtime native`
 value is exposed until a public runtime contract and user-facing capability
 surface are certified. The native backend remains a multi-year architecture
 project with its own standards conformance, security review, process

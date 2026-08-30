@@ -68,13 +68,14 @@
     "native-engine": {
       "certification": "experimental",
       "transport": "glass-owned-in-process-deterministic-engine",
-      "available": ["lifecycle", "navigation", "contexts", "evidence"],
-      "unavailable": ["action", "effects", "script", "capture", "storage", "prompts", "downloads"],
+      "available": ["lifecycle", "navigation", "contexts", "evidence", "action", "effects"],
+      "unavailable": ["script", "capture", "storage", "prompts", "downloads"],
       "dependencies": {},
       "limitations": [
-        "Phase 1 is limited to about:blank, data:text/html, and registered fixture:// resources.",
+        "Phase 2 is limited to about:blank, data:text/html, and registered fixture:// resources.",
         "The engine is in-process and is not a security boundary for hostile remote content.",
-        "CSS, layout, pixels, JavaScript, network, storage, and interaction are not implemented."
+        "CSS, layout, pixels, JavaScript, network, storage, coordinate input, and default browser behavior are not implemented.",
+        "Action support is limited to semantic click/type for supported local controls."
       ]
     }
   },

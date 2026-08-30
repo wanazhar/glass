@@ -114,14 +114,20 @@ cargo check -p glass-browser --features native-engine --locked
 cargo test -p glass-browser --features native-engine --test native_engine --locked
 ```
 
-Phase 1 is headless and deterministic. It accepts `about:blank`, bounded
+Phase 2 is headless and deterministic. It accepts `about:blank`, bounded
 percent-decoded `data:text/html` URLs, and registered `fixture://` documents
-through the Rust API. It exposes lifecycle, navigation, one context, and
-bounded URL/title/visible-text evidence through the existing backend dispatcher.
+through the Rust API. It exposes lifecycle, navigation, one context,
+bounded URL/title/visible-text evidence, semantic click/type actions for local
+controls, and a revision/changed effects signal through the existing backend
+dispatcher.
 
-It does not provide network access, filesystem navigation, CSS/layout/paint,
-JavaScript, storage, screenshots, prompts, downloads, or DOM actions. The
-backend is explicit-only and never silently falls back to Chromium or the
-semantic proof backend. Because it is in-process and incomplete, it is not a
-security boundary and must not be used to claim safe handling of hostile
-remote content.
+The action surface focuses supported controls, toggles checkbox/radio state,
+and replaces private text state for `input`/`textarea` controls. Explicit
+references are revision-bound; ambiguous, stale, disabled, read-only, and
+unsupported targets fail before mutation. It does not provide network access,
+filesystem navigation, CSS/layout/paint, JavaScript, storage, screenshots,
+prompts, downloads, coordinate hit testing, default link navigation, or raw
+form-value evidence. The backend is explicit-only and never silently falls
+back to Chromium or the semantic proof backend. Because it is in-process and
+incomplete, it is not a security boundary and must not be used to claim safe
+handling of hostile remote content.

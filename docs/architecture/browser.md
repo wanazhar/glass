@@ -9,9 +9,9 @@ This document describes the full Chromium BrowserSession/CDP data plane;
 the bounded Firefox and Safari path is specified in the
 [Browser Host RFC](../browser-host-rfc.md#current-browser-runtime-mapping).
 The feature-gated Glass-owned native engine is a separate experimental,
-local-content backend; its Phase 1 contract is defined in
-[Native browser engine](native-engine.md) and does not provide this CDP data
-plane.
+local-content backend; its current Phase 2 semantic interaction contract is
+defined in [Native browser engine](native-engine.md) and does not provide this
+CDP data plane.
 
 ## Observation contract
 

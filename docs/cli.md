@@ -35,8 +35,8 @@ remains the authority for installed flags, defaults, and positional arguments.
 | `--audit` | off | Record bounded high-risk operation metadata. |
 | `--trace-on-error` | off | Write one bounded failure trace to stderr. |
 | `--chrome-path PATH` | discovered | Select the browser executable. |
-| `--browser-runtime` | `chromium` | Select `chromium`, `firefox`, or `safari` portable runtime. |
-| `--browser-endpoint URL` | none | WebDriver BiDi WebSocket/HTTP discovery endpoint for Firefox, or W3C WebDriver base URL for Safari. |
+| `--browser-runtime` | `chromium` | Select `chromium`, `firefox`, or `safari`; `native` is available only in a `native-engine` feature build. |
+| `--browser-endpoint URL` | none | WebDriver BiDi WebSocket/HTTP discovery endpoint for Firefox, or W3C WebDriver base URL for Safari; native rejects endpoints. |
 | `--knowledge-store PATH` | profile-scoped | Select the knowledge store. |
 | `--response-mode minimal\|normal\|diagnostic` | `minimal` | Select the bounded agent-facing result projection. |
 | `--mcp` | off | Start the MCP stdio server. |
@@ -96,24 +96,37 @@ untrusted-mcp, and polite network policy modes currently require the full
 Chromium session because alternative drivers do not yet provide Glass's
 request-interception and robots gates.
 
-### Native engine (feature-gated Rust path)
+### Native engine (feature-gated local path)
 
-The Glass-owned native engine is not yet a CLI `--browser-runtime` value. Its
-Phase 2 semantic slice is available only through the explicitly enabled Rust
-backend path:
+The Glass-owned native engine is available as `--browser-runtime native` only
+when the `native-engine` feature is explicitly enabled:
 
 ```console
-cargo test -p glass-browser --features native-engine --test native_engine --locked
+cargo run -p glass-browser --features native-engine -- \
+  --browser-runtime native \
+  navigate 'data:text/html,%3Cbutton%20id%3D%22save%22%3ESave%3C%2Fbutton%3E'
 ```
 
-It is a deterministic, headless fixture/data-URL engine with one context,
-bounded URL/title/visible-text evidence, and semantic click/type actions for
-supported local controls. It has no network, JavaScript, CSS/layout/paint,
-storage, screenshots, prompts, downloads, coordinate hit testing, default link
-navigation, or raw form-value evidence. It is experimental, in-process, and
-not safe for hostile remote content. The native backend never enters automatic
-selection or silently falls back to Chromium; a user-facing CLI/runtime
-contract will be added only in a later certified task.
+The default CLI configuration accepts only `about:blank` and bounded,
+percent-decoded `data:text/html` documents. Registered `fixture://` documents
+remain available through the Rust `NativeEngineConfig` constructor; the CLI
+does not read fixture files. Native supports only the local command set:
+
+```text
+navigate URL
+click SEMANTIC_LOCATOR
+type TEXT --target SEMANTIC_LOCATOR
+text
+observe
+targets
+```
+
+Native locators use `ref`, `id`, `role`, `name`, or `text` forms; CSS selectors
+are not accepted. Endpoint and external lifecycle flags, remote URLs,
+script/evaluate, MCP, TUI, profiles, screenshots, storage, downloads, prompts,
+and other Chromium-only operations fail closed. The backend is experimental,
+in-process, and not a security boundary for hostile content. It never enters
+automatic selection or silently falls back to Chromium.
 
 Place global options before or after the subcommand.
 Compatibility spellings are limited to the aliases defined by Clap:

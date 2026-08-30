@@ -1,8 +1,8 @@
 # Native browser engine
 
-Status: Experimental Phase 2 semantic DOM/interaction slices and an initial
-Phase 3 presentation slice; feature-gated and not a stable browser
-compatibility or security boundary.
+Status: Experimental Phase 2 semantic DOM/interaction slices, an initial
+Phase 3 presentation slice, and feature-gated runtime/CLI integration; not a
+stable browser compatibility or security boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -73,6 +73,21 @@ assert_eq!(backend.profile().identity.backend_id, "native-engine");
 internal DOM, node IDs, scheduler tasks, resource records, and future layout
 types never cross the transport-neutral backend boundary.
 
+When the feature is enabled, `BrowserRuntimeSession::connect_native` is the
+explicit user-facing Rust session constructor. It accepts a
+`NativeEngineConfig`, initializes one native backend, and never interprets a
+network endpoint. The native runtime is not selected by omission or automatic
+backend ranking.
+
+The same feature exposes `--browser-runtime native` in the one-shot CLI. The
+CLI constructs the default local configuration, so it accepts `about:blank` and
+bounded `data:text/html` navigation. Rust callers can still register bounded
+`fixture://` documents through `NativeEngineConfig`; fixture registration is
+not a CLI file-loading or network capability. Native CLI commands are limited
+to navigate, click, type, text, observe, and targets, with semantic locators
+instead of CSS selectors. Endpoint, external lifecycle, profile, screenshot,
+storage, download, prompt, script/evaluate, MCP, and TUI paths fail closed.
+
 ## Configuration and limits
 
 `NativeEngineConfig` contains an initial URL, a viewport descriptor, fixture
@@ -139,10 +154,11 @@ queue. It commits navigation in a reproducible order. Interaction mutation is
 synchronous and single-owner; the scheduler does not spawn threads, sleep, or
 execute arbitrary callbacks.
 
-## Phase 2 semantic DOM/interaction and initial Phase 3 presentation slice
+## Phase 2 semantic DOM/interaction, initial Phase 3 presentation, and runtime slice
 
 The current Phase 2 slice intentionally exposes a narrow semantic surface
-without pretending to implement CSS selectors, layout, or a browser event loop.
+without pretending to implement general CSS selectors, layout, or a browser
+event loop.
 `NativeDocument::semantic_nodes` projects supported native roles and bounded
 names in source order. Supported role inference includes buttons, links with
 `href`, text-like inputs, textareas, checkboxes, radios, selects, options, and
@@ -265,12 +281,15 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   including unterminated-element behavior.
 - bounded stylesheet/inline selector matching and display/visibility cascade
   feeding visible text and semantic actionability.
+- explicit Rust native-session construction and feature-gated CLI dispatch for
+  local URL shapes, including rejection of remote endpoints and unsupported
+  browser-only flags.
 
 This slice is not browser parity. It cannot be promoted or advertised as safe
 for arbitrary remote content until CSS/layout, security policy, process
 isolation, cancellation, conformance, and platform evidence exist.
 
 Future phases may split the DOM parser into tokenizer/tree-builder modules and
-add CSS, layout, paint, full event-loop, script, storage, and process
+add general CSS, layout, paint, full event-loop, script, storage, and process
 boundaries. Those changes require updates to this document, the epic, and
 their dependency-ordered task files before implementation.

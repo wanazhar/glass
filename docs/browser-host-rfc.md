@@ -70,12 +70,16 @@ The full `BrowserSession` remains the Chromium/CDP production path. The public
 | Chromium | Chrome DevTools Protocol | Production full session | Glass launches or explicitly attaches |
 | Firefox | WebDriver BiDi WebSocket | Experimental portable semantics | User starts Firefox with `--remote-debugging-port` and supplies `--browser-endpoint` |
 | Safari | W3C WebDriver HTTP through `safaridriver` | Experimental portable semantics | User starts `safaridriver` and supplies its base URL |
+| Native | Glass-owned in-process Rust engine | Experimental local semantics; feature-gated | Explicit `native-engine` build; `NativeEngineConfig` or the local CLI path; no endpoint |
 
-The portable command set is navigation, one active context, compact
+The external portable command set is navigation, one active context, compact
 script-derived evidence, script evaluation, CSS click/type actions, and
-revision effects. Screenshots, storage, prompts, downloads, keyboard,
-scrolling, multi-window control, profiles, MCP, TUI, and the full locator/Web
-IR pipeline remain capability-denied on these adapters.
+revision effects. The native command set is local navigation, one active
+context, bounded URL/title/visible-text evidence, semantic click/type actions,
+and revision effects; it does not execute script. Screenshots, storage,
+prompts, downloads, keyboard, scrolling, multi-window control, profiles, MCP,
+TUI, and the full locator/Web IR pipeline remain capability-denied on these
+adapters.
 
 Firefox is configured as a browser-specific BiDi profile so selection can
 require `browserFamily=firefox`; Safari is intentionally represented by the
@@ -100,13 +104,16 @@ policy, cookies/storage, coordinate hit testing, downloads, or platform
 windowing.
 
 `BrowserRuntimeSession` remains the transport adapter for externally managed
-Firefox and Safari. The native backend is constructed through the explicit Rust
-`BackendFactory::native` path in Phase 2; no CLI `--browser-runtime native`
-value is exposed until a public runtime contract and user-facing capability
-surface are certified. The native backend remains a multi-year architecture
-project with its own standards conformance, security review, process
-isolation, and platform certification. The proof backend must never be
-presented as browser parity.
+Firefox and Safari. With the `native-engine` feature, the native backend is
+also exposed through the explicit `BrowserRuntimeSession::connect_native` Rust
+constructor and the local one-shot `--browser-runtime native` path. The CLI
+default configuration accepts only `about:blank` and bounded `data:text/html`;
+Rust callers may register `fixture://` documents. Native never accepts an
+external endpoint, enters automatic selection, or falls back to another
+backend. The native backend remains a multi-year architecture project with
+its own standards conformance, security review, process isolation, and
+platform certification. The proof backend must never be presented as browser
+parity.
 
 The machine-readable dependency and omission matrix is
 [`backend-capability-matrix.json`](backend-capability-matrix.json).

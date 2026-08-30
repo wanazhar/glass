@@ -2,11 +2,13 @@
 //!
 //! The existing [`crate::browser::session::BrowserSession`] remains the full Chrome/CDP
 //! API. This module exposes the portable semantic slice for Firefox BiDi and
-//! Safari WebDriver without pretending those runtimes implement every CDP-only
-//! operation.
+//! Safari WebDriver, plus the explicitly feature-gated native local runtime,
+//! without pretending those runtimes implement every CDP-only operation.
 
 use super::backend_factory::{BackendFactory, BackendStartup};
 use super::bidi_backend::BidiBackendConfig;
+#[cfg(feature = "native-engine")]
+use super::native_engine::NativeEngineConfig;
 use crate::browser_backend::{
     ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
     ContextRequest, EffectsRequest, EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult,
@@ -27,6 +29,9 @@ pub enum BrowserRuntime {
     Firefox,
     /// Experimental W3C WebDriver session through SafariDriver.
     Safari,
+    /// Experimental Glass-owned local-content engine.
+    #[cfg(feature = "native-engine")]
+    Native,
 }
 
 impl BrowserRuntime {
@@ -35,11 +40,22 @@ impl BrowserRuntime {
             Self::Chromium => "chromium",
             Self::Firefox => "firefox",
             Self::Safari => "safari",
+            #[cfg(feature = "native-engine")]
+            Self::Native => "native",
+        }
+    }
+
+    pub const fn is_native(self) -> bool {
+        match self {
+            #[cfg(feature = "native-engine")]
+            Self::Native => true,
+            _ => false,
         }
     }
 }
 
-/// Portable semantic browser session for Firefox and Safari.
+/// Portable semantic browser session for external Firefox/Safari runtimes and
+/// the explicit local native runtime.
 pub struct BrowserRuntimeSession {
     runtime: BrowserRuntime,
     backend: BackendStartup,
@@ -60,8 +76,28 @@ impl BrowserRuntimeSession {
                 BackendFactory::bidi(BidiBackendConfig::for_firefox(endpoint)).await?
             }
             BrowserRuntime::Safari => BackendFactory::safari_webdriver(endpoint)?,
+            #[cfg(feature = "native-engine")]
+            BrowserRuntime::Native => {
+                return Err(
+                    "native runtime does not accept an endpoint; use connect_native with NativeEngineConfig".into(),
+                );
+            }
         };
         let session = Self { runtime, backend };
+        BrowserBackendDispatcher::new(&session.backend)
+            .initialize()
+            .await?;
+        Ok(session)
+    }
+
+    /// Construct and initialize the explicit, local-only native runtime.
+    #[cfg(feature = "native-engine")]
+    pub async fn connect_native(config: NativeEngineConfig) -> BrowserResult<Self> {
+        let backend = BackendFactory::native(config)?;
+        let session = Self {
+            runtime: BrowserRuntime::Native,
+            backend,
+        };
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
             .await?;

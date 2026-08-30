@@ -10,7 +10,34 @@ use glass_browser::browser_backend::{
     BrowserBackendDispatcher, BrowserCapability, CertificationLevel, EffectsRequest, EvidenceLevel,
     EvidenceRequest, NavigationRequest, ScriptRequest, SemanticAction, SupportLevel,
 };
-use glass_browser::{BackendFactory, NativeEngineBackend};
+use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
+
+#[tokio::test]
+async fn native_runtime_session_uses_explicit_local_constructor() {
+    let session =
+        BrowserRuntimeSession::connect_native(NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Ctitle%3ERuntime%3C%2Ftitle%3E%3Cp%3ENative%20session%3C%2Fp%3E",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(session.runtime(), BrowserRuntime::Native);
+    assert_eq!(
+        session.profile().identity.backend_id,
+        NATIVE_ENGINE_BACKEND_ID
+    );
+
+    let evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(
+        evidence.url,
+        "data:text/html,%3Ctitle%3ERuntime%3C%2Ftitle%3E%3Cp%3ENative%20session%3C%2Fp%3E"
+    );
+    assert_eq!(evidence.title, "Runtime");
+    assert_eq!(evidence.visible_text, "Native session");
+
+    let script_error = session.script("1 + 1").await.unwrap_err().to_string();
+    assert!(script_error.contains("capability"));
+    session.close().await.unwrap();
+}
 
 #[tokio::test]
 async fn fixture_navigation_projects_through_the_real_backend_dispatcher() {

@@ -10,6 +10,8 @@ use super::args::{
     TuiGraphics, TuiLayout, TuiLiveBackend, TuiLiveFit, TuiLiveMode, TuiLiveQuality, TuiTransport,
     WorkflowAuthoringCommand, WorkspaceCommand,
 };
+#[cfg(feature = "native-engine")]
+use crate::browser::native_engine::{NativeEngineConfig, NativeResourceLoader};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyPreset};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::{BrowserRuntime, BrowserRuntimeSession};
@@ -328,55 +330,85 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
             "--browser-endpoint is only valid with --browser-runtime firefox or safari".into(),
         );
     }
+    let native = cli.browser_runtime.is_native();
     if cli.mcp {
-        return Err(
-            "Firefox and Safari currently support the portable one-shot semantic session; MCP remains on the full Chromium session".into(),
-        );
+        return Err(if native {
+            "native runtime supports only local one-shot commands; MCP remains on the full Chromium session".into()
+        } else {
+            "Firefox and Safari currently support the portable one-shot semantic session; MCP remains on the full Chromium session".into()
+        });
     }
-    validate_alternative_runtime_flags(cli)?;
-    if matches!(
-        policy.preset(),
-        PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
-    ) {
+    validate_alternative_runtime_flags(cli, cli.browser_runtime)?;
+    if !native
+        && matches!(
+            policy.preset(),
+            PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+        )
+    {
         return Err(
             "hardened and untrusted-mcp network interception currently requires the full Chromium session"
                 .into(),
         );
     }
-    if policy.is_polite() {
+    if !native && policy.is_polite() {
         return Err(
             "the polite robots and crawl-delay gate currently requires the full Chromium session"
                 .into(),
         );
     }
     let command = cli.command.as_ref().ok_or_else(|| {
-        "an explicit browser command is required for Firefox or Safari runtime mode".to_string()
-    })?;
-    if cli.prompt.is_some() {
-        return Err("natural-language prompts are not available on the portable alternative runtime; use an explicit browser command".into());
-    }
-    validate_alternative_runtime_command(command)?;
-
-    // An externally managed BiDi/WebDriver endpoint is an attach operation.
-    // Prepare the same host pinning state used by the CDP session before the
-    // endpoint is contacted, so hardened policy cannot become a no-op here.
-    policy.require(PolicyCapability::Attach)?;
-    policy.prepare_hardened_session(true).await?;
-
-    let endpoint = cli.browser_endpoint.as_deref().ok_or_else(|| {
         format!(
-            "--browser-endpoint is required for --browser-runtime {}",
+            "an explicit browser command is required for {} runtime mode",
             cli.browser_runtime.browser_family()
         )
     })?;
+    if cli.prompt.is_some() {
+        return Err("natural-language prompts are not available on the portable runtime; use an explicit browser command".into());
+    }
+    validate_alternative_runtime_command(command, cli.browser_runtime)?;
+
     if let Commands::Navigate { url, .. } = command {
-        policy
-            .require_url(&crate::browser::session::normalize_url(url))
-            .await?;
+        if native {
+            #[cfg(feature = "native-engine")]
+            validate_native_navigation_url(url)?;
+        } else {
+            policy
+                .require_url(&crate::browser::session::normalize_url(url))
+                .await?;
+        }
     }
 
-    let session = BrowserRuntimeSession::connect(cli.browser_runtime, endpoint).await?;
-    let context_result = if !matches!(command, Commands::Navigate { .. }) {
+    if !native {
+        // An externally managed BiDi/WebDriver endpoint is an attach operation.
+        // Prepare the same host pinning state used by the CDP session before
+        // the endpoint is contacted, so hardened policy cannot become a no-op.
+        policy.require(PolicyCapability::Attach)?;
+        policy.prepare_hardened_session(true).await?;
+    }
+
+    #[cfg(feature = "native-engine")]
+    let session = if native {
+        BrowserRuntimeSession::connect_native(NativeEngineConfig::default()).await?
+    } else {
+        let endpoint = cli.browser_endpoint.as_deref().ok_or_else(|| {
+            format!(
+                "--browser-endpoint is required for --browser-runtime {}",
+                cli.browser_runtime.browser_family()
+            )
+        })?;
+        BrowserRuntimeSession::connect(cli.browser_runtime, endpoint).await?
+    };
+    #[cfg(not(feature = "native-engine"))]
+    let session = {
+        let endpoint = cli.browser_endpoint.as_deref().ok_or_else(|| {
+            format!(
+                "--browser-endpoint is required for --browser-runtime {}",
+                cli.browser_runtime.browser_family()
+            )
+        })?;
+        BrowserRuntimeSession::connect(cli.browser_runtime, endpoint).await?
+    };
+    let context_result = if !matches!(command, Commands::Navigate { .. }) && !native {
         validate_alternative_runtime_context(&session, policy).await
     } else {
         Ok(())
@@ -392,8 +424,10 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
     close_result
 }
 
-fn validate_alternative_runtime_flags(cli: &Cli) -> BrowserResult<()> {
-    let unsupported = if cli.profile != "default" {
+fn validate_alternative_runtime_flags(cli: &Cli, runtime: BrowserRuntime) -> BrowserResult<()> {
+    let unsupported = if runtime.is_native() && cli.browser_endpoint.is_some() {
+        Some("--browser-endpoint is not available with --browser-runtime native")
+    } else if cli.profile != "default" {
         Some("--profile is only available on the full Chromium session")
     } else if cli.incognito {
         Some("--incognito is only available on the full Chromium session")
@@ -445,18 +479,28 @@ fn validate_alternative_runtime_flags(cli: &Cli) -> BrowserResult<()> {
     Ok(())
 }
 
-fn validate_alternative_runtime_command(command: &Commands) -> BrowserResult<()> {
+fn validate_alternative_runtime_command(
+    command: &Commands,
+    runtime: BrowserRuntime,
+) -> BrowserResult<()> {
+    let native = runtime.is_native();
     match command {
-        Commands::Navigate { expected_revision, .. }
-        | Commands::Click { expected_revision, .. }
-        | Commands::Type { expected_revision, .. }
-            if expected_revision.is_some() =>
-        {
+        Commands::Navigate {
+            expected_revision, ..
+        }
+        | Commands::Click {
+            expected_revision, ..
+        }
+        | Commands::Type {
+            expected_revision, ..
+        } if expected_revision.is_some() => {
             Err("revision guards are not yet exposed by the portable runtime CLI".into())
         }
-        Commands::Type { target, .. } if target.is_none() => {
-            Err("Firefox/Safari type requires --target with a CSS selector".into())
-        }
+        Commands::Type { target, .. } if target.is_none() => Err(if native {
+            "native type requires --target with a semantic locator".into()
+        } else {
+            "Firefox/Safari type requires --target with a CSS selector".into()
+        }),
         Commands::Observe {
             deep_dom,
             screenshot,
@@ -467,19 +511,29 @@ fn validate_alternative_runtime_command(command: &Commands) -> BrowserResult<()>
             || *screenshot
             || *form_values
             || semantic_level.is_some()
-            || region.is_some() => Err(
-            "portable Firefox/Safari observation supports compact evidence only; DOM, screenshot, forms, and semantic regions require Chromium".into(),
-        ),
+            || region.is_some() =>
+        {
+            Err(if native {
+                "native observation supports compact evidence only; DOM, screenshot, forms, and semantic regions require Chromium".into()
+            } else {
+                "portable Firefox/Safari observation supports compact evidence only; DOM, screenshot, forms, and semantic regions require Chromium".into()
+            })
+        }
+        Commands::Evaluate { .. } if native => {
+            Err("native runtime does not implement script/evaluate".into())
+        }
         Commands::Navigate { .. }
         | Commands::Click { .. }
         | Commands::Type { .. }
         | Commands::Text
         | Commands::Observe { .. }
-        | Commands::Targets
-        | Commands::Evaluate { .. } => Ok(()),
-        _ => Err(
-            "this Firefox/Safari runtime slice supports navigate, click, type, text, observe, targets, and evaluate; use Chromium for the full session command set".into(),
-        ),
+        | Commands::Targets => Ok(()),
+        Commands::Evaluate { .. } => Ok(()),
+        _ => Err(if native {
+            "this native runtime slice supports navigate, click, type, text, observe, and targets; use Chromium for the full session command set".into()
+        } else {
+            "this Firefox/Safari runtime slice supports navigate, click, type, text, observe, targets, and evaluate; use Chromium for the full session command set".into()
+        }),
     }
 }
 
@@ -504,6 +558,11 @@ async fn run_alternative_runtime_command(
 ) -> BrowserResult<()> {
     match command {
         Commands::Navigate { url, .. } => {
+            let url = if session.runtime().is_native() {
+                crate::browser::session::normalize_url(url)
+            } else {
+                url.clone()
+            };
             print_json_mode(&session.navigate(url).await?, response_mode)
         }
         Commands::Click { target, .. } => print_json_mode(
@@ -515,9 +574,13 @@ async fn run_alternative_runtime_command(
             response_mode,
         ),
         Commands::Type { text, target, .. } => {
-            let target = target
-                .clone()
-                .ok_or("Firefox/Safari type requires --target with a CSS selector")?;
+            let target = target.clone().ok_or_else(|| {
+                if session.runtime().is_native() {
+                    "native type requires --target with a semantic locator".to_string()
+                } else {
+                    "Firefox/Safari type requires --target with a CSS selector".to_string()
+                }
+            })?;
             print_json_mode(
                 &session
                     .action(SemanticAction::Type {
@@ -545,6 +608,13 @@ async fn run_alternative_runtime_command(
         }
         _ => unreachable!("alternative runtime command was validated before dispatch"),
     }
+}
+
+#[cfg(feature = "native-engine")]
+fn validate_native_navigation_url(value: &str) -> BrowserResult<()> {
+    let url = crate::browser::session::normalize_url(value);
+    NativeResourceLoader::new(&NativeEngineConfig::default())?.load(&url)?;
+    Ok(())
 }
 
 async fn dispatch_daemon(cli: &Cli, action: &DaemonCommand) -> BrowserResult<()> {
@@ -2930,7 +3000,7 @@ mod tests {
             "text",
         ])
         .unwrap();
-        let error = validate_alternative_runtime_flags(&cli)
+        let error = validate_alternative_runtime_flags(&cli, cli.browser_runtime)
             .unwrap_err()
             .to_string();
         assert!(error.contains("--profile"));
@@ -2947,10 +3017,59 @@ mod tests {
             "screenshot",
         ])
         .unwrap();
-        let error = validate_alternative_runtime_command(cli.command.as_ref().unwrap())
+        let error = validate_alternative_runtime_command(
+            cli.command.as_ref().unwrap(),
+            cli.browser_runtime,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("supports navigate"));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_runtime_rejects_endpoint_before_startup() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "native",
+            "--browser-endpoint",
+            "http://127.0.0.1:4444",
+            "observe",
+        ])
+        .unwrap();
+        let error = validate_alternative_runtime_flags(&cli, cli.browser_runtime)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("supports navigate"));
+        assert!(error.contains("not available with --browser-runtime native"));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_runtime_rejects_script_before_startup() {
+        let cli =
+            Cli::try_parse_from(["glass", "--browser-runtime", "native", "evaluate", "1 + 1"])
+                .unwrap();
+        let error = validate_alternative_runtime_command(
+            cli.command.as_ref().unwrap(),
+            cli.browser_runtime,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("does not implement script/evaluate"));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_navigation_validation_accepts_local_data_and_rejects_network() {
+        validate_native_navigation_url(
+            "data:text/html,%3Ctitle%3ELocal%3C%2Ftitle%3E%3Cp%3EGlass%3C%2Fp%3E",
+        )
+        .unwrap();
+        let error = validate_native_navigation_url("https://example.com")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not load network"));
     }
 
     #[test]

@@ -76,7 +76,8 @@ normal-flow rectangles, uniform non-negative padding/margin, explicit
 content-box or border-box sizing, outer/content rectangles, bounded vertical
 viewport scrolling, inherited text color, bounded paint clips, bounded
   side-specific solid/dashed/dotted-border paint, bounded physical circular
-  border radii, bounded inline-box line placement, a deterministic
+  border radii, bounded inline-box line placement, bounded fixed pixel
+  line-height flow, a deterministic
   clear/fill/text/border display list, a
 logical RGBA software surface, and
 bounded PNG capture through the explicit backend operation;

@@ -3,9 +3,10 @@
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
-bounded-inline-flow slices, including bounded style inheritance, paint clipping,
-solid/dashed/dotted border painting, rounded fill/border masks, inline-box line
-placement, and content-box geometry,
+bounded-inline-flow/bounded-fixed-line-height slices, including bounded style
+inheritance, paint clipping, solid/dashed/dotted border painting, rounded
+fill/border masks, inline-box line placement, fixed pixel line-height floors,
+and content-box geometry,
 plus feature-gated
 runtime/CLI integration; not a stable browser compatibility or security
 boundary.
@@ -28,8 +29,8 @@ display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden` paint
 clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
 bounded circular border radii, bounded outer/content box geometry, explicit root
-viewport scrolling, and bounded inline-box line placement. The engine does not
-yet own
+viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
+line-height flow. The engine does not yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
@@ -248,6 +249,14 @@ consumers. Font metrics/shaping, word-aware text fragments, whitespace
 collapsing, baselines, bidi, floats, replaced elements, flex/grid, and general
 inline-formatting parity remain unsupported.
 
+The 022 bounded-fixed-line-height boundary accepts one positive integer-pixel
+`line-height` value with the existing cascade precedence. A flow owner's value
+sets the minimum line-box height for direct text and inline children, while an
+inline element's own value raises its auto content height and never overrides
+an explicit `height`. Unitless, relative, percentage, `normal`, general
+inheritance, font metrics, baselines, vertical alignment, and browser
+line-layout parity remain unsupported.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -429,6 +438,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inline-box preflight line placement, deterministic line-height flow,
   and consistent layout/display-list/hit-test coordinates for adjacent inline
   elements.
+- bounded positive-pixel line-height parsing/cascade, flow minimums, inline
+  auto-height behavior, and explicit-height precedence.
 - bounded logical-surface PNG encoding, capture-byte enforcement, read-only
   revision behavior, real native backend dispatch, and explicit JPEG/PDF
   denials.

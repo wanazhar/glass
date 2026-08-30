@@ -148,6 +148,7 @@ pub(crate) struct NativeComputedStyle {
     visibility_hidden: bool,
     width: Option<u32>,
     height: Option<u32>,
+    line_height: Option<u32>,
     background_color: Option<NativeColor>,
     border: Option<NativeBorder>,
     border_radius: NativeBorderRadius,
@@ -173,6 +174,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn height(self) -> Option<u32> {
         self.height
+    }
+
+    pub(crate) const fn line_height(self) -> Option<u32> {
+        self.line_height
     }
 
     pub(crate) const fn background_color(self) -> Option<NativeColor> {
@@ -238,6 +243,7 @@ impl NativeStylesheet {
         let mut visibility = None;
         let mut width = None;
         let mut height = None;
+        let mut line_height = None;
         let mut background_color = None;
         let mut border: [Option<CascadeValue<NativeBorderSide>>; 4] = [None; 4];
         let mut border_radius = None;
@@ -284,6 +290,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, height)
             {
                 height = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.line_height
+                && wins(rule.selector.specificity, rule.order, false, line_height)
+            {
+                line_height = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -416,6 +432,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.line_height
+                && wins(u16::MAX, usize::MAX, true, line_height)
+            {
+                line_height = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.background_color
                 && wins(u16::MAX, usize::MAX, true, background_color)
             {
@@ -501,6 +527,7 @@ impl NativeStylesheet {
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
+            line_height: line_height.map(|value| value.value),
             background_color: background_color.map(|value| value.value),
             border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
             border_radius: border_radius.map_or(NativeBorderRadius::default(), |value| value.value),
@@ -566,6 +593,7 @@ struct NativeDeclarations {
     visibility: Option<VisibilityValue>,
     width: Option<u32>,
     height: Option<u32>,
+    line_height: Option<u32>,
     background_color: Option<NativeColor>,
     border: [Option<NativeBorderSide>; 4],
     border_radius: Option<NativeBorderRadius>,
@@ -650,6 +678,7 @@ fn parse_source(
             || declarations.visibility.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
+            || declarations.line_height.is_some()
             || declarations.background_color.is_some()
             || declarations.border.iter().any(Option::is_some)
             || declarations.border_radius.is_some()
@@ -707,6 +736,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "height" => {
                 declarations.height = parse_dimension(value);
+            }
+            "line-height" => {
+                declarations.line_height = parse_line_height(value);
             }
             "background-color" => {
                 declarations.background_color = parse_color(value);
@@ -917,6 +949,10 @@ fn parse_dimension(value: &str) -> Option<u32> {
     (value <= MAX_NATIVE_VIEWPORT_DIMENSION).then_some(value)
 }
 
+fn parse_line_height(value: &str) -> Option<u32> {
+    parse_dimension(value).filter(|value| *value > 0)
+}
+
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(VisibilityValue::Hidden),
@@ -1115,12 +1151,13 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
+        assert_eq!(declarations.line_height, Some(28));
         assert_eq!(declarations.color, Some(NativeColor::RED));
         let parsed_color = NativeColor {
             red: 16,
@@ -1270,6 +1307,16 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_cascade_resolves_line_height_with_inline_precedence() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            ".card { line-height: 16px; } #card { line-height: 20px; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='card' class='card' style='line-height: 28px'>Card</div>");
+        assert_eq!(stylesheet.computed_for(&node).line_height(), Some(28));
+    }
+
+    #[test]
     fn stylesheet_cascade_resolves_physical_border_sides_independently() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { border: 1px solid red; } #card { border-left: 3px solid blue; }".into(),
@@ -1309,6 +1356,16 @@ mod tests {
         assert_eq!(parse_dimension("240"), None);
         assert_eq!(parse_dimension("50%"), None);
         assert_eq!(parse_dimension("20000px"), None);
+    }
+
+    #[test]
+    fn line_height_parser_accepts_only_positive_bounded_pixels() {
+        assert_eq!(parse_line_height("28px"), Some(28));
+        assert_eq!(parse_line_height("0px"), None);
+        assert_eq!(parse_line_height("normal"), None);
+        assert_eq!(parse_line_height("1.5"), None);
+        assert_eq!(parse_line_height("50%"), None);
+        assert_eq!(parse_line_height("20000px"), None);
     }
 
     #[test]

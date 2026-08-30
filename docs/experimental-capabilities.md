@@ -132,7 +132,8 @@ presentation, normal-flow outer/content box geometry with uniform
 non-negative padding/margin and explicit box sizing, bounded vertical viewport
 scrolling, inherited text color,
 bounded paint clips, side-specific solid/dashed/dotted-border paint, bounded physical circular
-border radii, bounded inline-box line placement, bounded PNG capture, and
+border radii, bounded inline-box line placement, bounded fixed pixel line-height
+flow, bounded PNG capture, and
 Rust-only
 display-list/software-surface artifacts;
 it does not

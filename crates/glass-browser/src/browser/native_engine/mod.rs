@@ -6,6 +6,7 @@
 
 mod browsing_context;
 mod config;
+mod css;
 mod dom;
 mod engine;
 mod error;

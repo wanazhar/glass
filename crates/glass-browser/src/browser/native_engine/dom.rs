@@ -1,4 +1,5 @@
 use super::config::NativeEngineLimits;
+use super::css::NativeStylesheet;
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
 use std::collections::BTreeMap;
@@ -139,6 +140,7 @@ pub struct NativeDocument {
     revision: u64,
     root: NativeNodeId,
     nodes: Vec<NativeNode>,
+    stylesheet: NativeStylesheet,
 }
 
 impl NativeDocument {
@@ -177,6 +179,7 @@ impl NativeDocument {
                 kind: NativeNodeKind::Document,
                 state: NativeElementState::default(),
             }],
+            stylesheet: NativeStylesheet::default(),
         };
         let mut stack = vec![root];
 
@@ -263,6 +266,17 @@ impl NativeDocument {
                 }
             }
         }
+        let style_sources = document
+            .nodes
+            .iter()
+            .filter(|node| node.element_name() == Some("style"))
+            .map(|node| {
+                let mut source = String::new();
+                document.collect_raw_text(node.id(), &mut source);
+                source
+            })
+            .collect::<Vec<_>>();
+        document.stylesheet = NativeStylesheet::from_sources(style_sources)?;
         document.normalize_select_defaults();
         Ok(document)
     }
@@ -283,6 +297,7 @@ impl NativeDocument {
                 kind: NativeNodeKind::Document,
                 state: NativeElementState::default(),
             }],
+            stylesheet: NativeStylesheet::default(),
         }
     }
 
@@ -916,6 +931,9 @@ impl NativeDocument {
             {
                 return true;
             }
+            if self.stylesheet.computed_for(node).hidden() {
+                return true;
+            }
             current = node.parent();
         }
         false
@@ -1008,13 +1026,13 @@ impl NativeDocument {
                     self.collect_visible(*child, hidden_parent, output, truncated, max_bytes);
                 }
             }
-            NativeNodeKind::Element { name, attributes } => {
+            NativeNodeKind::Element { name, .. } => {
                 let hidden = hidden_parent
                     || matches!(
                         name.as_str(),
                         "head" | "script" | "style" | "template" | "title"
                     )
-                    || has_hidden_signal(attributes);
+                    || self.is_hidden(id);
                 for child in node.children() {
                     self.collect_visible(*child, hidden, output, truncated, max_bytes);
                 }
@@ -1164,18 +1182,7 @@ fn has_hidden_signal(attributes: &BTreeMap<String, String>) -> bool {
     {
         return true;
     }
-    attributes.get("style").is_some_and(|style| {
-        style.split(';').any(|declaration| {
-            let Some((property, value)) = declaration.split_once(':') else {
-                return false;
-            };
-            let property = property.trim();
-            let value = value.trim();
-            (property.eq_ignore_ascii_case("display") && value.eq_ignore_ascii_case("none"))
-                || (property.eq_ignore_ascii_case("visibility")
-                    && value.eq_ignore_ascii_case("hidden"))
-        })
-    })
+    false
 }
 
 #[derive(Debug)]

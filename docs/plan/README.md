@@ -132,8 +132,16 @@ nested, smooth, and keyboard scrolling remain outside the current claim.
 The completed side-specific-border slice is
 [native-engine-018](tasks/native-engine-018.md). It adds independently
 cascaded physical solid borders, side-aware box-model insets, and deterministic
-clipped/scrolled display replay; non-solid styles, radii, logical writing-mode
-sides, and browser corner-join fidelity remain outside the current claim.
+clipped/scrolled display replay; other border styles, radii, logical
+writing-mode sides, and browser corner-join fidelity remain outside the
+current claim.
+
+The completed bounded-pattern-border slice is
+[native-engine-019](tasks/native-engine-019.md). It implements
+typed `solid`/`dashed`/`dotted` physical border styles with deterministic
+integer patterns; other border styles, radius/images/gradients, standalone
+style properties, logical sides, and browser dash/corner fidelity remain
+outside the current claim.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

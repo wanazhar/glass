@@ -2,8 +2,8 @@
 
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
-    NativeAction, NativeColor, NativeDisplayCommand, NativeDocument, NativeEngine,
-    NativeEngineConfig, NativeEngineError, NativeEngineLimits, NativeEventKind,
+    NativeAction, NativeBorderStyle, NativeColor, NativeDisplayCommand, NativeDocument,
+    NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits, NativeEventKind,
     NativeLifecycleState, NativePoint, NativeRect, NativeSurface, Viewport,
 };
 use glass_browser::browser_backend::{
@@ -443,6 +443,49 @@ fn native_side_specific_borders_feed_box_model_and_paint() {
     assert_eq!(surface.pixel(27, 10), Some([0, 128, 0, 255]));
     assert_eq!(surface.pixel(10, 14), Some([0, 0, 255, 255]));
     assert_eq!(surface.pixel(0, 5), Some([0, 0, 0, 255]));
+}
+
+#[test]
+fn native_pattern_border_styles_feed_display_list_and_surface() {
+    let document = NativeDocument::parse(
+        "<div id='card' style='width:8px;height:6px;border-top:1px dashed red;border-right:1px dotted green;border-bottom:1px solid blue'></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 12,
+        height: 8,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let border = list
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            NativeDisplayCommand::BorderRect { borders, .. } => Some(*borders),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(border.top.style, NativeBorderStyle::Dashed);
+    assert_eq!(border.right.style, NativeBorderStyle::Dotted);
+    assert_eq!(border.bottom.style, NativeBorderStyle::Solid);
+    assert_eq!(border.left.width, 0);
+
+    let mut scrolled_list = list.clone();
+    let unscrolled = list.rasterize().unwrap();
+    assert_eq!(unscrolled.pixel(0, 0), Some([255, 0, 0, 255]));
+    assert_eq!(unscrolled.pixel(2, 0), Some([255, 0, 0, 255]));
+    assert_eq!(unscrolled.pixel(3, 0), Some([255, 255, 255, 255]));
+    assert_eq!(unscrolled.pixel(4, 0), Some([255, 255, 255, 255]));
+    assert_eq!(unscrolled.pixel(5, 0), Some([255, 0, 0, 255]));
+    assert_eq!(unscrolled.pixel(8, 0), Some([255, 255, 255, 255]));
+    assert_eq!(unscrolled.pixel(8, 1), Some([255, 255, 255, 255]));
+    assert_eq!(unscrolled.pixel(8, 2), Some([0, 128, 0, 255]));
+
+    scrolled_list.scroll_offset = NativePoint { x: 0, y: 1 };
+    let scrolled = scrolled_list.rasterize().unwrap();
+    assert_eq!(scrolled.pixel(8, 0), unscrolled.pixel(8, 1));
+    assert_eq!(scrolled.pixel(8, 1), unscrolled.pixel(8, 2));
 }
 
 #[test]

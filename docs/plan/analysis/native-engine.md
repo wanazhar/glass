@@ -7,7 +7,9 @@ committed locally, including the bounded 010 display-list seed and the bounded
 011 software-surface seed, 012 style-inheritance seed, 013 paint-clipping
 seed, 014 uniform solid-border paint, 015 bounded PNG capture, 017
 viewport-scroll, and 018 side-specific-border slices. The 018 slice is
-complete locally and its checkpoint evidence is recorded on issue #40.
+complete locally and its checkpoint evidence is recorded on issue #40. The
+019 bounded dashed/dotted-border slice is complete locally and its checkpoint
+evidence is recorded on issue #40.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -62,10 +64,10 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history | committed URL/revision | bounded entries/current index | native limits |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, pixel dimensions, and side-specific solid borders | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, pixel dimensions, and physical solid/dashed/dotted borders | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
 | `native_engine::layout` | viewport-bounded normal-flow geometry, bounded outer/content box model, side-specific border insets, root scroll projection, and point hit testing | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/content rectangles, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
-| `native_engine::paint` | revisioned clear/fill/text/side-specific-border display-list derivation, bounded ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
-| `native_engine::raster` | bounded logical RGBA surface replay for fills, text, side-specific borders, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
+| `native_engine::paint` | revisioned clear/fill/text/physical-border display-list derivation, bounded ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
+| `native_engine::raster` | bounded logical RGBA surface replay for fills, text, solid/dashed/dotted borders, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
 | `native_engine::interaction` | action/effect types and bounded effect records | semantic action and event kind | revisioned interaction metadata | native DOM IDs |
 | `native_engine::engine` | sole mutable page-state coordinator | lifecycle/navigation/action requests | snapshots/context/history/effects | all engine modules |
@@ -136,6 +138,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-016` | bounded uniform padding/margin, explicit box sizing, outer/content layout rectangles, and content-origin flow/paint | `native-engine-015` | four-side/negative/percentage/auto values, margin collapsing, positioned/flex/grid layout, scrolling, browser parity |
 | `native-engine-017` | bounded root vertical viewport scrolling, content-height/max-offset metadata, coordinate mapping, translated replay/capture, and revisioned scroll action | `native-engine-016` | horizontal/nested/smooth scrolling, scroll anchoring/snap, keyboard scrolling, general overflow/stacking layout, browser parity |
 | `native-engine-018` | independently cascaded physical side-specific solid borders, side-aware box insets, display-list paint data, and clipped/scrolled replay | `native-engine-017` | non-solid styles, radius/images/gradients, logical sides/writing modes, corner joins, general CSS, browser parity |
+| `native-engine-019` | bounded physical `solid`/`dashed`/`dotted` border styles, typed paint data, deterministic integer patterns, and clipped/scrolled replay | `native-engine-018` | other border styles, radius/images/gradients, standalone style properties, logical sides/writing modes, browser corner metrics, general CSS, browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -199,6 +202,9 @@ Phase 2 integration chains added by these slices are:
 23. Native side-specific border declarations cascade independently, contribute
     to outer/content geometry, emit bounded display-list paint data, and replay
     with clipping and root-scroll translation.
+24. Native solid/dashed/dotted border styles survive physical-side cascade,
+    typed display-list projection, deterministic pattern replay, clipping, and
+    root-scroll translation while unsupported styles remain ignored.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -229,13 +235,14 @@ stacking, or that clicking a link performs browser navigation.
 | bounded box-model layout | gives border, child flow, text origin, and hit testing one explicit outer/content geometry owner | no general box sizing, side-specific values, margin collapsing, fractional metrics, or positioned/flex/grid layout | support only uniform non-negative pixel values, expose `content_rect`, and keep unsupported values out of the computed style |
 | bounded root viewport scrolling | makes the existing action/layout/paint path observable across a tall local document | no horizontal/nested/smooth scrolling, scroll anchoring, or keyboard behavior | retain document-space boxes, carry one explicit offset, translate only at hit-test/replay boundaries, and clamp all deltas |
 | bounded side-specific solid borders | makes common asymmetric card/control edges observable while reusing the existing box model | no non-solid styles, border radius/images/gradients, logical sides, or browser corner joins | cascade four physical sides independently, retain integer geometry, and define deterministic replay precedence |
+| bounded dashed/dotted borders | makes common patterned card/control edges observable without adding a CSS painting dependency | no other border styles, radius/images/gradients, standalone style properties, logical sides, anti-aliasing, or browser dash metrics | carry a typed per-side style, anchor bounded integer patterns to document-space geometry, and reuse clip/source-over/root-scroll replay |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-018.md` is the latest completed checkpoint;
-017 is the preceding completed checkpoint. A checkpoint is complete only when
+`docs/plan/tasks/native-engine-019.md` is the latest completed checkpoint;
+018 is the preceding completed checkpoint. A checkpoint is complete only when
 the native feature tests pass, strict lint
 passes for the touched code, and the diff confirms no unrelated browser/TUI/
 release behavior changed.

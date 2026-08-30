@@ -106,7 +106,9 @@ evidence, semantic click/type actions, native point hit testing, and revision
 effects. Rust callers can additionally inspect the native layout's outer and
 content rectangles, bounded physical four-side padding/margin shorthands and
 longhands plus explicit box sizing,
-bounded vertical viewport scrolling, inherited text color, bounded paint clips,
+bounded vertical viewport scrolling, inherited text color, bounded
+`overflow:hidden` clips shared by paint, viewport projection, and point
+hit-testing,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow, bounded direct-text flow fragments and source-order text paint, bounded

@@ -1,4 +1,4 @@
-use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES};
+use super::config::MAX_NATIVE_NODES;
 use super::css::{NativeBorderRadius, NativeBorderStyle, NativeColor};
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
@@ -187,37 +187,7 @@ fn paint_clip(
     layout: &NativeLayoutSnapshot,
     id: NativeNodeId,
 ) -> Option<NativeRect> {
-    let mut current = Some(id);
-    let mut clip = None;
-    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
-        let Some(current_id) = current else {
-            break;
-        };
-        let style = document.computed_style_for_layout(current_id);
-        if style.overflow_hidden()
-            && let Some(rect) = layout.box_for(current_id)
-        {
-            clip = Some(match clip {
-                Some(existing) => intersect_rect(existing, rect),
-                None => rect,
-            });
-        }
-        current = document.node(current_id).and_then(|node| node.parent());
-    }
-    clip
-}
-
-fn intersect_rect(first: NativeRect, second: NativeRect) -> NativeRect {
-    let left = first.x.max(second.x);
-    let top = first.y.max(second.y);
-    let right = first.right().min(second.right());
-    let bottom = first.bottom().min(second.bottom());
-    NativeRect {
-        x: left,
-        y: top,
-        width: right.saturating_sub(left),
-        height: bottom.saturating_sub(top),
-    }
+    layout.overflow_clip_for(document, id)
 }
 
 fn push_command(

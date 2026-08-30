@@ -102,7 +102,8 @@ in-process context, local `about:blank`, `data:text/html`, and registered
 `fixture://` resources, a small DOM/text projection, history, revisions,
 bounded CSS presentation, integer normal-flow rectangles, point hit testing,
 semantic click/type actions for local controls, a bounded effects signal,
-bounded inherited text color, paint clips, side-specific solid/dashed/dotted-border paint,
+bounded inherited text color, `overflow:hidden` clips shared by paint, viewport
+projection, and point hit-testing, side-specific solid/dashed/dotted-border paint,
 bounded physical circular border radii, bounded inline-box line placement,
 bounded fixed pixel line-height flow, bounded direct-text flow fragments and
 source-order text paint, bounded word-aware wrapping,

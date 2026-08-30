@@ -332,12 +332,14 @@ hit-testing, bounded physical four-side padding/margin shorthands and
 longhands, explicit content-box or border-box sizing, outer/content layout
 rectangles, bounded vertical viewport scrolling, semantic click/type actions,
 revisioned effects for supported local controls, inherited text color
-for nested content, bounded paint clips, bounded side-specific solid/dashed/dotted-border paint, bounded
+for nested content, bounded `overflow:hidden` clips shared by paint, viewport
+projection, and point hit-testing, bounded side-specific solid/dashed/dotted-border paint, bounded
 physical circular border radii, bounded inline-box line placement, bounded
 fixed pixel line-height flow, bounded direct-text flow fragments and
 source-order text paint, bounded word-aware wrapping, bounded
 source-whitespace boundaries across sibling direct text and supported inline
-flow items, bounded
+flow items, bounded `overflow:hidden` clips shared by paint, viewport
+projection, and point hit-testing, bounded
 PNG capture through the explicit backend operation, and Rust-only
 display-list/software-surface artifacts. A
 `native-engine` feature build exposes the explicit local

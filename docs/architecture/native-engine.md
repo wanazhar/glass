@@ -1,10 +1,10 @@
 # Native browser engine
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
-presentation/layout/display-list/software-surface/PNG-capture slices,
-including bounded style inheritance, paint clipping, and uniform solid-border
-painting, plus feature-gated runtime/CLI integration; not a stable browser
-compatibility or security boundary.
+presentation/layout/display-list/software-surface/PNG-capture/box-model
+slices, including bounded style inheritance, paint clipping, uniform
+solid-border painting, and content-box geometry, plus feature-gated runtime/CLI
+integration; not a stable browser compatibility or security boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -22,8 +22,9 @@ parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
 normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
 display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden` paint
-clipping, and a uniform solid-border paint primitive. The engine does not yet
-own general CSS, scrolling/stacking layout, screenshot semantics, font/image
+clipping, a uniform solid-border paint primitive, and bounded outer/content
+box geometry. The engine does not yet own general CSS, scrolling/stacking
+layout, screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
 network access, storage, downloads, prompts, or platform windows.
 
@@ -187,10 +188,12 @@ general CSS, inheritance, or general paint.
 
 The 009 layout seed derives integer-pixel rectangles from the current
 presentation state and configured viewport using normal block/inline flow.
-Only bounded `width:Npx` and `height:Npx` declarations affect geometry;
-percentages, margins, padding, border box-model inputs, positioning, flex,
-grid, transforms, and font metrics remain unsupported. Layout is recomputed as
-a Rust-only derived view. `display:none`, explicit hidden signals, and
+The 016 box-model extension adds bounded uniform `padding:Npx` and
+`margin:Npx`, explicit `box-sizing:content-box|border-box`, and a derived
+content rectangle after border/padding insets. Percentages, negative/auto
+values, four-side shorthands, margin collapsing, positioning, flex, grid,
+transforms, and font metrics remain unsupported. Layout is recomputed as a
+Rust-only derived view. `display:none`, explicit hidden signals, and
 `visibility:hidden` remove boxes; `display:contents` preserves eligible
 descendants without creating its own box.
 
@@ -217,8 +220,9 @@ The 014 paint boundary accepts only a uniform `border:Npx solid <color>`
 declaration from the existing bounded CSS grammar. It adds one immutable
 `BorderRect` command per eligible layout box and replays the border as an
 inside-the-box ring with the existing source-over and clip rules. Border paint
-does not change layout dimensions and does not imply padding, box sizing,
-individual sides, non-solid styles, transforms, or general CSS borders.
+itself does not define individual sides, non-solid styles, transforms, or
+general CSS borders; the subsequent 016 layout boundary owns the bounded
+padding and box-sizing behavior.
 
 The 015 capture boundary is read-only: a running native engine can encode its
 current logical RGBA surface as PNG through `CaptureFormat::Png`, subject to
@@ -226,6 +230,15 @@ the stable capture-byte limit. JPEG and PDF are explicit denials, and
 `EvidenceLevel::Screenshot`/`Combined` remain denied because the stable
 evidence result has no image payload. The native CLI still has no screenshot
 command.
+
+The 016 box-model boundary accepts only uniform, non-negative `padding:Npx`
+and `margin:Npx` values plus `box-sizing:content-box|border-box`. It keeps
+`NativeLayoutBox::rect` as the outer border box and exposes a derived content
+rectangle after border and padding insets; child flow and direct text begin at
+that content origin. Uniform margins consume normal-flow space without margin
+collapsing. Percentages, negative/auto values, four-side shorthands, min/max
+constraints, positioning, flex/grid, fractional metrics, and scrolling remain
+unsupported.
 
 The native locator grammar is explicit and bounded:
 
@@ -335,7 +348,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded stylesheet/inline selector matching and display/visibility cascade
   feeding visible text and semantic actionability.
 - deterministic integer-pixel normal-flow layout, bounded width/height
-  declarations, hidden-box exclusion, and Rust-only layout inspection.
+  declarations, uniform padding/margin and explicit box sizing, outer/content
+  rectangles, hidden-box exclusion, and Rust-only layout inspection.
 - point hit testing with viewport bounds, deepest-hit ordering, actionable
   ancestor resolution, and pre-mutation rejection for empty/out-of-viewport
   points.
@@ -353,6 +367,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded logical-surface PNG encoding, capture-byte enforcement, read-only
   revision behavior, real native backend dispatch, and explicit JPEG/PDF
   denials.
+- bounded uniform padding/margin cascade, content-box/border-box sizing,
+  outer/content layout rectangles, margin flow, and content-origin text paint.
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local URL shapes, including rejection of remote endpoints and unsupported
   browser-only flags.

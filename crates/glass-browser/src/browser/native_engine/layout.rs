@@ -45,6 +45,8 @@ impl NativeRect {
 pub struct NativeLayoutBox {
     pub node_id: NativeNodeId,
     pub rect: NativeRect,
+    /// The content box after the bounded padding and border insets.
+    pub content_rect: NativeRect,
     pub depth: usize,
 }
 
@@ -249,26 +251,37 @@ impl<'a> LayoutBuilder<'a> {
                         DisplayValue::Contents => self.process_children(child, flow, depth + 1),
                         DisplayValue::Block => {
                             flow.flush_line();
+                            let margin = self.document.computed_style_for_layout(child).margin();
+                            let horizontal_margin = margin.saturating_mul(2);
                             let size = self.layout_element(
                                 child,
-                                flow.start_x,
-                                flow.y,
-                                flow.available_width,
+                                flow.start_x.saturating_add(margin),
+                                flow.y.saturating_add(margin),
+                                flow.available_width.saturating_sub(horizontal_margin),
                                 depth,
                             );
-                            flow.max_right =
-                                flow.max_right.max(flow.start_x.saturating_add(size.width));
-                            flow.place_block(size.height);
+                            flow.max_right = flow.max_right.max(
+                                flow.start_x
+                                    .saturating_add(margin)
+                                    .saturating_add(size.width)
+                                    .saturating_add(margin),
+                            );
+                            flow.place_block(size.height.saturating_add(horizontal_margin));
                         }
                         DisplayValue::Auto | DisplayValue::Inline | DisplayValue::Other => {
+                            let margin = self.document.computed_style_for_layout(child).margin();
+                            let horizontal_margin = margin.saturating_mul(2);
                             let size = self.layout_element(
                                 child,
-                                flow.x,
-                                flow.y,
-                                flow.available_width,
+                                flow.x.saturating_add(margin),
+                                flow.y.saturating_add(margin),
+                                flow.available_width.saturating_sub(horizontal_margin),
                                 depth,
                             );
-                            flow.place_inline(size.width, size.height);
+                            flow.place_inline(
+                                size.width.saturating_add(horizontal_margin),
+                                size.height.saturating_add(horizontal_margin),
+                            );
                         }
                     }
                 }
@@ -297,13 +310,25 @@ impl<'a> LayoutBuilder<'a> {
         }
 
         let is_block = display == DisplayValue::Block;
-        let default_width = if is_block {
+        let border = style.border().map_or(0, |border| border.width());
+        let inset = border.saturating_add(style.padding());
+        let horizontal_inset = inset.saturating_mul(2);
+        let vertical_inset = horizontal_inset;
+        let default_outer_width = if is_block {
             available_width
         } else {
             self.intrinsic_inline_width(id)
+                .saturating_add(horizontal_inset)
         };
-        let width = style.width().unwrap_or(default_width).min(available_width);
-        let default_height = if is_block {
+        let width = style.width().map_or(default_outer_width, |declared| {
+            if style.is_border_box() {
+                declared
+            } else {
+                declared.saturating_add(horizontal_inset)
+            }
+        });
+        let width = width.min(available_width);
+        let default_content_height = if is_block {
             DEFAULT_LINE_HEIGHT
         } else {
             self.intrinsic_inline_height(id)
@@ -315,16 +340,44 @@ impl<'a> LayoutBuilder<'a> {
                 x,
                 y,
                 width,
-                height: default_height,
+                height: vertical_inset.saturating_add(default_content_height),
+            },
+            content_rect: NativeRect {
+                x: x.saturating_add(inset),
+                y: y.saturating_add(inset),
+                width: width.saturating_sub(horizontal_inset),
+                height: default_content_height,
             },
             depth,
         });
 
-        let children = self.layout_children(id, x, y, width, depth + 1);
-        let height = style
-            .height()
-            .unwrap_or(default_height.max(children.height));
+        let content_width = width.saturating_sub(horizontal_inset);
+        let children = self.layout_children(
+            id,
+            x.saturating_add(inset),
+            y.saturating_add(inset),
+            content_width,
+            depth + 1,
+        );
+        let auto_content_height = default_content_height.max(children.height);
+        let height = style.height().map_or(
+            vertical_inset.saturating_add(auto_content_height),
+            |declared| {
+                if style.is_border_box() {
+                    declared
+                } else {
+                    declared.saturating_add(vertical_inset)
+                }
+            },
+        );
+        let content_height = height.saturating_sub(vertical_inset);
         self.boxes[box_index].rect.height = height;
+        self.boxes[box_index].content_rect = NativeRect {
+            x: x.saturating_add(inset),
+            y: y.saturating_add(inset),
+            width: content_width,
+            height: content_height,
+        };
         FlowSize { width, height }
     }
 

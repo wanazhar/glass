@@ -54,6 +54,13 @@ impl NativeBorder {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum NativeBoxSizing {
+    #[default]
+    ContentBox,
+    BorderBox,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum DisplayValue {
     #[default]
     Auto,
@@ -72,6 +79,9 @@ pub(crate) struct NativeComputedStyle {
     height: Option<u32>,
     background_color: Option<NativeColor>,
     border: Option<NativeBorder>,
+    padding: u32,
+    margin: u32,
+    box_sizing: NativeBoxSizing,
     color: Option<NativeColor>,
     overflow_hidden: bool,
 }
@@ -99,6 +109,18 @@ impl NativeComputedStyle {
 
     pub(crate) const fn border(self) -> Option<NativeBorder> {
         self.border
+    }
+
+    pub(crate) const fn padding(self) -> u32 {
+        self.padding
+    }
+
+    pub(crate) const fn margin(self) -> u32 {
+        self.margin
+    }
+
+    pub(crate) const fn is_border_box(self) -> bool {
+        matches!(self.box_sizing, NativeBoxSizing::BorderBox)
     }
 
     pub(crate) const fn color(self) -> Option<NativeColor> {
@@ -142,6 +164,9 @@ impl NativeStylesheet {
         let mut height = None;
         let mut background_color = None;
         let mut border = None;
+        let mut padding = None;
+        let mut margin = None;
+        let mut box_sizing = None;
         let mut color = None;
         let mut overflow = None;
         for rule in &self.rules {
@@ -207,6 +232,36 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, border)
             {
                 border = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.padding
+                && wins(rule.selector.specificity, rule.order, false, padding)
+            {
+                padding = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.margin
+                && wins(rule.selector.specificity, rule.order, false, margin)
+            {
+                margin = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.box_sizing
+                && wins(rule.selector.specificity, rule.order, false, box_sizing)
+            {
+                box_sizing = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -297,6 +352,36 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.padding
+                && wins(u16::MAX, usize::MAX, true, padding)
+            {
+                padding = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
+            if let Some(value) = declarations.margin
+                && wins(u16::MAX, usize::MAX, true, margin)
+            {
+                margin = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
+            if let Some(value) = declarations.box_sizing
+                && wins(u16::MAX, usize::MAX, true, box_sizing)
+            {
+                box_sizing = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.color
                 && wins(u16::MAX, usize::MAX, true, color)
             {
@@ -327,6 +412,9 @@ impl NativeStylesheet {
             height: height.map(|value| value.value),
             background_color: background_color.map(|value| value.value),
             border: border.map(|value| value.value),
+            padding: padding.map_or(0, |value| value.value),
+            margin: margin.map_or(0, |value| value.value),
+            box_sizing: box_sizing.map_or(NativeBoxSizing::ContentBox, |value| value.value),
             color: color.map(|value| value.value).or(inherited_color),
             overflow_hidden: overflow.is_some_and(|value| value.value == OverflowValue::Hidden),
         }
@@ -367,6 +455,9 @@ struct NativeDeclarations {
     height: Option<u32>,
     background_color: Option<NativeColor>,
     border: Option<NativeBorder>,
+    padding: Option<u32>,
+    margin: Option<u32>,
+    box_sizing: Option<NativeBoxSizing>,
     color: Option<NativeColor>,
     overflow: Option<OverflowValue>,
 }
@@ -447,6 +538,9 @@ fn parse_source(
             || declarations.height.is_some()
             || declarations.background_color.is_some()
             || declarations.border.is_some()
+            || declarations.padding.is_some()
+            || declarations.margin.is_some()
+            || declarations.box_sizing.is_some()
             || declarations.color.is_some()
             || declarations.overflow.is_some()
         {
@@ -505,6 +599,15 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "border" => {
                 declarations.border = parse_border(value);
             }
+            "padding" => {
+                declarations.padding = parse_dimension(value);
+            }
+            "margin" => {
+                declarations.margin = parse_dimension(value);
+            }
+            "box-sizing" => {
+                declarations.box_sizing = parse_box_sizing(value);
+            }
             "color" => {
                 declarations.color = parse_color(value);
             }
@@ -528,6 +631,14 @@ fn parse_border(value: &str) -> Option<NativeBorder> {
         width,
         color: parse_color(&color)?,
     })
+}
+
+fn parse_box_sizing(value: &str) -> Option<NativeBoxSizing> {
+    match value.to_ascii_lowercase().as_str() {
+        "content-box" => Some(NativeBoxSizing::ContentBox),
+        "border-box" => Some(NativeBoxSizing::BorderBox),
+        _ => None,
+    }
 }
 
 fn parse_color(value: &str) -> Option<NativeColor> {
@@ -795,7 +906,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; border: 2px solid #102030; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; border: 2px solid #102030; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -814,6 +925,9 @@ mod tests {
                 },
             })
         );
+        assert_eq!(declarations.padding, Some(4));
+        assert_eq!(declarations.margin, Some(3));
+        assert_eq!(declarations.box_sizing, Some(NativeBoxSizing::BorderBox));
         assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("clip"), None);

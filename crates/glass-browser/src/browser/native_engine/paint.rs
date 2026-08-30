@@ -1,4 +1,4 @@
-use super::config::MAX_NATIVE_NODES;
+use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES};
 use super::css::NativeColor;
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
@@ -17,6 +17,7 @@ pub enum NativeDisplayCommand {
         node_id: NativeNodeId,
         rect: NativeRect,
         color: NativeColor,
+        clip: Option<NativeRect>,
     },
     TextRun {
         node_id: NativeNodeId,
@@ -24,6 +25,7 @@ pub enum NativeDisplayCommand {
         text: String,
         truncated: bool,
         color: NativeColor,
+        clip: Option<NativeRect>,
     },
 }
 
@@ -55,6 +57,7 @@ impl NativeDisplayList {
         )?;
         for layout_box in &layout.boxes {
             let style = document.computed_style_for_layout(layout_box.node_id);
+            let clip = paint_clip(document, layout, layout_box.node_id);
             if let Some(color) = style.background_color() {
                 push_command(
                     &mut commands,
@@ -62,6 +65,7 @@ impl NativeDisplayList {
                         node_id: layout_box.node_id,
                         rect: layout_box.rect,
                         color,
+                        clip,
                     },
                 )?;
             }
@@ -78,6 +82,7 @@ impl NativeDisplayList {
                         text,
                         truncated,
                         color: style.color().unwrap_or(NativeColor::BLACK),
+                        clip,
                     },
                 )?;
             }
@@ -87,6 +92,44 @@ impl NativeDisplayList {
             viewport: layout.viewport,
             commands,
         })
+    }
+}
+
+fn paint_clip(
+    document: &NativeDocument,
+    layout: &NativeLayoutSnapshot,
+    id: NativeNodeId,
+) -> Option<NativeRect> {
+    let mut current = Some(id);
+    let mut clip = None;
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let Some(current_id) = current else {
+            break;
+        };
+        let style = document.computed_style_for_layout(current_id);
+        if style.overflow_hidden()
+            && let Some(rect) = layout.box_for(current_id)
+        {
+            clip = Some(match clip {
+                Some(existing) => intersect_rect(existing, rect),
+                None => rect,
+            });
+        }
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+    clip
+}
+
+fn intersect_rect(first: NativeRect, second: NativeRect) -> NativeRect {
+    let left = first.x.max(second.x);
+    let top = first.y.max(second.y);
+    let right = first.right().min(second.right());
+    let bottom = first.bottom().min(second.bottom());
+    NativeRect {
+        x: left,
+        y: top,
+        width: right.saturating_sub(left),
+        height: bottom.saturating_sub(top),
     }
 }
 

@@ -205,6 +205,60 @@ fn native_display_list_inherits_text_color_and_preserves_transparent_override() 
 }
 
 #[test]
+fn native_paint_clips_overflow_hidden_descendants() {
+    let document = NativeDocument::parse(
+        "<style>#clip { overflow: hidden; width: 10px; height: 10px; } #child { display: block; width: 20px; height: 20px; background-color: red; }</style><div id='clip'><div id='child'>Child</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let clip = document.resolve_target("id=clip").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let child_fill = list.commands.iter().find_map(|command| match command {
+        NativeDisplayCommand::FillRect {
+            node_id,
+            rect,
+            clip: paint_clip,
+            ..
+        } if *node_id == child => Some((*rect, *paint_clip)),
+        _ => None,
+    });
+    assert_eq!(
+        child_fill,
+        Some((
+            NativeRect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 20,
+            },
+            Some(NativeRect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            })
+        ))
+    );
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, .. } if *node_id == child
+        )
+    }));
+    assert!(document.layout(viewport).unwrap().box_for(clip).is_some());
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(5, 5), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 15), Some([255, 255, 255, 255]));
+}
+
+#[test]
 fn native_engine_display_list_revision_tracks_accepted_actions() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://paint", "<button id='save'>Save</button>")

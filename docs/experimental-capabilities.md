@@ -128,8 +128,9 @@ for `input`/`textarea` controls. Its bounded visibility gate excludes
 subtrees from visible text and rejects those action targets before mutation.
 Explicit references are revision-bound; ambiguous, stale, disabled, read-only,
 and unsupported targets fail before mutation. It provides only bounded
-presentation, inherited text color, normal-flow geometry, native point hit
-testing, and Rust-only display-list/software-surface artifacts; it does not
+presentation, inherited text color, bounded paint clips, normal-flow geometry,
+native point hit testing, and Rust-only display-list/software-surface artifacts;
+it does not
 provide network access,
 filesystem navigation, general CSS/scrolling/stacking layout,
 screenshot/capture transport, font/image fidelity, JavaScript, storage,

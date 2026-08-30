@@ -4,7 +4,7 @@ use super::dom::NativeDocument;
 use super::error::NativeEngineError;
 use super::history::NativeHistory;
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
-use super::layout::NativeLayoutSnapshot;
+use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
@@ -53,6 +53,7 @@ pub struct NativeEngine {
     url: String,
     origin: NativeOrigin,
     revision: u64,
+    scroll_offset: NativePoint,
     effects: VecDeque<NativeEffect>,
 }
 
@@ -73,6 +74,7 @@ impl NativeEngine {
             document: NativeDocument::empty(),
             origin: NativeOrigin::Opaque,
             revision: 0,
+            scroll_offset: NativePoint { x: 0, y: 0 },
             effects: VecDeque::new(),
         })
     }
@@ -87,6 +89,11 @@ impl NativeEngine {
 
     pub const fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Return the current root viewport scroll offset.
+    pub const fn scroll_offset(&self) -> NativePoint {
+        self.scroll_offset
     }
 
     pub fn initialize(&mut self) -> Result<(), NativeEngineError> {
@@ -145,7 +152,9 @@ impl NativeEngine {
     /// Return the current document's derived integer-pixel layout.
     pub fn layout(&self) -> Result<NativeLayoutSnapshot, NativeEngineError> {
         self.require_running("layout")?;
-        self.document.layout(self.config.viewport)
+        self.document
+            .layout(self.config.viewport)?
+            .with_scroll_offset(self.scroll_offset)
     }
 
     /// Hit test one point in the configured viewport without scrolling or
@@ -156,19 +165,19 @@ impl NativeEngine {
         y: i64,
     ) -> Result<Option<super::dom::NativeNodeId>, NativeEngineError> {
         self.require_running("hit testing")?;
-        self.document.hit_test(self.config.viewport, x, y)
+        self.layout()?.hit_test(x, y)
     }
 
     /// Return the current document's immutable Rust display-list projection.
     pub fn display_list(&self) -> Result<NativeDisplayList, NativeEngineError> {
         self.require_running("display list")?;
-        self.document.display_list(self.config.viewport)
+        NativeDisplayList::build(&self.document, &self.layout()?)
     }
 
     /// Replay the current document's display list into a bounded Rust surface.
     pub fn rasterize(&self) -> Result<NativeSurface, NativeEngineError> {
         self.require_running("raster surface")?;
-        self.document.rasterize(self.config.viewport)
+        self.display_list()?.rasterize()
     }
 
     /// Encode the current logical renderer surface as bounded PNG bytes.
@@ -185,22 +194,36 @@ impl NativeEngine {
         action: NativeAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.require_running("action")?;
-        let events = match action {
+        let (events, accepted) = match action {
             NativeAction::Click { target } => {
                 let id = self.resolve_click_target(&target)?;
                 if !self.document.is_hidden_for_layout(id) {
                     self.require_layout_actionable(id)?;
                 }
-                self.document.apply_click(id)?
+                (self.document.apply_click(id)?, true)
             }
             NativeAction::Type { target, text } => {
                 let id = self.document.resolve_target(&target)?;
                 if !self.document.is_hidden_for_layout(id) {
                     self.require_layout_actionable(id)?;
                 }
-                self.document.apply_type(id, &text)?
+                (self.document.apply_type(id, &text)?, true)
+            }
+            NativeAction::Scroll { delta_x, delta_y } => {
+                let moved = self.apply_scroll(delta_x, delta_y)?;
+                let events = moved
+                    .then(|| (self.document.root(), NativeEventKind::Scroll))
+                    .into_iter()
+                    .collect();
+                (events, moved)
             }
         };
+        if !accepted {
+            return Ok(NativeActionResult {
+                revision: self.revision,
+                accepted: false,
+            });
+        }
         let next_revision = self.next_revision()?;
         self.document.set_revision(next_revision);
         self.revision = next_revision;
@@ -297,6 +320,7 @@ impl NativeEngine {
         self.document = prepared.document;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
+        self.scroll_offset = NativePoint { x: 0, y: 0 };
         self.revision = revision;
         self.history.push(self.url.clone(), revision);
         Ok(())
@@ -315,7 +339,7 @@ impl NativeEngine {
         let Some((x, y)) = parse_point_target(target)? else {
             return self.document.resolve_target(target);
         };
-        let hit = self.document.hit_test(self.config.viewport, x, y)?;
+        let hit = self.layout()?.hit_test(x, y)?;
         let hit = hit.ok_or_else(|| NativeEngineError::TargetNotActionable {
             reason: "point hit no visible element".into(),
         })?;
@@ -330,13 +354,10 @@ impl NativeEngine {
         &self,
         id: super::dom::NativeNodeId,
     ) -> Result<(), NativeEngineError> {
-        let layout = self.document.layout(self.config.viewport)?;
-        let visible = layout.box_for(id).is_some_and(|rect| {
-            rect.width > 0
-                && rect.height > 0
-                && rect.x < self.config.viewport.width
-                && rect.y < self.config.viewport.height
-        });
+        let layout = self.layout()?;
+        let visible = layout
+            .viewport_rect_for(id)
+            .is_some_and(|rect| rect.width > 0 && rect.height > 0);
         if visible {
             return Ok(());
         }
@@ -356,6 +377,34 @@ impl NativeEngine {
                 kind,
             });
         }
+    }
+
+    fn apply_scroll(&mut self, delta_x: i32, delta_y: i32) -> Result<bool, NativeEngineError> {
+        if delta_x != 0 {
+            return Err(NativeEngineError::invalid(
+                "native scroll action",
+                "horizontal scrolling is unsupported",
+            ));
+        }
+        if delta_y == 0 {
+            return Ok(false);
+        }
+        let max_scroll_y = self
+            .document
+            .layout(self.config.viewport)?
+            .max_scroll_offset()
+            .y;
+        let current = i64::from(self.scroll_offset.y);
+        let requested = current.saturating_add(i64::from(delta_y));
+        let next = requested.clamp(0, i64::from(max_scroll_y));
+        let next = u32::try_from(next).map_err(|_| {
+            NativeEngineError::invalid("native scroll action", "scroll offset exceeds bounds")
+        })?;
+        if next == self.scroll_offset.y {
+            return Ok(false);
+        }
+        self.scroll_offset.y = next;
+        Ok(true)
     }
 
     fn require_running(&self, operation: &str) -> Result<(), NativeEngineError> {

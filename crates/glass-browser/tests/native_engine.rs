@@ -4,7 +4,7 @@ use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
     NativeAction, NativeColor, NativeDisplayCommand, NativeDocument, NativeEngine,
     NativeEngineConfig, NativeEngineError, NativeEngineLimits, NativeEventKind,
-    NativeLifecycleState, NativeRect, NativeSurface, Viewport,
+    NativeLifecycleState, NativePoint, NativeRect, NativeSurface, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -116,6 +116,94 @@ fn native_layout_excludes_hidden_boxes_and_hit_testing_is_viewport_bound() {
     );
     assert!(layout.hit_test(-1, 0).is_err());
     assert!(layout.hit_test(320, 0).is_err());
+}
+
+#[test]
+fn native_vertical_scroll_maps_layout_hit_testing_and_raster_output() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 80,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://scroll",
+            "<div id='top' style='display:block;height:24px;background-color:red'>Top</div><button id='bottom' style='display:block;height:24px;background-color:blue'>Bottom</button>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://scroll");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let bottom = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Bottom")
+        .unwrap();
+    let initial = engine.layout().unwrap();
+    assert_eq!(initial.scroll_offset, NativePoint { x: 0, y: 0 });
+    assert!(initial.content_height > initial.viewport.height);
+    assert_eq!(initial.viewport_rect_for(bottom.node_id), None);
+
+    let scrolled = engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: i32::MAX,
+        })
+        .unwrap();
+    assert!(scrolled.accepted);
+    assert_eq!(scrolled.revision, 2);
+    let layout = engine.layout().unwrap();
+    assert_eq!(layout.scroll_offset, layout.max_scroll_offset());
+    assert_eq!(layout.viewport_rect_for(bottom.node_id).unwrap().y, 0);
+    assert_eq!(engine.hit_test(1, 1).unwrap(), Some(bottom.node_id));
+    assert_eq!(
+        engine
+            .effects_since(1)
+            .unwrap()
+            .effects
+            .iter()
+            .map(|effect| effect.kind)
+            .collect::<Vec<_>>(),
+        vec![NativeEventKind::Scroll]
+    );
+
+    let list = engine.display_list().unwrap();
+    assert_eq!(list.scroll_offset, layout.scroll_offset);
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([0, 0, 255, 255]));
+
+    let clicked = engine
+        .action(NativeAction::Click {
+            target: "id=bottom".into(),
+        })
+        .unwrap();
+    assert!(clicked.accepted);
+    assert_eq!(clicked.revision, 3);
+
+    let no_op = engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: i32::MAX,
+        })
+        .unwrap();
+    assert!(!no_op.accepted);
+    assert_eq!(no_op.revision, 3);
+    assert_eq!(engine.scroll_offset(), layout.scroll_offset);
+
+    let horizontal = engine
+        .action(NativeAction::Scroll {
+            delta_x: 1,
+            delta_y: 0,
+        })
+        .unwrap_err();
+    assert!(matches!(
+        horizontal,
+        NativeEngineError::InvalidConfiguration { field, .. }
+            if field == "native scroll action"
+    ));
+    assert_eq!(engine.revision(), 3);
 }
 
 #[test]
@@ -511,6 +599,70 @@ async fn native_backend_captures_png_without_mutating_revision_and_denies_other_
         glass_browser::browser_backend::BrowserBackendError::UnsupportedOperation {
             operation, ..
         } if operation == "capture"
+    ));
+    dispatcher.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_backend_dispatches_vertical_scroll_into_capture() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 80,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://scroll-dispatch",
+            "<div style='display:block;height:24px;background-color:red'>Top</div><button id='bottom' style='display:block;height:24px;background-color:blue'>Bottom</button>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://scroll-dispatch");
+    let backend = NativeEngineBackend::new(config).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+
+    let action = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Scroll {
+                delta_x: 0,
+                delta_y: i32::MAX,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(action.revision, 2);
+    assert!(action.accepted);
+
+    let capture = dispatcher
+        .capture(CaptureRequest {
+            context_id: "native-context".into(),
+            format: CaptureFormat::Png,
+        })
+        .await
+        .unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture.bytes));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (80, 24));
+    let pixel_index = output.line_size + 4;
+    assert_eq!(&decoded[pixel_index..pixel_index + 4], &[0, 0, 255, 255]);
+
+    let horizontal = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Scroll {
+                delta_x: 1,
+                delta_y: 0,
+            },
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        horizontal,
+        glass_browser::browser_backend::BrowserBackendError::InvalidConfiguration { field, .. }
+            if field == "native scroll action"
     ));
     dispatcher.close().await.unwrap();
 }

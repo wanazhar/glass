@@ -104,9 +104,9 @@ bounded CSS presentation, integer normal-flow rectangles, point hit testing,
 semantic click/type actions for local controls, a bounded effects signal,
 bounded inherited text color, paint clips, uniform solid-border paint,
 bounded outer/content box geometry with uniform padding/margin and explicit
-box sizing, and bounded PNG capture through the explicit backend operation,
+box sizing, bounded vertical viewport scrolling, and bounded PNG capture through the explicit backend operation,
 plus Rust-only display-list/software-surface artifacts. It does not yet provide
-general CSS/scrolling/stacking layout, four-side/negative/percentage/auto box
+general CSS/nested/horizontal/stacking layout, four-side/negative/percentage/auto box
 model values, positioned/flex/grid layout,
 screen-shot-containing evidence, JPEG/PDF capture, or physical-pixel capture,
 font/image fidelity, JavaScript, network/security policy, cookies/storage,

@@ -8,6 +8,7 @@ pub const MAX_NATIVE_EFFECTS: usize = 256;
 pub enum NativeAction {
     Click { target: String },
     Type { target: String, text: String },
+    Scroll { delta_x: i32, delta_y: i32 },
 }
 
 /// Native event kinds retained by the single-owner document coordinator.
@@ -18,6 +19,7 @@ pub enum NativeEventKind {
     Click,
     Input,
     Change,
+    Scroll,
 }
 
 /// Bounded native effect metadata. It never contains raw input or form values.

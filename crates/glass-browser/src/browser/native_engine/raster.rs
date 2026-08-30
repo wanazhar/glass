@@ -53,19 +53,33 @@ impl NativeSurface {
             height,
             rgba: vec![0; byte_len],
         };
+        let scroll_offset = display_list.scroll_offset;
         for command in &display_list.commands {
             match command {
                 NativeDisplayCommand::Clear { color } => surface.clear(*color),
                 NativeDisplayCommand::FillRect {
                     rect, color, clip, ..
-                } => surface.fill_rect(*rect, *color, *clip),
+                } => {
+                    let Some(rect) = Self::translate_rect(*rect, scroll_offset) else {
+                        continue;
+                    };
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    surface.fill_rect(rect, *color, clip);
+                }
                 NativeDisplayCommand::BorderRect {
                     rect,
                     width,
                     color,
                     clip,
                     ..
-                } => surface.border_rect(*rect, *width, *color, *clip),
+                } => {
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    surface.border_rect(*rect, *width, *color, clip, scroll_offset);
+                }
                 NativeDisplayCommand::TextRun {
                     origin,
                     text,
@@ -80,7 +94,10 @@ impl NativeSurface {
                             text.len(),
                         ));
                     }
-                    surface.draw_text(*origin, text, *color, *clip);
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    surface.draw_text(*origin, text, *color, clip, scroll_offset);
                 }
             }
         }
@@ -97,6 +114,29 @@ impl NativeSurface {
 
     pub fn rgba(&self) -> &[u8] {
         &self.rgba
+    }
+
+    fn translate_rect(rect: NativeRect, scroll_offset: NativePoint) -> Option<NativeRect> {
+        let left = rect.x.saturating_sub(scroll_offset.x);
+        let top = rect.y.saturating_sub(scroll_offset.y);
+        let right = rect.right().saturating_sub(scroll_offset.x);
+        let bottom = rect.bottom().saturating_sub(scroll_offset.y);
+        (left < right && top < bottom).then_some(NativeRect {
+            x: left,
+            y: top,
+            width: right.saturating_sub(left),
+            height: bottom.saturating_sub(top),
+        })
+    }
+
+    fn translate_clip(
+        clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
+    ) -> Option<Option<NativeRect>> {
+        match clip {
+            Some(clip) => Self::translate_rect(clip, scroll_offset).map(Some),
+            None => Some(None),
+        }
     }
 
     /// Encode the logical surface as a bounded RGBA PNG payload.
@@ -164,17 +204,30 @@ impl NativeSurface {
         width: u32,
         color: super::css::NativeColor,
         clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
     ) {
-        let Some((left, top, right, bottom)) = self.clipped_bounds(rect, clip) else {
+        let outer_left = i64::from(rect.x) - i64::from(scroll_offset.x);
+        let outer_top = i64::from(rect.y) - i64::from(scroll_offset.y);
+        let outer_right = i64::from(rect.right()) - i64::from(scroll_offset.x);
+        let outer_bottom = i64::from(rect.bottom()) - i64::from(scroll_offset.y);
+        let Some((left, top, right, bottom)) =
+            self.clipped_signed_bounds(outer_left, outer_top, outer_right, outer_bottom, clip)
+        else {
             return;
         };
-        let inner_left = rect.x.saturating_add(width);
-        let inner_top = rect.y.saturating_add(width);
-        let inner_right = rect.right().saturating_sub(width);
-        let inner_bottom = rect.bottom().saturating_sub(width);
+        let inner_left = outer_left.saturating_add(i64::from(width));
+        let inner_top = outer_top.saturating_add(i64::from(width));
+        let inner_right = outer_right.saturating_sub(i64::from(width));
+        let inner_bottom = outer_bottom.saturating_sub(i64::from(width));
         for y in top..bottom {
             for x in left..right {
-                if x < inner_left || x >= inner_right || y < inner_top || y >= inner_bottom {
+                let signed_x = i64::from(x);
+                let signed_y = i64::from(y);
+                if signed_x < inner_left
+                    || signed_x >= inner_right
+                    || signed_y < inner_top
+                    || signed_y >= inner_bottom
+                {
                     self.blend_pixel(x, y, color);
                 }
             }
@@ -199,38 +252,74 @@ impl NativeSurface {
         (left < right && top < bottom).then_some((left, top, right, bottom))
     }
 
+    fn clipped_signed_bounds(
+        &self,
+        left: i64,
+        top: i64,
+        right: i64,
+        bottom: i64,
+        clip: Option<NativeRect>,
+    ) -> Option<(u32, u32, u32, u32)> {
+        let surface_width = i64::from(self.width);
+        let surface_height = i64::from(self.height);
+        let mut left = left.max(0).min(surface_width);
+        let mut top = top.max(0).min(surface_height);
+        let mut right = right.max(0).min(surface_width);
+        let mut bottom = bottom.max(0).min(surface_height);
+        if let Some(clip) = clip {
+            left = left.max(i64::from(clip.x).min(surface_width));
+            top = top.max(i64::from(clip.y).min(surface_height));
+            right = right.min(i64::from(clip.right()).min(surface_width));
+            bottom = bottom.min(i64::from(clip.bottom()).min(surface_height));
+        }
+        (left < right && top < bottom).then_some((
+            u32::try_from(left).unwrap_or(u32::MAX),
+            u32::try_from(top).unwrap_or(u32::MAX),
+            u32::try_from(right).unwrap_or(u32::MAX),
+            u32::try_from(bottom).unwrap_or(u32::MAX),
+        ))
+    }
+
     fn draw_text(
         &mut self,
         origin: super::layout::NativePoint,
         text: &str,
         color: super::css::NativeColor,
         clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
     ) {
+        let origin_x = i64::from(origin.x) - i64::from(scroll_offset.x);
+        let origin_y = i64::from(origin.y) - i64::from(scroll_offset.y);
         for (index, character) in text.chars().enumerate() {
-            let offset = u32::try_from(index)
-                .unwrap_or(u32::MAX)
-                .saturating_mul(GLYPH_ADVANCE);
-            let glyph_origin = super::layout::NativePoint {
-                x: origin.x.saturating_add(offset),
-                y: origin.y,
-            };
+            let offset = i64::try_from(index)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(i64::from(GLYPH_ADVANCE));
+            let glyph_origin_x = origin_x.saturating_add(offset);
             if let Some(rows) = glyph_rows(character) {
                 for (row, bits) in rows.into_iter().enumerate() {
-                    let y = glyph_origin
-                        .y
-                        .saturating_add(u32::try_from(row).unwrap_or(u32::MAX));
-                    if y >= self.height {
+                    let y = origin_y.saturating_add(i64::try_from(row).unwrap_or(i64::MAX));
+                    if y < 0 || y >= i64::from(self.height) {
                         continue;
                     }
                     for column in 0..GLYPH_WIDTH {
                         if bits & (1 << (GLYPH_WIDTH - 1 - column)) == 0 {
                             continue;
                         }
-                        let x = glyph_origin.x.saturating_add(column);
-                        if x < self.width
-                            && clip.is_none_or(|clip| clip.contains(NativePoint { x, y }))
+                        let x = glyph_origin_x.saturating_add(i64::from(column));
+                        if x >= 0
+                            && x < i64::from(self.width)
+                            && clip.is_none_or(|clip| {
+                                clip.contains(NativePoint {
+                                    x: u32::try_from(x).unwrap_or(u32::MAX),
+                                    y: u32::try_from(y).unwrap_or(u32::MAX),
+                                })
+                            })
                         {
-                            self.blend_pixel(x, y, color);
+                            self.blend_pixel(
+                                u32::try_from(x).unwrap_or(u32::MAX),
+                                u32::try_from(y).unwrap_or(u32::MAX),
+                                color,
+                            );
                         }
                     }
                 }
@@ -438,6 +527,7 @@ mod tests {
                 height,
                 device_scale_factor_milli: 1000,
             },
+            scroll_offset: NativePoint { x: 0, y: 0 },
             commands,
         }
     }
@@ -608,6 +698,44 @@ mod tests {
         assert_eq!(surface.pixel(2, 2), Some([255, 255, 255, 255]));
         assert_eq!(surface.pixel(4, 1), Some([255, 255, 255, 255]));
         assert_eq!(surface.pixel(2, 3), Some([255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn surface_translates_scrolled_geometry_without_pinning_offscreen_edges() {
+        let mut list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::BorderRect {
+                    node_id: NativeDocument::empty().root(),
+                    rect: NativeRect {
+                        x: 0,
+                        y: 0,
+                        width: 16,
+                        height: 20,
+                    },
+                    width: 2,
+                    color: NativeColor::RED,
+                    clip: None,
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: NativeDocument::empty().root(),
+                    origin: NativePoint { x: 0, y: 0 },
+                    text: "A".into(),
+                    truncated: false,
+                    color: NativeColor::BLACK,
+                    clip: None,
+                },
+            ],
+            16,
+            16,
+        );
+        list.scroll_offset = NativePoint { x: 0, y: 10 };
+
+        let surface = NativeSurface::from_display_list(&list).unwrap();
+        assert_eq!(surface.pixel(8, 0), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(8, 8), Some([255, 0, 0, 255]));
     }
 
     #[test]

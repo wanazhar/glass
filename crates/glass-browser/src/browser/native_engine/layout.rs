@@ -55,6 +55,10 @@ pub struct NativeLayoutBox {
 pub struct NativeLayoutSnapshot {
     pub revision: u64,
     pub viewport: Viewport,
+    /// The explicit root viewport offset applied to this projection.
+    pub scroll_offset: NativePoint,
+    /// The bounded document height before the viewport is translated.
+    pub content_height: u32,
     pub boxes: Vec<NativeLayoutBox>,
 }
 
@@ -68,10 +72,18 @@ impl NativeLayoutSnapshot {
             document,
             boxes: Vec::new(),
         };
-        builder.layout_children(document.root(), 0, 0, viewport.width, 0);
+        let flow = builder.layout_children(document.root(), 0, 0, viewport.width, 0);
+        let max_box_bottom = builder
+            .boxes
+            .iter()
+            .map(|layout_box| layout_box.rect.bottom())
+            .max()
+            .unwrap_or(0);
         Ok(Self {
             revision: document.revision(),
             viewport,
+            scroll_offset: NativePoint { x: 0, y: 0 },
+            content_height: viewport.height.max(flow.height).max(max_box_bottom),
             boxes: builder.boxes,
         })
     }
@@ -81,6 +93,55 @@ impl NativeLayoutSnapshot {
             .iter()
             .find(|layout_box| layout_box.node_id == node_id)
             .map(|layout_box| layout_box.rect)
+    }
+
+    /// Return a box projected into the current viewport, clipped at its
+    /// visible edges. The layout box itself remains in document coordinates.
+    pub fn viewport_rect_for(&self, node_id: NativeNodeId) -> Option<NativeRect> {
+        let rect = self.box_for(node_id)?;
+        let viewport_left = self.scroll_offset.x;
+        let viewport_top = self.scroll_offset.y;
+        let viewport_right = viewport_left.saturating_add(self.viewport.width);
+        let viewport_bottom = viewport_top.saturating_add(self.viewport.height);
+        let left = rect.x.max(viewport_left).min(viewport_right);
+        let top = rect.y.max(viewport_top).min(viewport_bottom);
+        let right = rect.right().min(viewport_right);
+        let bottom = rect.bottom().min(viewport_bottom);
+        (left < right && top < bottom).then_some(NativeRect {
+            x: left.saturating_sub(viewport_left),
+            y: top.saturating_sub(viewport_top),
+            width: right.saturating_sub(left),
+            height: bottom.saturating_sub(top),
+        })
+    }
+
+    /// Return the maximum root vertical scroll offset for this document.
+    pub const fn max_scroll_offset(&self) -> NativePoint {
+        NativePoint {
+            x: 0,
+            y: self.content_height.saturating_sub(self.viewport.height),
+        }
+    }
+
+    pub(crate) fn with_scroll_offset(
+        mut self,
+        scroll_offset: NativePoint,
+    ) -> Result<Self, NativeEngineError> {
+        let max_scroll = self.max_scroll_offset();
+        if scroll_offset.x != 0 {
+            return Err(NativeEngineError::invalid(
+                "native scroll offset",
+                "horizontal scrolling is unsupported",
+            ));
+        }
+        if scroll_offset.y > max_scroll.y {
+            return Err(NativeEngineError::invalid(
+                "native scroll offset",
+                "vertical scroll offset exceeds document bounds",
+            ));
+        }
+        self.scroll_offset = scroll_offset;
+        Ok(self)
     }
 
     /// Return the deepest visible element at an integer point. A point outside
@@ -93,7 +154,7 @@ impl NativeLayoutSnapshot {
                 "coordinates must be finite and non-negative",
             ));
         }
-        let point = NativePoint {
+        let viewport_point = NativePoint {
             x: u32::try_from(x).map_err(|_| {
                 NativeEngineError::invalid("hit-test point", "coordinates exceed integer bounds")
             })?,
@@ -101,12 +162,32 @@ impl NativeLayoutSnapshot {
                 NativeEngineError::invalid("hit-test point", "coordinates exceed integer bounds")
             })?,
         };
-        if point.x >= self.viewport.width || point.y >= self.viewport.height {
+        if viewport_point.x >= self.viewport.width || viewport_point.y >= self.viewport.height {
             return Err(NativeEngineError::invalid(
                 "hit-test point",
                 "coordinates are outside the native viewport",
             ));
         }
+        let point = NativePoint {
+            x: viewport_point
+                .x
+                .checked_add(self.scroll_offset.x)
+                .ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "hit-test point",
+                        "coordinates exceed document bounds",
+                    )
+                })?,
+            y: viewport_point
+                .y
+                .checked_add(self.scroll_offset.y)
+                .ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "hit-test point",
+                        "coordinates exceed document bounds",
+                    )
+                })?,
+        };
 
         let mut best: Option<(usize, usize, NativeNodeId)> = None;
         for (order, layout_box) in self.boxes.iter().enumerate() {

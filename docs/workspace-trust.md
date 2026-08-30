@@ -38,7 +38,7 @@ Untrusted mode blocks repository-controlled execution, including:
 - `workspace.opened` and other project hooks;
 - project commands and shell-backed custom tools;
 - configured tests, LSP commands, and DAP commands;
-- PTYs, kernels, Pi workers, Neovim, and experiment worktrees;
+- PTYs, kernels, Pi project execution, Neovim, and experiment worktrees;
 - file/Git mutations through development-agent routes; and
 - compatibility routes exposed by the legacy project CLI/MCP catalog.
 
@@ -82,10 +82,12 @@ leaving the TUI.
 
 ## Skills and experiments
 
-User-global skills are labelled `userGlobal`. Project skills remain visible
-as `untrustedProject` instructions but are excluded from Pi's privileged
-system context until trust. Once active, they are labelled `trustedProject`
-with their exact source path.
+User-global skills are labelled `userGlobal`. Project skills remain visible as
+`untrustedProject` instructions. The human-controlled Glass Dev resident Pi
+session loads its configured project resources, while project mutations,
+project hooks, and other project execution still require the workspace trust
+decision. Once trust is active, resources are labelled `trustedProject` with
+their exact source path.
 
 Creating experiment worktrees requires a trusted parent. The explicit current
 policy grants each child `TrustedOnce` for the owning experiment-manager

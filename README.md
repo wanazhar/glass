@@ -169,16 +169,23 @@ closes it. `Ctrl-D` toggles steer mode, which interrupts a running turn, while
 the default follow-up mode queues the next message. Sent prompts remain visible
 as `YOU` messages while the resident agent streams `GLASS AGENT` text and tool
 activity. A send failure restores the draft with an edit-and-retry message; a
-busy background operation keeps new text in the composer. Every Pi mutation
-pauses on a Glass approval card: `Enter`/`Y` approves that serialized call once
-and `Esc`/`N` denies it.
+busy background operation keeps new text in the composer. The human-controlled
+resident Pi session runs unrestricted by default in Glass Dev.
 
-Type in the dock to talk, `:` to search commands, and `a` to open this
+Type in the dock to talk. On Agent, `/` opens Pi's native slash-command modal
+and `:` opens Glass's workspace command palette; the Pi modal covers all 23
+official commands in the pinned SDK and accepts loaded extension, prompt, and
+skill commands by name. Results are written to the Agent transcript and More.
+`/login` hands the terminal to Pi for provider authentication. `a` opens this
 surface's actions. The Terminal surface starts the detected development suite
 with `:process start dev`; its action menu also exposes logs, input, stop, and
 health. Tasks shows the workspace-local Agent checklist (persisted at
-`.glass/todos/session.json`) and the overnight DAG. The More surface starts the private cockpit with `:cockpit
-start`; Enter on `doctor` stays on More. Git loads the selected file's diff on
+`.glass/todos/session.json`) and the overnight DAG. The More surface is the
+workspace-services dashboard: its Services, PI, and Experiments panels are
+live projections, while Routes can be selected with `j/k` or a click and run
+with `Enter` or a double-click. Its routes cover `doctor`, the private
+loopback cockpit, kernels, experiment status, and harnesses; `:cockpit start`
+starts the cockpit and reports its URL. Git loads the selected file's diff on
 open, stages with Space, and commits with `c`. Git also offers read-only
 `:github review` and confirmation-gated `:github ship TITLE`.
 
@@ -416,19 +423,21 @@ tool uses the same approval boundary.
 `--update` forces a reinstall of Glass's pinned Pi SDK version; it does not
 silently select an unreviewed upstream version.
 
-For an intentionally unrestricted coding session, launch the cockpit with:
+For direct Glass/browser operations or non-TUI callers that need the process-wide
+unrestricted mode, launch the cockpit with:
 
 ```console
 glass --yolo
 ```
 
-`--yolo` disables Pi/Glass tool confirmations for that process, automatically
+`--yolo` disables Glass tool confirmations for that process, automatically
 accepts confirmation requests from loaded Pi extensions, grants browser policy
 capabilities without confirmation, and loads trusted Pi resources plus all
-their registered tools. It trusts the model, current project, shell commands,
-and installed Pi extensions with the user's account. It does not disable
-revision checks, workspace/daemon leases, explicit host denials, protocol
-bounds, or result-size limits.
+their registered tools. The resident Glass Dev TUI already treats its Pi
+session as human-controlled and unrestricted; `--yolo` remains relevant to the
+other process-wide Glass/browser policy paths. It does not disable revision
+checks, workspace/daemon leases, explicit host denials, protocol bounds, or
+result-size limits.
 
 Nothing is downloaded during startup. `agent doctor` and `agent status` report
 the resolved Node/SDK/auth/provider/session state without secrets; `agent
@@ -451,13 +460,9 @@ planning are also available as explicit `glass_*` tools.
 
 Pi retains its configured provider/model catalog, including supported custom
 providers from `models.json`; use `glass agent models` or the Agent surface.
-`GLASS_PI_ONLINE_CATALOG=1` permits live catalog refresh,
-`GLASS_PI_PERSIST_SESSION=1` opts into Pi session persistence, and
-`GLASS_PI_TRUSTED_RESOURCES=1` opts into ambient Pi context files, extensions,
-skills, templates, and themes, and removes Glass's extension-tool allowlist so
-those registered tools are selectable too. The last setting executes
-user-installed code outside Glass's broker and should be used only for a trusted
-machine and project.
+The Glass Dev TUI loads its configured Pi context files, extensions, skills,
+templates, and themes in the resident human-controlled session. Its Pi
+built-in filesystem and shell tools remain replaced by Glass-owned tools.
 
 External agents can use the CLI or MCP project tools and attach an attributed
 actor. Conflicting file claims fail closed rather than silently overwriting

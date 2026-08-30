@@ -5,6 +5,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the managed native Pi AgentSession SDK to `0.84.4`; the published
+  `0.3.14` release remains documented with its shipped `0.84.3` pin.
+
 ## [0.3.14] - 2026-08-29
 
 ### Added

@@ -17,7 +17,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const EVENT_CAPACITY: usize = 256;
 const RUNTIME_SOURCE: &str = include_str!("../assets/pi-runtime.mjs");
-pub const PINNED_PI_SDK_VERSION: &str = "0.84.3";
+pub const PINNED_PI_SDK_VERSION: &str = "0.84.4";
+const MINIMUM_COMPATIBLE_PI_SDK_VERSION: (u64, u64, u64) = (0, 84, 1);
+const MINIMUM_COMPATIBLE_PI_SDK_VERSION_TEXT: &str = "0.84.1";
 const MINIMUM_NODE_VERSION: (u64, u64, u64) = (22, 19, 0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +116,11 @@ pub enum PiSessionRequest {
     SetSessionName {
         name: String,
     },
+    SlashCommands,
+    SlashCommand {
+        name: String,
+        args: String,
+    },
 }
 
 pub type PiToolExecutor =
@@ -202,6 +209,10 @@ impl GlassPiRuntime {
             .env("GLASS_PI_CWD", &root)
             .env("GLASS_PI_SESSION_DIR", &session_dir)
             .env("GLASS_PI_AGENT_DIR", &agent_dir)
+            .env(
+                "GLASS_PI_TRUSTED_RESOURCES",
+                if options.unrestricted { "1" } else { "0" },
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -696,6 +707,10 @@ fn request_parts(request: PiSessionRequest) -> (&'static str, Value) {
         PiSessionRequest::Messages => ("messages", Value::Null),
         PiSessionRequest::SessionStats => ("stats", Value::Null),
         PiSessionRequest::SetSessionName { name } => ("setName", json!({"name": name})),
+        PiSessionRequest::SlashCommands => ("slashCommands", Value::Null),
+        PiSessionRequest::SlashCommand { name, args } => {
+            ("slashCommand", json!({"name": name, "args": args}))
+        }
     }
 }
 
@@ -733,7 +748,7 @@ pub fn pi_readiness() -> DevelopmentResult<PiReadiness> {
             let compatible = version
                 .as_deref()
                 .and_then(parse_version)
-                .is_some_and(|version| version >= (0, 84, 1));
+                .is_some_and(|version| version >= MINIMUM_COMPATIBLE_PI_SDK_VERSION);
             let state = if compatible {
                 PiReadinessState::Ready
             } else {
@@ -748,7 +763,9 @@ pub fn pi_readiness() -> DevelopmentResult<PiReadiness> {
                     detail: if compatible {
                         format!("compatible {source} Pi SDK")
                     } else {
-                        format!("{source} Pi SDK version is missing or older than 0.84.3")
+                        format!(
+                            "{source} Pi SDK version is missing or older than {MINIMUM_COMPATIBLE_PI_SDK_VERSION_TEXT}"
+                        )
                     },
                 },
                 agent_dir,
@@ -801,6 +818,16 @@ pub fn setup_pi_runtime(
     update: bool,
     login: bool,
 ) -> DevelopmentResult<PiReadiness> {
+    setup_pi_runtime_with_provider(sdk_entry, agent_dir, update, login, None)
+}
+
+pub fn setup_pi_runtime_with_provider(
+    sdk_entry: Option<&Path>,
+    agent_dir: Option<&Path>,
+    update: bool,
+    login: bool,
+    provider: Option<&str>,
+) -> DevelopmentResult<PiReadiness> {
     let node = node_readiness();
     if node.state != PiReadinessState::Ready {
         return Err(DevelopmentError::Process(node.detail));
@@ -831,7 +858,7 @@ pub fn setup_pi_runtime(
     fs::create_dir_all(&selected.agent_dir)?;
     write_selected_runtime(&selected)?;
     if login {
-        run_pi_login(&selected)?;
+        run_pi_login(&selected, provider)?;
     }
     pi_readiness()
 }
@@ -1169,7 +1196,7 @@ fn install_managed_sdk(root: &Path) -> DevelopmentResult<()> {
     Ok(())
 }
 
-fn run_pi_login(selected: &SelectedPiRuntime) -> DevelopmentResult<()> {
+fn run_pi_login(selected: &SelectedPiRuntime, provider: Option<&str>) -> DevelopmentResult<()> {
     let managed_cli = managed_pi_root()?
         .join("node_modules")
         .join(".bin")
@@ -1183,8 +1210,12 @@ fn run_pi_login(selected: &SelectedPiRuntime) -> DevelopmentResult<()> {
     eprintln!(
         "Glass is opening Pi with its selected credential directory. Run `/login`, then exit Pi to return to Glass."
     );
-    let status = Command::new(cli)
-        .env("PI_CODING_AGENT_DIR", &selected.agent_dir)
+    let mut command = Command::new(cli);
+    command.env("PI_CODING_AGENT_DIR", &selected.agent_dir);
+    if let Some(provider) = provider {
+        command.args(["--provider", provider]);
+    }
+    let status = command
         .status()
         .map_err(|error| DevelopmentError::Process(format!("failed to open Pi login: {error}")))?;
     if !status.success() {
@@ -1327,6 +1358,16 @@ mod tests {
         });
         assert_eq!(params["context"]["browser"]["browserRevision"], 7);
         assert_eq!(request_parts(PiSessionRequest::SessionStats).0, "stats");
+        let (operation, params) = request_parts(PiSessionRequest::SlashCommand {
+            name: "settings".into(),
+            args: String::new(),
+        });
+        assert_eq!(operation, "slashCommand");
+        assert_eq!(params["name"], "settings");
+        assert_eq!(
+            request_parts(PiSessionRequest::SlashCommands).0,
+            "slashCommands"
+        );
         assert_eq!(
             request_parts(PiSessionRequest::Complete {
                 prefix: "fn main() {".into(),
@@ -1468,6 +1509,61 @@ mod tests {
                 .get("ok")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+        let slash_commands = response(&mut runtime, PiSessionRequest::SlashCommands);
+        let slash_commands = slash_commands
+            .pointer("/result")
+            .and_then(Value::as_array)
+            .expect("native SDK slash-command catalog");
+        let expected_commands = [
+            "settings",
+            "model",
+            "tree",
+            "thinking",
+            "scoped-models",
+            "export",
+            "import",
+            "share",
+            "copy",
+            "name",
+            "session",
+            "changelog",
+            "hotkeys",
+            "fork",
+            "clone",
+            "trust",
+            "login",
+            "logout",
+            "new",
+            "compact",
+            "resume",
+            "reload",
+            "quit",
+        ];
+        for name in expected_commands {
+            assert!(
+                slash_commands
+                    .iter()
+                    .any(|command| { command.get("name").and_then(Value::as_str) == Some(name) }),
+                "native SDK omitted /{name}"
+            );
+        }
+        let slash_settings = response(
+            &mut runtime,
+            PiSessionRequest::SlashCommand {
+                name: "settings".into(),
+                args: String::new(),
+            },
+        );
+        assert_eq!(
+            slash_settings.get("ok").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            slash_settings
+                .pointer("/result/kind")
+                .and_then(Value::as_str),
+            Some("settings")
         );
         assert!(
             response(&mut runtime, PiSessionRequest::Tree)

@@ -353,6 +353,13 @@ pub struct DevTuiState {
     pub palette_scroll: u16,
     /// Index in the filtered, arrow-selectable palette action list.
     pub palette_selection: usize,
+    pub pi_command_mode: bool,
+    pub pi_command_input: String,
+    pub pi_command_cursor: usize,
+    pub pi_command_selection: usize,
+    pub pi_command_scroll: u16,
+    pub pi_command_pending: Option<String>,
+    pub pi_command_pending_args: String,
     pub menu_open: bool,
     pub menu_selection: usize,
     pub help_open: bool,
@@ -416,6 +423,10 @@ pub struct DevTuiState {
     pub snapshot_generation: u64,
     pub snapshot_skills_count: usize,
     pub snapshot_tools_count: usize,
+    /// Whether the asynchronous workspace projection has delivered at least
+    /// one complete snapshot. The interactive TUI must not present empty
+    /// collections as authoritative before this becomes true.
+    pub snapshot_ready: bool,
     /// Wall-clock cost of the last background refresh pass.
     pub refresh_latency_ms: u64,
     /// Highest agent event sequence folded into the live conversation.
@@ -441,6 +452,8 @@ pub struct DevTuiState {
     /// Set by an in-TUI login action; the event loop temporarily hands the
     /// terminal to Pi so `/login` can receive interactive input.
     pub agent_login_requested: bool,
+    /// Optional provider preselected by a native `/login PROVIDER` request.
+    pub agent_login_provider: Option<String>,
     /// Set by a palette action; the event loop hands the terminal to the
     /// selected external harness and resumes Glass after it exits.
     pub harness_launch_requested: Option<String>,
@@ -595,7 +608,13 @@ impl DevTuiState {
         policy_preset: PolicyPreset,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let workspace = SharedDevelopmentWorkspace::open_with_policy(root, policy_preset)?;
-        if yolo_mode {
+        // Glass Dev's resident Pi session is an explicitly human-controlled
+        // development surface. Resident agents load the trusted workspace
+        // resources and run unrestricted by default; workspace trust remains
+        // a separate project state used by Glass's workspace policy. The
+        // legacy `yolo_mode` flag still controls its existing Glass policy
+        // marker and authority paths.
+        {
             let mut workspace = workspace.lock()?;
             workspace.agents().set_default_unrestricted(true);
         }
@@ -615,6 +634,8 @@ impl DevTuiState {
             .unwrap_or_else(|error| format!("Agent unavailable · {error}"));
         let initial_status = if trust_prompt {
             "Trust required · I inspect · O untrusted · 1 once · T project".to_string()
+        } else if !initial_refresh {
+            "Loading workspace snapshot · first refresh pending · ? help".to_string()
         } else if agent_readiness.starts_with("✓ Ready") {
             "Ready · Enter chat · Ctrl-P files · : commands · ? help".to_string()
         } else {
@@ -639,6 +660,13 @@ impl DevTuiState {
             palette_error: None,
             palette_scroll: 0,
             palette_selection: 0,
+            pi_command_mode: false,
+            pi_command_input: String::new(),
+            pi_command_cursor: 0,
+            pi_command_selection: 0,
+            pi_command_scroll: 0,
+            pi_command_pending: None,
+            pi_command_pending_args: String::new(),
             menu_open: false,
             menu_selection: 0,
             help_open: false,
@@ -697,6 +725,7 @@ impl DevTuiState {
             snapshot_generation,
             snapshot_skills_count,
             snapshot_tools_count,
+            snapshot_ready: initial_refresh,
             refresh_latency_ms: 0,
             conversation_cursor: 0,
             editor_buffer_index: 0,
@@ -717,6 +746,7 @@ impl DevTuiState {
             agent_readiness,
             harnesses: crate::harness::summary(),
             agent_login_requested: false,
+            agent_login_provider: None,
             harness_launch_requested: None,
             agent_conversation:
                 "No conversation yet. Press Enter or start typing to compose a message.".into(),
@@ -846,6 +876,169 @@ impl DevTuiState {
         command::surface_actions(self.surface)
     }
 
+    /// Explain why a guided launcher cannot run with the currently visible
+    /// state. The action menu uses this both for presentation and for the
+    /// reducer guard, so a stale or incomplete snapshot cannot look runnable.
+    pub fn surface_action_unavailable_reason(
+        &self,
+        action: command::SurfaceAction,
+    ) -> Option<&'static str> {
+        let snapshot_pending =
+            || (!self.snapshot_ready).then_some("workspace snapshot is still loading");
+        let browser = self.browser_workspace.state();
+        match action.command {
+            "Enter" | "i" if self.surface == DevSurface::Code => {
+                if self.files.is_empty() && self.focused_editor_path.is_empty() {
+                    Some("no project file is selected")
+                } else {
+                    None
+                }
+            }
+            "editor replace-selection" | "editor comment-selection" => self
+                .focused_editor_selection
+                .as_ref()
+                .filter(|selection| !selection.is_empty())
+                .is_none()
+                .then_some("no editor selection is active"),
+            "Ctrl-S" => {
+                if self.focused_editor_path.is_empty() {
+                    Some("no editor buffer is open")
+                } else if !self.focused_editor_dirty {
+                    Some("the focused buffer has no unsaved changes")
+                } else {
+                    None
+                }
+            }
+            "app source" => browser
+                .selected()
+                .is_none()
+                .then_some("no browser entity is selected"),
+            "browser observe" => (browser.connection != BrowserConnectionPhase::Connected)
+                .then_some("browser is not connected · start browser first"),
+            "browser type TARGET TEXT" => {
+                if browser.connection != BrowserConnectionPhase::Connected {
+                    Some("browser is not connected · start browser first")
+                } else if browser.selected().is_none() {
+                    Some("no browser entity is selected")
+                } else if !browser.selected().is_some_and(|entity| entity.actionable) {
+                    Some("the selected browser entity is not actionable")
+                } else {
+                    None
+                }
+            }
+            "app open" => {
+                if snapshot_pending().is_some() {
+                    snapshot_pending()
+                } else if self.process_urls.is_empty() {
+                    Some("no detected app URL is available")
+                } else {
+                    None
+                }
+            }
+            "process start dev" => {
+                if let Some(reason) = snapshot_pending() {
+                    Some(reason)
+                } else if self
+                    .ws()
+                    .ok()
+                    .and_then(|workspace| workspace.project().detection().dev_command.clone())
+                    .is_none()
+                {
+                    Some("no project development command was detected")
+                } else {
+                    None
+                }
+            }
+            "process logs NAME" | "process restart NAME" | "process stop NAME" => {
+                if let Some(reason) = snapshot_pending() {
+                    Some(reason)
+                } else {
+                    self.selected_process_entry()
+                        .is_none()
+                        .then_some("no managed process is selected")
+                }
+            }
+            "task cancel TASK_ID" => {
+                if let Some(reason) = snapshot_pending() {
+                    Some(reason)
+                } else if self
+                    .tasks
+                    .lines()
+                    .any(|line| line.starts_with("●") || line.starts_with("○"))
+                {
+                    None
+                } else {
+                    Some("no queued or running task is available")
+                }
+            }
+            "task retry TASK_ID" => {
+                if let Some(reason) = snapshot_pending() {
+                    Some(reason)
+                } else if self.tasks.lines().any(|line| line.starts_with('×')) {
+                    None
+                } else {
+                    Some("no failed task is available")
+                }
+            }
+            "git stage ." | "git commit MESSAGE" => {
+                if let Some(reason) = snapshot_pending() {
+                    Some(reason)
+                } else {
+                    self.git_entries
+                        .is_empty()
+                        .then_some("the working tree has no changes")
+                }
+            }
+            "git diff" => {
+                if let Some(reason) = snapshot_pending() {
+                    Some(reason)
+                } else {
+                    self.selected_git_entry()
+                        .is_none()
+                        .then_some("no changed file is selected")
+                }
+            }
+            "debug threads SESSION"
+            | "debug continue SESSION THREAD_ID"
+            | "debug step SESSION THREAD_ID over"
+            | "debug pause SESSION THREAD_ID" => {
+                if let Some(reason) = snapshot_pending() {
+                    Some(reason)
+                } else if self.selected_debug_session().is_none() {
+                    Some("no debugger session is selected")
+                } else if self.selected_debug_thread().is_none() {
+                    Some("no debugger thread is selected")
+                } else {
+                    None
+                }
+            }
+            "debug break SESSION PATH LINES" => {
+                if let Some(reason) = snapshot_pending() {
+                    Some(reason)
+                } else if self.selected_debug_session().is_none() {
+                    Some("no debugger session is selected")
+                } else if self.focused_editor_path.is_empty() {
+                    Some("open a source file before setting a breakpoint")
+                } else {
+                    None
+                }
+            }
+            "test results" => {
+                if let Some(reason) = snapshot_pending() {
+                    Some(reason)
+                } else {
+                    (self.tests.trim().is_empty() || self.tests.trim() == "No test runs")
+                        .then_some("no test result is available")
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn surface_action_available(&self, action: command::SurfaceAction) -> bool {
+        self.surface_action_unavailable_reason(action).is_none()
+    }
+
     pub fn toggle_help(&mut self) {
         self.help_open = !self.help_open;
         self.help_scroll = 0;
@@ -863,6 +1056,7 @@ impl DevTuiState {
     pub fn open_menu(&mut self) {
         self.menu_open = true;
         self.menu_selection = 0;
+        self.move_menu_selection(0);
         self.status = format!("Command center · {}", self.surface.label());
     }
 
@@ -1050,9 +1244,9 @@ impl DevTuiState {
         let _ = self.record_workflow_type(&input);
     }
 
-    /// Run the selected command-center launcher. Keyboard hints apply
-    /// directly; strings starting with `:` open the palette prefilled with
-    /// the command.
+    /// Run the selected command-center launcher. Keyboard hints and complete
+    /// commands apply directly; commands with placeholders open the palette
+    /// with the editable prefix prefilled.
     pub fn run_menu_action(&mut self) {
         let search_index = self.surface_actions().len();
         let quit_index = self.quit_menu_index();
@@ -1069,6 +1263,10 @@ impl DevTuiState {
         let Some(action) = self.surface_actions().get(self.menu_selection).copied() else {
             return;
         };
+        if let Some(reason) = self.surface_action_unavailable_reason(action) {
+            self.status = format!("{} unavailable · {reason}", action.label);
+            return;
+        }
         self.menu_open = false;
         let name = action.label;
         let hint = action.command;
@@ -1095,26 +1293,7 @@ impl DevTuiState {
             self.handle_printable(hint.chars().next().expect("trust action hint is non-empty"));
             return;
         }
-        let prefix = action.key;
-        if prefix == ":" {
-            // Strip documentation placeholders from the editable command so
-            // users can type values immediately instead of backspacing
-            // `NAME`, `QUERY`, or `RUN_ID` out of the input line.
-            let prefill = hint
-                .split_whitespace()
-                .take_while(|token| {
-                    !token
-                        .chars()
-                        .all(|character| character.is_ascii_uppercase() || character == '_')
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            if prefill.is_empty() || prefill == hint {
-                self.open_palette_with(hint);
-            } else {
-                self.open_palette_with(&format!("{prefill} "));
-            }
-        } else if hint == "i" {
+        if hint == "i" {
             if self.surface == DevSurface::Agent {
                 self.open_composer();
             } else {
@@ -1129,15 +1308,64 @@ impl DevTuiState {
                 crossterm::event::KeyCode::Char('s'),
                 crossterm::event::KeyModifiers::CONTROL,
             );
+        } else if action.key == ":" {
+            let has_placeholder = hint.split_whitespace().any(|token| {
+                token
+                    .chars()
+                    .all(|character| character.is_ascii_uppercase() || character == '_')
+            });
+            if has_placeholder {
+                // Strip documentation placeholders from the editable command
+                // so users can type values immediately instead of backspacing
+                // `NAME`, `QUERY`, or `RUN_ID` out of the input line.
+                let prefill = hint
+                    .split_whitespace()
+                    .take_while(|token| {
+                        !token
+                            .chars()
+                            .all(|character| character.is_ascii_uppercase() || character == '_')
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.open_palette_with(&format!("{prefill} "));
+            } else {
+                match command::execute(self, hint) {
+                    Ok(message) => self.status = message,
+                    Err(error) => self.status = format!("{name} unavailable: {error}"),
+                }
+            }
         } else {
             self.status = format!("{name} is available from this surface");
         }
     }
 
     pub fn move_menu_selection(&mut self, delta: i32) {
-        let count = self.surface_actions().len() as i32 + 2;
-        self.menu_selection =
-            (self.menu_selection as i32 + delta).rem_euclid(count.max(1)) as usize;
+        let count = self.surface_actions().len() + 2;
+        if count == 0 {
+            return;
+        }
+        let is_enabled = |index: usize| {
+            index >= self.surface_actions().len()
+                || self.surface_action_available(self.surface_actions()[index])
+        };
+        if delta == 0 {
+            if !is_enabled(self.menu_selection) {
+                self.menu_selection = (0..count).find(|index| is_enabled(*index)).unwrap_or(0);
+            }
+            return;
+        }
+        let direction = if delta < 0 { -1_i32 } else { 1_i32 };
+        let steps = delta.unsigned_abs();
+        let mut candidate = self.menu_selection as i32;
+        for _ in 0..steps {
+            for _ in 0..count {
+                candidate = (candidate + direction).rem_euclid(count as i32);
+                if is_enabled(candidate as usize) {
+                    break;
+                }
+            }
+        }
+        self.menu_selection = candidate as usize;
     }
 
     pub fn open_palette(&mut self) {
@@ -1164,6 +1392,196 @@ impl DevTuiState {
         self.palette_scroll = 0;
         self.palette_selection = 0;
         self.status = "Command palette closed · press : for guided launchers".into();
+    }
+
+    /// Open Pi's native slash-command surface. Glass `:` commands remain in
+    /// the separate global palette so the two command namespaces cannot be
+    /// confused while working on the Agent surface.
+    pub(crate) fn open_pi_command_palette(&mut self) {
+        self.close_file_picker();
+        self.command_mode = false;
+        self.composer_mode = false;
+        self.pi_command_mode = true;
+        self.pi_command_input.clear();
+        self.pi_command_cursor = 0;
+        self.pi_command_selection = 0;
+        self.pi_command_scroll = 0;
+        self.status = "Pi commands · type to filter · ↑↓ select · Tab complete · Enter run".into();
+    }
+
+    pub(crate) fn close_pi_command_palette(&mut self) {
+        self.pi_command_mode = false;
+        self.pi_command_input.clear();
+        self.pi_command_cursor = 0;
+        self.pi_command_selection = 0;
+        self.pi_command_scroll = 0;
+        self.status = "Pi command surface closed · press / on Agent".into();
+    }
+
+    pub(crate) fn pi_command_indices(&self) -> Vec<usize> {
+        let query = self
+            .pi_command_input
+            .trim()
+            .strip_prefix('/')
+            .unwrap_or(self.pi_command_input.trim())
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        super::pi_commands::BUILTIN_PI_COMMANDS
+            .iter()
+            .enumerate()
+            .filter_map(|(index, command)| {
+                let haystack = format!(
+                    "{} {} {}",
+                    command.name,
+                    command.description,
+                    command.argument_hint.unwrap_or("")
+                );
+                fuzzy_contains(&haystack, query).then_some(index)
+            })
+            .collect()
+    }
+
+    pub(crate) fn selected_pi_command(&self) -> Option<super::pi_commands::PiCommand> {
+        let indices = self.pi_command_indices();
+        indices
+            .get(self.pi_command_selection)
+            .and_then(|index| super::pi_commands::BUILTIN_PI_COMMANDS.get(*index))
+            .copied()
+    }
+
+    pub(crate) fn move_pi_command_selection(&mut self, delta: i32) {
+        let count = self.pi_command_indices().len();
+        if count == 0 {
+            self.pi_command_selection = 0;
+            return;
+        }
+        self.pi_command_selection = (self.pi_command_selection as i32 + delta)
+            .clamp(0, count.saturating_sub(1) as i32) as usize;
+        self.pi_command_scroll = self.pi_command_selection as u16;
+        if let Some(command) = self.selected_pi_command() {
+            self.status = format!("/{name} · Enter runs · Tab fills", name = command.name);
+        }
+    }
+
+    pub(crate) fn insert_pi_command_char(&mut self, character: char) {
+        if character.is_control() || self.pi_command_input.len() >= 4 * 1024 {
+            return;
+        }
+        self.pi_command_input
+            .insert(self.pi_command_cursor, character);
+        self.pi_command_cursor += character.len_utf8();
+        self.pi_command_selection = 0;
+        self.pi_command_scroll = 0;
+    }
+
+    pub(crate) fn pi_command_backspace(&mut self) {
+        if self.pi_command_cursor == 0 {
+            return;
+        }
+        let previous = self.pi_command_input[..self.pi_command_cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        self.pi_command_input
+            .drain(previous..self.pi_command_cursor);
+        self.pi_command_cursor = previous;
+        self.pi_command_selection = 0;
+        self.pi_command_scroll = 0;
+    }
+
+    pub(crate) fn move_pi_command_cursor(&mut self, right: bool) {
+        if right {
+            self.pi_command_cursor = self.pi_command_input[self.pi_command_cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(offset, _)| self.pi_command_cursor + offset)
+                .unwrap_or(self.pi_command_input.len());
+        } else if self.pi_command_cursor > 0 {
+            self.pi_command_cursor = self.pi_command_input[..self.pi_command_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+        }
+    }
+
+    pub(crate) fn complete_pi_command(&mut self) {
+        let Some(command) = self.selected_pi_command() else {
+            self.status = "No Pi command matches · Ctrl-U clears".into();
+            return;
+        };
+        let current = self.pi_command_input.trim();
+        let args = current
+            .strip_prefix('/')
+            .unwrap_or(current)
+            .split_once(char::is_whitespace)
+            .map(|(_, args)| args.trim_start())
+            .unwrap_or("");
+        self.pi_command_input = if args.is_empty() {
+            format!("{} ", command.name)
+        } else {
+            format!("{} {args}", command.name)
+        };
+        self.pi_command_cursor = self.pi_command_input.len();
+        self.pi_command_selection = 0;
+        self.status = format!(
+            "/{name} ready · type arguments, then Enter",
+            name = command.name
+        );
+    }
+
+    pub(crate) fn submit_pi_command(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if self.background_action_running() {
+            self.status =
+                "Pi command kept in the modal · another background action is running".into();
+            return;
+        }
+        let typed = self.pi_command_input.trim().to_string();
+        let typed = typed.strip_prefix('/').unwrap_or(&typed).trim();
+        let command = typed
+            .split_whitespace()
+            .next()
+            .or_else(|| self.selected_pi_command().map(|command| command.name));
+        let Some(command) = command else {
+            self.status = "No Pi command selected · Esc closes".into();
+            return;
+        };
+        let args = typed.strip_prefix(command).unwrap_or("").trim().to_string();
+        let mut arguments = serde_json::json!({
+            "name": command,
+            "args": args,
+        });
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        let (call, context) = match self.tool_request("glass.agent.slash", arguments, false) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("Pi /{command} unavailable: {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.pi_command_pending = Some(command.to_string());
+                self.pi_command_pending_args = args.clone();
+                self.pi_command_mode = false;
+                self.pi_command_input.clear();
+                self.pi_command_cursor = 0;
+                self.pi_command_selection = 0;
+                self.pi_command_scroll = 0;
+                self.status = format!("Pi /{command} · running in resident session…");
+                worker.request_conversation();
+            }
+            Err(error) => {
+                self.pi_command_pending = None;
+                self.pi_command_pending_args.clear();
+                self.status = format!("Pi /{command} failed to start: {error}");
+            }
+        }
     }
 
     pub fn palette_action_indices(&self) -> Vec<usize> {
@@ -2059,9 +2477,9 @@ impl DevTuiState {
         self.composer_mode = true;
         self.composer_cursor = self.composer_input.len();
         self.status = format!(
-            "{} dock on {} · Enter sends · Tab @mention · Shift-Enter newline · Ctrl-Shift-A mode · Esc back",
+            "{} on {} · Esc back · Enter sends · Tab mention · Shift-Enter newline",
             self.composer_run_mode.label(),
-            self.surface.label()
+            self.surface.label(),
         );
     }
 
@@ -2509,11 +2927,19 @@ impl DevTuiState {
     /// Request an interactive Pi login; the outer TUI loop performs the
     /// terminal handoff because the login program must own stdin.
     pub fn request_agent_login(&mut self) -> Result<(), String> {
+        self.request_agent_login_for_provider(None)
+    }
+
+    pub fn request_agent_login_for_provider(
+        &mut self,
+        provider: Option<String>,
+    ) -> Result<(), String> {
         if self.background_action_running() {
             let error = "Finish the current background action before signing in".to_string();
             self.status = error.clone();
             return Err(error);
         }
+        self.agent_login_provider = provider;
         self.agent_login_requested = true;
         self.surface = DevSurface::Agent;
         self.status = "Pi login will open in this terminal · exit Pi to return".into();
@@ -2962,6 +3388,14 @@ impl DevTuiState {
             self.status = "Empty slash command".into();
             return;
         };
+        if super::pi_commands::is_builtin(command) {
+            self.composer_mode = false;
+            self.pi_command_input = raw;
+            self.pi_command_cursor = self.pi_command_input.len();
+            self.composer_input.clear();
+            self.submit_pi_command(worker);
+            return;
+        }
         let rest = parts.collect::<Vec<_>>();
         let mut arguments = serde_json::json!({});
         if let Some(agent) = self.selected_agent.as_ref() {
@@ -3034,7 +3468,14 @@ impl DevTuiState {
                 return;
             }
             _ => {
-                self.status = format!("Unknown slash command /{command}");
+                // Extension commands, prompt templates, and skills are loaded
+                // by Pi at runtime, so unknown-to-Glass names must still reach
+                // the native Pi command dispatcher.
+                self.composer_mode = false;
+                self.pi_command_input = raw;
+                self.pi_command_cursor = self.pi_command_input.len();
+                self.composer_input.clear();
+                self.submit_pi_command(worker);
                 return;
             }
         };
@@ -3308,6 +3749,36 @@ impl DevTuiState {
         self.running_tool_job = None;
         match result.result {
             Ok(value) => {
+                if result.tool == "glass.agent.slash" {
+                    let pending_command = self.pi_command_pending.take();
+                    let pending_args = std::mem::take(&mut self.pi_command_pending_args);
+                    if value.get("queued").and_then(serde_json::Value::as_bool) == Some(true) {
+                        let command = pending_command.unwrap_or_else(|| "command".into());
+                        if let Some(agent_id) = value
+                            .get("agentId")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(|value| crate::AgentId::parse(value).ok())
+                        {
+                            self.selected_agent = Some(agent_id);
+                        }
+                        self.status = format!(
+                            "Pi /{command} queued · resident session will report the result"
+                        );
+                        if command == "login" {
+                            let provider = pending_args
+                                .split_whitespace()
+                                .next()
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_string);
+                            let _ = self.request_agent_login_for_provider(provider);
+                        } else if command == "quit" {
+                            self.request_quit();
+                        }
+                    } else {
+                        self.apply_pi_command_result(&value);
+                    }
+                    return;
+                }
                 if result.tool == "glass.agent.sessions" {
                     self.open_session_picker(&value);
                     return;
@@ -3551,6 +4022,10 @@ impl DevTuiState {
                 }
             }
             Err(error) => {
+                if result.tool == "glass.agent.slash" {
+                    self.pi_command_pending = None;
+                    self.pi_command_pending_args.clear();
+                }
                 if result.tool == "glass.browser.verify" {
                     self.last_proof_ok = Some(false);
                     self.last_verify = Some(evidence_card("live page", 0, None, &error, false));
@@ -3565,6 +4040,56 @@ impl DevTuiState {
                 self.status = format!("{} failed: {error}", result.tool);
             }
         }
+    }
+
+    fn apply_pi_command_result(&mut self, value: &serde_json::Value) {
+        let command = value
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("command");
+        let kind = value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if kind == "sessions" {
+            // `/resume` without a path is Pi's interactive session chooser.
+            // Reuse the existing Glass picker so the command is actionable
+            // instead of leaving a JSON list stranded on More.
+            self.open_session_picker(value);
+            return;
+        }
+        if kind == "login" {
+            let _ = self.request_agent_login();
+            return;
+        }
+        if kind == "quit" {
+            self.request_quit();
+            return;
+        }
+        if let Some(model) = value.get("model").filter(|model| model.is_object()) {
+            let provider = model
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let id = model
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !provider.is_empty() && !id.is_empty() {
+                self.agent_model = format!("{provider}/{id}");
+            }
+        }
+        if let Some(thinking) = value.get("thinking").and_then(serde_json::Value::as_str) {
+            self.agent_thinking = thinking.to_string();
+        }
+        if let Some(name) = value.get("sessionName").and_then(serde_json::Value::as_str) {
+            self.agent_session_name = name.to_string();
+        }
+        let rendered = serde_json::to_string_pretty(value)
+            .unwrap_or_else(|_| format!("Pi /{command} completed"));
+        self.more_result = format!("Pi /{command}\n\n{rendered}");
+        self.surface = DevSurface::More;
+        self.status = format!("Pi /{command} completed · result shown on More");
     }
 
     pub fn deny_confirmation(&mut self) {
@@ -3607,6 +4132,10 @@ impl DevTuiState {
     pub fn handle_printable(&mut self, character: char) {
         if character == ':' {
             self.open_palette();
+            return;
+        }
+        if character == '/' && self.surface == DevSurface::Agent {
+            self.open_pi_command_palette();
             return;
         }
         if character == 'a' && self.surface != DevSurface::Agent {
@@ -4523,7 +5052,22 @@ impl DevTuiState {
     pub fn move_more_selection(&mut self, delta: i32) {
         let last = Self::MORE_ROUTES.len().saturating_sub(1) as i32;
         self.selected_more = (self.selected_more as i32 + delta).clamp(0, last) as usize;
-        self.status = format!("{} · Enter runs", Self::MORE_ROUTES[self.selected_more]);
+        self.status = format!(
+            "Route {}/{} · {} · Enter runs",
+            self.selected_more + 1,
+            Self::MORE_ROUTES.len(),
+            Self::MORE_ROUTES[self.selected_more]
+        );
+    }
+
+    pub fn select_more(&mut self, index: usize) {
+        self.selected_more = index.min(Self::MORE_ROUTES.len().saturating_sub(1));
+        self.status = format!(
+            "Route {}/{} · {} · Enter runs",
+            self.selected_more + 1,
+            Self::MORE_ROUTES.len(),
+            Self::MORE_ROUTES[self.selected_more]
+        );
     }
 
     pub fn activate_more_selection(&mut self) {
@@ -4545,6 +5089,23 @@ impl DevTuiState {
                 self.status = format!("{command} · {error}");
             }
         }
+    }
+
+    pub fn refresh_experiment_projection(&mut self) -> Result<usize, String> {
+        let (projection, comparison, count) = {
+            let mut workspace = self.ws_mut()?;
+            let experiments = workspace.experiments().map_err(|error| error.to_string())?;
+            let snapshots = experiments.snapshots();
+            let count = snapshots.len();
+            (
+                format_experiment_snapshots(&snapshots),
+                experiments.compare(),
+                count,
+            )
+        };
+        self.experiments = projection;
+        self.experiment_comparison = Some(comparison);
+        Ok(count)
     }
 
     pub fn open_selected_file(&mut self) {
@@ -4601,7 +5162,7 @@ impl DevTuiState {
         self.open_selected_file();
         if selected_path.as_deref() == Some(self.focused_editor_path.as_str()) {
             self.surface = DevSurface::Code;
-            self.enter_code_edit();
+            self.enter_code_edit_normal();
         }
     }
 
@@ -4830,6 +5391,14 @@ impl DevTuiState {
     }
 
     pub fn enter_code_edit(&mut self) {
+        self.enter_code_edit_with_mode(EditorMode::Insert);
+    }
+
+    fn enter_code_edit_normal(&mut self) {
+        self.enter_code_edit_with_mode(EditorMode::Normal);
+    }
+
+    fn enter_code_edit_with_mode(&mut self, mode: EditorMode) {
         let has_buffer = self.focused_buffer().is_some();
         if !has_buffer {
             self.open_selected_file();
@@ -4839,10 +5408,18 @@ impl DevTuiState {
             self.code_edit_mode = true;
             self.editor_exit_prompt = None;
             self.ensure_editor_cursor_visible();
-            self.editor_engine.enter_insert();
+            match mode {
+                EditorMode::Normal => self.editor_engine.enter_normal(),
+                _ => self.editor_engine.enter_insert(),
+            }
             self.refresh_editor_hunks();
             self.refresh_editor_inlays();
-            self.status = "INSERT · Esc normal · gm/gn extra carets · dif · gd · Ctrl-S".into();
+            self.status = match mode {
+                EditorMode::Normal => {
+                    "NORMAL · arrows/hjkl move · i edit · Ctrl-S save · Esc back".into()
+                }
+                _ => "INSERT · type to edit · Esc normal · Ctrl-S save".into(),
+            };
         }
     }
 
@@ -4859,7 +5436,8 @@ impl DevTuiState {
         match self.editor_engine.mode {
             EditorMode::Agent => {
                 self.editor_engine.stop_pair_apply();
-                self.status = "NORMAL · agent yielded · hjkl · i insert · Esc exit".into();
+                self.status =
+                    "NORMAL · agent yielded · arrows/hjkl move · i edit · Esc back".into();
             }
             EditorMode::Insert | EditorMode::Select => {
                 self.editor_engine.enter_normal();
@@ -4884,11 +5462,11 @@ impl DevTuiState {
         let extras = self.editor_engine.extra_caret_count();
         if extras > 0 {
             format!(
-                "NORMAL · {} carets · gm match · gn next · d/c/i apply to all · Esc clear",
+                "NORMAL · {} carets · i edit · Ctrl-S save · Esc clears carets",
                 extras + 1
             )
         } else {
-            "NORMAL · hjkl · d/c/y · iw/if/ia · gm/gn extra carets · i insert · Esc exit".into()
+            "NORMAL · arrows/hjkl move · i edit · Ctrl-S save · Esc back".into()
         }
     }
 
@@ -6867,6 +7445,8 @@ impl DevTuiState {
 
     /// Apply one background snapshot without touching UI-only fields.
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
+        let was_waiting_for_snapshot = !self.snapshot_ready;
+        self.snapshot_ready = true;
         self.refresh_latency_ms = snapshot.duration.as_millis() as u64;
         let selected_agent_status = self.selected_agent.as_ref().and_then(|selected| {
             snapshot
@@ -7052,6 +7632,9 @@ impl DevTuiState {
             && !self.files.is_empty()
         {
             self.flush_pending_open_file();
+        }
+        if was_waiting_for_snapshot && self.browser_recovery.is_none() {
+            self.status = "Workspace ready · Enter chat · Ctrl-P files · : actions".into();
         }
     }
 
@@ -7597,39 +8180,11 @@ impl DevTuiState {
             && let Ok(experiments) = workspace.experiments()
         {
             let snapshots = experiments.snapshots();
-            self.experiments = if snapshots.is_empty() {
-                "No experiments".into()
-            } else {
-                snapshots
-                    .iter()
-                    .map(|experiment| {
-                        format!(
-                            "{} {} · {} · port {} · agent {}",
-                            if experiment.evidence.tests_failed == 0
-                                && experiment.evidence.tests_passed > 0
-                            {
-                                "✓"
-                            } else {
-                                "○"
-                            },
-                            experiment.id,
-                            experiment.state.label(),
-                            experiment
-                                .port
-                                .map_or_else(|| "—".into(), |port| port.to_string()),
-                            experiment
-                                .agent_id
-                                .as_ref()
-                                .map(|id| id.as_str())
-                                .unwrap_or("none")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
+            self.experiments = format_experiment_snapshots(&snapshots);
             self.experiment_comparison = Some(experiments.compare());
         }
         drop(workspace);
+        self.snapshot_ready = true;
         self.reconcile_pending_chat();
     }
 
@@ -8349,9 +8904,45 @@ fn more_route_status(command: &str, message: &str) -> String {
             "Doctor · Agent is ready · PI panel updated · 1 opens chat".into()
         }
         "doctor" => format!("Doctor · {message}"),
-        "harness list" => "Harness catalog listed in ROUTES".into(),
+        "harness list" => {
+            let installed = message
+                .lines()
+                .filter(|line| line.trim_start().starts_with('●'))
+                .count();
+            format!("Harness catalog refreshed · {installed} installed")
+        }
         _ => message.to_string(),
     }
+}
+
+fn format_experiment_snapshots(snapshots: &[crate::experiments::ExperimentSnapshot]) -> String {
+    if snapshots.is_empty() {
+        return "No experiments".into();
+    }
+    snapshots
+        .iter()
+        .map(|experiment| {
+            format!(
+                "{} {} · {} · port {} · agent {}",
+                if experiment.evidence.tests_failed == 0 && experiment.evidence.tests_passed > 0 {
+                    "✓"
+                } else {
+                    "○"
+                },
+                experiment.id,
+                experiment.state.label(),
+                experiment
+                    .port
+                    .map_or_else(|| "—".into(), |port| port.to_string()),
+                experiment
+                    .agent_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or("none")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn format_editor_buffers(buffers: &[crate::development::EditorBuffer]) -> String {
@@ -9070,7 +9661,10 @@ mod tests {
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.surface = DevSurface::Agent;
         state.snapshot_trust_label = "trusted".into();
-        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.agent_readiness = format!(
+            "✓ Ready · Node ✓ · SDK {} · auth ✓",
+            crate::pi_runtime::PINNED_PI_SDK_VERSION
+        );
 
         state.handle_printable('c');
 
@@ -9092,7 +9686,10 @@ mod tests {
                 .expect("open temporary workspace");
             state.surface = DevSurface::Agent;
             state.snapshot_trust_label = "trusted".into();
-            state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+            state.agent_readiness = format!(
+                "✓ Ready · Node ✓ · SDK {} · auth ✓",
+                crate::pi_runtime::PINNED_PI_SDK_VERSION
+            );
 
             state.handle_printable(character);
 
@@ -9119,7 +9716,10 @@ mod tests {
 
         state.surface = DevSurface::Agent;
         state.snapshot_trust_label = "trusted".into();
-        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.agent_readiness = format!(
+            "✓ Ready · Node ✓ · SDK {} · auth ✓",
+            crate::pi_runtime::PINNED_PI_SDK_VERSION
+        );
         state.handle_printable('a');
         assert!(state.composer_mode);
         assert_eq!(state.composer_input, "a");
@@ -10020,7 +10620,10 @@ mod tests {
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.surface = DevSurface::Agent;
         state.snapshot_trust_label = "trusted".into();
-        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.agent_readiness = format!(
+            "✓ Ready · Node ✓ · SDK {} · auth ✓",
+            crate::pi_runtime::PINNED_PI_SDK_VERSION
+        );
         state.agent_send_job = Some(9);
         state.open_composer();
         state.composer_input = "keep going".into();
@@ -10042,25 +10645,86 @@ mod tests {
     }
 
     #[test]
-    fn composer_slash_compact_routes_to_pi_compact() {
+    fn composer_slash_compact_routes_to_native_pi_command() {
         let root = std::env::temp_dir().join(format!("glass-slash-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.surface = DevSurface::Agent;
         state.snapshot_trust_label = "trusted".into();
-        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.agent_readiness = format!(
+            "✓ Ready · Node ✓ · SDK {} · auth ✓",
+            crate::pi_runtime::PINNED_PI_SDK_VERSION
+        );
         state.open_composer();
         state.composer_input = "/compact keep the review".into();
         state.composer_cursor = state.composer_input.len();
         let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
         state.submit_composer(&mut worker);
         assert!(
-            state.status.contains("glass.agent.compact")
+            state.status.contains("Pi /compact")
                 || state.status.contains("unavailable")
                 || state.status.contains("failed")
         );
         drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn pi_command_modal_filters_and_completes_native_commands() {
+        let root =
+            std::env::temp_dir().join(format!("glass-pi-command-modal-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.surface = DevSurface::Agent;
+        state.open_pi_command_palette();
+        state.insert_pi_command_char('m');
+        state.insert_pi_command_char('o');
+        state.insert_pi_command_char('d');
+        state.insert_pi_command_char('e');
+        assert_eq!(
+            state.selected_pi_command().map(|command| command.name),
+            Some("model")
+        );
+        state.complete_pi_command();
+        assert_eq!(state.pi_command_input, "model ");
+        state.close_pi_command_palette();
+        assert!(!state.pi_command_mode);
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn native_resume_result_opens_the_session_picker() {
+        let root = std::env::temp_dir().join(format!("glass-pi-resume-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.apply_pi_command_result(&serde_json::json!({
+            "command": "resume",
+            "kind": "sessions",
+            "sessions": [{"path": "session.jsonl", "name": "review"}],
+        }));
+        assert!(state.session_picker_open);
+        assert_eq!(state.session_picker_items[0].label, "review");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn tui_resident_pi_defaults_to_unrestricted_without_yolo() {
+        let root = std::env::temp_dir().join(format!("glass-pi-policy-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        assert!(!state.yolo_mode);
+        assert!(
+            state
+                .ws()
+                .expect("workspace lock")
+                .agents()
+                .default_unrestricted()
+        );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
@@ -10136,7 +10800,10 @@ mod tests {
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.snapshot_trust_label = "trusted".into();
-        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.agent_readiness = format!(
+            "✓ Ready · Node ✓ · SDK {} · auth ✓",
+            crate::pi_runtime::PINNED_PI_SDK_VERSION
+        );
         state.surface = DevSurface::Code;
         std::fs::create_dir_all(root.join("src")).expect("src");
         std::fs::write(root.join("src/lib.rs"), "fn main() {}\n").expect("write");

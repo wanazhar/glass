@@ -1327,6 +1327,16 @@ impl DevelopmentToolRouter {
                     name: string("name")?.into(),
                 },
             ),
+            "glass.agent.slash" => agent_slash_request(
+                workspace,
+                call,
+                PiSessionRequest::SlashCommand {
+                    name: required_string(call, "name")?.into(),
+                    args: optional_string(call, "args")
+                        .unwrap_or_default()
+                        .into(),
+                },
+            ),
             "glass.todo.list" => Ok(serde_json::to_value(workspace.todos())?),
             "glass.todo.write" => {
                 let items = call
@@ -1645,6 +1655,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.messages",
         "glass.agent.entries",
         "glass.agent.stats",
+        "glass.agent.slash",
         "glass.debug.events",
         "glass.debug.inspect",
         "glass.debug.processes",
@@ -1860,6 +1871,7 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.agent.messages"
             | "glass.agent.entries"
             | "glass.agent.stats"
+            | "glass.agent.slash"
             | "glass.graph.source"
             | "glass.agent.hello"
             | "glass.agent.models"
@@ -1964,6 +1976,20 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
                     "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
                 },
                 "required": ["harness", "prompt"],
+                "additionalProperties": false
+            }),
+        )
+    } else if name == "glass.agent.slash" {
+        (
+            "Run a native Pi slash command in the resident AgentSession".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agentId": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "name": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "args": {"type": "string", "maxLength": 65536}
+                },
+                "required": ["name"],
                 "additionalProperties": false
             }),
         )
@@ -2191,6 +2217,7 @@ fn active_agent_id(workspace: &mut DevelopmentWorkspace) -> Option<crate::agents
                 crate::agents::AgentStatus::Completed
                     | crate::agents::AgentStatus::Failed
                     | crate::agents::AgentStatus::Cancelled
+                    | crate::agents::AgentStatus::Queued
             )
         })
         .map(|snapshot| snapshot.id)
@@ -2204,6 +2231,37 @@ fn agent_request(
     let id = agent_id(workspace, required_string(call, "agentId")?)?;
     map_service(workspace.agents().request(&id, request))?;
     Ok(serde_json::json!({"queued":true}))
+}
+
+fn agent_slash_request(
+    workspace: &mut DevelopmentWorkspace,
+    call: &ToolCall,
+    request: PiSessionRequest,
+) -> DevelopmentResult<Value> {
+    let selected = optional_string(call, "agentId")
+        .map(|value| agent_id(workspace, value))
+        .transpose()?;
+    let selected = match selected {
+        Some(agent) => match workspace.agents().snapshot(&agent)?.status {
+            crate::agents::AgentStatus::Failed | crate::agents::AgentStatus::Cancelled => {
+                workspace.agents().restart(&agent)?;
+                Some(agent)
+            }
+            crate::agents::AgentStatus::Completed | crate::agents::AgentStatus::Queued => None,
+            _ => Some(agent),
+        },
+        None => None,
+    };
+    let agent = selected.or_else(|| active_agent_id(workspace));
+    let agent = match agent {
+        Some(agent) => agent,
+        None => workspace.agents().create(AgentSpec::new(
+            "assistant",
+            "interactive Glass Agent session",
+        ))?,
+    };
+    map_service(workspace.agents().request(&agent, request))?;
+    Ok(serde_json::json!({"queued":true,"agentId":agent}))
 }
 
 fn task_action(
@@ -3035,6 +3093,7 @@ mod tests {
             "glass.agent.entries",
             "glass.agent.stats",
             "glass.agent.name",
+            "glass.agent.slash",
             "glass.todo.list",
             "glass.todo.write",
             "glass.todo.complete",
@@ -3407,6 +3466,9 @@ mod tests {
         "glass.workspace.trust.inspect",
         "glass.project.attach",
         "glass.agent.setup",
+        // This endpoint belongs to the human TUI command surface rather than
+        // the resident model's named tool catalog.
+        "glass.agent.slash",
     ];
 
     #[test]

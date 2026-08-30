@@ -74,6 +74,15 @@ impl std::fmt::Debug for LspClient {
 
 impl LspClient {
     pub fn spawn(root: &Path, server: &str, arguments: &[String]) -> DevelopmentResult<Self> {
+        Self::spawn_with_initialization_options(root, server, arguments, None)
+    }
+
+    fn spawn_with_initialization_options(
+        root: &Path,
+        server: &str,
+        arguments: &[String],
+        initialization_options: Option<Value>,
+    ) -> DevelopmentResult<Self> {
         let root = fs::canonicalize(root)?;
         let mut child = Command::new(server)
             .args(arguments)
@@ -108,12 +117,17 @@ impl LspClient {
             documents: BTreeMap::new(),
             shutdown: false,
         };
-        client.initialize()?;
+        client.initialize(initialization_options)?;
         Ok(client)
     }
 
     pub fn rust_analyzer(root: &Path) -> DevelopmentResult<Self> {
-        Self::spawn(root, "rust-analyzer", &[])
+        Self::spawn_with_initialization_options(
+            root,
+            "rust-analyzer",
+            &[],
+            Some(rust_analyzer_initialization_options()),
+        )
     }
 
     pub fn diagnostics(&mut self, path: &str) -> DevelopmentResult<Vec<LanguageDiagnostic>> {
@@ -535,28 +549,28 @@ impl LspClient {
         Ok((absolute, relative.to_string_lossy().into_owned()))
     }
 
-    fn initialize(&mut self) -> DevelopmentResult<()> {
+    fn initialize(&mut self, initialization_options: Option<Value>) -> DevelopmentResult<()> {
         let root_uri = file_uri(&self.root)?;
-        let response = self.call(
-            "initialize",
-            serde_json::json!({
-                "processId": std::process::id(),
-                "rootUri": root_uri,
-                "capabilities": {
-                    "workspace": {"workspaceEdit": {"documentChanges": true}},
-                    "textDocument": {
-                        "publishDiagnostics": {"relatedInformation": true},
-                        "completion": {"completionItem": {"snippetSupport": false}},
-                        "signatureHelp": {},
-                        "codeAction": {"dataSupport": true},
-                        "rename": {"prepareSupport": true},
-                        "semanticTokens": {"requests": {"full": true}, "tokenTypes": [], "tokenModifiers": [], "formats": ["relative"]}
-                    }
-                },
-                "workspaceFolders": [{"uri": root_uri, "name": self.root.file_name().and_then(|name| name.to_str()).unwrap_or("project")}]
-            }),
-            Duration::from_secs(30),
-        )?;
+        let mut initialize_params = serde_json::json!({
+            "processId": std::process::id(),
+            "rootUri": root_uri,
+            "capabilities": {
+                "workspace": {"workspaceEdit": {"documentChanges": true}},
+                "textDocument": {
+                    "publishDiagnostics": {"relatedInformation": true},
+                    "completion": {"completionItem": {"snippetSupport": false}},
+                    "signatureHelp": {},
+                    "codeAction": {"dataSupport": true},
+                    "rename": {"prepareSupport": true},
+                    "semanticTokens": {"requests": {"full": true}, "tokenTypes": [], "tokenModifiers": [], "formats": ["relative"]}
+                }
+            },
+            "workspaceFolders": [{"uri": root_uri, "name": self.root.file_name().and_then(|name| name.to_str()).unwrap_or("project")}]
+        });
+        if let Some(options) = initialization_options {
+            initialize_params["initializationOptions"] = options;
+        }
+        let response = self.call("initialize", initialize_params, Duration::from_secs(30))?;
         if response.get("error").is_some() {
             return Err(DevelopmentError::Process(format!(
                 "language server initialization failed: {}",
@@ -752,6 +766,13 @@ fn language_id(path: &Path) -> &'static str {
     }
 }
 
+fn rust_analyzer_initialization_options() -> Value {
+    serde_json::json!({
+        "cargo": {"allTargets": false},
+        "check": {"allTargets": false, "workspace": false}
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,6 +788,17 @@ mod tests {
                 character: 2
             }),
             serde_json::json!({"line":3,"character":1})
+        );
+    }
+
+    #[test]
+    fn rust_analyzer_uses_package_scoped_non_all_target_checks() {
+        assert_eq!(
+            rust_analyzer_initialization_options(),
+            serde_json::json!({
+                "cargo": {"allTargets": false},
+                "check": {"allTargets": false, "workspace": false}
+            })
         );
     }
 

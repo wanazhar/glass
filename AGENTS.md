@@ -15,13 +15,15 @@ Focused unit tests live beside the module under test; use `tests/` for end-to-en
 
 ## Build, Test, and Development Commands
 
-- `cargo build` compiles the debug binary.
+- `cargo check -p glass-browser --lib --locked` and `cargo check -p glass-dev --lib --bins --locked` are the fast package-scoped edit checks.
+- `cargo build -p glass-dev --bin glass --locked` builds the development TUI without examples or integration-test binaries.
+- `cargo build` compiles the selected workspace debug targets; use an explicit package and binary when iterating.
 - `cargo run -- --help` lists the implemented CLI options and subcommands.
 - `cargo run -- install-chromium` downloads the managed Chromium build; browser flows otherwise require Chrome/Chromium and use CDP port `9222` by default.
 - `cargo run -- "navigate to https://example.com"` runs a one-shot browser prompt; subcommands include `navigate`, `click`, `type`, `screenshot`, `text`, `dom`, `observe`, `scroll`, and `evaluate`.
 - `cargo run -- profiles` and `cargo run -- delete-profile NAME` manage profiles; `cargo run -- --mcp` starts the real MCP server over stdio; `cargo run` starts the TUI.
 - `--interaction human` (default) sends bounded smooth pointer paths; `--interaction fast` sends direct pointer events for throughput tests.
-- `cargo test` runs the current unit tests; coverage has no enforced threshold.
+- `cargo test` runs the current unit tests; `cargo test --all-targets --locked` is the full target validation; coverage has no enforced threshold.
 - `GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture` runs the local-Chrome end-to-end smoke test.
 - `cargo fmt --all -- --check` verifies formatting; `cargo clippy --all-targets --all-features -- -D warnings` checks lint cleanliness.
 - `cargo build --release` builds the performance-oriented release; `cargo build --profile release-size` builds the stripped size-oriented profile.

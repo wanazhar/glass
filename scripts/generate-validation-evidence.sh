@@ -28,7 +28,7 @@ if ! python3 scripts/check-documentation-coverage.py >/dev/null; then documentat
 documentation_depth_status=passed
 if ! python3 scripts/check-documentation-depth.py >/dev/null; then documentation_depth_status=failed; fi
 build_status=passed
-if ! cargo build --package glass-dev --release --locked >/dev/null; then build_status=failed; fi
+if ! cargo build --package glass-dev --bin glass --release --locked >/dev/null; then build_status=failed; fi
 package_status=passed
 if ! cargo package --package glass-browser --locked --allow-dirty --no-verify >/dev/null || \
    ! cargo package --package glass-dev --locked --allow-dirty --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"' >/dev/null; then package_status=failed; fi
@@ -112,7 +112,7 @@ check_commands = {
     "docs": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --locked",
     "documentation-coverage": "python3 scripts/check-documentation-coverage.py",
     "documentation-depth": "python3 scripts/check-documentation-depth.py",
-    "build": "cargo build --package glass-dev --release --locked",
+    "build": "cargo build --package glass-dev --bin glass --release --locked",
     "package": "cargo package --package glass-browser --locked --allow-dirty --no-verify && cargo package --package glass-dev --locked --allow-dirty --no-verify --config 'patch.crates-io.glass-browser.path=\"crates/glass-browser\"'",
     "deny": "cargo deny check",
     "audit": "cargo audit",

@@ -259,7 +259,7 @@ count/digest and result metadata, not argument values.
 
 `glass_dev::pi_runtime` exposes `PiReadiness`, `PiReadinessComponent`,
 `PiReadinessState`, `PiSessionRequest`, and `PINNED_PI_SDK_VERSION`
-(`0.84.3`). `PiReadiness` checks Node (currently 22.19.0 or newer), the
+(`0.84.4`). `PiReadiness` checks Node (currently 22.19.0 or newer), the
 managed SDK, authentication, provider, and session state. `PiSessionRequest`
 is the native resident-session protocol used by the development agent runtime;
 it is distinct from the CLI's legacy one-shot `PiHarness` RPC adapter.

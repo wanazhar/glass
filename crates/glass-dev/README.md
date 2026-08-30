@@ -103,9 +103,12 @@ background work retains new text. Mutations pause on a Glass approval card
 (`Enter`/`Y` approve once, `Esc`/`N` deny). Type in the dock to talk, `:` to
 search commands, and `a` to open this surface's actions. `:process start dev`
 starts the detected suite, Tasks owns the workspace-local Agent checklist
-(`.glass/todos/session.json`) plus the overnight DAG, and `:cockpit start` in
-More opens a tokenized loopback-only cockpit. Enter on
-More `doctor` stays on More and updates the PI panel.
+(`.glass/todos/session.json`) plus the overnight DAG. More is the
+workspace-services dashboard: Services, PI, and Experiments are live
+projections, while Routes can be selected with `j/k` or a click and run with
+`Enter` or a double-click. Its `doctor`, cockpit, kernel, experiment, and
+harness routes keep the result on More; `:cockpit start` starts a tokenized
+loopback-only cockpit and reports its URL.
 
 On the App surface, `:browser targets` opens a searchable picker; type a
 redacted title, URL, or target ID, use arrows, and press `Enter` to queue one
@@ -221,12 +224,14 @@ reports credential presence/expiry without printing secrets.
 Prompt text, authored task values, and tool arguments are not stored in raw
 audit events. Mutating tools require authority and explicit confirmation.
 
-Launch `glass --yolo` only for a fully trusted local development session. It
-turns off Pi/Glass tool confirmation, automatically accepts extension
-confirmation RPCs, grants browser policy capabilities without confirmation,
-and loads installed Pi resources and their tools. The TUI displays a persistent
-`YOLO` marker. Revision guards, daemon/workspace leases, explicit host denials,
-and transport/result bounds remain enforced.
+The Glass Dev TUI is a human-controlled development suite: its resident Pi
+session is unrestricted by default, loads the workspace's Pi resources, and
+does not add a second Pi approval sheet. The workspace Trust surface remains a
+separate project-state decision. `glass --yolo` still applies the process-wide
+unrestricted behavior to direct Glass/browser operations and non-TUI callers;
+the TUI displays its `YOLO` marker when that flag is present. Revision guards,
+daemon/workspace leases, explicit host denials, and transport/result bounds
+remain enforced.
 
 The resident Pi SDK session uses a Glass-specific system prompt and one
 Glass-owned gateway into project, runtime, diagnostic, Web IR, task, browser,
@@ -234,15 +239,15 @@ and workflow tools. It streams completed message and tool events through the Age
 steer and abort remain responsive during a running turn. If a turn is
 cancelled or the worker fails, resubmitting from the composer restarts the
 selected interactive session instead of requiring a new CLI session. Unknown
-tool names are rejected once and the current turn is aborted. Ambient Pi
-extensions, skills, context files, and themes are disabled for deterministic
-local-first behavior. Every mutation pauses on a Glass-owned confirmation
-sheet. `Y` or Enter grants one use for the already serialized call; `N` or
-Esc denies it.
-Requests expire after 120 seconds, concurrent requests fail closed, and the
-one-shot/non-interactive path always denies UI requests. Exact preconditions,
-workspace confinement, atomic saves, bounded execution, actor attribution,
-revisions, and leases remain enforced by Glass.
+tool names are rejected once and the current turn is aborted. Native Pi slash
+commands are available from the Agent surface: press `/` for the Pi command
+modal and `:` for Glass workspace actions. The modal covers the pinned SDK's
+23 built-ins, and loaded extension, prompt-template, and skill commands can be
+typed directly. Slash results appear in the Agent transcript and on More;
+`/login` hands the terminal to Pi for its interactive provider flow.
+The one-shot/non-interactive path remains a separate compatibility adapter.
+Exact preconditions, workspace confinement, atomic saves, bounded execution,
+actor attribution, revisions, and leases remain enforced by Glass.
 
 The standard names keep useful coding semantics: line-paged reads; bounded,
 path-filtered listings; literal UTF-8 grep with glob/case/context controls;
@@ -250,13 +255,13 @@ path-filtered listings; literal UTF-8 grep with glob/case/context controls;
 300-second ceiling. Files that are non-UTF-8 or over the project-file bound are
 skipped by grep rather than copied into the model context.
 
-All Pi built-in and `models.json` providers remain selectable. Ambient Pi
-resources stay off by default; trusted users can opt into live catalog refresh,
-session persistence, or installed context/extensions/skills with
-`GLASS_PI_ONLINE_CATALOG=1`, `GLASS_PI_PERSIST_SESSION=1`, and
-`GLASS_PI_TRUSTED_RESOURCES=1` respectively. Trusted-resource mode also removes
-the extension-tool allowlist, so tools registered by installed extensions are
-available; those tools execute outside Glass's broker and approval boundary.
+All Pi built-in and `models.json` providers remain selectable. The Glass Dev TUI
+loads its configured Pi context files, extensions, skills, prompt templates,
+and themes as part of its human-controlled resident session. Its native runtime
+still disables Pi's built-in filesystem and shell tools and exposes the
+Glass-owned replacements. Non-TUI native agents select resource loading from
+their runtime options; `GLASS_PI_TRUSTED_RESOURCES` is an internal runtime
+setting rather than a user-facing switch for changing a running session.
 
 ## Browser usage
 

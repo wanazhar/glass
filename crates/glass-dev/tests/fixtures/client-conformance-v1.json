@@ -63,6 +63,7 @@
     "glass.agent.send",
     "glass.agent.sessions",
     "glass.agent.setup",
+    "glass.agent.slash",
     "glass.agent.spawn",
     "glass.agent.stats",
     "glass.agent.steer",

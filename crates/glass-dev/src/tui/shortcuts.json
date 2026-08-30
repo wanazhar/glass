@@ -14,6 +14,10 @@
       "text": "Ctrl-Shift-A  Ask/Plan/Agent · /ask /plan /agent /todo"
     },
     {
+      "keys": ["/", ":"],
+      "text": "/  Pi native commands on Agent · :  Glass workspace commands"
+    },
+    {
       "keys": ["Ctrl-G", "Tab", "Alt-Left", "Alt-Right"],
       "text": "Ctrl-G  App · Tab surfaces · App Alt-Left/Alt-Right history"
     },
@@ -27,7 +31,7 @@
       "path": "README.md",
       "markers": [
         "`1`", "`2`", "`3`", "`4`", "`5`", "`6`", "`7`", "`8`",
-        "`Tab`", "`Shift-Tab`", "`?`", "`:`", "`a`",
+        "`Tab`", "`Shift-Tab`", "`?`", "`/`", "`:`", "`a`",
         "`Ctrl-L`", "`Ctrl-P`", "`Ctrl-K`", "`Ctrl-Shift-P`", "`Ctrl-G`",
         "`Alt-Left`", "`Alt-Right`", "`Ctrl-R`", "`Alt-W`", "`Ctrl-S`",
         "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-D`"
@@ -36,7 +40,7 @@
     {
       "path": "crates/glass-dev/README.md",
       "markers": [
-        "`Ctrl-L`", "`Alt-A`", "`Ctrl-Shift-A`", "`Ctrl-D`", "`Alt-W`",
+        "`Ctrl-L`", "`Alt-A`", "`Ctrl-Shift-A`", "`/`", "`:`", "`Ctrl-D`", "`Alt-W`",
         "`Ctrl-S`", "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-C`"
       ]
     },
@@ -44,7 +48,7 @@
       "path": "docs/architecture/development-tui.md",
       "markers": [
         "`Ctrl-L`", "`Alt-A`", "`Ctrl-P`", "`Ctrl-K`", "`Ctrl-Shift-P`",
-        "`Ctrl-Shift-A`", "`Ctrl-G`", "`Tab`", "`Alt-Left`", "`Alt-Right`",
+        "`Ctrl-Shift-A`", "`/`", "`:`", "`Ctrl-G`", "`Tab`", "`Alt-Left`", "`Alt-Right`",
         "`Ctrl-R`", "Ctrl-O", "Ctrl-D", "Ctrl-X", "`Alt-W`",
         "`Ctrl-S`", "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-C`"
       ]

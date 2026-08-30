@@ -2,8 +2,18 @@
 // Glass-owned Pi AgentSession SDK runtime. Protocol: 4-byte BE length + JSON.
 
 import { createRequire } from "node:module";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
+import { spawn } from "node:child_process";
 import { realpath } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const sdkEntry = process.env.GLASS_PI_SDK_ENTRY;
@@ -15,13 +25,19 @@ if (!sdkEntry || !cwd || !sessionDir || !agentDir) {
 }
 
 const sdk = await import(pathToFileURL(sdkEntry).href);
+const { BUILTIN_SLASH_COMMANDS } = await import(
+  new URL("./core/slash-commands.js", pathToFileURL(sdkEntry)).href,
+);
 const require = createRequire(sdkEntry);
 const typeboxEntry = require.resolve("typebox");
 const { Type } = await import(pathToFileURL(typeboxEntry).href);
 const {
+  copyToClipboard,
   createAgentSession,
   DefaultResourceLoader,
+  ProjectTrustStore,
   SessionManager,
+  SettingsManager,
 } = sdk;
 
 let input = Buffer.alloc(0);
@@ -233,20 +249,26 @@ const nativeTools = [
 ];
 
 async function create(manager) {
+  const trustedResources = process.env.GLASS_PI_TRUSTED_RESOURCES === "1";
+  const settingsManager = SettingsManager.create(cwd, agentDir, {
+    projectTrusted: trustedResources,
+  });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
+    settingsManager,
+    noExtensions: !trustedResources,
+    noSkills: !trustedResources,
+    noPromptTemplates: !trustedResources,
+    noThemes: !trustedResources,
+    noContextFiles: !trustedResources,
     systemPrompt: process.env.GLASS_PI_SYSTEM_PROMPT || undefined,
   });
   await resourceLoader.reload();
   const result = await createAgentSession({
     cwd,
     sessionManager: manager,
+    settingsManager,
     resourceLoader,
     noTools: "builtin",
     tools: ["glass_tool", "delegate", "read", "write", "edit", "bash", "grep", "find", "ls"],
@@ -304,9 +326,247 @@ function snapshot() {
   };
 }
 
+const MAX_SLASH_DISPLAY_BYTES = 128 * 1024;
+
+function modelInfo(model) {
+  return model ? {
+    provider: model.provider,
+    id: model.id,
+    name: model.name,
+  } : null;
+}
+
+function modelList(models) {
+  return [...models].map((model) => modelInfo(model));
+}
+
+function extensionSlashCommands(session) {
+  return session.extensionRunner.getRegisteredCommands().map((command) => ({
+    name: command.invocationName || command.name,
+    description: command.description || "Extension command",
+    source: "extension",
+  }));
+}
+
+function slashCommandCatalog(session) {
+  const commands = BUILTIN_SLASH_COMMANDS.map((command) => ({
+    ...command,
+    source: "builtin",
+  }));
+  const seen = new Set(commands.map((command) => command.name));
+  const add = (command) => {
+    if (!seen.has(command.name)) {
+      seen.add(command.name);
+      commands.push(command);
+    }
+  };
+  for (const command of extensionSlashCommands(session)) add(command);
+  for (const prompt of session.resourceLoader.getPrompts().prompts) {
+    add({
+      name: prompt.name,
+      description: prompt.description || "Prompt template",
+      ...(prompt.argumentHint ? { argumentHint: prompt.argumentHint } : {}),
+      source: "prompt",
+    });
+  }
+  if (session.settingsManager.getEnableSkillCommands()) {
+    for (const skill of session.resourceLoader.getSkills().skills) {
+      add({
+        name: `skill:${skill.name}`,
+        description: skill.description || "Skill",
+        source: "skill",
+      });
+    }
+  }
+  return commands;
+}
+
+function slashArgs(args) {
+  const trimmed = String(args || "").trim();
+  return trimmed ? trimmed.split(/\s+/) : [];
+}
+
+function parseBoolean(value, label = "value") {
+  if (/^(1|true|yes|on)$/i.test(value)) return true;
+  if (/^(0|false|no|off)$/i.test(value)) return false;
+  throw new Error(`${label} must be yes or no`);
+}
+
+function parseModelRef(session, first, second) {
+  const reference = second === undefined
+    ? String(first || "")
+    : `${String(first || "")}/${String(second || "")}`;
+  const split = reference.indexOf("/");
+  if (split <= 0 || split === reference.length - 1) {
+    throw new Error("expected PROVIDER/MODEL or PROVIDER MODEL");
+  }
+  const provider = reference.slice(0, split);
+  const modelId = reference.slice(split + 1);
+  const model = session.modelRuntime.getModel(provider, modelId);
+  if (!model) throw new Error(`unknown Pi model ${provider}/${modelId}`);
+  return model;
+}
+
+function settingsSnapshot(session) {
+  const manager = session.settingsManager;
+  return {
+    global: safe(manager.getGlobalSettings()),
+    project: safe(manager.getProjectSettings()),
+    projectTrusted: manager.isProjectTrusted(),
+    effective: {
+      provider: manager.getDefaultProvider(),
+      model: manager.getDefaultModel(),
+      thinking: manager.getDefaultThinkingLevel(),
+      steeringMode: manager.getSteeringMode(),
+      followUpMode: manager.getFollowUpMode(),
+      theme: manager.getTheme(),
+      compaction: manager.getCompactionSettings(),
+      skillCommands: manager.getEnableSkillCommands(),
+      enabledModels: manager.getEnabledModels(),
+    },
+  };
+}
+
+function sessionInfo(session) {
+  return {
+    ...safe(session.getSessionStats()),
+    sessionName: session.sessionManager.getSessionName(),
+    sessionFile: session.sessionFile,
+    entryCount: session.sessionManager.getEntries().length,
+    leafId: session.sessionManager.getLeafId(),
+    model: modelInfo(session.model),
+    thinking: session.thinkingLevel,
+  };
+}
+
+function displayResult(name, value) {
+  if (value === undefined) return "done";
+  if (typeof value === "string") return value;
+  let text;
+  try {
+    text = JSON.stringify(safe(value), null, 2);
+  } catch {
+    text = String(value);
+  }
+  if (Buffer.byteLength(text, "utf8") > MAX_SLASH_DISPLAY_BYTES) {
+    let end = Math.min(text.length, MAX_SLASH_DISPLAY_BYTES);
+    while (end > 0 && Buffer.byteLength(text.slice(0, end), "utf8") > MAX_SLASH_DISPLAY_BYTES) {
+      end -= 1;
+    }
+    text = `${text.slice(0, end)}\n… /${name} output truncated`;
+  }
+  return text;
+}
+
+function emitSlashResult(name, args, result) {
+  send({
+    type: "glass_pi_command_result",
+    command: normalizeSlashCommand(name) || "command",
+    args: args || "",
+    text: displayResult(name, result),
+  });
+}
+
+function normalizeSlashCommand(value) {
+  return String(value || "").trim().replace(/^\/+/, "");
+}
+
+function runCommand(command, args, timeoutMs = 30_000) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const append = (target, chunk) => {
+      const text = chunk.toString("utf8");
+      return target.length >= 256 * 1024
+        ? target
+        : `${target}${text}`.slice(0, 256 * 1024);
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      child.kill();
+      settled = true;
+      reject(new Error(`${command} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`${command} could not start: ${error.message}`));
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) {
+        resolvePromise(stdout.trim());
+      } else {
+        const detail = (stderr || stdout).trim() || `exit code ${code ?? "unknown"}`;
+        reject(new Error(`${command} failed: ${detail}`));
+      }
+    });
+  });
+}
+
+function trustSnapshot() {
+  const store = new ProjectTrustStore(agentDir);
+  return {
+    cwd,
+    saved: store.getEntry(cwd),
+    effective: runtime.session.settingsManager.isProjectTrusted(),
+  };
+}
+
+function hotkeysText(session) {
+  const extensionShortcuts = session.extensionRunner.getRegisteredCommands().length > 0
+    ? "Extension commands are available through the same `/` modal."
+    : "No extension commands are currently loaded.";
+  return `Navigation\n- Arrow keys: move through the Glass modal or editor\n- Page Up/Page Down: move through long command output\n\nEditing\n- Enter: run the selected slash command\n- Tab: complete the selected command\n- Ctrl-U: clear the slash input\n- Escape: close the modal\n\nAgent surface\n- /: open native Pi slash commands\n- :: open Glass workspace actions\n- /copy: copy the last assistant message\n- /quit: leave Glass Dev\n\n${extensionShortcuts}`;
+}
+
+async function forkSession(entryId, position = "before") {
+  const session = runtime.session;
+  const selected = session.sessionManager.getEntry(entryId);
+  if (!selected) throw new Error("invalid entry ID for forking");
+  let targetLeafId;
+  if (position === "at") {
+    targetLeafId = selected.id;
+  } else {
+    if (selected.type !== "message" || selected.message.role !== "user") {
+      throw new Error("fork requires a user-message entry ID");
+    }
+    targetLeafId = selected.parentId;
+  }
+  if (!targetLeafId) {
+    const next = SessionManager.create(cwd, sessionDir);
+    next.newSession({ parentSession: session.sessionFile });
+    return replace(next);
+  }
+  const path = session.sessionManager.createBranchedSession(targetLeafId);
+  if (!path) throw new Error("Pi could not persist the forked session");
+  return replace(SessionManager.open(path, sessionDir, cwd));
+}
+
+async function importSession(inputPath) {
+  const source = resolve(cwd, inputPath);
+  if (!existsSync(source)) throw new Error(`session file not found: ${source}`);
+  mkdirSync(sessionDir, { recursive: true });
+  const destination = join(sessionDir, basename(source));
+  if (resolve(destination) !== source) copyFileSync(source, destination);
+  return replace(SessionManager.open(destination, sessionDir, cwd));
+}
+
 async function confinedSessionPath(path) {
   const canonicalDir = await realpath(sessionDir);
-  const canonical = await realpath(resolve(path));
+  const sessionCandidate = resolve(sessionDir, path);
+  const candidate = existsSync(sessionCandidate) ? sessionCandidate : resolve(cwd, path);
+  const canonical = await realpath(candidate);
   if (canonical !== canonicalDir && !canonical.startsWith(canonicalDir + sep)) {
     throw new Error("session path is outside the Glass Pi session directory");
   }
@@ -399,10 +659,11 @@ async function operation(name, params = {}) {
           "prompt", "steer", "followUp", "complete", "abort", "compact", "models",
           "thinking", "newSession", "cloneSession", "rewind", "fork",
           "switchSession", "messages", "entries", "tree", "stats", "name",
-          "glassTool",
+          "glassTool", "slashCommands", "slashCommand",
         ],
       };
     case "state": return snapshot();
+    case "slashCommands": return slashCommandCatalog(session);
     case "prompt":
       await attachContext(params.context);
       await session.prompt(params.text);
@@ -463,6 +724,241 @@ async function operation(name, params = {}) {
     case "setName":
       session.sessionManager.appendSessionInfo(params.name);
       return snapshot();
+    case "slashCommand": {
+      const command = normalizeSlashCommand(params.name);
+      const args = String(params.args || "").trim();
+      if (!command) throw new Error("Pi slash command name is required");
+      const tokens = slashArgs(args);
+      switch (command) {
+        case "settings": {
+          if (tokens.length === 0) return { kind: "settings", settings: settingsSnapshot(session) };
+          const manager = session.settingsManager;
+          const values = [...tokens];
+          if (values[0].toLowerCase() === "set") values.shift();
+          const key = values.shift()?.toLowerCase();
+          const value = values.join(" ").trim();
+          if (!key || !value) {
+            throw new Error("/settings accepts `set KEY VALUE`; supported keys: theme, model, thinking, steering, follow-up, compaction, skill-commands");
+          }
+          switch (key) {
+            case "theme": manager.setTheme(value); break;
+            case "model": {
+              const modelTokens = slashArgs(value);
+              const model = parseModelRef(session, modelTokens[0], modelTokens[1]);
+              manager.setDefaultModelAndProvider(model.provider, model.id);
+              break;
+            }
+            case "thinking": manager.setDefaultThinkingLevel(value); break;
+            case "steering":
+              if (value !== "all" && value !== "one-at-a-time") throw new Error("steering must be all or one-at-a-time");
+              manager.setSteeringMode(value);
+              break;
+            case "follow-up":
+            case "followup":
+              if (value !== "all" && value !== "one-at-a-time") throw new Error("follow-up must be all or one-at-a-time");
+              manager.setFollowUpMode(value);
+              break;
+            case "compaction": manager.setCompactionEnabled(parseBoolean(value, "compaction")); break;
+            case "skill-commands": manager.setEnableSkillCommands(parseBoolean(value, "skill-commands")); break;
+            default: throw new Error(`unsupported Pi setting ${key}`);
+          }
+          await manager.flush();
+          return { kind: "settings", settings: settingsSnapshot(session) };
+        }
+        case "model": {
+          if (tokens.length === 0) {
+            return {
+              kind: "models",
+              current: modelInfo(session.model),
+              models: modelList(session.modelRuntime.getAvailableSnapshot()),
+            };
+          }
+          if (tokens.length > 2) throw new Error("/model accepts PROVIDER/MODEL or PROVIDER MODEL");
+          const model = parseModelRef(session, tokens[0], tokens[1]);
+          await session.setModel(model, { persist: false });
+          return { kind: "model", current: modelInfo(session.model), snapshot: snapshot() };
+        }
+        case "tree": {
+          if (tokens.length === 0) {
+            return {
+              kind: "tree",
+              leafId: session.sessionManager.getLeafId(),
+              tree: session.sessionManager.getTree(),
+            };
+          }
+          if (tokens.length !== 1) throw new Error("/tree accepts one entry ID");
+          const result = await session.navigateTree(tokens[0], { summarize: false });
+          return { kind: "tree", result, snapshot: snapshot() };
+        }
+        case "thinking": {
+          const levels = session.getAvailableThinkingLevels();
+          if (tokens.length === 0) return { kind: "thinking", current: session.thinkingLevel, levels };
+          if (tokens.length !== 1 || !levels.includes(tokens[0])) {
+            throw new Error(`unknown thinking level; available: ${levels.join(", ")}`);
+          }
+          session.setThinkingLevel(tokens[0], { persist: false });
+          return { kind: "thinking", current: session.thinkingLevel, levels, snapshot: snapshot() };
+        }
+        case "scoped-models": {
+          if (tokens.length === 0) {
+            return {
+              kind: "scoped-models",
+              configured: session.settingsManager.getEnabledModels(),
+              current: modelList(session.scopedModels.map(({ model }) => model)),
+            };
+          }
+          if (tokens.length === 1 && /^(all|off|none)$/i.test(tokens[0])) {
+            session.setScopedModels([]);
+            session.settingsManager.setEnabledModels(undefined);
+          } else {
+            const models = tokens.map((token) => parseModelRef(session, token));
+            session.setScopedModels(models.map((model) => ({ model })));
+            session.settingsManager.setEnabledModels(tokens);
+          }
+          await session.settingsManager.flush();
+          return {
+            kind: "scoped-models",
+            configured: session.settingsManager.getEnabledModels(),
+            current: modelList(session.scopedModels.map(({ model }) => model)),
+          };
+        }
+        case "export": {
+          const target = args ? resolve(cwd, args) : undefined;
+          const path = target?.toLowerCase().endsWith(".jsonl")
+            ? session.exportToJsonl(target)
+            : await session.exportToHtml(target);
+          return { kind: "export", path };
+        }
+        case "import": {
+          if (!args) throw new Error("/import requires a JSONL path");
+          const result = await importSession(args);
+          return { kind: "import", snapshot: result };
+        }
+        case "share": {
+          const temporary = mkdtempSync(join(tmpdir(), "glass-pi-share-"));
+          try {
+            const html = join(temporary, "session.html");
+            await session.exportToHtml(html);
+            const url = await runCommand("gh", ["gist", "create", "--public=false", html]);
+            return { kind: "share", url };
+          } finally {
+            rmSync(temporary, { recursive: true, force: true });
+          }
+        }
+        case "copy": {
+          const text = session.getLastAssistantText();
+          if (!text) throw new Error("there is no assistant message to copy");
+          await copyToClipboard(text);
+          return { kind: "copy", characters: text.length };
+        }
+        case "name": {
+          if (!args) return { kind: "name", session: sessionInfo(session) };
+          await session.setSessionName(args);
+          return { kind: "name", snapshot: snapshot() };
+        }
+        case "session": return { kind: "session", session: sessionInfo(session) };
+        case "changelog": {
+          const path = join(dirname(sdkEntry), "..", "CHANGELOG.md");
+          const text = existsSync(path) ? readFileSync(path, "utf8") : "Pi changelog is unavailable";
+          return { kind: "changelog", text };
+        }
+        case "hotkeys": return { kind: "hotkeys", text: hotkeysText(session) };
+        case "fork": {
+          if (tokens.length === 0) {
+            return { kind: "fork", messages: session.getUserMessagesForForking() };
+          }
+          if (tokens.length !== 1) throw new Error("/fork accepts one user-message entry ID");
+          return { kind: "fork", snapshot: await forkSession(tokens[0], "before") };
+        }
+        case "clone": {
+          if (tokens.length !== 0) throw new Error("/clone does not accept arguments");
+          const leafId = session.sessionManager.getLeafId();
+          if (!leafId) throw new Error("there is no session content to clone");
+          return { kind: "clone", snapshot: await forkSession(leafId, "at") };
+        }
+        case "trust": {
+          if (tokens.length === 0) return { kind: "trust", trust: trustSnapshot() };
+          if (tokens.length !== 1 || !/^(yes|no|reset|true|false)$/i.test(tokens[0])) {
+            throw new Error("/trust accepts yes, no, or reset");
+          }
+          const decision = /^reset$/i.test(tokens[0]) ? null : parseBoolean(tokens[0], "trust");
+          new ProjectTrustStore(agentDir).set(cwd, decision);
+          session.settingsManager.setProjectTrusted(decision === true);
+          await session.settingsManager.flush();
+          await session.reload();
+          return { kind: "trust", trust: trustSnapshot() };
+        }
+        case "login": {
+          const providers = session.modelRuntime.getProviders().map((provider) => ({
+            id: provider.id,
+            name: provider.name,
+          }));
+          if (args && !providers.some((provider) =>
+            provider.id.toLowerCase() === args.toLowerCase() || provider.name.toLowerCase() === args.toLowerCase())) {
+            throw new Error(`unknown Pi login provider ${args}`);
+          }
+          return {
+            kind: "login",
+            provider: args || null,
+            providers,
+            message: "Pi login requires terminal handoff; Glass will open Pi for the human login flow",
+          };
+        }
+        case "logout": {
+          if (!args) {
+            const credentials = await session.modelRuntime.listCredentials({ signal: AbortSignal.timeout(15_000) });
+            return {
+              kind: "logout",
+              credentials: credentials.map(({ providerId, type }) => ({ providerId, type })),
+            };
+          }
+          if (tokens.length !== 1) throw new Error("/logout accepts one provider ID");
+          await session.modelRuntime.logout(tokens[0], { signal: AbortSignal.timeout(15_000) });
+          return { kind: "logout", provider: tokens[0], removed: true };
+        }
+        case "new": {
+          if (tokens.length !== 0) throw new Error("/new does not accept arguments");
+          return { kind: "new", snapshot: await replace(SessionManager.create(cwd, sessionDir)) };
+        }
+        case "compact": {
+          const result = await session.compact(args || undefined);
+          return { kind: "compact", result, snapshot: snapshot() };
+        }
+        case "resume": {
+          if (!args) {
+            return { kind: "sessions", sessions: await SessionManager.list(cwd, sessionDir) };
+          }
+          return {
+            kind: "resume",
+            snapshot: await replace(SessionManager.open(await confinedSessionPath(args), sessionDir, cwd)),
+          };
+        }
+        case "reload":
+          if (tokens.length !== 0) throw new Error("/reload does not accept arguments");
+          await session.reload();
+          return { kind: "reload", commands: slashCommandCatalog(session), snapshot: snapshot() };
+        case "quit":
+          if (tokens.length !== 0) throw new Error("/quit does not accept arguments");
+          return { kind: "quit", message: "Glass will close the Agent surface" };
+        default:
+          break;
+      }
+
+      const extension = session.extensionRunner.getCommand(command);
+      if (extension) {
+        const result = await extension.handler(args, session.extensionRunner.createCommandContext());
+        return { kind: "extension", command, result };
+      }
+      const prompt = session.resourceLoader.getPrompts().prompts
+        .find((candidate) => candidate.name === command);
+      const skill = session.resourceLoader.getSkills().skills
+        .find((candidate) => `skill:${candidate.name}` === command);
+      if (prompt || skill) {
+        await session.prompt(`/${command}${args ? ` ${args}` : ""}`);
+        return { kind: skill ? "skill" : "prompt", command, snapshot: snapshot() };
+      }
+      throw new Error(`unknown Pi slash command /${command}`);
+    }
     default: throw new Error(`unknown Glass Pi SDK operation ${name}`);
   }
 }
@@ -478,8 +974,20 @@ async function handle(message) {
   }
   try {
     const result = await operation(message.operation, message.params);
+    if (message.operation === "slashCommand") {
+      emitSlashResult(message.params?.name, message.params?.args, result);
+    }
     send({ type: "response", id: message.id, operation: message.operation, ok: true, result });
   } catch (error) {
+    if (message.operation === "slashCommand") {
+      send({
+        type: "glass_pi_command_result",
+        command: normalizeSlashCommand(message.params?.name) || "command",
+        args: message.params?.args || "",
+        ok: false,
+        text: error instanceof Error ? error.message : String(error),
+      });
+    }
     send({
       type: "response",
       id: message.id,

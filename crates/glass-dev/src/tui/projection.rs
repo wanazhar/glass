@@ -632,6 +632,30 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     Some(name),
                 ));
             }
+            "glass_pi_command_result" => {
+                let command = event
+                    .payload
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or("command");
+                let text = event
+                    .payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Pi command completed");
+                let label = format!("pi /{command}");
+                if event.payload.get("ok").and_then(Value::as_bool) == Some(false) {
+                    items.push(ConversationEntry::error(
+                        format!("/{command}\n{text}"),
+                        Some(label),
+                    ));
+                } else {
+                    items.push(ConversationEntry::system(
+                        format!("/{command}\n{text}"),
+                        Some(label),
+                    ));
+                }
+            }
             "tool_execution_start" => {
                 let name = tool_name(&event.payload);
                 items.push(ConversationEntry::system(
@@ -1060,6 +1084,27 @@ mod tests {
         assert!(!projected.contains("request-1"));
         assert!(!projected.contains("agent_end"));
         assert!(!projected.contains("… streaming"));
+    }
+
+    #[test]
+    fn conversation_renders_native_pi_slash_results() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let events = vec![crate::AgentEvent {
+            sequence: 1,
+            agent_id,
+            timestamp_ms: 0,
+            kind: "glass_pi_command_result".into(),
+            payload: serde_json::json!({
+                "command": "settings",
+                "text": "{\"projectTrusted\":true}"
+            }),
+        }];
+        let entries = conversation_entries(&events);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, ConversationKind::System);
+        assert!(entries[0].text.contains("/settings"));
+        assert!(entries[0].text.contains("projectTrusted"));
+        assert_eq!(entries[0].tool_name.as_deref(), Some("pi /settings"));
     }
 
     #[test]

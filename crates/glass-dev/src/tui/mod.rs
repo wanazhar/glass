@@ -13,6 +13,7 @@ mod command;
 mod editor;
 mod file_view;
 mod parse;
+mod pi_commands;
 mod playbooks;
 mod pointer;
 mod projection;
@@ -331,6 +332,7 @@ pub fn run(
     let mut last_refresh = Instant::now();
     let mut last_visual = Instant::now();
     let mut last_render = Instant::now() - Duration::from_millis(33);
+    let mut render_requested = true;
     let mut previous_overlay_mask = 0_u16;
     let mut pointer = pointer::PointerState::default();
     loop {
@@ -342,19 +344,44 @@ pub fn run(
                 .resize(Rect::new(0, 0, size.width, size.height))?;
             previous_overlay_mask = overlay_mask;
         }
+        let resized = state.terminal_width != size.width || state.terminal_height != size.height;
         state.set_terminal_size(size.width, size.height);
+        render_requested |= resized;
         let kitty_area =
             render::browser_visual_area(&state, Rect::new(0, 0, size.width, size.height))
                 .map(|area| PaneArea::new(area.x, area.y, area.width, area.height));
         visual.sync_kitty_area(kitty_area, &mut guard)?;
-        if last_render.elapsed() >= Duration::from_millis(33) {
+        let render_interval = if state.browser_visual_live && visual.live {
+            Duration::from_millis(33)
+        } else if state.composer_mode
+            || state.code_edit_mode
+            || state.command_mode
+            || state.pi_command_mode
+            || state.menu_open
+            || state.help_open
+            || state.quit_confirmation
+            || state.pending_confirmation.is_some()
+            || state.pending_agent_approval.is_some()
+            || state.running_tool_job.is_some()
+        {
+            Duration::from_millis(100)
+        } else if worker.is_busy() {
+            // Background snapshots remain responsive without forcing an idle
+            // terminal into the interactive overlay cadence.
+            Duration::from_millis(250)
+        } else {
+            Duration::from_secs(1)
+        };
+        if render_requested || last_render.elapsed() >= render_interval {
             guard.terminal.draw(|frame| render::render(frame, &state))?;
             last_render = Instant::now();
+            render_requested = false;
         }
         if state.quit {
             break;
         }
         if event::poll(Duration::from_millis(50))? {
+            render_requested = true;
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     // The quit modal is the strongest user-facing guard.
@@ -383,6 +410,7 @@ pub fn run(
                     } else if key.code == KeyCode::Char('?')
                         && !state.composer_mode
                         && !state.command_mode
+                        && !state.pi_command_mode
                         && !state.code_edit_mode
                     {
                         state.toggle_help();
@@ -491,6 +519,39 @@ pub fn run(
                             (KeyCode::Esc, _) => state.handle_editor_escape(),
                             _ => state.edit_code_key(key.code, key.modifiers),
                         }
+                    } else if state.pi_command_mode {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => state.close_pi_command_palette(),
+                            (KeyCode::Enter, _) => state.submit_pi_command(&mut worker),
+                            (KeyCode::Backspace, _) => state.pi_command_backspace(),
+                            (KeyCode::Char('u'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.pi_command_input.clear();
+                                state.pi_command_cursor = 0;
+                                state.pi_command_selection = 0;
+                                state.pi_command_scroll = 0;
+                            }
+                            (KeyCode::Left, _) => state.move_pi_command_cursor(false),
+                            (KeyCode::Right, _) => state.move_pi_command_cursor(true),
+                            (KeyCode::Home, _) => state.pi_command_cursor = 0,
+                            (KeyCode::End, _) => {
+                                state.pi_command_cursor = state.pi_command_input.len();
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                                state.move_pi_command_selection(-1)
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                                state.move_pi_command_selection(1)
+                            }
+                            (KeyCode::PageUp, _) => state.move_pi_command_selection(-8),
+                            (KeyCode::PageDown, _) => state.move_pi_command_selection(8),
+                            (KeyCode::Tab, _) => state.complete_pi_command(),
+                            (KeyCode::Char(character), _) => {
+                                state.insert_pi_command_char(character)
+                            }
+                            _ => {}
+                        }
                     } else if state.file_picker_open {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_file_picker(),
@@ -593,6 +654,9 @@ pub fn run(
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
                                 state.jump_to_app_keep_dock();
+                            }
+                            (KeyCode::Char('/'), _) if state.composer_input.trim().is_empty() => {
+                                state.open_pi_command_palette();
                             }
                             (KeyCode::Left, _) => state.move_composer_cursor(false),
                             (KeyCode::Right, _) => state.move_composer_cursor(true),
@@ -994,6 +1058,11 @@ pub fn run(
                     }
                 }
                 Event::Paste(text) if state.command_mode => state.insert_palette_text(&text),
+                Event::Paste(text) if state.pi_command_mode => {
+                    for character in text.chars() {
+                        state.insert_pi_command_char(character);
+                    }
+                }
                 Event::Paste(text) if state.composer_mode => state.insert_composer_text(&text),
                 Event::Mouse(mouse) => {
                     if !state.quit_confirmation
@@ -1021,7 +1090,9 @@ pub fn run(
                 Event::Key(_) | Event::Paste(_) | Event::FocusGained => {}
             }
         }
+        let menu_was_open = state.menu_open;
         pointer.poll(&mut state, Instant::now());
+        render_requested |= menu_was_open != state.menu_open;
         if state.agent_login_requested {
             state.agent_login_requested = false;
             run_agent_login(&mut state, &mut guard);
@@ -1032,7 +1103,9 @@ pub fn run(
             worker.request_refresh();
         }
 
-        for event in visual.poll_events() {
+        let visual_events = visual.poll_events();
+        render_requested |= !visual_events.is_empty();
+        for event in visual_events {
             match event {
                 HerdrEvent::Connected if visual.live => {
                     state.browser_workspace.state_mut().presentation =
@@ -1096,11 +1169,13 @@ pub fn run(
             state.submit_queued_tool(&mut worker);
         }
         if state.tick_pair_apply() {
+            render_requested = true;
             last_render = Instant::now()
                 .checked_sub(Duration::from_millis(33))
                 .unwrap_or_else(Instant::now);
         }
         if state.tick_fim() {
+            render_requested = true;
             last_render = Instant::now()
                 .checked_sub(Duration::from_millis(33))
                 .unwrap_or_else(Instant::now);
@@ -1130,6 +1205,7 @@ pub fn run(
             last_visual = Instant::now();
         }
         if let Ok(Some(result)) = worker.try_job_result() {
+            render_requested = true;
             let browser_start = result.tool == "glass.browser.start" && result.result.is_ok();
             let browser_observe = result.tool == "glass.browser.observe" && result.result.is_ok();
             state.apply_tool_job_result(result);
@@ -1144,6 +1220,7 @@ pub fn run(
             }
         }
         if let Ok(Some(result)) = worker.try_visual_result() {
+            render_requested = true;
             match &visual.path {
                 VisualPath::Herdr if visual.live => match visual_png(&result) {
                     Ok(png) => {
@@ -1222,6 +1299,7 @@ pub fn run(
         }
         if let Some(snapshot) = worker.take_pending() {
             state.apply_snapshot(&snapshot);
+            render_requested = true;
         }
         state.flush_pending_trust();
         state.flush_pending_open_file();
@@ -1270,6 +1348,9 @@ fn terminal_overlay_mask(state: &DevTuiState) -> u16 {
     if state.editor_exit_prompt.is_some() {
         mask |= 1 << 11;
     }
+    if state.pi_command_mode {
+        mask |= 1 << 12;
+    }
     mask
 }
 
@@ -1313,7 +1394,14 @@ fn run_agent_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
         state.status = format!("Could not hand the terminal to Pi: {error}");
         return;
     }
-    let result = crate::pi_runtime::setup_pi_runtime(None, None, false, true);
+    let provider = state.agent_login_provider.take();
+    let result = crate::pi_runtime::setup_pi_runtime_with_provider(
+        None,
+        None,
+        false,
+        true,
+        provider.as_deref(),
+    );
     let resume = guard.resume();
     match (result, resume) {
         (Ok(_), Ok(())) => match state.refresh_agent_readiness() {

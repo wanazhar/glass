@@ -39,14 +39,13 @@ There are two checked-in version facts:
 | Evidence | Version and status |
 |---|---|
 | Published `0.3.12` release evidence | Pi SDK `0.84.2`; see [release notes](releases/0.3.12.md) |
-| Current `0.3.14` source and package metadata | `PINNED_PI_SDK_VERSION`, managed setup, and the checked-in `packages/pi-runtime` package/lockfile use `0.84.3` |
+| Current checkout source and package metadata | `PINNED_PI_SDK_VERSION`, managed setup, and the checked-in `packages/pi-runtime` package/lockfile use `0.84.4` |
 
-The current `0.3.14` source and package metadata are aligned on `0.84.3`.
-Do not describe `0.84.3` as part of the immutable `0.3.12` release; keep the
-published `0.3.12` SDK fact scoped to its historical release record. The
-published `0.3.14` crate and docs.rs pages use `0.84.3`. Checkout-only TUI
-playbooks and workspace-local todo behavior can be newer than that published
-API page.
+The current checkout source and package metadata are aligned on `0.84.4`.
+Do not describe `0.84.4` as part of an immutable published release until that
+Glass version is actually released; the published `0.3.14` crate and docs.rs
+pages use `0.84.3`. Checkout-only TUI playbooks and workspace-local todo
+behavior can be newer than that published API page.
 
 `setup --login` opens the selected Pi CLI with `PI_CODING_AGENT_DIR` set to the selected agent directory. Run Pi `/login`, then exit Pi. Glass does not impersonate a provider or copy credentials. `--login` requires the Pi CLI to be available either in the managed installation or on `PATH`; a non-zero Pi exit is an explicit setup error.
 
@@ -74,9 +73,35 @@ The daemon-backed resident workspace retains the registry while the workspace ac
 
 ## Protocol and SDK surface
 
-The adapter sends `hello`, `prompt`, `steer`, `followUp`, `abort`, `state`, `models`, `setModel`, `setThinking`, `newSession`, `compact`, `cloneSession`, `rewind`, `fork`, `switchSession`, `listSessions`, `entries`, `tree`, `messages`, `stats`, and `setName` operations. Events are forwarded to the worker as structured Pi events. `message_update` token noise is not required for the TUI display; the display consumes bounded evidence and settled state.
+The adapter sends `hello`, `prompt`, `steer`, `followUp`, `abort`, `state`, `models`, `setModel`, `setThinking`, `newSession`, `compact`, `cloneSession`, `rewind`, `fork`, `switchSession`, `listSessions`, `entries`, `tree`, `messages`, `stats`, `setName`, `slashCommands`, and `slashCommand` operations. Events are forwarded to the worker as structured Pi events. `message_update` token noise is not required for the TUI display; the display consumes bounded evidence and settled state.
 
-The adapter starts `createAgentSession` with `DefaultResourceLoader` and disables Pi built-in tools, extensions, skills, prompt templates, themes, and context files. The allowed native tools are Glass `glass_tool`, `delegate`, `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`. `glass_tool` accepts an exact `glass.*` capability name and JSON arguments. Familiar file and shell names are normalized to Glass names before execution.
+The Glass Dev TUI creates the resident `AgentSession` with `DefaultResourceLoader` in its human-controlled development mode. Project context files, extensions, skills, prompt templates, and themes are loaded, and the Pi built-in tools remain disabled in favor of the Glass-owned tool set: `glass_tool`, `delegate`, `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`. `glass_tool` accepts an exact `glass.*` capability name and JSON arguments. Familiar file and shell names are normalized to Glass names before execution. Non-TUI callers may select a different resource policy through their runtime options.
+
+### Native slash commands in Glass Dev
+
+Press `/` on the Agent surface to open the native Pi command modal. Press `:`
+for Glass workspace actions; the two namespaces are intentionally separate.
+The modal covers every official built-in command in the pinned Pi SDK (`0.84.4`):
+
+```text
+/settings       /model          /tree           /thinking
+/scoped-models  /export         /import         /share
+/copy           /name           /session        /changelog
+/hotkeys        /fork           /clone          /trust
+/login          /logout         /new            /compact
+/resume         /reload         /quit
+```
+
+Commands that need a value accept their native arguments, such as
+`/model PROVIDER/MODEL`, `/thinking LEVEL`, `/export PATH`, `/import PATH`,
+`/name TITLE`, `/fork ENTRY_ID`, `/login PROVIDER`, `/logout PROVIDER`, and
+`/resume SESSION_PATH`. A command result is emitted into the Agent transcript
+and the detailed projection is available on More. `/login` temporarily hands
+the terminal to Pi for its interactive provider flow; `/quit` returns control
+to Glass's quit path. Commands registered by loaded extensions, prompt
+templates, and enabled skill commands are also accepted by name, even when
+they are not in the compiled-in modal list. `/reload` refreshes that resource
+catalog.
 
 On Agent multi-step turns, Pi must keep the workspace-local Agent checklist at
 `.glass/todos/session.json` current with `glass.todo.write` and
@@ -103,9 +128,15 @@ All tool execution returns through the authoritative workspace router. The route
 | `delegate` timeout | 1–3,600 seconds in the native tool schema |
 | Session path | Must resolve inside the explicit session directory |
 
-A native mutation tool call produces `glass_tool_approval_request` with redacted arguments. The resident host must resolve the matching frame with approve or deny. Approval is consumed once and applies only to that exact call. A denial returns an error to Pi. There is no source-level 120-second approval expiry in the native adapter; do not promise one. Stale, unknown, duplicate, or concurrent approval frames fail closed. The one-shot compatibility adapter has no interactive approval host and denies Pi extension UI requests immediately.
+In the human-controlled Glass Dev TUI, resident Pi tool calls run unrestricted by default, so they do not stop on a second Pi approval sheet. The Glass workspace router still owns the call and reports its result. Other runtime modes can produce `glass_tool_approval_request` with redacted arguments; the host must resolve the matching frame with approve or deny. Approval is consumed once and applies only to that exact call. There is no source-level 120-second approval expiry in the native adapter. Stale, unknown, duplicate, or concurrent approval frames fail closed. The one-shot compatibility adapter has no interactive approval host and denies Pi extension UI requests immediately.
 
-`glass --yolo` is an explicit unrestricted mode for the Glass process. It skips Glass mutation confirmation, accepts Pi extension confirmation RPCs, enables ambient Pi resources and extension tools, and allows configured browser capabilities. It does not remove stale revision checks, path checks, leases, protocol bounds, timeouts, or result limits. Treat installed extensions, shell commands, and project instructions as local code under the operating-system account.
+`glass --yolo` remains an explicit unrestricted mode for direct Glass/browser
+operations and non-TUI callers. It skips their mutation confirmation, accepts
+Pi extension confirmation RPCs, enables ambient Pi resources and extension
+tools, and allows configured browser capabilities. It does not remove stale
+revision checks, path checks, leases, protocol bounds, timeouts, or result
+limits. Treat installed extensions, shell commands, and project instructions
+as local code under the operating-system account.
 
 ## Persistent sessions and migration failures
 

@@ -171,6 +171,12 @@ impl NativeEngine {
         self.document.rasterize(self.config.viewport)
     }
 
+    /// Encode the current logical renderer surface as bounded PNG bytes.
+    pub fn capture_png(&self) -> Result<Vec<u8>, NativeEngineError> {
+        self.require_running("capture")?;
+        self.rasterize()?.to_png()
+    }
+
     /// Apply one semantic action and advance the document revision exactly
     /// once. Target resolution and actionability checks happen before state
     /// mutation, so rejected actions leave the document unchanged.

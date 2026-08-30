@@ -105,8 +105,9 @@ The backend profile declares lifecycle, navigation, one context, bounded
 evidence, semantic click/type actions, native point hit testing, and revision
 effects. Rust callers can additionally inspect the native layout, inherited
 text color, bounded paint clips, uniform solid-border paint, deterministic
-display list, and bounded logical RGBA software surface directly; those
-artifacts are not backend evidence or capture output. Scripts, captures,
+display list, bounded logical RGBA software surface, and bounded PNG capture
+through the native backend directly; screenshot-containing evidence, JPEG/PDF,
+and physical-pixel capture remain unavailable. Scripts,
 storage, prompts, and downloads are omitted and fail through the dispatcher.
 The feature adds no dependency and is never included in automatic backend
 selection. Native action targets are semantic and local-only, with the bounded

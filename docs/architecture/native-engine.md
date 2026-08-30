@@ -1,10 +1,10 @@
 # Native browser engine
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
-presentation/layout/display-list/software-surface slices, including bounded
-style inheritance, paint clipping, and uniform solid-border painting, plus
-feature-gated runtime/CLI integration; not a stable browser compatibility or
-security boundary.
+presentation/layout/display-list/software-surface/PNG-capture slices,
+including bounded style inheritance, paint clipping, and uniform solid-border
+painting, plus feature-gated runtime/CLI integration; not a stable browser
+compatibility or security boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -20,10 +20,10 @@ revisioned semantic interaction/effects model for text, checkbox, radio, and
 single-select controls, plus bounded visibility/actionability and raw-text/RCDATA
 parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
 normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
-display list, a bounded logical RGBA software surface, inherited text color
-through DOM parent links, bounded `overflow:hidden` paint clipping, and a
-uniform solid-border paint primitive. The engine does not yet own
-general CSS, scrolling/stacking layout, screenshot capture, font/image
+display list, a bounded logical RGBA software surface and PNG capture,
+inherited text color through DOM parent links, bounded `overflow:hidden` paint
+clipping, and a uniform solid-border paint primitive. The engine does not yet
+own general CSS, scrolling/stacking layout, screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
 network access, storage, downloads, prompts, or platform windows.
 
@@ -198,8 +198,10 @@ The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
 surface using integer source-over blending and a fixed 5x7 ASCII glyph subset.
-Both are Rust inspection artifacts only; there is no PNG/screenshot transport,
-font engine, image decoder, or GPU path.
+The 015 capture boundary encodes that current logical surface as bounded PNG
+bytes through the explicit backend capture operation. It does not add
+screenshot-containing evidence levels, physical-device pixels, a font engine,
+image decoder, JPEG/PDF encoding, or a GPU path.
 
 The 012 style boundary resolves only `color` through parsed DOM parent
 links. Explicit child declarations remain authoritative, while absent values
@@ -217,6 +219,13 @@ declaration from the existing bounded CSS grammar. It adds one immutable
 inside-the-box ring with the existing source-over and clip rules. Border paint
 does not change layout dimensions and does not imply padding, box sizing,
 individual sides, non-solid styles, transforms, or general CSS borders.
+
+The 015 capture boundary is read-only: a running native engine can encode its
+current logical RGBA surface as PNG through `CaptureFormat::Png`, subject to
+the stable capture-byte limit. JPEG and PDF are explicit denials, and
+`EvidenceLevel::Screenshot`/`Combined` remain denied because the stable
+evidence result has no image payload. The native CLI still has no screenshot
+command.
 
 The native locator grammar is explicit and bounded:
 
@@ -268,7 +277,7 @@ The native profile is `experimental` and declares:
 | action | available | semantic click/type plus bounded native point targets for supported local controls; no scrolling or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | omitted | JavaScript is unavailable |
-| capture | omitted | no screenshots or pixels |
+| capture | available | bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable |
 | storage | omitted | no cookies/local/session storage |
 | prompts | omitted | no dialogs |
 | downloads | omitted | no download pipeline |
@@ -276,8 +285,9 @@ The native profile is `experimental` and declares:
 The profile limitations are surfaced through `BackendProfile`. The dispatcher
 returns typed capability denials for omitted operations. `EvidenceLevel::Deep`
 can return a bounded incomplete projection; screenshot-containing levels are
-explicitly denied. No operation silently falls back to CDP, the proof backend,
-or another resource loader.
+explicitly denied. The separate capture operation supports only bounded PNG
+bytes. No operation silently falls back to CDP, the proof backend, or another
+resource loader.
 
 ## Errors and recovery
 
@@ -336,9 +346,13 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden` ancestor intersections on fill/text commands and
-  software-surface clipping with no scrolling or capture capability.
+  software-surface clipping with no scrolling or screenshot-evidence
+  capability.
 - bounded uniform solid-border parsing, deterministic `BorderRect` command
   ordering, inside-the-box border replay, and clip/source-over enforcement.
+- bounded logical-surface PNG encoding, capture-byte enforcement, read-only
+  revision behavior, real native backend dispatch, and explicit JPEG/PDF
+  denials.
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local URL shapes, including rejection of remote endpoints and unsupported
   browser-only flags.

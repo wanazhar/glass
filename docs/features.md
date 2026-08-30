@@ -236,8 +236,9 @@ bounded presentation, inherited text color, paint clips, uniform solid-border
 paint, normal-flow geometry,
 native point hit testing, local click/type actions, and a revision/changed
 effects signal; its Rust-only
-presentation artifacts include a display list and logical RGBA software
-surface. These are not screenshot/capture output, and the backend is not a
+presentation artifacts include a display list, logical RGBA software surface,
+and bounded PNG capture through the explicit backend operation. These are not
+screenshot-containing evidence, and the backend is not a
 remote-content security boundary. The proof backend is browser-free and only
 certifies protocol conformance.
 Capability omission or incompatibility is a typed denial, never a fallback to

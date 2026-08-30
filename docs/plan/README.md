@@ -105,9 +105,17 @@ The completed uniform-border slice is
 `border:Npx solid <color>` CSS declaration, a revisioned `BorderRect` display
 command, and inside-the-box software replay using the existing clip and
 source-over rules. It does not add border box-model geometry, padding,
-box-sizing, individual sides, non-solid styles, scrolling, transforms,
-screenshots, or capture transport. The next renderer slice must be documented
-and committed separately before expanding this boundary.
+box-sizing, individual sides, non-solid styles, scrolling, transforms, or
+screenshot evidence. Capture transport is separately owned by
+[native-engine-015](tasks/native-engine-015.md).
+
+The current capture slice is
+[native-engine-015](tasks/native-engine-015.md). It adds bounded PNG encoding
+for the existing logical RGBA surface and exposes explicit
+`CaptureFormat::Png` through the native backend while keeping screenshot-
+containing evidence, JPEG/PDF, physical pixels, and native CLI screenshots
+unsupported. It must be verified and committed before the next renderer or
+resource expansion changes this boundary.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

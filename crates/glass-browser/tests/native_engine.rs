@@ -8,10 +8,12 @@ use glass_browser::browser::native_engine::{
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
-    BrowserBackendDispatcher, BrowserCapability, CertificationLevel, EffectsRequest, EvidenceLevel,
-    EvidenceRequest, NavigationRequest, ScriptRequest, SemanticAction, SupportLevel,
+    BrowserBackendDispatcher, BrowserCapability, CaptureFormat, CaptureRequest, CertificationLevel,
+    EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest, ScriptRequest,
+    SemanticAction, SupportLevel,
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
+use std::io::Cursor;
 
 #[tokio::test]
 async fn native_runtime_session_uses_explicit_local_constructor() {
@@ -365,6 +367,72 @@ fn native_engine_raster_surface_is_bounded_and_does_not_mutate_revision() {
     assert_eq!(surface.pixel(1, 0), Some([0, 0, 255, 255]));
 }
 
+#[tokio::test]
+async fn native_backend_captures_png_without_mutating_revision_and_denies_other_formats() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 8,
+            height: 8,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://capture",
+            "<style>#card { width: 8px; height: 8px; background-color: red; }</style><div id='card'>A</div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://capture");
+    let backend = NativeEngineBackend::new(config).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+    let before = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+
+    let capture = dispatcher
+        .capture(CaptureRequest {
+            context_id: "native-context".into(),
+            format: CaptureFormat::Png,
+        })
+        .await
+        .unwrap();
+    assert_eq!(capture.format, CaptureFormat::Png);
+    assert_eq!(&capture.bytes[..8], b"\x89PNG\r\n\x1a\n");
+    let decoder = png::Decoder::new(Cursor::new(capture.bytes));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (8, 8));
+    assert_eq!(&decoded[..4], &[255, 0, 0, 255]);
+
+    let after = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(after.revision, before.revision);
+
+    let jpeg = dispatcher
+        .capture(CaptureRequest {
+            context_id: "native-context".into(),
+            format: CaptureFormat::Jpeg,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        jpeg,
+        glass_browser::browser_backend::BrowserBackendError::UnsupportedOperation {
+            operation, ..
+        } if operation == "capture"
+    ));
+    dispatcher.close().await.unwrap();
+}
+
 #[test]
 fn native_point_click_hits_nested_content_and_preserves_state_on_rejection() {
     let config = NativeEngineConfig::default()
@@ -491,6 +559,13 @@ async fn fixture_navigation_projects_through_the_real_backend_dispatcher() {
         backend
             .profile()
             .capability(BrowserCapability::Effects)
+            .level,
+        SupportLevel::Available
+    );
+    assert_eq!(
+        backend
+            .profile()
+            .capability(BrowserCapability::Capture)
             .level,
         SupportLevel::Available
     );

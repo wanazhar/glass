@@ -82,8 +82,8 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
   exposes bounded presentation/normal-flow geometry and native point hit
   testing through explicit Rust or feature-gated local CLI paths. Its current
   Rust-only presentation artifacts include uniform solid-border paint, a
-  display list, and logical RGBA software surface; it never enters automatic
-  backend selection.
+  display list, a logical RGBA software surface, and bounded PNG capture; it
+  never enters automatic backend selection.
 
 ## Module index
 

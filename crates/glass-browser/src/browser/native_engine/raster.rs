@@ -99,6 +99,30 @@ impl NativeSurface {
         &self.rgba
     }
 
+    /// Encode the logical surface as a bounded RGBA PNG payload.
+    pub fn to_png(&self) -> Result<Vec<u8>, NativeEngineError> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, self.width, self.height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder
+                .write_header()
+                .map_err(|error| NativeEngineError::invalid("native PNG", error.to_string()))?;
+            writer
+                .write_image_data(&self.rgba)
+                .map_err(|error| NativeEngineError::invalid("native PNG", error.to_string()))?;
+        }
+        if bytes.len() > crate::browser_backend::MAX_CAPTURE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native PNG bytes",
+                crate::browser_backend::MAX_CAPTURE_BYTES,
+                bytes.len(),
+            ));
+        }
+        Ok(bytes)
+    }
+
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.width || y >= self.height {
             return None;
@@ -400,6 +424,7 @@ mod tests {
     use crate::browser::native_engine::{
         NativeColor, NativeDisplayCommand, NativeDisplayList, NativeDocument, NativePoint, Viewport,
     };
+    use std::io::Cursor;
 
     fn display_list(
         commands: Vec<NativeDisplayCommand>,
@@ -415,6 +440,36 @@ mod tests {
             },
             commands,
         }
+    }
+
+    #[test]
+    fn surface_encodes_deterministic_rgba_png() {
+        let surface = NativeSurface::from_display_list(&display_list(
+            vec![NativeDisplayCommand::Clear {
+                color: NativeColor {
+                    red: 12,
+                    green: 34,
+                    blue: 56,
+                    alpha: 255,
+                },
+            }],
+            2,
+            1,
+        ))
+        .unwrap();
+        let first = surface.to_png().unwrap();
+        assert_eq!(first, surface.to_png().unwrap());
+        assert_eq!(&first[..8], b"\x89PNG\r\n\x1a\n");
+
+        let decoder = png::Decoder::new(Cursor::new(first));
+        let mut reader = decoder.read_info().unwrap();
+        let mut decoded = vec![0; reader.output_buffer_size()];
+        let output = reader.next_frame(&mut decoded).unwrap();
+        assert_eq!((output.width, output.height), (2, 1));
+        assert_eq!(
+            &decoded[..output.buffer_size()],
+            &[12, 34, 56, 255, 12, 34, 56, 255]
+        );
     }
 
     #[test]

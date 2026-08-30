@@ -73,12 +73,14 @@ fail before browser input.
 
 The feature-gated native engine additionally derives bounded integer-pixel
 normal-flow rectangles, inherited text color, bounded paint clips, uniform
-solid-border paint, a deterministic clear/fill/text/border display list, and a
-logical RGBA software surface;
+solid-border paint, a deterministic clear/fill/text/border display list, a
+logical RGBA software surface, and bounded PNG capture through the explicit
+backend operation;
 it accepts native
 `point=x,y` click targets
 through its Rust API/CLI path. These are experimental local-content artifacts,
-not CSS/layout, font, or screenshot compatibility claims.
+not CSS/layout, font, physical-pixel, or screenshot-evidence compatibility
+claims.
 
 The standalone browser TUI starts structured-only by default. Its first screen
 offers `l` to launch a local browser, `a` to attach a verified DevTools port,

@@ -129,12 +129,13 @@ subtrees from visible text and rejects those action targets before mutation.
 Explicit references are revision-bound; ambiguous, stale, disabled, read-only,
 and unsupported targets fail before mutation. It provides only bounded
 presentation, inherited text color, bounded paint clips, uniform solid-border
-paint, normal-flow geometry,
-native point hit testing, and Rust-only display-list/software-surface artifacts;
+paint, normal-flow geometry, bounded PNG capture, and Rust-only
+display-list/software-surface artifacts;
 it does not
 provide network access,
 filesystem navigation, general CSS/scrolling/stacking layout,
-screenshot/capture transport, font/image fidelity, JavaScript, storage,
+screen-shot-containing evidence, JPEG/PDF capture, physical pixels,
+font/image fidelity, JavaScript, storage,
 prompts, downloads, default link navigation, or raw form-value evidence. The
 backend is explicit-only and never silently falls
 back to Chromium or the semantic proof backend. A `native-engine` feature

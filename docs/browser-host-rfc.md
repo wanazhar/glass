@@ -102,10 +102,11 @@ in-process context, local `about:blank`, `data:text/html`, and registered
 `fixture://` resources, a small DOM/text projection, history, revisions,
 bounded CSS presentation, integer normal-flow rectangles, point hit testing,
 semantic click/type actions for local controls, a bounded effects signal,
-bounded inherited text color, paint clips, and uniform solid-border paint, and
-Rust-only display-list/software-surface artifacts. It does not yet provide
+bounded inherited text color, paint clips, uniform solid-border paint, and
+bounded PNG capture through the explicit backend operation, plus Rust-only
+display-list/software-surface artifacts. It does not yet provide
 general CSS/scrolling/stacking layout, border box-model geometry,
-screenshot/capture transport,
+screen-shot-containing evidence, JPEG/PDF capture, or physical-pixel capture,
 font/image fidelity, JavaScript, network/security policy, cookies/storage,
 downloads, or platform windowing.
 

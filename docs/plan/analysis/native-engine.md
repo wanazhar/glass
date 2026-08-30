@@ -5,7 +5,7 @@ Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
 committed locally, including the bounded 010 display-list seed and the bounded
 011 software-surface seed, 012 style-inheritance seed, 013 paint-clipping
-seed, and 014 uniform solid-border paint.
+seed, 014 uniform solid-border paint, and 015 bounded PNG capture.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -63,7 +63,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, pixel dimensions, and uniform solid borders | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
 | `native_engine::layout` | viewport-bounded normal-flow geometry and point hit testing | DOM, computed display/visibility, viewport | layout boxes and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text/border display-list derivation and bounded ancestor clips | current layout, bounded computed colors/text/borders, and overflow presentation | immutable display-list commands | native DOM + layout |
-| `native_engine::raster` | bounded logical RGBA surface replay for fills, text, and uniform borders | immutable display-list commands | immutable software surface | native display list |
+| `native_engine::raster` | bounded logical RGBA surface replay for fills, text, uniform borders, and PNG encoding | immutable display-list commands | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
 | `native_engine::interaction` | action/effect types and bounded effect records | semantic action and event kind | revisioned interaction metadata | native DOM IDs |
 | `native_engine::engine` | sole mutable page-state coordinator | lifecycle/navigation/action requests | snapshots/context/history/effects | all engine modules |
@@ -93,15 +93,18 @@ The first slice must prove these real call chains:
 9. A failed resource or parse path returns before document/history/revision
    mutation.
 10. Dispatcher action/effects calls reach the native mutation and revision
-    owner; script, capture, storage, prompts, and download calls fail through
-    the profile's typed capability gate.
+    owner; script, storage, prompts, and download calls fail through the
+    profile's typed capability gate, while the explicit PNG capture path reads
+    the renderer surface without mutation.
 
 ## Non-goals for this checkpoint
 
 - network, filesystem navigation, redirects, HTTP semantics, or cookies;
-- general CSS parsing/cascade, general raster painting, screenshots, or fonts;
+- general CSS parsing/cascade, general raster painting, screenshot semantics,
+  or fonts;
   the bounded 009 layout, 010 display-list, 011 software-surface, 013
-  clipping, and 014 border seeds do not imply general layout or rendering;
+  clipping, 014 border, and 015 PNG seeds do not imply general layout or
+  rendering;
 - JavaScript, event loops, timers, storage, workers, Web APIs, or downloads;
 - MCP/TUI integration, external browser lifecycle, or platform windows;
 - claiming standards compatibility, browser parity, or remote-content safety;
@@ -127,6 +130,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-012` | bounded inherited `color` resolution through DOM ancestors feeding text runs | `native-engine-011` | general CSS inheritance/cascade, inherited layout, fonts, images, screenshots, browser parity |
 | `native-engine-013` | bounded `overflow:hidden` ancestor clips on fill/text commands and software replay | `native-engine-012` | scrolling, visible overflow, stacking contexts, borders, transforms, screenshots, browser parity |
 | `native-engine-014` | bounded uniform `border:Npx solid <color>` parsing, `BorderRect` display commands, and inside-the-box software replay | `native-engine-013` | padding, box sizing, individual sides, non-solid styles, scrolling, transforms, screenshots, browser parity |
+| `native-engine-015` | bounded logical RGBA-to-PNG encoding and real native `CaptureFormat::Png` dispatch | `native-engine-014` | screenshot-containing evidence, JPEG/PDF, physical pixels, viewport/element/full-page modes, fonts, images, browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -168,9 +172,9 @@ Phase 2 integration chains added by these slices are:
     through the deepest layout hit to an actionable semantic ancestor before
     any mutation.
 15. Native display lists are derived from a matching layout revision and emit
-    bounded deterministic commands without adding a capture capability.
+    bounded deterministic commands without mutating the document.
 16. Native software surfaces replay a bounded display list into logical RGBA
-    pixels without adding transport capture or mutable page state.
+    pixels without mutating page state.
 17. Native style resolution inherits only `color` through bounded DOM parent
     links, and display-list text consumes that resolved value.
 18. Native fill/text commands carry bounded logical clips derived from matching
@@ -178,6 +182,9 @@ Phase 2 integration chains added by these slices are:
 19. Native uniform border declarations produce matching revisioned `BorderRect`
     commands, preserve deterministic fill/border/text order, and replay only
     inside the layout box and its ancestor clips.
+20. Native PNG capture encodes the current logical surface through the real
+    backend dispatcher, enforces the stable capture-byte limit, preserves the
+    revision, and denies unsupported JPEG/PDF formats explicitly.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -204,13 +211,14 @@ stacking, or that clicking a link performs browser navigation.
 | inherited text color | makes nested text styling observable without broadening the CSS grammar | no general inheritance, user-agent styles, font/color management, or style cache | resolve one property through bounded parent links and keep explicit child declarations authoritative |
 | bounded paint clipping | makes descendant overflow behavior explicit without inventing scrolling | no scroll offsets, visible overflow model, border box-model, transforms, or clip stack cache | carry half-open ancestor intersections on immutable commands and intersect again at replay |
 | bounded uniform border paint | adds a useful edge primitive without changing layout ownership | no padding/box sizing, individual sides, non-solid styles, or border geometry | paint an inside-the-box ring as one immutable command and reuse existing clip/source-over bounds |
+| bounded PNG capture | makes the current logical renderer artifact consumable through the stable capture operation | no physical-device pixels, screenshot evidence schema, JPEG/PDF, image/font fidelity, or capture modes | encode only the bounded current surface, enforce `MAX_CAPTURE_BYTES`, keep capture read-only, and deny unsupported formats |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-014.md` is the latest completed checkpoint; 013
-is the preceding completed checkpoint. A checkpoint is complete only when the
+`docs/plan/tasks/native-engine-015.md` is the current in-progress checkpoint;
+014 is the latest completed checkpoint. A checkpoint is complete only when the
 native feature tests pass, strict lint
 passes for the touched code, and the diff confirms no unrelated browser/TUI/
 release behavior changed.

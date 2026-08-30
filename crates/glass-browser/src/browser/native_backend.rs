@@ -10,8 +10,9 @@ use super::native_engine::{
 use crate::browser_backend::{
     ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendFuture, BackendOperation, BackendProfile,
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
-    BrowsingContext, CapabilityDescriptor, CertificationLevel, CertificationProfile, EffectsResult,
-    EvidenceLevel, EvidenceResult, NavigationResult, Portability, SemanticAction, SupportLevel,
+    BrowsingContext, CapabilityDescriptor, CaptureFormat, CaptureResult, CertificationLevel,
+    CertificationProfile, EffectsResult, EvidenceLevel, EvidenceResult, NavigationResult,
+    Portability, SemanticAction, SupportLevel,
 };
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -55,6 +56,7 @@ impl NativeEngineBackend {
             BrowserCapability::Evidence,
             BrowserCapability::Action,
             BrowserCapability::Effects,
+            BrowserCapability::Capture,
         ];
         let mut capabilities = BTreeMap::new();
         for capability in supported {
@@ -74,6 +76,11 @@ impl NativeEngineBackend {
                     vec![
                         "bounded changed/revision signal; native event details remain internal"
                             .into(),
+                    ]
+                }
+                BrowserCapability::Capture => {
+                    vec![
+                        "bounded PNG of the current logical RGBA surface; JPEG/PDF and screenshot-containing evidence are unavailable".into(),
                     ]
                 }
                 BrowserCapability::Contexts => vec!["one active context only".into()],
@@ -107,9 +114,9 @@ impl NativeEngineBackend {
                     glass_version: glass_version.into(),
                     tested_capabilities: supported.to_vec(),
                     limitations: vec![
-                        "Phase 2 is a deterministic local-content engine, not browser parity".into(),
+                        "Phase 2 and initial Phase 3 are deterministic local-content slices, not browser parity".into(),
                         "in-process execution is not a security boundary for hostile content".into(),
-                        "network, JavaScript, general CSS, scrolling/stacking layout, paint, storage, and default browser behavior are unavailable".into(),
+                        "network, JavaScript, general CSS, scrolling/stacking layout, font/image fidelity, storage, and default browser behavior are unavailable".into(),
                         "actions are limited to semantic click/type and bounded native point targets for supported local controls".into(),
                     ],
                 },
@@ -228,6 +235,20 @@ impl BrowserBackend for NativeEngineBackend {
                         context_id: NATIVE_CONTEXT_ID.into(),
                         revision: snapshot.revision,
                         changed: snapshot.changed,
+                    }))
+                }
+                (BackendOperation::Capture, BackendRequest::Capture(request)) => {
+                    require_context_id(&request.context_id)?;
+                    if request.format != CaptureFormat::Png {
+                        return Err(BrowserBackendError::UnsupportedOperation {
+                            operation: "capture".into(),
+                            reason: "native engine supports only bounded PNG capture".into(),
+                        });
+                    }
+                    let bytes = engine.capture_png().map_err(native_error)?;
+                    Ok(BackendResponse::Capture(CaptureResult {
+                        format: CaptureFormat::Png,
+                        bytes,
                     }))
                 }
                 (operation, _) => Err(BrowserBackendError::UnsupportedOperation {

@@ -2987,7 +2987,7 @@ fn compact_result(tool: &str, value: &Value) -> String {
 }
 
 fn require_trusted(state: &DevTuiState) -> Result<(), String> {
-    if state.snapshot_trust_label == "untrusted" {
+    if !state.trust_allows_execution() {
         Err(
             "repository-controlled execution is blocked; inspect and trust the workspace first"
                 .into(),

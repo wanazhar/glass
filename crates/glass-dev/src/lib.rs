@@ -179,7 +179,7 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return cli::dispatch_harness(action);
     }
     if let Some(glass_browser::cli::args::Commands::Daemon { action }) = &cli.command {
-        return daemon::dispatch(action).await;
+        return daemon::dispatch(action, cli.yolo).await;
     }
     if let Some(glass_browser::cli::args::Commands::Project { action }) = &cli.command {
         enforce_legacy_development_trust(&cli)?;
@@ -220,6 +220,10 @@ fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error:
     use glass_browser::cli::args::{
         AgentCommand, AgentHarness, Commands, HarnessCommand, ProjectCommand,
     };
+
+    if cli.yolo {
+        return Ok(());
+    }
 
     let (root, safe_static) = match cli.command.as_ref() {
         Some(Commands::Project { action }) => {
@@ -354,6 +358,9 @@ async fn dispatch_external_tool(
         _ => return Err("expected an external agent tool action".into()),
     };
     let mut workspace = DevelopmentWorkspace::open(root)?;
+    if unrestricted {
+        workspace.enable_unrestricted_execution()?;
+    }
     let context = DevelopmentToolContext {
         authorization: ToolAuthorization {
             actor: Actor::external("cli"),

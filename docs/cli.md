@@ -14,7 +14,7 @@ remains the authority for installed flags, defaults, and positional arguments.
 
 | Option | Default | Function |
 |---|---|---|
-| `--yolo` | off | Run direct Glass/browser operations and non-TUI Pi callers without process-level mutation confirmation; the Glass Dev TUI's resident Pi session is already human-controlled and unrestricted. |
+| `--yolo` | off | Run Glass Dev and browser operations without process-level mutation confirmation; Glass Dev also bypasses the workspace-trust execution gate for this process without persisting trust. The resident TUI Pi session is human-controlled and unrestricted by default. |
 | `--policy development\|ci\|polite\|hardened\|untrusted-mcp` | `development` | Select the browser safety preset. |
 | `--policy-allow CAPABILITY` | none | Explicitly allow a privileged capability; repeatable. |
 | `--policy-confirm CAPABILITY` | none | Require a typed confirmation result; repeatable. |
@@ -600,15 +600,16 @@ glass --yolo
 glass --yolo agent prompt "Implement and verify the requested change" --harness pi --root .
 ```
 
-This is a process-scoped unrestricted setting for direct Glass/browser work and
-non-TUI callers. Glass skips its mutation approval sheet, the Pi extension does
-not request approval, and any confirmation RPC from another loaded Pi
-extension is accepted automatically. Ambient context, extensions, skills,
-templates, themes, and registered extension tools are enabled. Browser policy
+This is a process-scoped unrestricted setting for Glass Dev, direct
+Glass/browser work, and non-TUI callers. Glass skips its mutation approval
+sheet, bypasses the workspace-trust execution gate, the Pi extension does not
+request approval, and any confirmation RPC from another loaded Pi extension is
+accepted automatically. Ambient context, extensions, skills, templates,
+themes, and registered extension tools are enabled. Browser policy
 capabilities are treated as explicitly allowed, even if a confirmation
-capability was also supplied on the command line. The resident Glass Dev TUI
-already uses its human-controlled unrestricted Pi session without requiring
-this flag.
+capability was also supplied on the command line. The trust record itself is
+not changed, so a later process without `--yolo` still opens the workspace as
+untrusted.
 
 `--yolo` does not turn correctness guards into best effort: project file tools
 remain root-confined, browser revisions remain guarded, workspace/daemon

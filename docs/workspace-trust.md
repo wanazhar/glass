@@ -42,10 +42,12 @@ Untrusted mode blocks repository-controlled execution, including:
 - file/Git mutations through development-agent routes; and
 - compatibility routes exposed by the legacy project CLI/MCP catalog.
 
-A custom tool's `mutating = false` value affects post-trust confirmation UX;
-it never makes an arbitrary shell command safe to run before trust. `--yolo`
-removes per-operation confirmations only after trust and cannot elevate an
-untrusted workspace.
+A custom tool's `mutating = false` value affects confirmation UX; it never
+makes an arbitrary shell command safe to run in normal untrusted mode.
+`--yolo` is the explicit Glass Dev exception: it enables repository-controlled
+execution for the current process, removes per-operation confirmations, and
+does not write a trust decision to the external store. A later process without
+`--yolo` still requires the normal local trust decision.
 
 Read-only trust APIs are available through the authoritative tool router:
 

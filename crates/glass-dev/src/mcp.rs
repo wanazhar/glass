@@ -18,10 +18,14 @@ pub struct DevelopmentMcpBackend {
 
 impl DevelopmentMcpBackend {
     pub fn open(root: impl AsRef<Path>, unrestricted: bool) -> Result<Self, String> {
+        let mut workspace = DevelopmentWorkspace::open(root).map_err(|error| error.to_string())?;
+        if unrestricted {
+            workspace
+                .enable_unrestricted_execution()
+                .map_err(|error| error.to_string())?;
+        }
         Ok(Self {
-            workspace: Mutex::new(
-                DevelopmentWorkspace::open(root).map_err(|error| error.to_string())?,
-            ),
+            workspace: Mutex::new(workspace),
             unrestricted,
             next_call: AtomicU64::new(1),
         })
@@ -113,7 +117,10 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
             ));
         }
         let (name, arguments) = if legacy_execution {
-            if descriptor.mutating && !workspace.trust().permits_project_execution() {
+            if descriptor.mutating
+                && !self.unrestricted
+                && !workspace.trust().permits_project_execution()
+            {
                 return Err(format!(
                     "{name} is blocked until the workspace is trusted by a local user"
                 ));
@@ -127,7 +134,7 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
                 actor: Actor::external(actor),
                 allow_mutation: authorized,
                 confirmed: authorized,
-                unrestricted: false,
+                unrestricted: self.unrestricted,
             },
             initiator: None,
             expected_generation: metadata

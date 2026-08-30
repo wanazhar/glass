@@ -151,9 +151,12 @@ A retry resets assignment, completion time, last error, and retry deadline. It d
 
 ## State ownership and security
 
-The task prompt, worktree, authority policy, model, thinking level, unrestricted flag, and budgets are copied into the assigned `AgentSpec`. The agent owns its Pi process and session. The scheduler owns only task state and does not bypass the agent's tool gateway. Mutating tools still require trust, actor attribution, revision guards, confirmation, path confinement, and browser leases. Task evidence records who supplied it and from which service; callers cannot turn an untrusted or stale claim into proof.
+The task prompt, worktree, authority policy, model, thinking level, unrestricted flag, and budgets are copied into the assigned `AgentSpec`. The agent owns its Pi process and session. The scheduler owns only task state and does not bypass the agent's tool gateway. Mutating tools still require actor attribution, revision guards, path confinement, and browser leases; normal mode additionally requires workspace trust and confirmation. An explicit process-local `--yolo` run may activate an untrusted workspace without persisting that decision. Task evidence records who supplied it and from which service; callers cannot turn an untrusted or stale claim into proof.
 
-`unrestricted` is explicit task policy and reaches the assigned agent. It does not remove path checks, revision checks, protocol bounds, process limits, or browser host denial. Use it only in a trusted workspace and label the resulting evidence.
+`unrestricted` is explicit task policy and reaches the assigned agent. It does
+not remove path checks, revision checks, protocol bounds, process limits, or
+browser host denial. Use it only in a trusted workspace or an explicitly
+`--yolo` process, and label the resulting evidence.
 
 ## Verification and evidence
 

@@ -363,12 +363,18 @@ pub struct DevelopmentDaemonResponse {
     pub error: Option<String>,
 }
 
-pub async fn dispatch(action: &DaemonCommand) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn dispatch(
+    action: &DaemonCommand,
+    unrestricted: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         DaemonCommand::Start { socket, status } => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&start(socket.as_deref(), status.as_deref()).await?)?
+                serde_json::to_string_pretty(
+                    &start_with_unrestricted(socket.as_deref(), status.as_deref(), unrestricted,)
+                        .await?,
+                )?
             );
         }
         DaemonCommand::Status { socket, status } | DaemonCommand::Doctor { socket, status } => {
@@ -392,7 +398,9 @@ pub async fn dispatch(action: &DaemonCommand) -> Result<(), Box<dyn std::error::
         DaemonCommand::AcknowledgeRecovery { .. } => {
             println!("{{\"status\":\"no-recovery-required\"}}");
         }
-        DaemonCommand::Serve { socket, status } => serve(socket, status).await?,
+        DaemonCommand::Serve { socket, status } => {
+            serve_with_unrestricted(socket, status, unrestricted).await?
+        }
     }
     Ok(())
 }
@@ -425,6 +433,14 @@ pub async fn start(
     socket: Option<&Path>,
     status_path: Option<&Path>,
 ) -> Result<DevelopmentDaemonStatus, Box<dyn std::error::Error>> {
+    start_with_unrestricted(socket, status_path, false).await
+}
+
+async fn start_with_unrestricted(
+    socket: Option<&Path>,
+    status_path: Option<&Path>,
+    unrestricted: bool,
+) -> Result<DevelopmentDaemonStatus, Box<dyn std::error::Error>> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (socket, status_path);
@@ -454,7 +470,11 @@ pub async fn start(
             .append(true)
             .open(&log)?;
         let stderr = stdout.try_clone()?;
-        std::process::Command::new(std::env::current_exe()?)
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        if unrestricted {
+            command.arg("--yolo");
+        }
+        command
             .args(["daemon", "serve"])
             .arg("--socket")
             .arg(socket)
@@ -501,7 +521,11 @@ pub async fn start(
             .append(true)
             .open(&log)?;
         let stderr = stdout.try_clone()?;
-        std::process::Command::new(std::env::current_exe()?)
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        if unrestricted {
+            command.arg("--yolo");
+        }
+        command
             .args(["daemon", "serve"])
             .arg("--socket")
             .arg(socket)
@@ -589,10 +613,19 @@ pub fn stop(
 }
 
 pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    serve_with_unrestricted(socket, status_path, false).await
+}
+
+async fn serve_with_unrestricted(
+    socket: &Path,
+    status_path: &Path,
+    unrestricted: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     serve_with_store(
         socket,
         status_path,
         WorkspaceTrustStore::platform_default()?,
+        unrestricted,
     )
     .await
 }
@@ -601,6 +634,7 @@ async fn serve_with_store(
     socket: &Path,
     status_path: &Path,
     trust_store: WorkspaceTrustStore,
+    unrestricted: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(any(unix, windows)))]
     {
@@ -657,8 +691,15 @@ async fn serve_with_store(
                     let socket = socket.to_path_buf();
                     let trust_store = trust_store.clone();
                     tokio::task::spawn_local(async move {
-                        if let Err(error) =
-                            handle_client(stream, &token, &socket, &workspaces, &trust_store).await
+                        if let Err(error) = handle_client(
+                            stream,
+                            &token,
+                            &socket,
+                            &workspaces,
+                            &trust_store,
+                            unrestricted,
+                        )
+                        .await
                         {
                             tracing::warn!(%error, "development daemon client failed");
                         }
@@ -725,8 +766,15 @@ async fn serve_with_store(
                     let socket = socket.to_path_buf();
                     let trust_store = trust_store.clone();
                     tokio::task::spawn_local(async move {
-                        if let Err(error) =
-                            handle_stream(server, &token, &socket, &workspaces, &trust_store).await
+                        if let Err(error) = handle_stream(
+                            server,
+                            &token,
+                            &socket,
+                            &workspaces,
+                            &trust_store,
+                            unrestricted,
+                        )
+                        .await
                         {
                             tracing::warn!(%error, "development daemon named-pipe client failed");
                         }
@@ -751,8 +799,9 @@ async fn handle_client(
     socket: &Path,
     workspaces: &WorkspaceRegistry,
     trust_store: &WorkspaceTrustStore,
+    unrestricted: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    handle_stream(stream, token, socket, workspaces, trust_store).await
+    handle_stream(stream, token, socket, workspaces, trust_store, unrestricted).await
 }
 
 async fn handle_stream<S>(
@@ -761,6 +810,7 @@ async fn handle_stream<S>(
     socket: &Path,
     workspaces: &WorkspaceRegistry,
     trust_store: &WorkspaceTrustStore,
+    unrestricted: bool,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -778,7 +828,15 @@ where
         } else {
             match serde_json::from_str::<DevelopmentDaemonRequest>(&line) {
                 Ok(request) => {
-                    execute_request(request, token, socket, workspaces, trust_store).await
+                    execute_request(
+                        request,
+                        token,
+                        socket,
+                        workspaces,
+                        trust_store,
+                        unrestricted,
+                    )
+                    .await
                 }
                 Err(error) => DevelopmentDaemonResponse {
                     id: "invalid".into(),
@@ -805,6 +863,7 @@ async fn execute_request(
     socket: &Path,
     workspaces: &WorkspaceRegistry,
     trust_store: &WorkspaceTrustStore,
+    unrestricted: bool,
 ) -> DevelopmentDaemonResponse {
     let id = request.id.clone();
     let result = async {
@@ -833,6 +892,11 @@ async fn execute_request(
                 let mut workspace =
                     DevelopmentWorkspace::open_with_store(root, trust_store.clone())
                         .map_err(|error| error.to_string())?;
+                if unrestricted {
+                    workspace
+                        .enable_unrestricted_execution()
+                        .map_err(|error| error.to_string())?;
+                }
                 workspace
                     .agents()
                     .set_resident_broker(ResidentAgentBroker {
@@ -2693,7 +2757,7 @@ while True:
                 let server_status = status.clone();
                 let server_trust_store = trust_store.clone();
                 let server = tokio::task::spawn_local(async move {
-                    serve_with_store(&server_socket, &server_status, server_trust_store)
+                    serve_with_store(&server_socket, &server_status, server_trust_store, false)
                         .await
                         .unwrap()
                 });
@@ -2895,7 +2959,7 @@ while True:
                 let server_status = status.clone();
                 let store = WorkspaceTrustStore::at(base.join("trust.json"));
                 let server = tokio::task::spawn_local(async move {
-                    serve_with_store(&server_socket, &server_status, store)
+                    serve_with_store(&server_socket, &server_status, store, false)
                         .await
                         .unwrap()
                 });

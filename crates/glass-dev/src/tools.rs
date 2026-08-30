@@ -104,7 +104,10 @@ impl DevelopmentToolRouter {
                     .unwrap_or_else(|| format!("tool {} is unavailable", call.name)),
             ));
         }
-        if workspace.trust() == WorkspaceTrust::Untrusted && !untrusted_tool_allowed(&call.name) {
+        if workspace.trust() == WorkspaceTrust::Untrusted
+            && !workspace.unrestricted_execution()
+            && !untrusted_tool_allowed(&call.name)
+        {
             return Err(DevelopmentError::Conflict(format!(
                 "tool {} is blocked until the workspace is trusted",
                 call.name
@@ -157,11 +160,12 @@ impl DevelopmentToolRouter {
             evidence: serde_json::json!({"name":call.name,"mutating":descriptor.mutating,"initiator":initiator_id,"executor":actor_id}),
             rationale: None,
         })?;
-        if workspace.trust().permits_project_execution() {
+        let execution_trust = workspace.execution_trust();
+        if execution_trust.permits_project_execution() {
             workspace.customization().run_hooks(
                 "tool.before",
                 &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id}),
-                workspace.trust(),
+                execution_trust,
                 &actor_id,
             )?;
         }
@@ -174,24 +178,24 @@ impl DevelopmentToolRouter {
             workspace.customization().execute_tool(
                 &call.name,
                 &call.arguments,
-                workspace.trust(),
+                execution_trust,
                 &actor_id,
             )
         } else if let Some(name) = call.name.strip_prefix("glass.command.") {
             workspace
                 .customization()
-                .execute_command(name, workspace.trust(), &actor_id)
+                .execute_command(name, execution_trust, &actor_id)
         } else {
             self.core
                 .execute(workspace.project_mut(), call, &context.authorization)
         };
         match result {
             Ok(result) => {
-                if workspace.trust().permits_project_execution() {
+                if execution_trust.permits_project_execution() {
                     workspace.customization().run_hooks(
                         "tool.after",
                         &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":true}),
-                        workspace.trust(),
+                        execution_trust,
                         &actor_id,
                     )?;
                 }
@@ -222,11 +226,11 @@ impl DevelopmentToolRouter {
                 Ok(result)
             }
             Err(error) => {
-                if workspace.trust().permits_project_execution() {
+                if execution_trust.permits_project_execution() {
                     workspace.customization().run_hooks(
                         "tool.after",
                         &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":false,"error":error.to_string()}),
-                        workspace.trust(),
+                        execution_trust,
                         &actor_id,
                     )?;
                 }

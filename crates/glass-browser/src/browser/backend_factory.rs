@@ -7,6 +7,7 @@
 use super::backend_adapter::CdpBrowserBackend;
 use super::bidi_backend::{BidiBackendConfig, BidiBrowserBackend};
 use super::proof_backend::ProofBackend;
+use super::webdriver_backend::{WebDriverBackendConfig, WebDriverBrowserBackend};
 use crate::browser_backend::{
     BackendFuture, BackendOperation, BackendProfile, BackendRequest, BackendResponse,
     BackendSelectionRequest, BackendSelectionResult, BrowserBackend, BrowserBackendError,
@@ -17,6 +18,7 @@ use crate::browser_backend::{
 pub enum BackendStartup {
     Cdp(Box<CdpBrowserBackend>),
     Bidi(Box<BidiBrowserBackend>),
+    WebDriver(Box<WebDriverBrowserBackend>),
     Proof(Box<ProofBackend>),
 }
 
@@ -25,6 +27,7 @@ impl BackendStartup {
         match self {
             Self::Cdp(backend) => backend.profile(),
             Self::Bidi(backend) => backend.profile(),
+            Self::WebDriver(backend) => backend.profile(),
             Self::Proof(backend) => backend.profile(),
         }
     }
@@ -47,6 +50,7 @@ impl BrowserBackend for BackendStartup {
         match self {
             Self::Cdp(backend) => backend.dispatch(operation, request),
             Self::Bidi(backend) => backend.dispatch(operation, request),
+            Self::WebDriver(backend) => backend.dispatch(operation, request),
             Self::Proof(backend) => backend.dispatch(operation, request),
         }
     }
@@ -126,6 +130,20 @@ impl BackendFactory {
         Ok(BackendStartup::Bidi(Box::new(
             BidiBrowserBackend::connect_with_config(config).await?,
         )))
+    }
+
+    pub fn webdriver(
+        config: WebDriverBackendConfig,
+    ) -> Result<BackendStartup, BrowserBackendError> {
+        Ok(BackendStartup::WebDriver(Box::new(
+            WebDriverBrowserBackend::new(config)?,
+        )))
+    }
+
+    pub fn safari_webdriver(
+        endpoint: impl Into<String>,
+    ) -> Result<BackendStartup, BrowserBackendError> {
+        Self::webdriver(WebDriverBackendConfig::for_safari(endpoint))
     }
 
     pub fn cdp(

@@ -11,8 +11,9 @@ use crate::browser_backend::{
 use crate::browser_backend::{
     ActionResult, BROWSER_BACKEND_SCHEMA_VERSION, BackendContract, BackendFuture, BackendOperation,
     BackendProfile, BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError,
-    BrowserCapability, BrowsingContext, CapabilityDescriptor, EffectsResult, EvidenceLevel,
-    EvidenceResult, NavigationResult, Portability, ScriptResult, SemanticAction, SupportLevel,
+    BrowserCapability, BrowsingContext, CapabilityDependency, CapabilityDescriptor, EffectsResult,
+    EvidenceLevel, EvidenceResult, NavigationResult, Portability, ScriptResult, SemanticAction,
+    SupportLevel,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -22,6 +23,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+use url::Url;
 
 const BIDI_BACKEND_ID: &str = "webdriver-bidi";
 const BIDI_BACKEND_VERSION: &str = "1";
@@ -43,6 +45,10 @@ pub struct BidiBackendConfig {
     pub disabled_capabilities: Vec<BrowserCapability>,
     /// Per-command transport deadline.
     pub command_timeout: Duration,
+    /// Browser family reported by this endpoint. The default keeps the
+    /// generic BiDi adapter useful for custom implementations; Firefox uses
+    /// [`Self::for_firefox`].
+    pub browser_family: String,
 }
 
 impl BidiBackendConfig {
@@ -52,20 +58,48 @@ impl BidiBackendConfig {
             glass_version: env!("CARGO_PKG_VERSION").into(),
             disabled_capabilities: Vec::new(),
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
+            browser_family: "webdriver-bidi".into(),
         }
     }
 
+    /// Configure the direct WebDriver BiDi endpoint exposed by Firefox.
+    pub fn for_firefox(endpoint: impl Into<String>) -> Self {
+        let mut config = Self::new(endpoint);
+        config.browser_family = "firefox".into();
+        config
+    }
+
     pub fn validate(&self) -> Result<(), BrowserBackendError> {
-        if self.endpoint.is_empty() {
+        let endpoint = Url::parse(self.endpoint.trim()).map_err(|error| {
+            BrowserBackendError::InvalidConfiguration {
+                field: "bidi endpoint".into(),
+                reason: format!("endpoint must be a valid URL: {error}"),
+            }
+        })?;
+        if !matches!(endpoint.scheme(), "ws" | "wss" | "http" | "https") {
             return Err(BrowserBackendError::InvalidConfiguration {
                 field: "bidi endpoint".into(),
-                reason: "endpoint must not be empty".into(),
+                reason: "endpoint must use ws, wss, http, or https".into(),
+            });
+        }
+        if endpoint.host_str().is_none() {
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "bidi endpoint".into(),
+                reason: "endpoint must include a host".into(),
             });
         }
         if self.glass_version.is_empty() {
             return Err(BrowserBackendError::InvalidConfiguration {
                 field: "glass version".into(),
                 reason: "glass version must not be empty".into(),
+            });
+        }
+        if self.browser_family.is_empty()
+            || self.browser_family.len() > crate::browser_backend::MAX_BROWSER_FAMILY_BYTES
+        {
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "browser family".into(),
+                reason: "browser family must be between one and the bounded family size".into(),
             });
         }
         if self.command_timeout.is_zero() || self.command_timeout > Duration::from_secs(60) {
@@ -114,7 +148,7 @@ impl BidiBrowserBackend {
     ) -> Result<Self, BrowserBackendError> {
         config.validate()?;
         let websocket_url =
-            discover_websocket_url(&config.endpoint, config.command_timeout).await?;
+            discover_websocket_url(config.endpoint.trim(), config.command_timeout).await?;
         let (socket, _) = timeout(config.command_timeout, connect_async(&websocket_url))
             .await
             .map_err(|_| connection_error("connect", "connection timed out"))?
@@ -156,6 +190,21 @@ impl BidiBrowserBackend {
                 BrowserCapability::Evidence | BrowserCapability::Action
             ) && disabled.contains(&BrowserCapability::Script);
             let available = available && !dependent;
+            let dependencies = if available
+                && matches!(
+                    capability,
+                    BrowserCapability::Evidence | BrowserCapability::Action
+                ) {
+                vec![CapabilityDependency {
+                    capability: BrowserCapability::Script,
+                    minimum: SupportLevel::Available,
+                    reason:
+                        "the BiDi adapter derives this semantic operation through script evaluation"
+                            .into(),
+                }]
+            } else {
+                Vec::new()
+            };
             capabilities.insert(
                 capability,
                 CapabilityDescriptor {
@@ -172,7 +221,7 @@ impl BidiBrowserBackend {
                     } else {
                         Portability::NonPortable
                     },
-                    dependencies: Vec::new(),
+                    dependencies,
                     limitations: if available {
                         Vec::new()
                     } else {
@@ -188,10 +237,10 @@ impl BidiBrowserBackend {
         let profile = BackendProfile {
             schema_version: BROWSER_BACKEND_SCHEMA_VERSION,
             identity: crate::browser_backend::BackendIdentity {
-                backend_id: BIDI_BACKEND_ID.into(),
+                backend_id: bidi_backend_id(&config.browser_family),
                 version: BIDI_BACKEND_VERSION.into(),
                 browser: crate::browser_backend::BrowserVersionRange {
-                    family: "webdriver-bidi".into(),
+                    family: config.browser_family.clone(),
                     minimum: None,
                     maximum: None,
                 },
@@ -488,10 +537,36 @@ async fn discover_websocket_url(
         .await
         .map_err(|_| connection_error("discover", "HTTP discovery timed out"))?
         .map_err(|error| connection_error("discover", &error.to_string()))?;
-    let document: Value = timeout(command_timeout, response.json())
-        .await
-        .map_err(|_| connection_error("discover", "HTTP response timed out"))?
-        .map_err(|error| connection_error("discover", &error.to_string()))?;
+    let content_length = response.content_length();
+    if content_length.is_some_and(|length| length > MAX_WIRE_BYTES as u64) {
+        return Err(connection_error(
+            "discover",
+            "HTTP response exceeds wire budget",
+        ));
+    }
+    let mut stream = response.bytes_stream();
+    let bytes = timeout(command_timeout, async {
+        let mut bytes = Vec::with_capacity(
+            content_length
+                .unwrap_or_default()
+                .min(MAX_WIRE_BYTES as u64) as usize,
+        );
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| connection_error("discover", &error.to_string()))?;
+            if bytes.len().saturating_add(chunk.len()) > MAX_WIRE_BYTES {
+                return Err(connection_error(
+                    "discover",
+                    "HTTP response exceeds wire budget",
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    })
+    .await
+    .map_err(|_| connection_error("discover", "HTTP response timed out"))??;
+    let document: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| connection_error("discover", &format!("invalid JSON: {error}")))?;
     document
         .get("webSocketUrl")
         .or_else(|| document.get("websocketUrl"))
@@ -537,11 +612,11 @@ fn action_source(action: &SemanticAction) -> Result<String, BrowserBackendError>
     match action {
         SemanticAction::Click { target } => Ok(format!(
             "(() => {{ const e = document.querySelector({}); if (!e) return false; e.click(); return true; }})()",
-            serde_json::to_string(target).unwrap_or_else(|_| "\"\"".into())
+            css_selector_literal(target)?
         )),
         SemanticAction::Type { target, text } => Ok(format!(
             "(() => {{ const e = document.querySelector({}); if (!e) return false; e.focus(); e.value = {}; e.dispatchEvent(new Event('input', {{bubbles: true}})); e.dispatchEvent(new Event('change', {{bubbles: true}})); return true; }})()",
-            serde_json::to_string(target).unwrap_or_else(|_| "\"\"".into()),
+            css_selector_literal(target)?,
             serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into())
         )),
         SemanticAction::KeyPress { .. } | SemanticAction::Scroll { .. } => {
@@ -552,10 +627,33 @@ fn action_source(action: &SemanticAction) -> Result<String, BrowserBackendError>
         }
     }
 }
+
+fn css_selector_literal(target: &str) -> Result<String, BrowserBackendError> {
+    let selector = target.strip_prefix("css=").unwrap_or(target);
+    if selector.is_empty()
+        || ["ref=", "role=", "text=", "name=", "ordinal="]
+            .iter()
+            .any(|prefix| target.starts_with(prefix))
+    {
+        return Err(BrowserBackendError::UnsupportedOperation {
+            operation: "action".into(),
+            reason: "Firefox/BiDi actions require a CSS selector (use css=...)".into(),
+        });
+    }
+    Ok(serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".into()))
+}
 fn next_command_id(state: &mut BidiState) -> u64 {
     let id = state.next_command_id;
     state.next_command_id = state.next_command_id.saturating_add(1);
     id
+}
+
+fn bidi_backend_id(browser_family: &str) -> String {
+    if browser_family == "webdriver-bidi" {
+        BIDI_BACKEND_ID.into()
+    } else {
+        format!("{BIDI_BACKEND_ID}-{browser_family}")
+    }
 }
 fn ensure_initialized(state: &BidiState, operation: &str) -> Result<(), BrowserBackendError> {
     if state.initialized {
@@ -634,6 +732,22 @@ mod tests {
     }
 
     #[test]
+    fn firefox_profile_is_browser_specific() {
+        let config = BidiBackendConfig::for_firefox("ws://127.0.0.1:9222/session");
+        let profile = BidiBrowserBackend::profile_for(&config).unwrap();
+        assert_eq!(profile.identity.backend_id, "webdriver-bidi-firefox");
+        assert_eq!(profile.identity.browser.family, "firefox");
+    }
+
+    #[test]
+    fn bidi_endpoint_validation_rejects_missing_host() {
+        let error = BidiBackendConfig::for_firefox("wss://")
+            .validate()
+            .unwrap_err();
+        assert!(error.to_string().contains("valid URL"));
+    }
+
+    #[test]
     fn action_translation_is_bounded() {
         let source = action_source(&SemanticAction::Type {
             target: "input[name=q]".into(),
@@ -643,6 +757,16 @@ mod tests {
         assert!(source.contains("dispatchEvent"));
         assert!(source.len() < crate::browser_backend::MAX_JSON_BYTES);
     }
+
+    #[test]
+    fn action_translation_rejects_non_css_semantic_references() {
+        let error = action_source(&SemanticAction::Click {
+            target: "role=button[name=Save]".into(),
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("CSS selector"));
+    }
+
     #[tokio::test]
     async fn mock_bidi_flow_navigates_extracts_acts_and_reports_effects() {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))

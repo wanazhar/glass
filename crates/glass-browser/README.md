@@ -1,9 +1,10 @@
 # glass-browser
 
 `glass-browser` is Glass's standalone browser intelligence runtime and Rust
-library. It drives local Chrome or Chromium through a transport-neutral
-contract with CDP as the production backend. It does not bundle a browser,
-host a remote browser service, or infer an autonomous action plan.
+library. Its full `BrowserSession` drives local Chrome or Chromium through CDP;
+its portable semantic session can connect to Firefox WebDriver BiDi or
+SafariDriver W3C WebDriver endpoints. It does not bundle a browser, host a
+remote browser service, or infer an autonomous action plan.
 
 **Status: Current 0.3.14 source behavior.** This is the browser-only package;
 the complete development TUI, project runtime, Pi Agent, editor, PTYs, and
@@ -38,9 +39,11 @@ you want both `glass` and `glass-browser`. Installing both packages into the
 same Cargo home can make the last installation replace the shared
 `glass-browser` executable; use one package as the owner of that command.
 
-Chrome, Chromium, or Chrome for Testing is required for browser-backed
-operations. `doctor`, Task Protocol validation/compilation, Web IR operations,
-policy checks, and several scorecards are browser-free.
+Chrome, Chromium, or Chrome for Testing is required for full
+`BrowserSession`-backed operations. Firefox and Safari require an externally
+started BiDi/WebDriver endpoint for the portable semantic command set.
+`doctor`, Task Protocol validation/compilation, Web IR operations, policy
+checks, and several scorecards are browser-free.
 
 For Rust:
 
@@ -130,6 +133,7 @@ does not own or close the external browser.
 | Workflows | `WorkflowDefinition`, `WorkflowCheckpoint` | Typed bounded execution, proof, resume, and recovery |
 | Knowledge | `KnowledgeStore` | Scoped advisory persistence and freshness assessment |
 | Backend interface | `browser_backend` | Capability-evidenced semantic backend dispatch |
+| Alternative runtimes | `BrowserRuntimeSession` | Portable Firefox BiDi and Safari WebDriver session |
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -162,9 +166,10 @@ agreement reports exact schema and capability status.
   and diagnostic logs as sensitive.
 - Linux and macOS targets are declared; native certification is tracked
   separately. Windows receives browser-free source checks but has no certified
-  native browser runtime. Firefox, WebKit, and Safari are unsupported.
-- WebDriver BiDi is experimental and bounded. An unavailable capability fails
-  closed rather than falling back to raw transport.
+  native browser runtime.
+- Firefox BiDi and Safari WebDriver are experimental and bounded. An
+  unavailable capability fails closed rather than falling back to raw
+  transport.
 - Native extensions require explicit opt-in and a platform sandbox gate.
 
 ## Documentation

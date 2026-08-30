@@ -7,12 +7,14 @@ use super::args::{
     BackendCommand, CertifyCommand, CheckpointCommand, Cli, Commands, DaemonCommand, IrCommand,
     KnowledgeCommand, KnowledgeInvalidationState, McpClient, MemoryCommand, ProfileCommand,
     ReplayCommand, ResultCommand, SessionCommand, SnapshotCommand, SurfaceCommand, TaskCommand,
+    TuiGraphics, TuiLayout, TuiLiveBackend, TuiLiveFit, TuiLiveMode, TuiLiveQuality, TuiTransport,
     WorkflowAuthoringCommand, WorkspaceCommand,
 };
-use crate::browser::policy::{BrowserPolicy, PolicyCapability};
+use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyPreset};
 use crate::browser::profile::ProfileManager;
+use crate::browser::runtime::{BrowserRuntime, BrowserRuntimeSession};
 use crate::browser::session::{
-    ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie,
+    ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie, InteractionMode,
     KnowledgeConfidence, KnowledgeStore, Locator, PdfOptions, ReconciliationOptions,
     SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
     SessionOptions, SessionSnapshotStore, StructuredExtractionRequest, VerificationPredicate,
@@ -94,12 +96,15 @@ pub async fn dispatch_browser(cli: Cli) -> BrowserResult<()> {
 }
 
 async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserResult<()> {
-    let policy = policy_from_cli(&cli)?;
+    let mut policy = policy_from_cli(&cli)?;
     if cli.experimental_extensions {
         eprintln!(concat!(
             "warning: experimental extensions are enabled; extension code is untrusted, ",
             "sandbox support is required, and behavior may break"
         ));
+    }
+    if cli.browser_runtime != BrowserRuntime::Chromium || cli.browser_endpoint.is_some() {
+        return dispatch_alternative_runtime(&cli, &mut policy).await;
     }
     if cli.mcp {
         return crate::mcp::server::run_mcp_server(&cli).await;
@@ -315,6 +320,231 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
     let close_result = session.close().await;
     result?;
     close_result
+}
+
+async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> BrowserResult<()> {
+    if cli.browser_runtime == BrowserRuntime::Chromium {
+        return Err(
+            "--browser-endpoint is only valid with --browser-runtime firefox or safari".into(),
+        );
+    }
+    if cli.mcp {
+        return Err(
+            "Firefox and Safari currently support the portable one-shot semantic session; MCP remains on the full Chromium session".into(),
+        );
+    }
+    validate_alternative_runtime_flags(cli)?;
+    if matches!(
+        policy.preset(),
+        PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+    ) {
+        return Err(
+            "hardened and untrusted-mcp network interception currently requires the full Chromium session"
+                .into(),
+        );
+    }
+    if policy.is_polite() {
+        return Err(
+            "the polite robots and crawl-delay gate currently requires the full Chromium session"
+                .into(),
+        );
+    }
+    let command = cli.command.as_ref().ok_or_else(|| {
+        "an explicit browser command is required for Firefox or Safari runtime mode".to_string()
+    })?;
+    if cli.prompt.is_some() {
+        return Err("natural-language prompts are not available on the portable alternative runtime; use an explicit browser command".into());
+    }
+    validate_alternative_runtime_command(command)?;
+
+    // An externally managed BiDi/WebDriver endpoint is an attach operation.
+    // Prepare the same host pinning state used by the CDP session before the
+    // endpoint is contacted, so hardened policy cannot become a no-op here.
+    policy.require(PolicyCapability::Attach)?;
+    policy.prepare_hardened_session(true).await?;
+
+    let endpoint = cli.browser_endpoint.as_deref().ok_or_else(|| {
+        format!(
+            "--browser-endpoint is required for --browser-runtime {}",
+            cli.browser_runtime.browser_family()
+        )
+    })?;
+    if let Commands::Navigate { url, .. } = command {
+        policy
+            .require_url(&crate::browser::session::normalize_url(url))
+            .await?;
+    }
+
+    let session = BrowserRuntimeSession::connect(cli.browser_runtime, endpoint).await?;
+    let context_result = if !matches!(command, Commands::Navigate { .. }) {
+        validate_alternative_runtime_context(&session, policy).await
+    } else {
+        Ok(())
+    };
+    let result = match context_result {
+        Ok(()) => {
+            run_alternative_runtime_command(&session, command, policy, cli.response_mode).await
+        }
+        Err(error) => Err(error),
+    };
+    let close_result = session.close().await;
+    result?;
+    close_result
+}
+
+fn validate_alternative_runtime_flags(cli: &Cli) -> BrowserResult<()> {
+    let unsupported = if cli.profile != "default" {
+        Some("--profile is only available on the full Chromium session")
+    } else if cli.incognito {
+        Some("--incognito is only available on the full Chromium session")
+    } else if cli.attach {
+        Some("alternative runtimes are already externally managed; omit --attach")
+    } else if cli.session.is_some() {
+        Some("--session is only available on the full Chromium session")
+    } else if cli.target_id.is_some() {
+        Some("--target-id is only available on the full Chromium session")
+    } else if cli.frame_id.is_some() {
+        Some("--frame-id is only available on the full Chromium session")
+    } else if cli.port != 9222 {
+        Some(
+            "--port is only available on the full Chromium session; put the port in --browser-endpoint",
+        )
+    } else if cli.headed {
+        Some("--headed is only available when Glass launches Chromium")
+    } else if cli.viewport.is_some() {
+        Some("--viewport is only available on the full Chromium session")
+    } else if cli.interaction != InteractionMode::Human {
+        Some("--interaction is only available on the full Chromium session")
+    } else if cli.audit {
+        Some("--audit is only available on the full Chromium session")
+    } else if cli.trace_on_error {
+        Some("--trace-on-error is only available on the full Chromium session")
+    } else if cli.chrome_path.is_some() {
+        Some("--chrome-path is only available on the full Chromium session")
+    } else if cli.experimental_extensions {
+        Some("--experimental-extensions is only available on the full Chromium session")
+    } else if cli.tui_layout != TuiLayout::Auto
+        || cli.tui_transport != TuiTransport::Auto
+        || cli.tui_graphics != TuiGraphics::Auto
+        || cli.tui_rtt_ms.is_some()
+        || cli.tui_throughput_mbps.is_some()
+        || cli.tui_live != TuiLiveMode::Off
+        || cli.tui_live_backend != TuiLiveBackend::Auto
+        || cli.tui_live_quality != TuiLiveQuality::Balanced
+        || cli.tui_live_fit != TuiLiveFit::Contain
+    {
+        Some("TUI presentation options are only available on the full Chromium session")
+    } else if cli.knowledge_store.is_some() {
+        Some("--knowledge-store is only available on the full Chromium session")
+    } else {
+        None
+    };
+    if let Some(message) = unsupported {
+        return Err(message.into());
+    }
+    Ok(())
+}
+
+fn validate_alternative_runtime_command(command: &Commands) -> BrowserResult<()> {
+    match command {
+        Commands::Navigate { expected_revision, .. }
+        | Commands::Click { expected_revision, .. }
+        | Commands::Type { expected_revision, .. }
+            if expected_revision.is_some() =>
+        {
+            Err("revision guards are not yet exposed by the portable runtime CLI".into())
+        }
+        Commands::Type { target, .. } if target.is_none() => {
+            Err("Firefox/Safari type requires --target with a CSS selector".into())
+        }
+        Commands::Observe {
+            deep_dom,
+            screenshot,
+            form_values,
+            semantic_level,
+            region,
+        } if *deep_dom
+            || *screenshot
+            || *form_values
+            || semantic_level.is_some()
+            || region.is_some() => Err(
+            "portable Firefox/Safari observation supports compact evidence only; DOM, screenshot, forms, and semantic regions require Chromium".into(),
+        ),
+        Commands::Navigate { .. }
+        | Commands::Click { .. }
+        | Commands::Type { .. }
+        | Commands::Text
+        | Commands::Observe { .. }
+        | Commands::Targets
+        | Commands::Evaluate { .. } => Ok(()),
+        _ => Err(
+            "this Firefox/Safari runtime slice supports navigate, click, type, text, observe, targets, and evaluate; use Chromium for the full session command set".into(),
+        ),
+    }
+}
+
+async fn validate_alternative_runtime_context(
+    session: &BrowserRuntimeSession,
+    policy: &BrowserPolicy,
+) -> BrowserResult<()> {
+    let contexts = session.contexts().await?;
+    let context = contexts
+        .iter()
+        .find(|context| context.active)
+        .ok_or("alternative runtime returned no active context")?;
+    policy.require_existing_target_url(&context.url)?;
+    Ok(())
+}
+
+async fn run_alternative_runtime_command(
+    session: &BrowserRuntimeSession,
+    command: &Commands,
+    policy: &BrowserPolicy,
+    response_mode: ResponseMode,
+) -> BrowserResult<()> {
+    match command {
+        Commands::Navigate { url, .. } => {
+            print_json_mode(&session.navigate(url).await?, response_mode)
+        }
+        Commands::Click { target, .. } => print_json_mode(
+            &session
+                .action(SemanticAction::Click {
+                    target: target.clone(),
+                })
+                .await?,
+            response_mode,
+        ),
+        Commands::Type { text, target, .. } => {
+            let target = target
+                .clone()
+                .ok_or("Firefox/Safari type requires --target with a CSS selector")?;
+            print_json_mode(
+                &session
+                    .action(SemanticAction::Type {
+                        target,
+                        text: text.clone(),
+                    })
+                    .await?,
+                response_mode,
+            )
+        }
+        Commands::Text => {
+            let evidence = session.evidence(EvidenceLevel::Compact).await?;
+            println!("{}", evidence.visible_text);
+            Ok(())
+        }
+        Commands::Observe { .. } => print_json_mode(
+            &session.evidence(EvidenceLevel::Compact).await?,
+            response_mode,
+        ),
+        Commands::Targets => print_json_mode(&session.contexts().await?, response_mode),
+        Commands::Evaluate { expression } => {
+            policy.require(PolicyCapability::Evaluate)?;
+            let result = session.script(expression).await?;
+            print_json_mode(&result.value, response_mode)
+        }
+        _ => unreachable!("alternative runtime command was validated before dispatch"),
+    }
 }
 
 async fn dispatch_daemon(cli: &Cli, action: &DaemonCommand) -> BrowserResult<()> {
@@ -2685,6 +2915,42 @@ mod tests {
         assert!(!should_run_tui(false, true));
         assert!(!should_run_tui(true, false));
         assert!(!should_run_tui(false, false));
+    }
+
+    #[test]
+    fn alternative_runtime_rejects_flags_that_would_be_ignored() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "firefox",
+            "--browser-endpoint",
+            "ws://127.0.0.1:9222/session",
+            "--profile",
+            "work",
+            "text",
+        ])
+        .unwrap();
+        let error = validate_alternative_runtime_flags(&cli)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--profile"));
+    }
+
+    #[test]
+    fn alternative_runtime_rejects_unsupported_commands_before_connecting() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "safari",
+            "--browser-endpoint",
+            "http://127.0.0.1:4444",
+            "screenshot",
+        ])
+        .unwrap();
+        let error = validate_alternative_runtime_command(cli.command.as_ref().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("supports navigate"));
     }
 
     #[test]

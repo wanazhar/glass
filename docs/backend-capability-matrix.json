@@ -35,6 +35,28 @@
       },
       "limitations": ["Action certification is bounded to click and type via evaluated DOM input.", "A disabled script capability also disables evidence and action."]
     },
+    "webdriver-bidi-firefox": {
+      "certification": "experimental",
+      "transport": "firefox-webdriver-bidi-websocket",
+      "available": ["lifecycle", "navigation", "contexts", "evidence", "action", "effects", "script"],
+      "unavailable": ["capture", "storage", "prompts", "downloads"],
+      "dependencies": {
+        "evidence": ["script"],
+        "action": ["script"]
+      },
+      "limitations": ["Firefox support is exposed through the bounded portable semantic session; full CDP-only features are unavailable."]
+    },
+    "webdriver-classic-safari": {
+      "certification": "experimental",
+      "transport": "safari-driver-w3c-webdriver-http",
+      "available": ["lifecycle", "navigation", "contexts", "evidence", "action", "effects", "script"],
+      "unavailable": ["capture", "storage", "prompts", "downloads"],
+      "dependencies": {
+        "evidence": ["script"],
+        "action": ["script"]
+      },
+      "limitations": ["Safari support is bounded to one active WebDriver window and CSS click/type actions; SafariDriver is externally started."]
+    },
     "semantic-proof": {
       "certification": "experimental",
       "transport": "browser-free-deterministic-conformance",

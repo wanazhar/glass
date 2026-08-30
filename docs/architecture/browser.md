@@ -5,6 +5,9 @@ Status: Accepted
 ## Purpose
 
 Define the lowest-cost correct browser contract shared by CLI, MCP, and TUI.
+This document describes the full Chromium BrowserSession/CDP data plane;
+the bounded Firefox and Safari path is specified in the
+[Browser Host RFC](../browser-host-rfc.md#current-browser-runtime-mapping).
 
 ## Observation contract
 

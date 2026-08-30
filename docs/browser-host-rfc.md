@@ -60,5 +60,47 @@ mutation. The current Web IR, revision, policy, and capability evidence remain
 executable authority; backend profiles are declarations, not permission to
 bypass those checks.
 
+## Current browser runtime mapping
+
+The full `BrowserSession` remains the Chromium/CDP production path. The public
+`BrowserRuntimeSession` adds a deliberately smaller portable path:
+
+| Runtime | Transport | Status | Startup |
+|---|---|---|---|
+| Chromium | Chrome DevTools Protocol | Production full session | Glass launches or explicitly attaches |
+| Firefox | WebDriver BiDi WebSocket | Experimental portable semantics | User starts Firefox with `--remote-debugging-port` and supplies `--browser-endpoint` |
+| Safari | W3C WebDriver HTTP through `safaridriver` | Experimental portable semantics | User starts `safaridriver` and supplies its base URL |
+
+The portable command set is navigation, one active context, compact
+script-derived evidence, script evaluation, CSS click/type actions, and
+revision effects. Screenshots, storage, prompts, downloads, keyboard,
+scrolling, multi-window control, profiles, MCP, TUI, and the full locator/Web
+IR pipeline remain capability-denied on these adapters.
+
+Firefox is configured as a browser-specific BiDi profile so selection can
+require `browserFamily=firefox`; Safari is intentionally represented by the
+classic WebDriver adapter because SafariDriver is not currently a certified
+direct BiDi endpoint in this codebase.
+
+Protocol references:
+
+- [W3C WebDriver BiDi](https://www.w3.org/TR/webdriver-bidi/)
+- [MDN: create a WebDriver BiDi connection](https://developer.mozilla.org/en-US/docs/Web/WebDriver/How_to/Create_BiDi_connection)
+- [WebKit: WebDriver is coming to Safari](https://webkit.org/blog/9395/webdriver-is-coming-to-safari-in-ios-13/)
+
+## Native browser feasibility
+
+Glass does not currently contain a browser engine. A native runtime would need
+at least HTML parsing, CSS/layout, painting/compositing, JavaScript execution,
+network/security policy, cookies/storage, accessibility, input, downloads, and
+platform windowing. An adapter can reuse a browser protocol; it cannot provide
+those engine responsibilities.
+
+The practical boundary is therefore to keep `BrowserRuntimeSession` as a
+transport adapter and treat an in-house engine as a separate multi-year
+architecture project with its own standards conformance, security review, and
+platform certification. No `native` runtime flag is exposed until an actual
+engine exists; the proof backend must never be presented as browser parity.
+
 The machine-readable dependency and omission matrix is
 [`backend-capability-matrix.json`](backend-capability-matrix.json).

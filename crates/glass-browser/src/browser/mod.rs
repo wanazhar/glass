@@ -4,7 +4,9 @@
 //! owned session launches Chrome, owns its process and profile flush, and must
 //! be closed explicitly. An attached session selects an existing CDP endpoint
 //! and never owns that browser process. The [`session options type`](crate::browser::session::SessionOptions)
-//! validates the distinction before connection.
+//! validates the distinction before connection. [`runtime module`](crate::browser::runtime)
+//! provides a separate portable semantic slice for externally managed
+//! Firefox BiDi and Safari WebDriver endpoints.
 //!
 //! The production path is raw CDP through the [`CDP module`](crate::browser::cdp);
 //! the [`BiDi backend module`](crate::browser::bidi_backend) is a bounded
@@ -45,8 +47,12 @@ pub mod policy;
 pub mod profile;
 /// Browser-free deterministic backend for semantic protocol conformance.
 pub mod proof_backend;
+/// Alternative browser runtime sessions backed by BiDi or W3C WebDriver.
+pub mod runtime;
 /// Central browser session orchestrating all CDP operations.
 pub mod session;
+/// Bounded W3C WebDriver adapter for runtimes such as SafariDriver.
+pub mod webdriver_backend;
 pub(crate) use backend_adapter::CdpSessionBackend;
 /// Backend startup candidates and selected backend handle.
 pub use backend_factory::{BackendFactory, BackendStartup, StartedBackend};
@@ -54,6 +60,10 @@ pub use backend_factory::{BackendFactory, BackendStartup, StartedBackend};
 pub use bidi_backend::{BidiBackendConfig, BidiBrowserBackend};
 /// Browser-free deterministic backend used for semantic conformance tests.
 pub use proof_backend::ProofBackend;
+/// Alternative browser runtime and portable semantic session.
+pub use runtime::{BrowserRuntime, BrowserRuntimeSession};
+/// W3C WebDriver backend and endpoint configuration.
+pub use webdriver_backend::{WebDriverBackendConfig, WebDriverBrowserBackend};
 
 // Re-export key session types to the browser module level.
 

@@ -5,10 +5,12 @@ Status: Accepted
 ## Purpose and boundary
 
 Glass is a reusable Rust library plus one `glass` executable from the
-`glass-dev` package that gives local automation clients a semantic
-execution layer over direct Chrome control through raw CDP. It owns the client
-and session lifecycle, bounded extraction, Web IR reconciliation, deterministic
-task compilation, and guarded execution; Chrome remains the browser process.
+`glass-dev` package that gives local automation clients a semantic execution
+layer over direct Chrome control through raw CDP. It also exposes a bounded
+portable semantic session for externally managed Firefox BiDi and Safari
+WebDriver endpoints. It owns the client and session lifecycle, bounded
+extraction, Web IR reconciliation, deterministic task compilation, and guarded
+execution; the browser remains an external process.
 
 ## Product constraints
 
@@ -37,6 +39,11 @@ commands. High-level tasks must pass through the browser-free Web IR compiler
 before the guarded executor dispatches an existing browser operation.
 `CdpClient` owns WebSocket request routing and lightweight event delivery.
 Chrome lifecycle owns only processes started by Glass.
+
+The portable alternative CLI path is intentionally separate from this full
+session data plane: BrowserRuntimeSession talks to an externally managed
+Firefox BiDi or Safari WebDriver endpoint and exposes only its certified
+semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
 
 ## Main concepts
 

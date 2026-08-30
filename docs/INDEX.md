@@ -180,6 +180,9 @@ current user instructions.
 - [Browser Host RFC](browser-host-rfc.md) and
   [backend capability matrix](backend-capability-matrix.json) — backend
   registration, capability evidence, BiDi boundary, and survivability.
+- [Alternative browser runtimes](browser-host-rfc.md#current-browser-runtime-mapping) —
+  experimental Firefox BiDi and Safari WebDriver support, plus the native
+  browser feasibility boundary.
 - [Automation contracts](architecture/automation.md) — targeting, waiting,
   topology, input, safety, evidence, visual capture, and resource rules.
 - [Experience Layer](architecture/experience.md) — shared user-facing result,

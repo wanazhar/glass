@@ -1,6 +1,6 @@
-//! Local, revision-safe browser intelligence for Chrome and Chromium.
+//! Local, revision-safe browser intelligence for Chromium, Firefox, and Safari.
 //!
-//! `glass-browser` provides an owned/attached browser [`BrowserSession`],
+//! `glass-browser` provides an owned/attached Chromium [`BrowserSession`],
 //! structured semantic observation, guarded actions, stable Web IR, Task
 //! Protocol compilation/execution, workflows, advisory knowledge, policy,
 //! MCP, daemon, TUI, backend, surface, presentation, and reliability contracts.
@@ -8,8 +8,9 @@
 //! Glass does not bundle a browser, host a browser service, or infer an
 //! autonomous plan. Callers select operations; Glass validates current
 //! evidence, policy, capabilities, revisions, unique targeting, and bounded
-//! postconditions. CDP is the production backend. WebDriver BiDi remains an
-//! experimental bounded adapter.
+//! postconditions. CDP is the production backend for the full session. The
+//! portable [`BrowserRuntimeSession`] covers the bounded semantic slice for
+//! Firefox BiDi and Safari WebDriver.
 //!
 //! The docs.rs page documents the Rust library API; installed command behavior
 //! is specified in the [CLI reference](https://github.com/wanazhar/glass/blob/main/docs/cli.md).
@@ -229,12 +230,12 @@ pub mod workspace;
 pub use browser::{
     AccessibilityDiffSummary, ActionContractError, ActionFailureKind, ActionKind, ActionOutcome,
     ActionStatus, ActionVerificationEvidence, BackendFactory, BackendStartup, BidiBackendConfig,
-    BidiBrowserBackend, BrowserResult, BrowserSession, KnowledgeAssessment,
-    KnowledgeAssessmentSignal, KnowledgeAssessmentStatus, KnowledgeBackendCapability,
-    KnowledgeBackendKind, KnowledgeBackendProvenance, KnowledgeConfidence,
-    KnowledgeCurrentValidation, KnowledgeCurrentValidationStatus, KnowledgeEmbeddingProvider,
-    KnowledgeEvidenceQuality, KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode,
-    KnowledgeGraphNodeKind, KnowledgeGraphTraversal, KnowledgeInvalidation,
+    BidiBrowserBackend, BrowserResult, BrowserRuntime, BrowserRuntimeSession, BrowserSession,
+    KnowledgeAssessment, KnowledgeAssessmentSignal, KnowledgeAssessmentStatus,
+    KnowledgeBackendCapability, KnowledgeBackendKind, KnowledgeBackendProvenance,
+    KnowledgeConfidence, KnowledgeCurrentValidation, KnowledgeCurrentValidationStatus,
+    KnowledgeEmbeddingProvider, KnowledgeEvidenceQuality, KnowledgeGraph, KnowledgeGraphEdge,
+    KnowledgeGraphNode, KnowledgeGraphNodeKind, KnowledgeGraphTraversal, KnowledgeInvalidation,
     KnowledgeLearningPolicy, KnowledgeLearningRequest, KnowledgeLearningResult,
     KnowledgeLifecycleEvent, KnowledgeLookupContext, KnowledgeLookupOptions,
     KnowledgeMemoryInfluence, KnowledgeObservationMode, KnowledgeObservationReport,
@@ -248,12 +249,13 @@ pub use browser::{
     KnowledgeSurfaceProvenance, KnowledgeUnderstandingLevel, KnowledgeValidationError,
     KnowledgeVerifiedWorkflowEvidence, MAX_KNOWLEDGE_RECORDS, NavigationOutcome, PageInfo,
     ProofBackend, SessionOptions, SessionOptionsBuilder, StartedBackend, TaskExecutionReceipt,
-    TaskExecutionResult, TaskPostconditionReceipt, TaskStepResult, WorkflowBudgets,
-    WorkflowCheckpoint, WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition,
-    WorkflowInput, WorkflowOutput, WorkflowOutputDeclaration, WorkflowOutputSource,
-    WorkflowResumeError, WorkflowResumePlan, WorkflowRunResult, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepRecord, WorkflowStepState, WorkflowTerminalProof, WorkflowTrace,
-    WorkflowTraceEvent, WorkflowTransactionClass, WorkflowValidationError, WorkflowValueType,
+    TaskExecutionResult, TaskPostconditionReceipt, TaskStepResult, WebDriverBackendConfig,
+    WebDriverBrowserBackend, WorkflowBudgets, WorkflowCheckpoint, WorkflowCheckpointPage,
+    WorkflowCheckpointStep, WorkflowDefinition, WorkflowInput, WorkflowOutput,
+    WorkflowOutputDeclaration, WorkflowOutputSource, WorkflowResumeError, WorkflowResumePlan,
+    WorkflowRunResult, WorkflowRunStatus, WorkflowStep, WorkflowStepRecord, WorkflowStepState,
+    WorkflowTerminalProof, WorkflowTrace, WorkflowTraceEvent, WorkflowTransactionClass,
+    WorkflowValidationError, WorkflowValueType,
 };
 
 pub use task_protocol::{

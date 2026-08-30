@@ -72,10 +72,11 @@ capabilities. Locators must resolve exactly one current target; stale revisions
 fail before browser input.
 
 The feature-gated native engine additionally derives bounded integer-pixel
-normal-flow rectangles, inherited text color, bounded paint clips, uniform
-solid-border paint, a deterministic clear/fill/text/border display list, a
-logical RGBA software surface, and bounded PNG capture through the explicit
-backend operation;
+normal-flow rectangles, uniform non-negative padding/margin, explicit
+content-box or border-box sizing, outer/content rectangles, inherited text
+color, bounded paint clips, uniform solid-border paint, a deterministic
+clear/fill/text/border display list, a logical RGBA software surface, and
+bounded PNG capture through the explicit backend operation;
 it accepts native
 `point=x,y` click targets
 through its Rust API/CLI path. These are experimental local-content artifacts,
@@ -185,8 +186,8 @@ agreement reports exact schema and capability status.
   transport.
 - The native engine is experimental, default-off, fixture/data-URL-only, and
   available through the explicit Rust backend factory and feature-gated local
-  CLI runtime. Its current semantic slice supports bounded layout/point input,
-  click/type actions, and revision effects for local controls. The CLI default configuration
+  CLI runtime. Its current semantic slice supports bounded box-model layout,
+  point input, click/type actions, and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary
   for hostile remote content.

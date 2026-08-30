@@ -61,7 +61,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
 | `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, pixel dimensions, and uniform solid borders | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
-| `native_engine::layout` | viewport-bounded normal-flow geometry and point hit testing | DOM, computed display/visibility, viewport | layout boxes and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::layout` | viewport-bounded normal-flow geometry, bounded outer/content box model, and point hit testing | DOM, computed presentation, viewport | layout boxes/content rectangles and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text/border display-list derivation and bounded ancestor clips | current layout, bounded computed colors/text/borders, and overflow presentation | immutable display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, uniform borders, and PNG encoding | immutable display-list commands | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
@@ -131,6 +131,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-013` | bounded `overflow:hidden` ancestor clips on fill/text commands and software replay | `native-engine-012` | scrolling, visible overflow, stacking contexts, borders, transforms, screenshots, browser parity |
 | `native-engine-014` | bounded uniform `border:Npx solid <color>` parsing, `BorderRect` display commands, and inside-the-box software replay | `native-engine-013` | padding, box sizing, individual sides, non-solid styles, scrolling, transforms, screenshots, browser parity |
 | `native-engine-015` | bounded logical RGBA-to-PNG encoding and real native `CaptureFormat::Png` dispatch | `native-engine-014` | screenshot-containing evidence, JPEG/PDF, physical pixels, viewport/element/full-page modes, fonts, images, browser parity |
+| `native-engine-016` | bounded uniform padding/margin, explicit box sizing, outer/content layout rectangles, and content-origin flow/paint | `native-engine-015` | four-side/negative/percentage/auto values, margin collapsing, positioned/flex/grid layout, scrolling, browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -185,6 +186,9 @@ Phase 2 integration chains added by these slices are:
 20. Native PNG capture encodes the current logical surface through the real
     backend dispatcher, enforces the stable capture-byte limit, preserves the
     revision, and denies unsupported JPEG/PDF formats explicitly.
+21. Native box-model derivation exposes outer and content rectangles, applies
+    bounded border/padding insets to child/text origins, applies uniform
+    margins to normal flow, and preserves deterministic hit-test ownership.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -212,13 +216,14 @@ stacking, or that clicking a link performs browser navigation.
 | bounded paint clipping | makes descendant overflow behavior explicit without inventing scrolling | no scroll offsets, visible overflow model, border box-model, transforms, or clip stack cache | carry half-open ancestor intersections on immutable commands and intersect again at replay |
 | bounded uniform border paint | adds a useful edge primitive without changing layout ownership | no padding/box sizing, individual sides, non-solid styles, or border geometry | paint an inside-the-box ring as one immutable command and reuse existing clip/source-over bounds |
 | bounded PNG capture | makes the current logical renderer artifact consumable through the stable capture operation | no physical-device pixels, screenshot evidence schema, JPEG/PDF, image/font fidelity, or capture modes | encode only the bounded current surface, enforce `MAX_CAPTURE_BYTES`, keep capture read-only, and deny unsupported formats |
+| bounded box-model layout | gives border, child flow, text origin, and hit testing one explicit outer/content geometry owner | no general box sizing, side-specific values, margin collapsing, fractional metrics, or positioned/flex/grid layout | support only uniform non-negative pixel values, expose `content_rect`, and keep unsupported values out of the computed style |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-015.md` is the current in-progress checkpoint;
-014 is the latest completed checkpoint. A checkpoint is complete only when the
+`docs/plan/tasks/native-engine-016.md` is the latest completed checkpoint; 015
+is the preceding completed checkpoint. A checkpoint is complete only when the
 native feature tests pass, strict lint
 passes for the touched code, and the diff confirms no unrelated browser/TUI/
 release behavior changed.

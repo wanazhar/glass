@@ -97,8 +97,8 @@ impl NativeDisplayList {
                     NativeDisplayCommand::TextRun {
                         node_id: layout_box.node_id,
                         origin: NativePoint {
-                            x: layout_box.rect.x,
-                            y: layout_box.rect.y,
+                            x: layout_box.content_rect.x,
+                            y: layout_box.content_rect.y,
                         },
                         text,
                         truncated,

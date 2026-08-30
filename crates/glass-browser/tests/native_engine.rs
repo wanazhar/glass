@@ -208,7 +208,7 @@ fn native_display_list_inherits_text_color_and_preserves_transparent_override() 
 }
 
 #[test]
-fn native_display_list_emits_uniform_border_before_text_and_keeps_layout_stable() {
+fn native_display_list_emits_uniform_border_after_box_model_layout() {
     let document = NativeDocument::parse(
         "<div id='card' style='width: 8px; height: 8px; border: 2px solid blue'>Card</div>",
         &NativeEngineLimits::default(),
@@ -226,8 +226,8 @@ fn native_display_list_emits_uniform_border_before_text_and_keeps_layout_stable(
         Some(NativeRect {
             x: 0,
             y: 0,
-            width: 8,
-            height: 8,
+            width: 12,
+            height: 12,
         })
     );
 
@@ -252,17 +252,99 @@ fn native_display_list_emits_uniform_border_before_text_and_keeps_layout_stable(
             color,
             clip: None,
         } if *node_id == card
-            && *rect == NativeRect { x: 0, y: 0, width: 8, height: 8 }
+            && *rect == NativeRect { x: 0, y: 0, width: 12, height: 12 }
             && *width == 2
             && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+    ));
+    assert!(matches!(
+        &list.commands[text_index],
+        NativeDisplayCommand::TextRun {
+            node_id,
+            origin,
+            ..
+        } if *node_id == card && *origin == glass_browser::browser::native_engine::NativePoint { x: 2, y: 2 }
     ));
 
     let surface = list.rasterize().unwrap();
     assert_eq!(surface.pixel(0, 0), Some([0, 0, 255, 255]));
     assert_eq!(surface.pixel(1, 1), Some([0, 0, 255, 255]));
     assert_eq!(surface.pixel(2, 2), Some([255, 255, 255, 255]));
-    assert_eq!(surface.pixel(5, 5), Some([255, 255, 255, 255]));
-    assert_eq!(surface.pixel(7, 7), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(2, 5), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(11, 11), Some([0, 0, 255, 255]));
+}
+
+#[test]
+fn native_box_model_lays_out_content_padding_border_and_margin() {
+    let document = NativeDocument::parse(
+        "<style>#outer { width: 20px; height: 10px; padding: 2px; border: 1px solid red; } #child { display: block; width: 4px; height: 4px; margin: 3px; } #fixed { width: 20px; height: 10px; padding: 2px; border: 1px solid blue; box-sizing: border-box; }</style><div id='outer'><div id='child'>A</div></div><div id='fixed'>B</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let outer = document.resolve_target("id=outer").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let fixed = document.resolve_target("id=fixed").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(outer),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 26,
+            height: 16,
+        })
+    );
+    let outer_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == outer)
+        .unwrap();
+    assert_eq!(
+        outer_box.content_rect,
+        NativeRect {
+            x: 3,
+            y: 3,
+            width: 20,
+            height: 10,
+        }
+    );
+    assert_eq!(
+        layout.box_for(child),
+        Some(NativeRect {
+            x: 6,
+            y: 6,
+            width: 4,
+            height: 4,
+        })
+    );
+    assert_eq!(
+        layout.box_for(fixed),
+        Some(NativeRect {
+            x: 0,
+            y: 16,
+            width: 20,
+            height: 10,
+        })
+    );
+    let fixed_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == fixed)
+        .unwrap();
+    assert_eq!(
+        fixed_box.content_rect,
+        NativeRect {
+            x: 3,
+            y: 19,
+            width: 14,
+            height: 4,
+        }
+    );
 }
 
 #[test]

@@ -117,6 +117,12 @@ containing evidence, JPEG/PDF, physical pixels, and native CLI screenshots
 unsupported. It must be verified and committed before the next renderer or
 resource expansion changes this boundary.
 
+The completed box-model slice is
+[native-engine-016](tasks/native-engine-016.md). It adds bounded uniform
+padding and margin, explicit content-box/border-box sizing, outer/content
+layout rectangles, and content-origin child/text placement. General box-model
+and layout behavior remains explicitly outside the native capability claim.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -13,9 +13,10 @@ third crate, a protocol adapter, or an embedded copy of another browser.
 The native engine owns a deterministic, headless browser-platform kernel. The
 current slices own lifecycle, one browsing context, local document resources,
 HTML-to-DOM parsing, history, revisions, bounded semantic evidence, and a small
-revisioned semantic interaction/effects model. The engine does not yet own CSS,
-layout, painting, hit testing, JavaScript, network access, storage, downloads,
-prompts, or platform windows.
+revisioned semantic interaction/effects model for text, checkbox, radio, and
+single-select controls. The engine does not yet own CSS, layout, painting, hit
+testing, JavaScript, network access, storage, downloads, prompts, or platform
+windows.
 
 ```text
 BrowserBackendDispatcher
@@ -167,12 +168,14 @@ CSS selectors belong to the later CSS/layout phase.
 The native backend accepts only semantic `Click` and `Type` actions in this
 slice. Click focuses supported buttons, links, checkboxes, radios, textboxes,
 and comboboxes; checkbox and radio state changes are retained in the document
-owner. Type replaces private state for native `input` and `textarea` textboxes.
-Links do not perform default navigation, and no action performs coordinate hit
-testing or invokes JavaScript. Each accepted action advances the document
-revision exactly once, so earlier references must be re-observed. The effects
-operation returns the current revision and changed bit; bounded native event
-metadata remains an internal Rust inspection surface.
+owner. Clicking an option in a single-select combobox selects it and clears its
+siblings. Type replaces private state for native `input` and `textarea`
+textboxes. Links do not perform default navigation, and no action performs
+keyboard navigation, multi-select, coordinate hit testing, or JavaScript
+execution. Each accepted action advances the document revision exactly once,
+so earlier references must be re-observed. The effects operation returns the
+current revision and changed bit; bounded native event metadata remains an
+internal Rust inspection surface.
 
 ## Backend capability contract
 
@@ -184,7 +187,7 @@ The native profile is `experimental` and declares:
 | navigation | available | local `about`, `data`, and registered fixture URLs |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
-| action | available | semantic click/type for supported local controls; no coordinates or default browser behavior |
+| action | available | semantic click/type for supported local controls and single-select options; no coordinates or default browser behavior |
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | omitted | JavaScript is unavailable |
 | capture | omitted | no screenshots or pixels |
@@ -234,7 +237,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   references;
 - duplicate and stale semantic targets plus supported control metadata;
 - focus, checkbox/radio state, text-control state, bounded effects, and
-  pre-mutation rejection of stale, disabled, read-only, and unsupported targets.
+  pre-mutation rejection of stale, disabled, read-only, and unsupported targets;
+- deterministic single-select defaults, option selection, sibling clearing, and
+  rejection of unsupported multi-select behavior.
 
 This slice is not browser parity. It cannot be promoted or advertised as safe
 for arbitrary remote content until CSS/layout, security policy, process

@@ -549,6 +549,76 @@ fn native_border_radius_feeds_layout_hit_testing_and_rounded_replay() {
 }
 
 #[test]
+fn native_inline_boxes_wrap_before_layout_materializes_geometry() {
+    let document = NativeDocument::parse(
+        "<div id='container' style='width:16px'><span id='first' style='display:inline;width:6px;height:4px;padding:1px;margin:1px;background-color:red'>A</span><span id='second' style='display:inline;width:6px;height:4px;padding:1px;margin:1px;background-color:blue'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let container = document.resolve_target("id=container").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(container),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 40,
+        })
+    );
+    assert_eq!(
+        layout.box_for(first),
+        Some(NativeRect {
+            x: 1,
+            y: 1,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(
+        layout.box_for(second),
+        Some(NativeRect {
+            x: 1,
+            y: 21,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(layout.hit_test(2, 2).unwrap(), Some(first));
+    assert_eq!(layout.hit_test(2, 22).unwrap(), Some(second));
+
+    let list = document.display_list(viewport).unwrap();
+    let text_origins = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id, origin, ..
+            } => Some((*node_id, *origin)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(text_origins.contains(&(first, NativePoint { x: 2, y: 2 })));
+    assert!(text_origins.contains(&(second, NativePoint { x: 2, y: 22 })));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == first
+                    && *rect == NativeRect { x: 1, y: 1, width: 8, height: 6 }
+        )
+    }));
+}
+
+#[test]
 fn native_box_model_lays_out_content_padding_border_and_margin() {
     let document = NativeDocument::parse(
         "<style>#outer { width: 20px; height: 10px; padding: 2px; border: 1px solid red; } #child { display: block; width: 4px; height: 4px; margin: 3px; } #fixed { width: 20px; height: 10px; padding: 2px; border: 1px solid blue; box-sizing: border-box; }</style><div id='outer'><div id='child'>A</div></div><div id='fixed'>B</div>",

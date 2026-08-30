@@ -1,5 +1,5 @@
 use super::config::Viewport;
-use super::css::{DisplayValue, NativeBorderRadius};
+use super::css::{DisplayValue, NativeBorderRadius, NativeComputedStyle};
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
 
@@ -328,14 +328,17 @@ impl FlowCursor {
         }
     }
 
+    fn would_wrap(&self, width: u32) -> bool {
+        self.line_has_content
+            && self.x.saturating_sub(self.start_x).saturating_add(width) > self.available_width
+    }
+
     fn place_inline(&mut self, mut width: u32, height: u32) {
         if self.available_width == 0 {
             return;
         }
         width = width.min(self.available_width);
-        if self.line_has_content
-            && self.x.saturating_sub(self.start_x).saturating_add(width) > self.available_width
-        {
+        if self.would_wrap(width) {
             self.flush_line();
         }
         self.x = self.x.saturating_add(width);
@@ -423,13 +426,22 @@ impl<'a> LayoutBuilder<'a> {
                             flow.place_block(size.height.saturating_add(horizontal_margin));
                         }
                         DisplayValue::Auto | DisplayValue::Inline | DisplayValue::Other => {
-                            let margin = self.document.computed_style_for_layout(child).margin();
+                            let style = self.document.computed_style_for_layout(child);
+                            let margin = style.margin();
                             let horizontal_margin = margin.saturating_mul(2);
+                            let available_width =
+                                flow.available_width.saturating_sub(horizontal_margin);
+                            let candidate_width =
+                                self.outer_width(child, style, false, available_width);
+                            let candidate_width = candidate_width.saturating_add(horizontal_margin);
+                            if flow.would_wrap(candidate_width) {
+                                flow.flush_line();
+                            }
                             let size = self.layout_element(
                                 child,
                                 flow.x.saturating_add(margin),
                                 flow.y.saturating_add(margin),
-                                flow.available_width.saturating_sub(horizontal_margin),
+                                available_width,
                                 depth,
                             );
                             flow.place_inline(
@@ -480,20 +492,7 @@ impl<'a> LayoutBuilder<'a> {
         let bottom_inset = border_bottom.saturating_add(padding);
         let horizontal_inset = left_inset.saturating_add(right_inset);
         let vertical_inset = top_inset.saturating_add(bottom_inset);
-        let default_outer_width = if is_block {
-            available_width
-        } else {
-            self.intrinsic_inline_width(id)
-                .saturating_add(horizontal_inset)
-        };
-        let width = style.width().map_or(default_outer_width, |declared| {
-            if style.is_border_box() {
-                declared
-            } else {
-                declared.saturating_add(horizontal_inset)
-            }
-        });
-        let width = width.min(available_width);
+        let width = self.outer_width(id, style, is_block, available_width);
         let default_content_height = if is_block {
             DEFAULT_LINE_HEIGHT
         } else {
@@ -546,6 +545,37 @@ impl<'a> LayoutBuilder<'a> {
             height: content_height,
         };
         FlowSize { width, height }
+    }
+
+    fn outer_width(
+        &self,
+        id: NativeNodeId,
+        style: NativeComputedStyle,
+        is_block: bool,
+        available_width: u32,
+    ) -> u32 {
+        let padding = style.padding();
+        let (border_left, border_right) = style.border().map_or((0, 0), |border| {
+            (border.left().width(), border.right().width())
+        });
+        let horizontal_inset = border_left
+            .saturating_add(padding)
+            .saturating_add(border_right)
+            .saturating_add(padding);
+        let default_outer_width = if is_block {
+            available_width
+        } else {
+            self.intrinsic_inline_width(id)
+                .saturating_add(horizontal_inset)
+        };
+        let width = style.width().map_or(default_outer_width, |declared| {
+            if style.is_border_box() {
+                declared
+            } else {
+                declared.saturating_add(horizontal_inset)
+            }
+        });
+        width.min(available_width)
     }
 
     fn place_text(&self, flow: &mut FlowCursor, value: &str) {

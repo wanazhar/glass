@@ -83,7 +83,8 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
   root vertical viewport scrolling, plus native point hit testing through explicit Rust or feature-gated local CLI
   paths. Its current Rust-only presentation artifacts include side-specific
   solid/dashed/dotted-border paint, bounded physical circular border radii, a
-  display list, a logical RGBA software surface, and
+  bounded inline-box line placement, a display list, a logical RGBA software
+  surface, and
   bounded PNG capture; it never enters automatic backend selection.
 
 ## Module index

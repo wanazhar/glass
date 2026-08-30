@@ -150,6 +150,12 @@ normalization, rounded fill/border replay, and rounded point hit testing.
 Percentages, elliptical radii, corner longhands, rounded descendant clips,
 anti-aliasing, and browser corner fidelity remain outside the current claim.
 
+The completed bounded-inline-flow slice is
+[native-engine-021](tasks/native-engine-021.md). It adds preflight inline-box
+line placement using the same bounded integer outer-width calculation as final
+layout, preserving deterministic line height and hit/paint coordinates while
+leaving typography and general inline formatting unsupported.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -325,6 +325,7 @@ struct FlowCursor {
     minimum_line_height: u32,
     line_height: u32,
     line_has_content: bool,
+    pending_whitespace: bool,
     max_right: u32,
     max_bottom: u32,
 }
@@ -340,12 +341,14 @@ impl FlowCursor {
             minimum_line_height,
             line_height: 0,
             line_has_content: false,
+            pending_whitespace: false,
             max_right: x,
             max_bottom: y,
         }
     }
 
     fn flush_line(&mut self) {
+        self.pending_whitespace = false;
         if self.line_has_content {
             self.y = self
                 .y
@@ -355,6 +358,18 @@ impl FlowCursor {
             self.line_height = 0;
             self.line_has_content = false;
         }
+    }
+
+    fn take_pending_whitespace(&mut self) -> bool {
+        std::mem::take(&mut self.pending_whitespace)
+    }
+
+    fn has_pending_whitespace(&self) -> bool {
+        self.pending_whitespace
+    }
+
+    fn mark_pending_whitespace(&mut self) {
+        self.pending_whitespace = true;
     }
 
     fn would_wrap(&self, width: u32) -> bool {
@@ -477,8 +492,16 @@ impl<'a> LayoutBuilder<'a> {
                                 self.outer_width(child, style, false, available_width);
                             let candidate_width =
                                 candidate_width.saturating_add(margin.horizontal());
-                            if flow.would_wrap(candidate_width) {
+                            let separator_width =
+                                if flow.has_pending_whitespace() && flow.line_has_content {
+                                    CHARACTER_WIDTH
+                                } else {
+                                    0
+                                };
+                            if flow.would_wrap(candidate_width.saturating_add(separator_width)) {
                                 flow.flush_line();
+                            } else {
+                                self.place_pending_separator(parent, flow);
                             }
                             let size = self.layout_element(
                                 child,
@@ -625,8 +648,14 @@ impl<'a> LayoutBuilder<'a> {
     }
 
     fn place_text(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {
+        let leading_whitespace = value.chars().next().is_some_and(char::is_whitespace);
+        let trailing_whitespace = value.chars().next_back().is_some_and(char::is_whitespace);
+        let pending_whitespace = flow.take_pending_whitespace();
         let (text, truncated) = NativeDocument::collapse_text_for_layout(value);
         if text.is_empty() {
+            if leading_whitespace || trailing_whitespace || pending_whitespace {
+                flow.mark_pending_whitespace();
+            }
             return;
         }
         if flow.available_width == 0 {
@@ -638,13 +667,23 @@ impl<'a> LayoutBuilder<'a> {
             .collect::<Vec<_>>();
         for (word_index, word) in words.iter().enumerate() {
             let is_last_word = word_index + 1 == words.len();
+            let separator = if word_index == 0 {
+                leading_whitespace || pending_whitespace
+            } else {
+                true
+            };
             let word_width = Self::text_width(word);
             if flow.line_has_content {
                 let remaining_width = flow
                     .available_width
                     .saturating_sub(flow.x.saturating_sub(flow.start_x));
-                if CHARACTER_WIDTH.saturating_add(word_width) <= remaining_width {
-                    let fragment = format!(" {word}");
+                let separator_width = if separator { CHARACTER_WIDTH } else { 0 };
+                if separator_width.saturating_add(word_width) <= remaining_width {
+                    let fragment = if separator {
+                        format!(" {word}")
+                    } else {
+                        (*word).to_owned()
+                    };
                     self.place_text_fragment(parent, flow, &fragment, truncated && is_last_word);
                     continue;
                 }
@@ -652,6 +691,23 @@ impl<'a> LayoutBuilder<'a> {
             }
             self.place_word(parent, flow, word, is_last_word, truncated);
         }
+        if trailing_whitespace {
+            flow.mark_pending_whitespace();
+        }
+    }
+
+    fn place_pending_separator(&mut self, parent: NativeNodeId, flow: &mut FlowCursor) {
+        if !flow.take_pending_whitespace() || !flow.line_has_content {
+            return;
+        }
+        let remaining_width = flow
+            .available_width
+            .saturating_sub(flow.x.saturating_sub(flow.start_x));
+        if CHARACTER_WIDTH > remaining_width {
+            flow.flush_line();
+            return;
+        }
+        self.place_text_fragment(parent, flow, " ", false);
     }
 
     fn place_word(

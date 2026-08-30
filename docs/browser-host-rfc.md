@@ -106,6 +106,7 @@ bounded inherited text color, paint clips, side-specific solid/dashed/dotted-bor
 bounded physical circular border radii, bounded inline-box line placement,
 bounded fixed pixel line-height flow, bounded direct-text flow fragments and
 source-order text paint, bounded word-aware wrapping,
+bounded source-whitespace boundaries across supported inline flow,
 bounded outer/content box geometry with physical four-side padding/margin
 shorthands and longhands plus explicit box sizing, bounded vertical viewport
 scrolling, and bounded PNG capture through the explicit backend operation,

@@ -189,6 +189,14 @@ text-fragment path, and drops separators at wrapped line starts. CSS
 `white-space` modes, typography, and cross-owner inline parity remain outside
 the native capability claim.
 
+The completed overflow hit-test/projection slice is
+[native-engine-027](tasks/native-engine-027.md). It shares the bounded
+rectangular `overflow:hidden` ancestor intersection across software paint,
+viewport rectangle projection, and point hit-testing, including nested clips in
+document coordinates before root-scroll translation. Visible overflow,
+axis-specific/nested scrolling, rounded descendant clips, and general CSS
+hit-testing remain outside the native capability claim.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -57,12 +57,13 @@ source-behavior reference.
   Rust-only presentation artifacts include bounded outer/content box layout with
   physical four-side padding/margin shorthands and longhands plus explicit box
   sizing, bounded vertical viewport scrolling,
-  inherited text color, paint
-  clips, side-specific solid/dashed/dotted borders, bounded physical circular
+  inherited text color, bounded `overflow:hidden` clips shared by paint,
+  viewport projection, and point hit-testing, side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow, bounded direct-text flow fragments and source-order text
   paint, bounded word-aware wrapping, bounded source-whitespace boundaries
-  across supported inline flow, a display list, a logical RGBA software
+  across supported inline flow, bounded `overflow:hidden` clips shared by
+  paint, viewport projection, and point hit-testing, a display list, a logical RGBA software
   surface,
   and bounded PNG capture; these are not screenshot-containing evidence.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
@@ -240,12 +241,14 @@ Safari W3C WebDriver are experimental bounded adapters for the portable
 semantic session. The feature-gated native engine is an experimental,
 fixture/data-URL-only Glass-owned backend exposed through the explicit Rust
 factory and local one-shot runtime. Its current semantic surface includes
-bounded presentation, inherited text color, paint clips, side-specific
+bounded presentation, inherited text color, bounded `overflow:hidden` clips
+shared by paint, viewport projection, and point hit-testing, side-specific
 solid/dashed/dotted-border paint, bounded physical circular border radii,
 bounded inline-box line placement, bounded fixed pixel line-height flow,
 bounded direct-text flow fragments and source-order text paint, bounded
 word-aware wrapping, bounded source-whitespace boundaries across supported
-inline flow,
+inline flow, bounded `overflow:hidden` clips shared by paint, viewport
+projection, and point hit-testing,
   normal-flow outer/content box geometry with physical four-side padding/margin
   shorthands and longhands,
 explicit box sizing, and bounded vertical viewport scrolling,

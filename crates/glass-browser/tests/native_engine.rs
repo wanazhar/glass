@@ -1105,6 +1105,47 @@ fn native_paint_clips_overflow_hidden_descendants() {
 }
 
 #[test]
+fn native_overflow_hidden_clips_hit_testing_and_viewport_projection() {
+    let document = NativeDocument::parse(
+        "<style>#outer { overflow: hidden; width: 12px; height: 12px; } #clip { overflow: hidden; width: 10px; height: 10px; } #child { display: block; width: 10px; height: 20px; }</style><div id='outer'><div id='clip'><div id='child'>Child</div></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let outer = document.resolve_target("id=outer").unwrap();
+    let clip = document.resolve_target("id=clip").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(outer).unwrap().height, 12);
+    assert_eq!(layout.box_for(clip).unwrap().height, 10);
+    assert_eq!(
+        layout.box_for(child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        })
+    );
+    assert_eq!(layout.hit_test(5, 5).unwrap(), Some(child));
+    assert_eq!(layout.hit_test(5, 10).unwrap(), Some(outer));
+}
+
+#[test]
 fn native_engine_display_list_revision_tracks_accepted_actions() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://paint", "<button id='save'>Save</button>")

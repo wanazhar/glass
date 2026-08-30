@@ -75,7 +75,8 @@ The feature-gated native engine additionally derives bounded integer-pixel
 normal-flow rectangles, bounded physical four-side padding/margin shorthands
 and longhands, explicit content-box or border-box sizing, outer/content
 rectangles, bounded vertical
-viewport scrolling, inherited text color, bounded paint clips, bounded
+viewport scrolling, inherited text color, bounded `overflow:hidden` clips
+shared by paint, viewport projection, and point hit-testing, bounded
   side-specific solid/dashed/dotted-border paint, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow, bounded direct-text flow fragments and source-order text

@@ -1,4 +1,4 @@
-use super::config::Viewport;
+use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{DisplayValue, NativeBorderRadius, NativeComputedStyle};
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -83,6 +83,7 @@ pub struct NativeLayoutSnapshot {
     pub boxes: Vec<NativeLayoutBox>,
     pub text_runs: Vec<NativeTextLayout>,
     pub(crate) paint_order: Vec<NativeLayoutPaintOrder>,
+    overflow_clips: Vec<Option<NativeRect>>,
 }
 
 impl NativeLayoutSnapshot {
@@ -104,6 +105,11 @@ impl NativeLayoutSnapshot {
             .map(|layout_box| layout_box.rect.bottom())
             .max()
             .unwrap_or(0);
+        let overflow_clips = builder
+            .boxes
+            .iter()
+            .map(|layout_box| overflow_clip_for(document, &builder.boxes, layout_box.node_id))
+            .collect();
         Ok(Self {
             revision: document.revision(),
             viewport,
@@ -112,6 +118,7 @@ impl NativeLayoutSnapshot {
             boxes: builder.boxes,
             text_runs: builder.text_runs,
             paint_order: builder.paint_order,
+            overflow_clips,
         })
     }
 
@@ -122,10 +129,34 @@ impl NativeLayoutSnapshot {
             .map(|layout_box| layout_box.rect)
     }
 
+    /// Return the bounded rectangular overflow clip affecting one node.
+    /// Coordinates remain in document space so root scrolling can be applied
+    /// exactly once by viewport consumers.
+    pub(crate) fn overflow_clip_for(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+    ) -> Option<NativeRect> {
+        overflow_clip_for(document, &self.boxes, node_id)
+    }
+
     /// Return a box projected into the current viewport, clipped at its
-    /// visible edges. The layout box itself remains in document coordinates.
+    /// visible viewport and bounded overflow edges. The layout box itself
+    /// remains in document coordinates.
     pub fn viewport_rect_for(&self, node_id: NativeNodeId) -> Option<NativeRect> {
-        let rect = self.box_for(node_id)?;
+        let (box_index, layout_box) = self
+            .boxes
+            .iter()
+            .enumerate()
+            .find(|(_, layout_box)| layout_box.node_id == node_id)?;
+        let rect = self
+            .overflow_clips
+            .get(box_index)
+            .copied()
+            .flatten()
+            .map_or(layout_box.rect, |clip| {
+                intersect_rect(layout_box.rect, clip)
+            });
         let viewport_left = self.scroll_offset.x;
         let viewport_top = self.scroll_offset.y;
         let viewport_right = viewport_left.saturating_add(self.viewport.width);
@@ -218,6 +249,11 @@ impl NativeLayoutSnapshot {
 
         let mut best: Option<(usize, usize, NativeNodeId)> = None;
         for (order, layout_box) in self.boxes.iter().enumerate() {
+            if let Some(clip) = self.overflow_clips.get(order).copied().flatten()
+                && !clip.contains(point)
+            {
+                continue;
+            }
             if !rounded_rect_contains(layout_box.rect, layout_box.border_radius, point) {
                 continue;
             }
@@ -229,6 +265,47 @@ impl NativeLayoutSnapshot {
             }
         }
         Ok(best.map(|(_, _, node_id)| node_id))
+    }
+}
+
+fn overflow_clip_for(
+    document: &NativeDocument,
+    boxes: &[NativeLayoutBox],
+    node_id: NativeNodeId,
+) -> Option<NativeRect> {
+    let mut current = Some(node_id);
+    let mut clip = None;
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let Some(current_id) = current else {
+            break;
+        };
+        let style = document.computed_style_for_layout(current_id);
+        if style.overflow_hidden()
+            && let Some(rect) = boxes
+                .iter()
+                .find(|layout_box| layout_box.node_id == current_id)
+                .map(|layout_box| layout_box.rect)
+        {
+            clip = Some(match clip {
+                Some(existing) => intersect_rect(existing, rect),
+                None => rect,
+            });
+        }
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+    clip
+}
+
+fn intersect_rect(first: NativeRect, second: NativeRect) -> NativeRect {
+    let left = first.x.max(second.x);
+    let top = first.y.max(second.y);
+    let right = first.right().min(second.right());
+    let bottom = first.bottom().min(second.bottom());
+    NativeRect {
+        x: left,
+        y: top,
+        width: right.saturating_sub(left),
+        height: bottom.saturating_sub(top),
     }
 }
 

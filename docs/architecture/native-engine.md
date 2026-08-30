@@ -4,7 +4,8 @@ Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
-bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries
+bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
+bounded-overflow-hit-test-projection
 slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
@@ -35,7 +36,9 @@ bounded circular border radii, bounded outer/content box geometry, explicit root
 viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
 line-height flow, bounded direct-text fragments at actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
-four-side padding/margin edges, and bounded source-whitespace boundaries.
+four-side padding/margin edges, bounded source-whitespace boundaries, and
+bounded `overflow:hidden` clips shared by paint, viewport projection, and point
+hit testing.
 The engine does not
 yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
@@ -308,6 +311,14 @@ tabs/newlines, `word-spacing`, Unicode line breaking, bidi, font
 metrics/shaping, anonymous inline boxes, whitespace joining across independent
 nested flow owners, and browser inline-formatting parity remain unsupported.
 
+The 027 bounded-overflow-hit-test-projection boundary derives the same
+rectangular `overflow:hidden` ancestor intersection for layout consumers that
+the paint path already uses. `NativeLayoutSnapshot` retains one bounded clip
+per layout box in document coordinates; viewport rectangle projection applies
+it before root-scroll translation, and point hit testing rejects descendants
+outside it. The clip remains rectangular and does not create nested scrolling,
+axis-specific overflow, or rounded descendant clip geometry.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -478,8 +489,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden` ancestor intersections on fill/text commands and
-  software-surface clipping with no nested scrolling or screenshot-evidence
-  capability.
+  software-surface clipping, viewport projection, and point-hit filtering with
+  no nested scrolling or screenshot-evidence capability.
 - bounded solid-border parsing, deterministic `BorderRect` command ordering,
   inside-the-box border replay, and clip/source-over enforcement.
 - independently cascaded physical side-specific solid/dashed/dotted borders,
@@ -503,6 +514,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded source-whitespace boundaries across direct text, `display:contents`,
   and supported inline flow items, including source-order separator paint and
   drop-on-wrap behavior.
+- bounded rectangular `overflow:hidden` ancestor clips shared by paint,
+  viewport rectangle projection, and point hit-testing, including nested clip
+  intersection in document coordinates.
 - bounded root viewport scrolling, content-height/max-offset derivation,
   viewport-to-document hit-test mapping, translated software replay/capture,
   clamping, and revision/effect behavior for moved scroll actions.

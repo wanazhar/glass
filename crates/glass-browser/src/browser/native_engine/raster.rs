@@ -1,5 +1,6 @@
+use super::css::NativeBorderRadius;
 use super::error::NativeEngineError;
-use super::layout::{NativePoint, NativeRect};
+use super::layout::{NativePoint, NativeRect, rounded_rect_contains};
 use super::paint::{MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList};
 
 /// Maximum number of logical pixels retained by one native software surface.
@@ -58,18 +59,23 @@ impl NativeSurface {
             match command {
                 NativeDisplayCommand::Clear { color } => surface.clear(*color),
                 NativeDisplayCommand::FillRect {
-                    rect, color, clip, ..
+                    rect,
+                    radius,
+                    color,
+                    clip,
+                    ..
                 } => {
-                    let Some(rect) = Self::translate_rect(*rect, scroll_offset) else {
+                    let Some(viewport_rect) = Self::translate_rect(*rect, scroll_offset) else {
                         continue;
                     };
                     let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
                         continue;
                     };
-                    surface.fill_rect(rect, *color, clip);
+                    surface.fill_rect(viewport_rect, *rect, *radius, *color, clip, scroll_offset);
                 }
                 NativeDisplayCommand::BorderRect {
                     rect,
+                    radius,
                     borders,
                     clip,
                     ..
@@ -77,7 +83,7 @@ impl NativeSurface {
                     let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
                         continue;
                     };
-                    surface.border_rect(*rect, *borders, clip, scroll_offset);
+                    surface.border_rect(*rect, *radius, *borders, clip, scroll_offset);
                 }
                 NativeDisplayCommand::TextRun {
                     origin,
@@ -183,16 +189,25 @@ impl NativeSurface {
 
     fn fill_rect(
         &mut self,
-        rect: NativeRect,
+        viewport_rect: NativeRect,
+        document_rect: NativeRect,
+        radius: NativeBorderRadius,
         color: super::css::NativeColor,
         clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
     ) {
-        let Some((left, top, right, bottom)) = self.clipped_bounds(rect, clip) else {
+        let Some((left, top, right, bottom)) = self.clipped_bounds(viewport_rect, clip) else {
             return;
         };
         for y in top..bottom {
             for x in left..right {
-                self.blend_pixel(x, y, color);
+                let point = NativePoint {
+                    x: x.saturating_add(scroll_offset.x),
+                    y: y.saturating_add(scroll_offset.y),
+                };
+                if rounded_rect_contains(document_rect, radius, point) {
+                    self.blend_pixel(x, y, color);
+                }
             }
         }
     }
@@ -200,6 +215,7 @@ impl NativeSurface {
     fn border_rect(
         &mut self,
         rect: NativeRect,
+        radius: NativeBorderRadius,
         borders: super::paint::NativeBorderPaint,
         clip: Option<NativeRect>,
         scroll_offset: NativePoint,
@@ -213,20 +229,59 @@ impl NativeSurface {
         else {
             return;
         };
+        let inner_rect = NativeRect {
+            x: rect.x.saturating_add(borders.left.width),
+            y: rect.y.saturating_add(borders.top.width),
+            width: rect
+                .width
+                .saturating_sub(borders.left.width.saturating_add(borders.right.width)),
+            height: rect
+                .height
+                .saturating_sub(borders.top.width.saturating_add(borders.bottom.width)),
+        };
+        let inner_radius = NativeBorderRadius {
+            top_left: radius
+                .top_left
+                .saturating_sub(borders.top.width.max(borders.left.width)),
+            top_right: radius
+                .top_right
+                .saturating_sub(borders.top.width.max(borders.right.width)),
+            bottom_right: radius
+                .bottom_right
+                .saturating_sub(borders.bottom.width.max(borders.right.width)),
+            bottom_left: radius
+                .bottom_left
+                .saturating_sub(borders.bottom.width.max(borders.left.width)),
+        };
         for y in top..bottom {
             for x in left..right {
                 let signed_x = i64::from(x);
                 let signed_y = i64::from(y);
                 let document_x = signed_x.saturating_add(i64::from(scroll_offset.x));
                 let document_y = signed_y.saturating_add(i64::from(scroll_offset.y));
+                let Some(document_x) = u32::try_from(document_x).ok() else {
+                    continue;
+                };
+                let Some(document_y) = u32::try_from(document_y).ok() else {
+                    continue;
+                };
+                let document_point = NativePoint {
+                    x: document_x,
+                    y: document_y,
+                };
+                if !rounded_rect_contains(rect, radius, document_point)
+                    || rounded_rect_contains(inner_rect, inner_radius, document_point)
+                {
+                    continue;
+                }
                 let paint = if signed_y < outer_top.saturating_add(i64::from(borders.top.width)) {
-                    Some((borders.top, document_x.saturating_sub(i64::from(rect.x))))
+                    Some((borders.top, i64::from(document_x.saturating_sub(rect.x))))
                 } else if signed_x >= outer_right.saturating_sub(i64::from(borders.right.width)) {
-                    Some((borders.right, document_y.saturating_sub(i64::from(rect.y))))
+                    Some((borders.right, i64::from(document_y.saturating_sub(rect.y))))
                 } else if signed_y >= outer_bottom.saturating_sub(i64::from(borders.bottom.width)) {
-                    Some((borders.bottom, document_x.saturating_sub(i64::from(rect.x))))
+                    Some((borders.bottom, i64::from(document_x.saturating_sub(rect.x))))
                 } else if signed_x < outer_left.saturating_add(i64::from(borders.left.width)) {
-                    Some((borders.left, document_y.saturating_sub(i64::from(rect.y))))
+                    Some((borders.left, i64::from(document_y.saturating_sub(rect.y))))
                 } else {
                     None
                 };
@@ -634,6 +689,7 @@ mod tests {
                         width: 2,
                         height: 1,
                     },
+                    radius: NativeBorderRadius::default(),
                     color: NativeColor {
                         red: 0,
                         green: 0,
@@ -699,6 +755,7 @@ mod tests {
                         width: 4,
                         height: 3,
                     },
+                    radius: NativeBorderRadius::default(),
                     color: NativeColor::RED,
                     clip: Some(NativeRect {
                         x: 1,
@@ -734,6 +791,7 @@ mod tests {
                         width: 4,
                         height: 3,
                     },
+                    radius: NativeBorderRadius::default(),
                     borders: uniform_border(1, NativeColor::RED),
                     clip: Some(NativeRect {
                         x: 1,
@@ -771,6 +829,7 @@ mod tests {
                         width: 6,
                         height: 5,
                     },
+                    radius: NativeBorderRadius::default(),
                     borders: NativeBorderPaint {
                         top: NativeBorderPaintSide {
                             width: 1,
@@ -834,6 +893,7 @@ mod tests {
                         width: 8,
                         height: 6,
                     },
+                    radius: NativeBorderRadius::default(),
                     borders: NativeBorderPaint {
                         top: styled_border(1, NativeBorderStyle::Dashed, NativeColor::RED),
                         right: styled_border(
@@ -882,6 +942,92 @@ mod tests {
     }
 
     #[test]
+    fn surface_replays_rounded_fill_and_border_with_document_geometry() {
+        let radius = NativeBorderRadius {
+            top_left: 3,
+            top_right: 3,
+            bottom_right: 3,
+            bottom_left: 3,
+        };
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::FillRect {
+                    node_id: NativeDocument::empty().root(),
+                    rect: NativeRect {
+                        x: 1,
+                        y: 1,
+                        width: 8,
+                        height: 8,
+                    },
+                    radius,
+                    color: NativeColor::RED,
+                    clip: None,
+                },
+                NativeDisplayCommand::BorderRect {
+                    node_id: NativeDocument::empty().root(),
+                    rect: NativeRect {
+                        x: 1,
+                        y: 1,
+                        width: 8,
+                        height: 8,
+                    },
+                    radius,
+                    borders: uniform_border(1, NativeColor::BLACK),
+                    clip: None,
+                },
+            ],
+            10,
+            10,
+        );
+        let unscrolled = list.rasterize().unwrap();
+
+        assert_eq!(unscrolled.pixel(1, 1), Some([255, 255, 255, 255]));
+        assert_eq!(unscrolled.pixel(3, 1), Some([0, 0, 0, 255]));
+        assert_eq!(unscrolled.pixel(1, 4), Some([0, 0, 0, 255]));
+        assert_eq!(unscrolled.pixel(4, 4), Some([255, 0, 0, 255]));
+
+        let mut scrolled_list = list;
+        scrolled_list.scroll_offset = NativePoint { x: 0, y: 1 };
+        let scrolled = scrolled_list.rasterize().unwrap();
+        assert_eq!(scrolled.pixel(3, 0), unscrolled.pixel(3, 1));
+        assert_eq!(scrolled.pixel(4, 3), unscrolled.pixel(4, 4));
+    }
+
+    #[test]
+    fn rounded_mask_normalizes_radii_to_the_concrete_box() {
+        let rect = NativeRect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
+        let radius = NativeBorderRadius {
+            top_left: 100,
+            top_right: 100,
+            bottom_right: 100,
+            bottom_left: 100,
+        };
+        assert!(!rounded_rect_contains(
+            rect,
+            radius,
+            NativePoint { x: 0, y: 0 }
+        ));
+        assert!(rounded_rect_contains(
+            rect,
+            radius,
+            NativePoint { x: 5, y: 5 }
+        ));
+        assert!(rounded_rect_contains(
+            rect,
+            radius,
+            NativePoint { x: 0, y: 5 }
+        ));
+    }
+
+    #[test]
     fn surface_translates_scrolled_geometry_without_pinning_offscreen_edges() {
         let mut list = display_list(
             vec![
@@ -896,6 +1042,7 @@ mod tests {
                         width: 16,
                         height: 20,
                     },
+                    radius: NativeBorderRadius::default(),
                     borders: uniform_border(2, NativeColor::RED),
                     clip: None,
                 },

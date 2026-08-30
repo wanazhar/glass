@@ -44,6 +44,16 @@ pub enum NativeBorderStyle {
     Dotted,
 }
 
+/// Bounded physical circular radii for the top-left, top-right, bottom-right,
+/// and bottom-left corners of one native box.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeBorderRadius {
+    pub top_left: u32,
+    pub top_right: u32,
+    pub bottom_right: u32,
+    pub bottom_left: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeBorderSide {
     width: u32,
@@ -140,6 +150,7 @@ pub(crate) struct NativeComputedStyle {
     height: Option<u32>,
     background_color: Option<NativeColor>,
     border: Option<NativeBorder>,
+    border_radius: NativeBorderRadius,
     padding: u32,
     margin: u32,
     box_sizing: NativeBoxSizing,
@@ -170,6 +181,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn border(self) -> Option<NativeBorder> {
         self.border
+    }
+
+    pub(crate) const fn border_radius(self) -> NativeBorderRadius {
+        self.border_radius
     }
 
     pub(crate) const fn padding(self) -> u32 {
@@ -225,6 +240,7 @@ impl NativeStylesheet {
         let mut height = None;
         let mut background_color = None;
         let mut border: [Option<CascadeValue<NativeBorderSide>>; 4] = [None; 4];
+        let mut border_radius = None;
         let mut padding = None;
         let mut margin = None;
         let mut box_sizing = None;
@@ -296,6 +312,16 @@ impl NativeStylesheet {
                 false,
                 &mut border,
             );
+            if let Some(value) = rule.declarations.border_radius
+                && wins(rule.selector.specificity, rule.order, false, border_radius)
+            {
+                border_radius = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
             if let Some(value) = rule.declarations.padding
                 && wins(rule.selector.specificity, rule.order, false, padding)
             {
@@ -407,6 +433,16 @@ impl NativeStylesheet {
                 true,
                 &mut border,
             );
+            if let Some(value) = declarations.border_radius
+                && wins(u16::MAX, usize::MAX, true, border_radius)
+            {
+                border_radius = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.padding
                 && wins(u16::MAX, usize::MAX, true, padding)
             {
@@ -467,6 +503,7 @@ impl NativeStylesheet {
             height: height.map(|value| value.value),
             background_color: background_color.map(|value| value.value),
             border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
+            border_radius: border_radius.map_or(NativeBorderRadius::default(), |value| value.value),
             padding: padding.map_or(0, |value| value.value),
             margin: margin.map_or(0, |value| value.value),
             box_sizing: box_sizing.map_or(NativeBoxSizing::ContentBox, |value| value.value),
@@ -531,6 +568,7 @@ struct NativeDeclarations {
     height: Option<u32>,
     background_color: Option<NativeColor>,
     border: [Option<NativeBorderSide>; 4],
+    border_radius: Option<NativeBorderRadius>,
     padding: Option<u32>,
     margin: Option<u32>,
     box_sizing: Option<NativeBoxSizing>,
@@ -614,6 +652,7 @@ fn parse_source(
             || declarations.height.is_some()
             || declarations.background_color.is_some()
             || declarations.border.iter().any(Option::is_some)
+            || declarations.border_radius.is_some()
             || declarations.padding.is_some()
             || declarations.margin.is_some()
             || declarations.box_sizing.is_some()
@@ -689,6 +728,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "border-left" => {
                 set_border_side(&mut declarations.border, 3, value);
             }
+            "border-radius" => {
+                declarations.border_radius = parse_border_radius(value);
+            }
             "padding" => {
                 declarations.padding = parse_dimension(value);
             }
@@ -720,6 +762,43 @@ fn parse_border(value: &str) -> Option<NativeBorderSide> {
         style,
         color: parse_color(&color)?,
     })
+}
+
+fn parse_border_radius(value: &str) -> Option<NativeBorderRadius> {
+    if value.contains('/') {
+        return None;
+    }
+    let values = value
+        .split_ascii_whitespace()
+        .map(parse_dimension)
+        .collect::<Option<Vec<_>>>()?;
+    match values.as_slice() {
+        [all] => Some(NativeBorderRadius {
+            top_left: *all,
+            top_right: *all,
+            bottom_right: *all,
+            bottom_left: *all,
+        }),
+        [top_left, top_right] => Some(NativeBorderRadius {
+            top_left: *top_left,
+            top_right: *top_right,
+            bottom_right: *top_left,
+            bottom_left: *top_right,
+        }),
+        [top_left, top_right, bottom_right] => Some(NativeBorderRadius {
+            top_left: *top_left,
+            top_right: *top_right,
+            bottom_right: *bottom_right,
+            bottom_left: *top_right,
+        }),
+        [top_left, top_right, bottom_right, bottom_left] => Some(NativeBorderRadius {
+            top_left: *top_left,
+            top_right: *top_right,
+            bottom_right: *bottom_right,
+            bottom_left: *bottom_left,
+        }),
+        _ => None,
+    }
 }
 
 fn parse_border_style(value: &str) -> Option<NativeBorderStyle> {
@@ -1036,7 +1115,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; border: 2px solid #102030; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -1050,6 +1129,15 @@ mod tests {
             alpha: 255,
         };
         assert_eq!(declarations.border, [Some(border_side(2, parsed_color)); 4]);
+        assert_eq!(
+            declarations.border_radius,
+            Some(NativeBorderRadius {
+                top_left: 1,
+                top_right: 2,
+                bottom_right: 3,
+                bottom_left: 4,
+            })
+        );
         assert_eq!(declarations.padding, Some(4));
         assert_eq!(declarations.margin, Some(3));
         assert_eq!(declarations.box_sizing, Some(NativeBoxSizing::BorderBox));
@@ -1096,6 +1184,42 @@ mod tests {
     }
 
     #[test]
+    fn border_radius_parser_expands_bounded_physical_shorthand() {
+        assert_eq!(
+            parse_border_radius("5px"),
+            Some(NativeBorderRadius {
+                top_left: 5,
+                top_right: 5,
+                bottom_right: 5,
+                bottom_left: 5,
+            })
+        );
+        assert_eq!(
+            parse_border_radius("1px 2px"),
+            Some(NativeBorderRadius {
+                top_left: 1,
+                top_right: 2,
+                bottom_right: 1,
+                bottom_left: 2,
+            })
+        );
+        assert_eq!(
+            parse_border_radius("1px 2px 3px"),
+            Some(NativeBorderRadius {
+                top_left: 1,
+                top_right: 2,
+                bottom_right: 3,
+                bottom_left: 2,
+            })
+        );
+        assert_eq!(parse_border_radius("1px/2px"), None);
+        assert_eq!(parse_border_radius("50%"), None);
+        assert_eq!(parse_border_radius("-1px"), None);
+        assert_eq!(parse_border_radius("1px 2px 3px 4px 5px"), None);
+        assert_eq!(parse_border_radius("20000px"), None);
+    }
+
+    #[test]
     fn stylesheet_cascade_prefers_specificity_then_inline_style() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "button { display: none; } #shown { display: block; }".into(),
@@ -1123,6 +1247,25 @@ mod tests {
                     alpha: 255,
                 },
             ))
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_border_radius_with_inline_precedence() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            ".card { border-radius: 1px; } #card { border-radius: 2px 3px; }".into(),
+        ])
+        .unwrap();
+        let node =
+            node("<div id='card' class='card' style='border-radius: 4px 5px 6px 7px'>Card</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).border_radius(),
+            NativeBorderRadius {
+                top_left: 4,
+                top_right: 5,
+                bottom_right: 6,
+                bottom_left: 7,
+            }
         );
     }
 

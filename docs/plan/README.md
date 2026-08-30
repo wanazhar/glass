@@ -143,6 +143,13 @@ integer patterns; other border styles, radius/images/gradients, standalone
 style properties, logical sides, and browser dash/corner fidelity remain
 outside the current claim.
 
+The completed bounded-corner-radius slice is
+[native-engine-020](tasks/native-engine-020.md). It adds bounded physical
+one-to-four-value `border-radius` shorthand expansion, conservative corner
+normalization, rounded fill/border replay, and rounded point hit testing.
+Percentages, elliptical radii, corner longhands, rounded descendant clips,
+anti-aliasing, and browser corner fidelity remain outside the current claim.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

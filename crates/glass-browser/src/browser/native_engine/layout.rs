@@ -1,5 +1,5 @@
 use super::config::Viewport;
-use super::css::DisplayValue;
+use super::css::{DisplayValue, NativeBorderRadius};
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
 
@@ -47,6 +47,8 @@ pub struct NativeLayoutBox {
     pub rect: NativeRect,
     /// The content box after the bounded padding and border insets.
     pub content_rect: NativeRect,
+    /// The physical circular corner radii for the outer border box.
+    pub border_radius: NativeBorderRadius,
     pub depth: usize,
 }
 
@@ -191,7 +193,7 @@ impl NativeLayoutSnapshot {
 
         let mut best: Option<(usize, usize, NativeNodeId)> = None;
         for (order, layout_box) in self.boxes.iter().enumerate() {
-            if !layout_box.rect.contains(point) {
+            if !rounded_rect_contains(layout_box.rect, layout_box.border_radius, point) {
                 continue;
             }
             let replaces = best.is_none_or(|(best_depth, best_order, _)| {
@@ -203,6 +205,77 @@ impl NativeLayoutSnapshot {
         }
         Ok(best.map(|(_, _, node_id)| node_id))
     }
+}
+
+pub(crate) fn rounded_rect_contains(
+    rect: NativeRect,
+    radius: NativeBorderRadius,
+    point: NativePoint,
+) -> bool {
+    if !rect.contains(point) {
+        return false;
+    }
+    let radius_limit = rect.width.min(rect.height) / 2;
+    let top_left = radius.top_left.min(radius_limit);
+    let top_right = radius.top_right.min(radius_limit);
+    let bottom_right = radius.bottom_right.min(radius_limit);
+    let bottom_left = radius.bottom_left.min(radius_limit);
+    let left = i64::from(rect.x);
+    let top = i64::from(rect.y);
+    let right = i64::from(rect.right());
+    let bottom = i64::from(rect.bottom());
+    let x = i64::from(point.x);
+    let y = i64::from(point.y);
+    let corner = if x < left.saturating_add(i64::from(top_left))
+        && y < top.saturating_add(i64::from(top_left))
+    {
+        (
+            top_left,
+            left.saturating_add(i64::from(top_left)),
+            top.saturating_add(i64::from(top_left)),
+        )
+    } else if x >= right.saturating_sub(i64::from(top_right))
+        && y < top.saturating_add(i64::from(top_right))
+    {
+        (
+            top_right,
+            right.saturating_sub(i64::from(top_right)),
+            top.saturating_add(i64::from(top_right)),
+        )
+    } else if x >= right.saturating_sub(i64::from(bottom_right))
+        && y >= bottom.saturating_sub(i64::from(bottom_right))
+    {
+        (
+            bottom_right,
+            right.saturating_sub(i64::from(bottom_right)),
+            bottom.saturating_sub(i64::from(bottom_right)),
+        )
+    } else if x < left.saturating_add(i64::from(bottom_left))
+        && y >= bottom.saturating_sub(i64::from(bottom_left))
+    {
+        (
+            bottom_left,
+            left.saturating_add(i64::from(bottom_left)),
+            bottom.saturating_sub(i64::from(bottom_left)),
+        )
+    } else {
+        return true;
+    };
+    let (radius, center_x, center_y) = corner;
+    if radius == 0 {
+        return true;
+    }
+    let point_x = x.saturating_mul(2).saturating_add(1);
+    let point_y = y.saturating_mul(2).saturating_add(1);
+    let center_x = center_x.saturating_mul(2);
+    let center_y = center_y.saturating_mul(2);
+    let delta_x = point_x.saturating_sub(center_x);
+    let delta_y = point_y.saturating_sub(center_y);
+    let radius = i64::from(radius).saturating_mul(2);
+    delta_x
+        .saturating_mul(delta_x)
+        .saturating_add(delta_y.saturating_mul(delta_y))
+        <= radius.saturating_mul(radius)
 }
 
 struct LayoutBuilder<'a> {
@@ -441,6 +514,7 @@ impl<'a> LayoutBuilder<'a> {
                 width: width.saturating_sub(horizontal_inset),
                 height: default_content_height,
             },
+            border_radius: style.border_radius(),
             depth,
         });
 

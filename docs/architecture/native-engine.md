@@ -2,9 +2,9 @@
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
-viewport-scroll/side-specific-border/bounded-pattern-border slices, including
-bounded style inheritance, paint clipping, solid/dashed/dotted border painting,
-and content-box geometry,
+viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius
+slices, including bounded style inheritance, paint clipping, solid/dashed/dotted
+border painting, rounded fill/border masks, and content-box geometry,
 plus feature-gated
 runtime/CLI integration; not a stable browser compatibility or security
 boundary.
@@ -25,8 +25,9 @@ parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
 normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
 display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden` paint
-clipping, bounded side-specific solid/dashed/dotted-border paint primitives, and bounded outer/content
-box geometry and explicit root viewport scrolling. The engine does not yet own
+clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
+bounded circular border radii, and bounded outer/content box geometry with
+explicit root viewport scrolling. The engine does not yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
@@ -225,7 +226,16 @@ integer dash/gap or dot/gap periods anchored to document-space geometry, then
 applies the existing side precedence, ancestor clips, source-over blending,
 and root-scroll translation. Other border styles, standalone `border-style`
 properties, radii, images, gradients, logical sides, anti-aliased joins, and
-browser-parity dash distribution remain unsupported.
+
+The 020 bounded-corner-radius boundary adds the physical `border-radius`
+shorthand with one-to-four non-negative integer-pixel values. The values expand
+to physical corners, normalize conservatively to the concrete box, and travel
+through computed style, layout metadata, display commands, rounded background
+and border replay, and point hit testing. Software uses deterministic
+pixel-center circle masks after the existing rectangular ancestor clips and
+root-scroll translation. Percentages, slash-separated elliptical radii,
+corner longhands, rounded descendant overflow clips, anti-aliasing, and
+browser corner-join fidelity remain unsupported.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -402,6 +412,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   side-aware content-box/border-box insets, deterministic side paint data,
   integer pattern phase, corner precedence, ancestor clipping, and root-scroll
   replay.
+- bounded one-to-four-value physical border-radius shorthand expansion,
+  conservative concrete-box normalization, rounded fill/border replay, and
+  rounded point hit testing with explicit rejection of unsupported radius forms.
 - bounded logical-surface PNG encoding, capture-byte enforcement, read-only
   revision behavior, real native backend dispatch, and explicit JPEG/PDF
   denials.

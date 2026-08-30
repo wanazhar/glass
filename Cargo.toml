@@ -14,6 +14,18 @@ license = "MIT"
 repository = "https://github.com/wanazhar/glass"
 homepage = "https://github.com/wanazhar/glass"
 
+# Keep the normal edit/build loop light. Use `--profile debugging` when full
+# workspace debug information is needed for an interactive debugger.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = true
+
 [profile.release]
 opt-level = "z"
 lto = "thin"

@@ -467,6 +467,12 @@ const MORE_ACTIONS: &[SurfaceAction] = &[
         description: "inspect resident workspace services",
     },
     SurfaceAction {
+        label: "Harness catalog",
+        command: "harness list",
+        key: ":",
+        description: "list installed external coding harnesses",
+    },
+    SurfaceAction {
         label: "Doctor",
         command: "doctor",
         key: ":",
@@ -639,6 +645,7 @@ const MORE_PALETTE_ROOTS: &[&str] = &[
     "cockpit",
     "workspace",
     "daemon",
+    "harness",
     "kernel",
     "experiment",
     "replay",
@@ -952,8 +959,26 @@ fn execute_harness(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
     match parts.first().copied().unwrap_or("list") {
         "list" | "status" => {
             state.surface = DevSurface::Agent;
+            let installed = state
+                .harnesses
+                .lines()
+                .filter_map(|line| {
+                    line.trim_start()
+                        .strip_prefix('●')
+                        .and_then(|line| line.split_whitespace().next())
+                })
+                .collect::<Vec<_>>();
+            let headline = if installed.is_empty() {
+                "Harness catalog · none detected".into()
+            } else {
+                format!(
+                    "Harness catalog · {} installed · {}",
+                    installed.len(),
+                    installed.join(" · ")
+                )
+            };
             Ok(format!(
-                "External harnesses · ● installed · ○ unavailable\n{}\n\n`harness start NAME` hands the terminal to a selected installed harness\n`harness delegate NAME PROMPT` runs a bounded read-only delegation for codex, claude, or opencode",
+                "{headline}\nExternal harnesses · ● installed · ○ unavailable\n{}\n\n`harness start NAME` hands the terminal to a selected installed harness\n`harness delegate NAME PROMPT` runs a bounded read-only delegation for codex, claude, or opencode",
                 state.harnesses
             ))
         }
@@ -2805,15 +2830,25 @@ fn execute_test(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
 }
 
 fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    let Some(action) = parts.first().copied() else {
-        state.surface = DevSurface::More;
-        return Ok("Opened experiments".into());
-    };
+    let action = parts.first().copied().unwrap_or("list");
     require_trusted(state)?;
     let mut workspace = state.ws_mut()?;
     let experiments = workspace.experiments().map_err(|error| error.to_string())?;
-    let mut comparison = None;
     let message = match action {
+        "list" | "status" => {
+            let snapshots = experiments.snapshots();
+            if snapshots.is_empty() {
+                "No experiments · use `experiment create ID BRANCH [PORT]`".into()
+            } else {
+                let preview = snapshots
+                    .iter()
+                    .take(3)
+                    .map(|experiment| experiment.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                format!("Listed {} experiment(s) · {preview}", snapshots.len())
+            }
+        }
         "create" => {
             let id = parts
                 .get(1)
@@ -2834,10 +2869,7 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
                 snapshot.worktree.display()
             )
         }
-        "compare" => {
-            comparison = Some(experiments.compare());
-            "Compared experiment evidence".into()
-        }
+        "compare" => "Compared experiment evidence".into(),
         "collect" => {
             let id = parts.get(1).ok_or("experiment collect requires ID")?;
             let evidence = experiments
@@ -2864,12 +2896,14 @@ fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Strin
                 .map_err(|error| error.to_string())?;
             format!("Removed experiment {id}")
         }
-        _ => return Err("experiment actions: create, collect, compare, select, remove".into()),
+        _ => {
+            return Err(
+                "experiment actions: list, create, collect, compare, select, remove".into(),
+            );
+        }
     };
     drop(workspace);
-    if let Some(comparison) = comparison {
-        state.experiment_comparison = Some(comparison);
-    }
+    state.refresh_experiment_projection()?;
     state.surface = DevSurface::More;
     Ok(message)
 }
@@ -3336,6 +3370,41 @@ mod tests {
         assert!(output.contains("harness start NAME"));
         assert!(output.contains("harness delegate NAME PROMPT"));
         assert_eq!(state.surface, DevSurface::Agent);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn experiment_route_lists_state_and_refreshes_the_more_projection() {
+        let (mut state, root) = test_state("experiment-list");
+        let git_status = std::process::Command::new("git")
+            .args([
+                "-C",
+                root.to_str().expect("test root path"),
+                "init",
+                "--quiet",
+            ])
+            .status()
+            .expect("git init");
+        assert!(git_status.success(), "git init should succeed");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
+            .expect("trust project");
+        state.snapshot_trust_label = "trusted-project".into();
+        state.surface = DevSurface::More;
+
+        let output = execute(&mut state, "experiment").expect("list experiments");
+        assert!(output.contains("No experiments"));
+        assert_eq!(state.surface, DevSurface::More);
+        assert_eq!(state.experiments, "No experiments");
+        assert!(state.experiment_comparison.is_some());
+
+        let experiment_root = root.parent().expect("test root parent").join(format!(
+            ".glass-{}-experiments",
+            root.file_name().expect("test root name").to_string_lossy()
+        ));
+        let _ = fs::remove_dir_all(experiment_root);
         let _ = fs::remove_dir_all(root);
     }
 

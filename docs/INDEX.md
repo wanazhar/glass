@@ -7,9 +7,9 @@ These guides describe the complete Glass product in the current `0.3.14`
 source checkout. The `0.3.14` release notes and migration guide route the
 current source contract; the signed `v0.3.13` release and its migration record
 remain historical. Published docs.rs pages currently match crate `0.3.14`.
-The empty working-tree changelog `Unreleased` section is reserved for changes
-after this release. `Local only` means a capability exists in the checkout but
-is not part of an external release record.
+The working-tree changelog `Unreleased` section records changes after this
+release. `Local only` means a capability exists in the checkout but is not part
+of an external release record.
 Platform certification remains separate from source availability; see
 [cross-platform feature parity](feature-parity.md).
 
@@ -237,10 +237,10 @@ current user instructions.
 - [Glass 0.3.6 release notes](releases/0.3.6.md) — failed exact-tag candidate
   retained for audit history; it was not published to crates.io.
 - [Glass 0.3.5 release notes](releases/0.3.5.md) — previous release record.
-- [Changelog](../CHANGELOG.md) — empty `Unreleased` section followed by the
+- [Changelog](../CHANGELOG.md) — current `Unreleased` changes followed by the
   0.3.14 release entries and immutable historical release entries.
 - [Migrate from 0.3.13 to 0.3.14](migration/0.3.14.md) — current upgrade
-  contract for package ownership, Pi 0.84.3, TUI, editor, crew, Git, and
+  contract for package ownership, Pi 0.84.4, TUI, editor, crew, Git, and
   browser changes.
 - [Migrate from 0.3.12 to 0.3.13](migration/0.3.13.md) — previous published
   release migration.

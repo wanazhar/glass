@@ -16,6 +16,7 @@ pub enum HitRegion {
     Process(usize),
     Debug(usize),
     Entity(usize),
+    MoreRoute(usize),
     Menu(usize),
     Help,
     Other,
@@ -126,9 +127,12 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
         return HitRegion::Help;
     }
     if state.menu_open {
-        let index =
-            usize::from(row.saturating_sub(3)).min(state.surface_actions().len().saturating_sub(1));
-        return HitRegion::Menu(index);
+        let index = usize::from(row.saturating_sub(3));
+        let item_count = state.quit_menu_index() + 1;
+        if index < item_count {
+            return HitRegion::Menu(index);
+        }
+        return HitRegion::Other;
     }
     if let Some(surface) = navigation_surface_at(
         state.responsive_class(width, height),
@@ -137,6 +141,9 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
         row,
     ) {
         return HitRegion::Surface(surface);
+    }
+    if let Some(index) = super::render::more_route_at(state, column, row) {
+        return HitRegion::MoreRoute(index);
     }
     match state.surface {
         DevSurface::Code if !state.files.is_empty() => {
@@ -229,6 +236,7 @@ fn apply_select(state: &mut DevTuiState, hit: &HitRegion) {
                 state.browser = state.browser_workspace_summary();
             }
         }
+        HitRegion::MoreRoute(index) => state.select_more(*index),
         _ => {}
     }
 }
@@ -288,6 +296,11 @@ fn apply_primary(state: &mut DevTuiState, hit: &HitRegion) -> bool {
             );
             true
         }
+        HitRegion::MoreRoute(index) => {
+            state.select_more(*index);
+            state.activate_more_selection();
+            true
+        }
         HitRegion::Surface(surface) => {
             state.show_surface(*surface);
             true
@@ -309,7 +322,10 @@ mod tests {
         state.terminal_width = 140;
         state.terminal_height = 40;
         state.snapshot_trust_label = "trusted".into();
-        state.agent_readiness = "✓ Ready · Node ✓ · SDK 0.84.3 · auth ✓".into();
+        state.agent_readiness = format!(
+            "✓ Ready · Node ✓ · SDK {} · auth ✓",
+            crate::pi_runtime::PINNED_PI_SDK_VERSION
+        );
         assert_eq!(hit_test(&state, 10, 39), HitRegion::Dock);
         assert!(matches!(
             hit_test(&state, 2, 3),
@@ -333,6 +349,76 @@ mod tests {
         );
         assert!(state.composer_mode);
         assert_eq!(state.surface, DevSurface::Agent);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn more_route_click_selects_and_double_click_runs_the_launcher() {
+        let root = std::env::temp_dir().join(format!("glass-more-hit-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
+        state.terminal_width = 140;
+        state.terminal_height = 40;
+        state.surface = DevSurface::More;
+
+        let target = (0..state.terminal_height).find_map(|row| {
+            (0..state.terminal_width).find_map(|column| {
+                (hit_test(&state, column, row) == HitRegion::MoreRoute(2)).then_some((column, row))
+            })
+        });
+        let (column, row) = target.expect("kernel route should have a mouse target");
+        let mut pointer = PointerState::default();
+        let at = Instant::now();
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        pointer.handle(&mut state, mouse, at);
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                ..mouse
+            },
+            at + Duration::from_millis(10),
+        );
+        assert_eq!(state.selected_more, 2);
+        assert!(state.status.contains("Route 3/5"));
+
+        pointer.handle(&mut state, mouse, at + Duration::from_millis(100));
+        assert!(state.command_mode);
+        assert_eq!(state.command_input, "kernel start ");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn every_more_route_is_visible_to_pointer_on_phone_layout() {
+        let root =
+            std::env::temp_dir().join(format!("glass-more-phone-hit-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Mobile).unwrap();
+        state.terminal_width = 48;
+        state.terminal_height = 18;
+        state.surface = DevSurface::More;
+
+        let mut routes = Vec::new();
+        for row in 0..state.terminal_height {
+            for column in 0..state.terminal_width {
+                if let HitRegion::MoreRoute(index) = hit_test(&state, column, row)
+                    && !routes.contains(&index)
+                {
+                    routes.push(index);
+                }
+            }
+        }
+        assert_eq!(
+            routes,
+            (0..DevTuiState::MORE_ROUTES.len()).collect::<Vec<_>>()
+        );
+
         std::fs::remove_dir_all(root).unwrap();
     }
 }

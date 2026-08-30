@@ -81,7 +81,7 @@ pub fn curriculum_help(surface: DevSurface) -> String {
     let surface_lines = match surface {
         DevSurface::Trust => "TRUST\n  I inspect · 1 once · T project · O untrusted",
         DevSurface::Agent => {
-            "AGENT\n  type in the dock to talk · Enter sends\n  :plan accept after a Plan turn"
+            "AGENT\n  type in the dock to talk · Enter sends\n  / Pi commands · : Glass actions\n  :plan accept after a Plan turn"
         }
         DevSurface::Code => "CODE\n  Enter opens · i inserts · gc comments",
         DevSurface::App => "APP\n  Enter activates · g source · C comment",
@@ -95,7 +95,7 @@ pub fn curriculum_help(surface: DevSurface) -> String {
         DevSurface::Debug => {
             "DEBUG\n  j/k select · [ ] pane · Enter jump · Space continue · n/i/o step"
         }
-        DevSurface::More => "MORE\n  j/k routes · Enter runs doctor/cockpit/kernels",
+        DevSurface::More => "MORE\n  j/k or click routes · Enter/double-click runs · a actions",
     };
     format!(
         "DO THIS\n  type in the dock   talk to Glass\n  :                  search commands\n  a                  this surface's actions\n  Enter              do the highlighted thing\n  Esc                back\n  ?                  close help\n\n{surface_lines}\n\nMORE\n  Agent · Code · App · Terminal · Tasks · Git · Debug · More\n\nKEYS\n{}\n  click dock · double-click open · right-click / long-press = a",
@@ -104,8 +104,13 @@ pub fn curriculum_help(surface: DevSurface) -> String {
 }
 
 pub fn dock_placeholder(surface: DevSurface, mode: crate::AgentTurnMode) -> String {
+    let command_hint = if surface == DevSurface::Agent {
+        ": search · / Pi commands · a actions"
+    } else {
+        ": search · a actions"
+    };
     format!(
-        "{}  Ask Glass about {}…    : search · a actions",
+        "{}  Ask Glass about {}…    {command_hint}",
         mode.label().to_ascii_uppercase(),
         surface.label()
     )
@@ -113,5 +118,5 @@ pub fn dock_placeholder(surface: DevSurface, mode: crate::AgentTurnMode) -> Stri
 
 #[allow(dead_code)]
 pub fn unfocused_footer_hint() -> &'static str {
-    "Enter · : search · a actions · click dock to talk"
+    "Enter · : search · / Pi · a actions · click dock to talk"
 }

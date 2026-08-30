@@ -31,8 +31,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-
             ${{ runner.os }}-cargo-${{ github.job }}-
       - name: Install Python for Windows kernel fixtures
         if: runner.os == 'Windows'
@@ -40,16 +41,15 @@ jobs:
         with:
           python-version: "3.x"
       - name: Check both product packages
-        run: |
-          cargo check --package glass-browser --all-targets --all-features --locked
-          cargo check --package glass-dev --all-targets --all-features --locked
+        shell: bash
+        run: scripts/check-rust-workspace.sh fast-check
       - name: Run glass-dev browser-free contract tests
-        run: cargo test --package glass-dev --all-targets --all-features --locked -- --nocapture
+        run: cargo test --package glass-dev --tests --all-features --locked -- --nocapture
       - name: Certify native Windows named-pipe daemon lifecycle
         if: runner.os == 'Windows'
         run: cargo test --package glass-dev --test development_runtime --locked windows_named_pipe_daemon_lifecycle_reconnect_and_permissions -- --nocapture
       - name: Run glass-browser browser-free contract tests
-        run: cargo test --package glass-browser --all-targets --all-features --locked
+        run: cargo test --package glass-browser --tests --all-features --locked
 
   test:
     runs-on: ubuntu-latest
@@ -71,8 +71,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-
             ${{ runner.os }}-cargo-${{ github.job }}-
 
       - name: Run common source certification
@@ -149,12 +150,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-
             ${{ runner.os }}-cargo-${{ github.job }}-
 
       - name: Build Glass for client smoke tests
-        run: cargo build --package glass-dev --locked
+        run: cargo build --package glass-dev --bin glass --locked
 
       - uses: actions/setup-node@v5
         with:

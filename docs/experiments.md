@@ -7,6 +7,7 @@ trust and child worktrees inherit only process-lifetime `TrustedOnce` authority.
 Use the TUI command palette:
 
 ```text
+:experiment list
 :experiment create approach-a experiment-a 3101
 :experiment collect approach-a
 :experiment compare
@@ -47,6 +48,6 @@ difference, and LCP contribute fixed default weights. Custom weights have a
 bounded magnitude and can be applied only after an explicit trust decision.
 Agents cannot change weights through the experiment evidence payload.
 
-The Experiments TUI shows the complete snapshots and provenance alongside the
-recommendation. Selection rejects any candidate that is not the current
-evidence-derived winner.
+The More TUI surface shows the current snapshot summary and evidence-derived
+recommendation; use `:experiment list` for an explicit refresh. Selection
+rejects any candidate that is not the current evidence-derived winner.

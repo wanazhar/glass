@@ -32,8 +32,9 @@ jobs:
             ~/.cargo/git
             target
             fuzz/target
-          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-${{ matrix.target }}
+          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-cargo-fuzz-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-${{ matrix.target }}-
             ${{ runner.os }}-cargo-fuzz-
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.2 --locked

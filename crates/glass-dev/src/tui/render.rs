@@ -1,6 +1,7 @@
 use super::command;
 use super::editor::EditorMode;
 use super::file_view;
+use super::pi_commands;
 use super::state::{DevSurface, DevTuiState, ResponsiveClass};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -129,6 +130,47 @@ fn footer_height(state: &DevTuiState) -> u16 {
     }
 }
 
+fn shell_rows(state: &DevTuiState, area: Rect) -> [Rect; 3] {
+    let rows = match state.responsive_class(area.width, area.height) {
+        ResponsiveClass::Desktop | ResponsiveClass::Compact => Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(header_height()),
+                Constraint::Min(8),
+                Constraint::Length(footer_height(state)),
+            ])
+            .split(area),
+        ResponsiveClass::Phone => Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(header_height()),
+                Constraint::Min(5),
+                Constraint::Length(footer_height(state)),
+            ])
+            .split(area),
+    };
+    [rows[0], rows[1], rows[2]]
+}
+
+fn surface_area(state: &DevTuiState, area: Rect) -> Rect {
+    let rows = shell_rows(state, area);
+    match state.responsive_class(area.width, area.height) {
+        ResponsiveClass::Desktop => Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(24),
+                Constraint::Percentage(55),
+                Constraint::Min(30),
+            ])
+            .split(rows[1])[1],
+        ResponsiveClass::Compact => Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(22), Constraint::Min(36)])
+            .split(rows[1])[1],
+        ResponsiveClass::Phone => rows[1],
+    }
+}
+
 fn git_header_label(state: &DevTuiState) -> Option<String> {
     if state.git_branch.is_empty() {
         return None;
@@ -163,6 +205,7 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
         || state.quit_confirmation
         || state.help_open
         || state.command_mode
+        || state.pi_command_mode
         || state.menu_open
         || state.browser_target_picker
         || state.browser_recovery.is_some()
@@ -171,48 +214,7 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
         return None;
     }
 
-    let app_area = match state.responsive_class(area.width, area.height) {
-        ResponsiveClass::Desktop => {
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(header_height()),
-                    Constraint::Min(8),
-                    Constraint::Length(footer_height(state)),
-                ])
-                .split(area);
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(24),
-                    Constraint::Percentage(55),
-                    Constraint::Min(30),
-                ])
-                .split(rows[1])[1]
-        }
-        ResponsiveClass::Compact => {
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(header_height()),
-                    Constraint::Min(8),
-                    Constraint::Length(footer_height(state)),
-                ])
-                .split(area);
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(22), Constraint::Min(36)])
-                .split(rows[1])[1]
-        }
-        ResponsiveClass::Phone => Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(header_height()),
-                Constraint::Min(5),
-                Constraint::Length(footer_height(state)),
-            ])
-            .split(area)[1],
-    };
+    let app_area = surface_area(state, area);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -271,6 +273,9 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     }
     if state.command_mode {
         render_command_palette(frame, state, area);
+    }
+    if state.pi_command_mode {
+        render_pi_command_palette(frame, state, area);
     }
     if state.file_picker_open {
         render_file_picker(frame, state, area);
@@ -425,27 +430,24 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
     );
     let (editor_help, exit_help) = if area.width < 40 {
         (
-            "Arrows · Ctrl-S",
+            "i edit · Ctrl-S save",
             if insert {
                 "Esc normal"
             } else {
-                "Esc exit · Ctrl-C quit"
+                "Esc back · Ctrl-C quit"
             },
         )
     } else if insert {
-        (
-            "Esc normal · Ctrl-S save · Alt-A / Ctrl-L ask",
-            "Esc returns to NORMAL · Esc again leaves",
-        )
+        ("Type to edit · Ctrl-S save · Alt-A ask", "Esc normal")
     } else if area.width < 70 {
         (
-            "hjkl · i insert · Ctrl-S save",
-            "Esc leaves the editor · Ctrl-C quits Glass",
+            "Arrows/hjkl move · i edit · Ctrl-S save",
+            "Esc back · Ctrl-C quit",
         )
     } else {
         (
-            "hjkl · i insert · dif/dia · Ctrl-S save · Alt-A / Ctrl-L ask",
-            "Esc leaves the editor · unsaved work asks first",
+            "Arrows/hjkl move · i edit · Ctrl-S save · Alt-A ask",
+            "Esc back · unsaved changes ask first",
         )
     };
     if state.composer_mode {
@@ -879,6 +881,106 @@ fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
     );
 }
 
+fn render_pi_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4).min(112);
+    let height = area.height.saturating_sub(6).max(5).min(area.height);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + 1,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(" PI COMMANDS · resident AgentSession · Esc close ")
+        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PURPLE))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(modal);
+    let mut lines = vec![
+        palette_fixed_line(
+            "NATIVE PI SLASH COMMANDS",
+            inner.width,
+            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+        ),
+        palette_fixed_line(
+            "Official SDK commands · extension commands can also be typed directly",
+            inner.width,
+            Style::default().fg(MUTED),
+        ),
+    ];
+    if !state.pi_command_input.is_empty() {
+        lines.push(palette_fixed_line(
+            format!(
+                "Command: /{}",
+                state.pi_command_input.trim_start_matches('/')
+            ),
+            inner.width,
+            Style::default().fg(TEXT),
+        ));
+    }
+    lines.push(palette_fixed_line(
+        "",
+        inner.width,
+        Style::default().bg(PANEL_BACKGROUND),
+    ));
+    let command_offset = lines.len();
+    let indices = state.pi_command_indices();
+    if indices.is_empty() {
+        lines.push(palette_fixed_line(
+            "No built-in match · Enter still sends a typed extension command",
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    } else {
+        for (visible_index, command_index) in indices.into_iter().enumerate() {
+            let command = &pi_commands::BUILTIN_PI_COMMANDS[command_index];
+            let hint = command.argument_hint.unwrap_or("");
+            let invocation = if hint.is_empty() {
+                format!("/{}", command.name)
+            } else {
+                format!("/{} {}", command.name, hint)
+            };
+            let content = format!(
+                "{}{:<28} · {}",
+                if visible_index == state.pi_command_selection {
+                    "▸ "
+                } else {
+                    "  "
+                },
+                invocation,
+                command.description
+            );
+            let style = if visible_index == state.pi_command_selection {
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .bg(ACTIVE_BACKGROUND)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT).bg(PANEL_BACKGROUND)
+            };
+            lines.push(palette_fixed_line(content, inner.width, style));
+        }
+    }
+    let line_count = lines.len();
+    let visible_lines = usize::from(inner.height);
+    let max_scroll = line_count.saturating_sub(visible_lines);
+    let selected_line = command_offset.saturating_add(state.pi_command_selection);
+    let selected_scroll = selected_line.saturating_sub(visible_lines.saturating_sub(1));
+    let scroll = usize::from(state.pi_command_scroll)
+        .max(selected_scroll)
+        .min(max_scroll) as u16;
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .scroll((scroll, 0))
+            .block(block),
+        modal,
+    );
+}
+
 #[cfg(test)]
 fn command_palette_content(state: &DevTuiState) -> String {
     let address = navigation_value(state);
@@ -1083,14 +1185,7 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_desktop(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height()),
-            Constraint::Min(8),
-            Constraint::Length(footer_height(state)),
-        ])
-        .split(area);
+    let rows = shell_rows(state, area);
     render_header(frame, state, rows[0], "desktop");
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -1107,14 +1202,7 @@ fn render_desktop(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_compact(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height()),
-            Constraint::Min(8),
-            Constraint::Length(footer_height(state)),
-        ])
-        .split(area);
+    let rows = shell_rows(state, area);
     render_header(frame, state, rows[0], "compact");
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -1125,14 +1213,7 @@ fn render_compact(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     render_status(frame, state, rows[2]);
 }
 fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height()),
-            Constraint::Min(5),
-            Constraint::Length(footer_height(state)),
-        ])
-        .split(area);
+    let rows = shell_rows(state, area);
     render_header(frame, state, rows[0], "phone cockpit");
     render_surface(frame, state, rows[1]);
     let footer_lines = if state.composer_mode {
@@ -1152,6 +1233,21 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )),
             status_line(state, rows[2].width.saturating_sub(2)),
         ]
+    } else if state.pi_command_mode {
+        let mut spans = input_spans(
+            "/ ",
+            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+            &state.pi_command_input,
+            state.pi_command_cursor,
+            area.width.saturating_sub(8),
+        );
+        let hint = if state.pi_command_input.trim().is_empty() {
+            "  ↑↓ select · Tab complete · Enter run · Esc cancel"
+        } else {
+            "  Enter runs native command · Esc cancel"
+        };
+        spans.push(Span::styled(hint, Style::default().fg(MUTED)));
+        vec![Line::from(spans)]
     } else if state.command_mode {
         let (prefix, input, cursor) = match navigation_value(state) {
             Some(address) => (" URL: ", address, navigation_cursor(state, address)),
@@ -1173,7 +1269,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         vec![
             Line::from(Span::styled(
                 compact_line(
-                    &super::bindings::dock_placeholder(state.surface, state.composer_run_mode),
+                    "Tab surfaces · 1-5 jump · a actions · ? help",
                     rows[2].width.saturating_sub(2),
                 ),
                 Style::default().fg(MUTED),
@@ -1380,6 +1476,27 @@ fn render_panel(
     frame.render_widget(
         Paragraph::new(panel_text(&content.into()))
             .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+            .block(surface_block(title, title_color))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_scrolled_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: impl Into<String>,
+    content: impl Into<String>,
+    title_color: Color,
+    scroll: usize,
+) {
+    if area.width < 2 || area.height < 2 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(panel_text(&content.into()))
+            .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+            .scroll((scroll.min(u16::MAX as usize) as u16, 0))
             .block(surface_block(title, title_color))
             .wrap(Wrap { trim: false }),
         area,
@@ -1809,7 +1926,7 @@ fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     let conversation = state.conversation_view();
     let landing = if conversation.starts_with("No conversation yet.") {
         if state.agent_readiness.starts_with("✓ Ready") {
-            "START HERE\nDescribe a coding task.\nEnter to chat or type a message.\nGlass inspects, edits, runs, verifies.\nBrowser opens only for UI work.".into()
+            "START HERE\nDescribe a coding task.\nEnter to chat or type a message.\n/ Pi commands · : Glass actions\nGlass inspects, edits, runs, verifies.\nBrowser opens only for UI work.".into()
         } else {
             "SETUP\nPress :actions.\nChoose Setup Pi runtime · Enter to install.\nChoose Authenticate if installed.\nThen Enter or type to chat.".into()
         }
@@ -1850,17 +1967,17 @@ fn render_agent_workspace_context(frame: &mut Frame<'_>, state: &DevTuiState, ar
             Constraint::Length(8),
         ])
         .split(area);
-    let branch = state.git.lines().next().unwrap_or("branch unavailable");
-    let branch = branch.strip_prefix("branch ").unwrap_or(branch);
-    let check = state
-        .tests
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("No checks run yet");
-    render_panel(
-        frame,
-        rows[0],
-        " WORKSPACE ",
+    let workspace_content = if !state.snapshot_ready {
+        "Loading workspace snapshot…\nGit, checks, and service counts will appear after refresh."
+            .to_string()
+    } else {
+        let branch = state.git.lines().next().unwrap_or("branch unavailable");
+        let branch = branch.strip_prefix("branch ").unwrap_or(branch);
+        let check = state
+            .tests
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("No checks run yet");
         format!(
             "BRANCH {branch}\n{} changed · rev {}\nGITHUB {}\n{}\n{}\n{}",
             state.git_entries.len(),
@@ -1876,7 +1993,13 @@ fn render_agent_workspace_context(frame: &mut Frame<'_>, state: &DevTuiState, ar
                 .map(|item| format!("{} {}", item.status.label(), item.title))
                 .collect::<Vec<_>>()
                 .join(" · ")
-        ),
+        )
+    };
+    render_panel(
+        frame,
+        rows[0],
+        " WORKSPACE ",
+        workspace_content,
         ACCENT_BRIGHT,
     );
     if state.git_diff_open {
@@ -1888,9 +2011,14 @@ fn render_agent_workspace_context(frame: &mut Frame<'_>, state: &DevTuiState, ar
     render_browser_visual(frame, state, rows[2], browser);
 }
 fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let items = if state.files.is_empty() {
+    let items = if state.files.is_empty() && !state.snapshot_ready {
         vec![ListItem::new(Line::from(Span::styled(
-            "No files yet · refresh is still running",
+            "Loading workspace snapshot…",
+            Style::default().fg(MUTED),
+        )))]
+    } else if state.files.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "No project files found · create or open a file",
             Style::default().fg(MUTED),
         )))]
     } else {
@@ -1939,7 +2067,7 @@ fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 ListItem::new(Line::from(vec![
                     Span::styled(format!("{marker} "), Style::default().fg(ACCENT)),
                     Span::styled(icon, Style::default().fg(MUTED)),
-                    Span::styled(path.clone(), style),
+                    Span::styled(compact_path(path, area.width.saturating_sub(9)), style),
                 ]))
                 .style(style)
             })
@@ -2283,18 +2411,40 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
         .iter()
         .filter(|entry| matches!(entry.health, crate::development::ProcessHealth::Healthy))
         .count();
-    let selected = state
-        .selected_process_entry()
-        .map(|entry| format!("selected {}", entry.name))
-        .unwrap_or_else(|| "j/k choose a process".into());
+    let process_count_label = if state.snapshot_ready {
+        process_count.to_string()
+    } else {
+        "…".into()
+    };
+    let healthy_count_label = if state.snapshot_ready {
+        healthy_count.to_string()
+    } else {
+        "…".into()
+    };
+    let selected = if !state.snapshot_ready {
+        "waiting for workspace snapshot".into()
+    } else {
+        state
+            .selected_process_entry()
+            .map(|entry| format!("selected {}", entry.name))
+            .unwrap_or_else(|| "j/k choose a process".into())
+    };
     render_panel(
         frame,
         rows[0],
         " TERMINAL ",
-        format!("{process_count} processes · {healthy_count} healthy · {selected}"),
+        format!("{process_count_label} processes · {healthy_count_label} healthy · {selected}"),
         ACCENT_BRIGHT,
     );
-    if state.process_entries.is_empty() {
+    if !state.snapshot_ready {
+        render_panel(
+            frame,
+            rows[1],
+            " PROCESSES ",
+            "Loading workspace snapshot…",
+            ACCENT_BRIGHT,
+        );
+    } else if state.process_entries.is_empty() {
         let empty_state = if state.processes.trim().is_empty()
             || state.processes.contains("No managed terminals")
         {
@@ -2370,9 +2520,16 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
 
 fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let task_count = status_line_count(&state.tasks);
+    let task_count_label = if state.snapshot_ready {
+        task_count.to_string()
+    } else {
+        "…".into()
+    };
     let guided_empty =
         state.tasks.trim().is_empty() || state.tasks.trim_start().starts_with("No tasks.");
-    let items = if guided_empty {
+    let items = if !state.snapshot_ready {
+        vec![ListItem::new(panel_text("Loading workspace snapshot…"))]
+    } else if guided_empty {
         vec![ListItem::new(panel_text(
             "No tasks yet.\na opens actions · :task create TITLE PROMPT",
         ))]
@@ -2392,7 +2549,7 @@ fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
             .block(surface_block(
-                format!(" TASKS · {task_count} "),
+                format!(" TASKS · {task_count_label} "),
                 ACCENT_BRIGHT,
             )),
         area,
@@ -2417,19 +2574,18 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         .split(rows[0]);
     render_todo_list(frame, state, split[0]);
     render_task_list(frame, state, split[1]);
-    let (running, queued, failed) = task_counts(state);
-    let wake = state
-        .last_crew_wake
-        .as_deref()
-        .and_then(|wake| wake.lines().next())
-        .unwrap_or("no crew wake");
-    render_panel(
-        frame,
-        rows[1],
-        " SUMMARY ",
-        format!("{running} running\n{queued} queued\n{failed} failed\n{wake}"),
-        PURPLE,
-    );
+    let summary = if !state.snapshot_ready {
+        "Loading workspace snapshot…\nTask and todo counts appear after refresh.".into()
+    } else {
+        let (running, queued, failed) = task_counts(state);
+        let wake = state
+            .last_crew_wake
+            .as_deref()
+            .and_then(|wake| wake.lines().next())
+            .unwrap_or("no crew wake");
+        format!("{running} running\n{queued} queued\n{failed} failed\n{wake}")
+    };
+    render_panel(frame, rows[1], " SUMMARY ", summary, PURPLE);
 }
 
 fn task_counts(state: &DevTuiState) -> (usize, usize, usize) {
@@ -2452,7 +2608,9 @@ fn task_counts(state: &DevTuiState) -> (usize, usize, usize) {
 }
 
 fn render_todo_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let items = if state.session_todos.items.is_empty() {
+    let items = if !state.snapshot_ready {
+        vec![ListItem::new(panel_text("Loading workspace snapshot…"))]
+    } else if state.session_todos.items.is_empty() {
         vec![ListItem::new(panel_text(
             "No session todos\nPlan accept or glass.todo.write",
         ))]
@@ -2527,7 +2685,12 @@ fn git_entry_status_color(entry: &crate::git::GitStatusEntry) -> Color {
 }
 
 fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let items = if state.git_entries.is_empty() {
+    let items = if !state.snapshot_ready {
+        vec![ListItem::new(Line::from(Span::styled(
+            "Loading workspace snapshot…",
+            Style::default().fg(MUTED),
+        )))]
+    } else if state.git_entries.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "No changed files · working tree clean",
             Style::default().fg(MUTED),
@@ -2564,7 +2727,7 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        path,
+                        compact_path(&path, area.width.saturating_sub(9)),
                         Style::default()
                             .fg(if selected { TEXT } else { MUTED })
                             .add_modifier(if selected {
@@ -2590,7 +2753,9 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
             .block(surface_block(
-                {
+                if !state.snapshot_ready {
+                    " CHANGES · … ".to_string()
+                } else {
                     let mut title = format!(" CHANGES · {} ", state.git_entries.len());
                     let conflicts = state.git_conflicts.len();
                     let unstaged = state
@@ -2622,6 +2787,10 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
 }
 
 fn render_git_diff_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    if !state.snapshot_ready {
+        render_panel(frame, area, " DIFF ", "Loading workspace snapshot…", PURPLE);
+        return;
+    }
     if state.git_diff_open {
         if state.git_diff.starts_with("REVIEW") {
             render_panel(frame, area, " REVIEW ", &state.git_diff, ACCENT_BRIGHT);
@@ -2658,13 +2827,26 @@ fn render_git_diff_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
 }
 
 fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let branch = state.git_branch.as_str();
+    let branch = if state.snapshot_ready {
+        state.git_branch.as_str()
+    } else {
+        "loading…"
+    };
     let change_count = state.git_entries.len();
-    let review = state
-        .github_review
-        .lines()
-        .next()
-        .unwrap_or("no GitHub review");
+    let change_count_label = if state.snapshot_ready {
+        change_count.to_string()
+    } else {
+        "…".into()
+    };
+    let review = if state.snapshot_ready {
+        state
+            .github_review
+            .lines()
+            .next()
+            .unwrap_or("no GitHub review")
+    } else {
+        "workspace snapshot pending"
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(4), Constraint::Min(5)])
@@ -2682,11 +2864,15 @@ fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             state.git_ahead, state.git_behind
         ),
         format!(
-            "{change_count} changed{conflicts} · {}\n{review}",
-            state
-                .selected_git_entry()
-                .map(|entry| format!("selected {}", entry.path))
-                .unwrap_or_else(|| "j/k choose · c commit · o open · x discard".into()),
+            "{change_count_label} changed{conflicts} · {}\n{review}",
+            if state.snapshot_ready {
+                state
+                    .selected_git_entry()
+                    .map(|entry| format!("selected {}", entry.path))
+                    .unwrap_or_else(|| "j/k choose · c commit · o open · x discard".into())
+            } else {
+                "waiting for workspace snapshot".into()
+            },
         ),
         PURPLE,
     );
@@ -2715,8 +2901,16 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         render_panel(
             frame,
             rows[0],
-            " DEBUG · 0 ",
-            "No debugger sessions\n:debug start NAME COMMAND\na opens actions",
+            if state.snapshot_ready {
+                " DEBUG · 0 ".to_string()
+            } else {
+                " DEBUG · … ".to_string()
+            },
+            if state.snapshot_ready {
+                "No debugger sessions\n:debug start NAME COMMAND\na opens actions".to_string()
+            } else {
+                "Loading workspace snapshot…".to_string()
+            },
             ACCENT_BRIGHT,
         );
         let bottom = if stack_for_phone(state, area) {
@@ -2947,50 +3141,144 @@ fn render_debug_list(
     render_panel(frame, area, title, lines.join("\n"), color);
 }
 
-fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let phone = matches!(
+fn more_phone_layout(state: &DevTuiState, area: Rect) -> bool {
+    matches!(
         state.responsive_class(area.width, area.height),
         ResponsiveClass::Phone
-    ) && area.width < 80;
+    ) && area.width < 80
+}
+
+fn more_route_panel_area(state: &DevTuiState, area: Rect) -> Rect {
+    let phone = more_phone_layout(state, area);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if phone { 4 } else { 5 }),
+            Constraint::Length(if phone { 3 } else { 5 }),
+            Constraint::Min(5),
+        ])
+        .split(area);
+    if phone {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(7)])
+            .split(rows[1])[1]
+    } else {
+        let narrow = area.width < 60;
+        let columns = if narrow {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(38),
+                    Constraint::Percentage(31),
+                    Constraint::Percentage(31),
+                ])
+                .split(rows[1])
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(34),
+                    Constraint::Percentage(33),
+                    Constraint::Min(24),
+                ])
+                .split(rows[1])
+        };
+        columns[2]
+    }
+}
+
+fn more_route_scroll(selected: usize, viewport_height: usize) -> usize {
+    let viewport_height = viewport_height.max(1);
+    selected.saturating_sub(viewport_height.saturating_sub(1))
+}
+
+pub(crate) fn more_route_at(state: &DevTuiState, column: u16, row: u16) -> Option<usize> {
+    if state.surface != DevSurface::More {
+        return None;
+    }
+    let area = Rect::new(
+        0,
+        0,
+        state.terminal_width.max(1),
+        state.terminal_height.max(1),
+    );
+    let route_area = more_route_panel_area(state, surface_area(state, area));
+    let right = route_area.x.saturating_add(route_area.width);
+    let content_top = route_area.y.saturating_add(1);
+    let content_bottom = route_area
+        .y
+        .saturating_add(route_area.height.saturating_sub(1));
+    if column < route_area.x || column >= right || row < content_top || row >= content_bottom {
+        return None;
+    }
+    let viewport_height = usize::from(content_bottom.saturating_sub(content_top));
+    let scroll = more_route_scroll(state.selected_more, viewport_height);
+    let index = usize::from(row - content_top).saturating_add(scroll);
+    (index < DevTuiState::MORE_ROUTES.len()).then_some(index)
+}
+
+fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let phone = more_phone_layout(state, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(if phone { 3 } else { 5 }),
             Constraint::Min(5),
         ])
         .split(area);
     let narrow = area.width < 60 || phone;
     let kernel_count = status_line_count(&state.kernels);
-    let mut summary = format!(
-        "{} skills · {} tools · {kernel_count} kernels\n{}\nCOCKPIT {}",
-        state.snapshot_skills_count,
-        state.snapshot_tools_count,
-        activity_summary(state),
-        state.private_cockpit_status(),
-    );
-    if !state.more_result.is_empty() {
-        summary.push('\n');
-        summary.push_str(state.more_result.lines().next().unwrap_or_default());
-    }
+    let latest_result = state
+        .more_result
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim);
+    let summary = if !state.snapshot_ready {
+        "Loading workspace snapshot…".to_string()
+    } else if phone {
+        latest_result.map_or_else(
+            || {
+                format!(
+                    "{} skills · {} tools · {kernel_count} kernels",
+                    state.snapshot_skills_count, state.snapshot_tools_count
+                )
+            },
+            |result| format!("LAST {result}"),
+        )
+    } else {
+        format!(
+            "{} skills · {} tools · {kernel_count} kernels\n{}\nCOCKPIT {}",
+            state.snapshot_skills_count,
+            state.snapshot_tools_count,
+            latest_result
+                .map(|result| format!("LAST {result}"))
+                .unwrap_or_else(|| activity_summary(state)),
+            state.private_cockpit_status(),
+        )
+    };
     let summary = compact_multiline(&summary, rows[0].width.saturating_sub(4));
     render_panel(frame, rows[0], " SERVICES ", summary, ACCENT_BRIGHT);
     if phone {
         let columns = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([Constraint::Length(3), Constraint::Min(7)])
             .split(rows[1]);
         let pi_content = compact_multiline(
-            &format!(
-                "{}\n{}\n{}\n{}",
-                state
-                    .agent_readiness
-                    .lines()
-                    .next()
-                    .unwrap_or("Pi unavailable"),
-                agent_progress(state),
-                state.experiments.lines().next().unwrap_or("No experiments"),
-                state.replay.lines().next().unwrap_or("No replay"),
-            ),
+            &if state.snapshot_ready {
+                format!(
+                    "{}\n{}\n{}\n{}",
+                    state
+                        .agent_readiness
+                        .lines()
+                        .next()
+                        .unwrap_or("Pi unavailable"),
+                    agent_progress(state),
+                    state.experiments.lines().next().unwrap_or("No experiments"),
+                    state.replay.lines().next().unwrap_or("No replay"),
+                )
+            } else {
+                "Loading workspace snapshot…".to_string()
+            },
             columns[0].width.saturating_sub(4),
         );
         render_panel(frame, columns[0], " PI · WORKSPACE ", pi_content, PURPLE);
@@ -2998,7 +3286,22 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             &more_route_lines(state).join("\n"),
             columns[1].width.saturating_sub(4),
         );
-        render_panel(frame, columns[1], " ROUTES ", route_content, WARNING);
+        let route_title = format!(
+            " ROUTES · {}/{} ",
+            state.selected_more + 1,
+            DevTuiState::MORE_ROUTES.len()
+        );
+        render_scrolled_panel(
+            frame,
+            columns[1],
+            route_title,
+            route_content,
+            WARNING,
+            more_route_scroll(
+                state.selected_more,
+                usize::from(columns[1].height.saturating_sub(2)),
+            ),
+        );
         return;
     }
     let columns = if narrow {
@@ -3021,24 +3324,24 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .split(rows[1])
     };
     let pi_content = compact_multiline(
-        &format!(
-            "{}\n{}\n{kernel_count} kernels",
-            state
-                .agent_readiness
-                .lines()
-                .next()
-                .unwrap_or("Pi unavailable"),
-            agent_progress(state),
-        ),
+        &if state.snapshot_ready {
+            format!(
+                "{}\n{}\n{kernel_count} kernels",
+                state
+                    .agent_readiness
+                    .lines()
+                    .next()
+                    .unwrap_or("Pi unavailable"),
+                agent_progress(state),
+            )
+        } else {
+            "Loading workspace snapshot…".to_string()
+        },
         columns[0].width.saturating_sub(4),
     );
     render_panel(frame, columns[0], " PI ", pi_content, PURPLE);
     let experiments_content = compact_multiline(
-        &format!(
-            "{}\nreplay {}",
-            state.experiments.lines().next().unwrap_or("No experiments"),
-            state.replay.lines().next().unwrap_or("idle"),
-        ),
+        &more_experiment_content(state),
         columns[1].width.saturating_sub(4),
     );
     render_panel(
@@ -3069,6 +3372,30 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     render_panel(frame, columns[2], " ROUTES ", routes_content, WARNING);
 }
 
+fn more_experiment_content(state: &DevTuiState) -> String {
+    let mut lines = state
+        .experiments
+        .lines()
+        .take(6)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.push("No experiments".into());
+    }
+    if let Some(recommended) = state
+        .experiment_comparison
+        .as_ref()
+        .and_then(|comparison| comparison.recommended.as_deref())
+    {
+        lines.push(format!("recommended {recommended}"));
+    }
+    lines.push(format!(
+        "replay {}",
+        state.replay.lines().next().unwrap_or("idle")
+    ));
+    lines.join("\n")
+}
+
 fn more_route_lines(state: &DevTuiState) -> Vec<String> {
     crate::tui::state::DevTuiState::MORE_ROUTES
         .iter()
@@ -3094,7 +3421,14 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             .enumerate()
             .map(|(index, action)| {
                 let selected = index == state.menu_selection;
-                let item_style = if selected {
+                let unavailable = !state.surface_action_available(*action);
+                let item_style = if unavailable {
+                    Style::default().fg(MUTED).bg(if selected {
+                        ACTIVE_BACKGROUND
+                    } else {
+                        PANEL_BACKGROUND
+                    })
+                } else if selected {
                     Style::default()
                         .fg(ACCENT_BRIGHT)
                         .bg(ACTIVE_BACKGROUND)
@@ -3104,8 +3438,16 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        if selected { "› " } else { "  " },
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        if unavailable {
+                            "× "
+                        } else if selected {
+                            "› "
+                        } else {
+                            "  "
+                        },
+                        Style::default()
+                            .fg(if unavailable { MUTED } else { ACCENT })
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(action.label, item_style),
                 ]))
@@ -3151,15 +3493,29 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             }))
             .collect::<Vec<_>>();
         let selected_description = if state.menu_selection == search_index {
-            "Search every Glass route by root command."
+            "Search every Glass route by root command.".to_string()
         } else if state.menu_selection == quit_index {
-            "Close the TUI after an explicit quit confirmation."
+            "Close the TUI after an explicit quit confirmation.".to_string()
         } else {
             state
                 .surface_actions()
                 .get(state.menu_selection)
-                .map(|action| action.description)
-                .unwrap_or("Choose an action.")
+                .map(|action| {
+                    state
+                        .surface_action_unavailable_reason(*action)
+                        .map(|reason| format!("Unavailable · {reason}"))
+                        .unwrap_or_else(|| action.description.to_string())
+                })
+                .unwrap_or_else(|| "Choose an action.".to_string())
+        };
+        let selected_available = state
+            .surface_actions()
+            .get(state.menu_selection)
+            .is_none_or(|action| state.surface_action_available(*action));
+        let run_hint = if selected_available {
+            "Enter run · Esc close"
+        } else {
+            "Unavailable · Esc close"
         };
         let example = command::palette_example(state.surface);
         let rows = if area.height >= 11 {
@@ -3197,8 +3553,8 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         if rows[1].height > 0 {
             frame.render_widget(
                 Paragraph::new(panel_text(&format!(
-                    "{}\n{}\nEnter run · Esc close",
-                    selected_description, example,
+                    "{}\n{}\n{}",
+                    selected_description, example, run_hint,
                 )))
                 .style(Style::default().fg(TEXT))
                 .block(
@@ -3587,7 +3943,7 @@ fn status_style(state: &DevTuiState) -> Style {
         || status.contains("required")
     {
         Style::default().fg(WARNING)
-    } else if state.composer_mode || state.command_mode {
+    } else if state.composer_mode || state.command_mode || state.pi_command_mode {
         Style::default().fg(ACCENT_BRIGHT)
     } else {
         Style::default().fg(SUCCESS)
@@ -3678,6 +4034,21 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )),
             status_line(state, area.width.saturating_sub(2)),
         ]
+    } else if state.pi_command_mode {
+        let mut spans = input_spans(
+            "/ ",
+            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+            &state.pi_command_input,
+            state.pi_command_cursor,
+            area.width.saturating_sub(8),
+        );
+        let hint = if state.pi_command_input.trim().is_empty() {
+            "  ↑↓ select · Tab complete · Enter run · Esc cancel"
+        } else {
+            "  Enter runs native command · Esc cancel"
+        };
+        spans.push(Span::styled(hint, Style::default().fg(MUTED)));
+        vec![Line::from(spans)]
     } else if state.command_mode {
         let (prefix, input, cursor, hint) = match navigation_value(state) {
             Some(address) => (
@@ -4044,6 +4415,51 @@ mod tests {
         assert!(terminal.contains("0 processes"));
         assert!(terminal.contains("No managed processes yet"));
     }
+
+    #[test]
+    fn async_startup_shows_loading_instead_of_empty_workspace_claims() {
+        let mut state = state(TuiLayout::Desktop);
+        state.snapshot_ready = false;
+        state.surface = DevSurface::Agent;
+        state.git.clear();
+        state.git_entries.clear();
+        state.tests.clear();
+
+        let output = rendered(&state, 140, 40);
+        assert!(output.contains("Loading workspace snapshot"));
+        assert!(!output.contains("branch unavailable"));
+        assert!(!output.contains("0 changed"));
+    }
+
+    #[test]
+    fn action_menu_marks_unavailable_rows_and_rejects_execution() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Terminal;
+        state.process_entries.clear();
+        state.snapshot_ready = true;
+        state.open_menu();
+        state.menu_selection = 2;
+
+        let output = rendered(&state, 118, 32);
+        assert!(output.contains("× View logs"));
+        assert!(output.contains("Unavailable"));
+
+        state.run_menu_action();
+        assert!(state.menu_open);
+        assert!(state.status.contains("unavailable"));
+    }
+
+    #[test]
+    fn phone_more_route_selection_reports_position_and_keeps_marker_visible() {
+        let mut state = state(TuiLayout::Mobile);
+        state.surface = DevSurface::More;
+        state.selected_more = DevTuiState::MORE_ROUTES.len() - 1;
+
+        let output = rendered(&state, 48, 18);
+        assert!(output.contains("ROUTES · 5/5"));
+        assert!(output.contains("› harness list"));
+    }
+
     #[test]
     fn compact_more_surface_keeps_service_routes_reachable() {
         let mut state = state(TuiLayout::Mobile);
@@ -4052,6 +4468,20 @@ mod tests {
         assert!(output.contains("0 kernels"));
         assert!(output.contains("PI"));
         assert!(output.contains("ROUTES"));
+    }
+
+    #[test]
+    fn more_phone_surface_shows_every_route_and_the_latest_result() {
+        let mut state = state(TuiLayout::Mobile);
+        state.surface = DevSurface::More;
+        let output = rendered(&state, 48, 18);
+        for route in DevTuiState::MORE_ROUTES {
+            assert!(output.contains(route), "missing phone route {route}");
+        }
+
+        state.more_result = "External harnesses · ● installed · ○ unavailable".into();
+        let output = rendered(&state, 48, 18);
+        assert!(output.contains("LAST External harnesses"));
     }
 
     #[test]
@@ -4403,17 +4833,18 @@ mod tests {
         assert!(!state.surface_actions().is_empty());
         state.move_menu_selection(3);
         state.run_menu_action();
-        // `agent setup login` carries an argument, so the palette opens prefilled.
-        assert!(state.command_mode);
-        assert!(state.command_input.starts_with("agent setup login"));
-        state.close_palette();
+        // No-input actions execute immediately; login hands control to the
+        // outer loop instead of requiring a second Enter in the palette.
+        assert!(!state.command_mode);
+        assert!(state.agent_login_requested);
 
         state.surface = DevSurface::App;
         state.open_menu();
         state.run_menu_action();
-        // `browser start` has no argument requirement in the menu, palette prefilled.
-        assert!(state.command_input.starts_with("browser start"));
-        state.close_palette();
+        // Mutating no-input actions go directly to their confirmation guard.
+        assert!(!state.command_mode);
+        assert!(state.pending_confirmation.is_some());
+        state.deny_confirmation();
         state.open_menu();
         state.menu_selection = 2;
         state.run_menu_action();
@@ -4421,8 +4852,11 @@ mod tests {
 
         state.surface = DevSurface::Terminal;
         state.open_menu();
+        state.menu_selection = 0;
         state.run_menu_action();
-        assert!(state.status.contains("No development command detected"));
+        assert!(state.menu_open);
+        assert!(state.status.contains("unavailable"));
+        state.close_menu();
         state.open_menu();
         state.menu_selection = 1;
         state.run_menu_action();
@@ -4430,8 +4864,10 @@ mod tests {
 
         state.surface = DevSurface::More;
         state.open_menu();
+        state.menu_selection = 0;
         state.run_menu_action();
-        assert!(state.status.contains("No development command detected"));
+        assert!(state.menu_open);
+        assert!(state.status.contains("unavailable"));
     }
 
     #[test]
@@ -4634,13 +5070,12 @@ mod tests {
             .unwrap();
         state.open_selected_file_for_edit();
         assert!(state.code_edit_mode);
+        assert_eq!(state.editor_engine.mode, EditorMode::Normal);
         let output = rendered(&state, 100, 30);
         assert!(output.contains("GLASS DEV · EDITOR"));
         assert!(output.contains("SOURCE"));
-        assert!(
-            output.contains("Esc normal") || output.contains("Esc leaves"),
-            "rendered output: {output:?}"
-        );
+        assert!(output.contains("NORMAL"), "rendered output: {output:?}");
+        assert!(output.contains("Esc back"), "rendered output: {output:?}");
         assert!(output.contains("Ctrl-S"));
 
         let backend = TestBackend::new(100, 30);
@@ -4650,6 +5085,10 @@ mod tests {
         assert!(cursor.x > 0);
         assert!(cursor.y > 0);
 
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('i'),
+            crossterm::event::KeyModifiers::NONE,
+        );
         state.edit_code_key(
             crossterm::event::KeyCode::Char('#'),
             crossterm::event::KeyModifiers::NONE,
@@ -4795,9 +5234,9 @@ mod tests {
         assert!(output.contains("Compose message"));
         state.move_menu_selection(1);
         state.run_menu_action();
-        assert!(state.command_mode);
-        assert!(state.command_input.starts_with("agent setup"));
-        state.close_palette();
+        assert!(!state.command_mode);
+        assert!(state.pending_confirmation.is_some());
+        state.deny_confirmation();
 
         state.open_menu();
         state.menu_selection = state.surface_actions().len();

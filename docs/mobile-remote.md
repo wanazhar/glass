@@ -35,7 +35,7 @@ Phone mode exposes five direct destinations:
 | `2` | Code | bounded files, editor buffers, and diagnostics |
 | `3` | App | semantic browser state, workflow, and selected live view |
 | `4` | Tasks | task state, verification, and task actions |
-| `5` | More | workspace status, kernels, experiments, and operations |
+| `5` | More | workspace status, kernels, experiments, and operations; click or `j/k` to select Routes |
 
 
 ## Input contract
@@ -46,6 +46,7 @@ The phone layout uses the same keyboard and authority rules as desktop:
 |---|---|
 | `a` | open the current surface's action menu |
 | `:` | open the governed command palette |
+| More Routes | click selects; `Enter` or double-click runs the selected route |
 | `?` | open scrollable keyboard help in navigation mode |
 | `j`/`k`, arrows, mouse wheel | scroll content; App `j`/`k` moves semantic selection |
 | printable text on Agent | open the composer and insert the text when Pi is ready |

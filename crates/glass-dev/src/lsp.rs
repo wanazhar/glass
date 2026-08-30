@@ -64,13 +64,16 @@ impl LanguageService {
     }
 
     pub fn start_rust_analyzer(&mut self) -> DevelopmentResult<()> {
-        self.start(
-            "rust",
-            &LanguageServerConfig {
-                command: "rust-analyzer".into(),
-                arguments: Vec::new(),
-            },
-        )
+        validate_name("rust")?;
+        if self.servers.contains_key("rust") {
+            return Err(DevelopmentError::Conflict(
+                "language server rust is already running".into(),
+            ));
+        }
+        let client = LspClient::rust_analyzer(&self.root)?;
+        self.servers.insert("rust".into(), client);
+        self.record("rust", "system", "started", None, None);
+        Ok(())
     }
 
     pub fn stop(&mut self, name: &str) -> DevelopmentResult<()> {

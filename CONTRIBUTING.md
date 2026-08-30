@@ -12,10 +12,36 @@ status statements exact.
 
 ## Build and test
 
-Run:
+Use the package-scoped loop while editing. It avoids compiling examples and
+integration-test binaries on every save:
 
 ```console
-cargo build --locked
+scripts/check-rust-workspace.sh fast-check
+scripts/check-rust-workspace.sh fast-build
+```
+
+To run unit tests without building the complete target inventory:
+
+```console
+scripts/check-rust-workspace.sh fast-test
+```
+
+Native release binaries are an opt-in workflow because they are not current
+release deliverables and consume one runner on each supported OS. Dispatch the
+workflow manually when platform binary artifacts or release-mode smoke tests
+are needed:
+
+```console
+gh workflow run native-binaries.yml --ref <branch>
+```
+
+The workflow builds both `glass-dev` entry points (`glass` and
+`glass-browser`) for Linux, macOS, and Windows, then uploads short-lived
+validation artifacts. It is not part of the normal CI or crates release gate.
+
+Run the full certification before merging or releasing:
+
+```console
 cargo test --all-targets --locked
 cargo fmt --all -- --check
 python3 scripts/check-feature-parity.py

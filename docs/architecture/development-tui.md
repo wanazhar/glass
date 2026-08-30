@@ -120,17 +120,17 @@ a second keybinding or state owner.
 | Tasks | workspace-local Agent checklist plus overnight DAG rows | empty todos direct to Plan accept or `glass.todo.write`; empty DAG directs to `a` or `:task create TITLE PROMPT` |
 | Git | branch/change rows, selected file and inline diff | opening Git loads the selected diff; loading is visible and off-thread |
 | Debug | debugger sessions and test evidence | no sessions is one start panel (`:debug start NAME COMMAND`) |
-| More | Pi/readiness, kernels, experiments/replay, harnesses and routes | Enter runs the selected route; `doctor` stays on More |
+| More | Pi/readiness, kernels, experiments/replay, harnesses and routes | `j/k` or click selects a route; Enter/double-click runs it; results stay on More |
 
 ## Navigation and modal routing
 
 The event loop routes the strongest guard first: quit confirmation, editor exit
 prompt, Ctrl-C, help, command-center menu, browser target picker/recovery,
 agent approval, mutation confirmation, full-screen editor, file/session
-pickers, composer dock, command palette, then ordinary surface input including
-Git workbench keys. `Esc` closes the active modal/overlay; it does not cancel a
-running worker job. Git keys stay live while a diff is open, but they do not
-trap confirm or palette input.
+pickers, Pi slash-command modal, composer dock, Glass command palette, then
+ordinary surface input including Git workbench keys. `Esc` closes the active
+modal/overlay; it does not cancel a running worker job. Git keys stay live while
+a diff is open, but they do not trap confirm or palette input.
 
 | Input | Route and behavior |
 |---|---|
@@ -142,6 +142,7 @@ trap confirm or palette input.
 | Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
 | PageUp/PageDown, Home/End | surface scroll/page or bounds |
 | `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
+| `/` on Agent | open Pi's native slash-command modal; `:` remains the Glass command palette |
 | `Ctrl-L` | open the shared composer dock on the current surface |
 | `Ctrl-P` | open the file picker; in the composer or palette, it keeps its local history behavior |
 | `Ctrl-K` / `Ctrl-Shift-P` | open the command palette from the normal surface view |
@@ -170,6 +171,26 @@ Quit. Search accepts a typed route, including expert commands such as
 other argument tokens. Browser action commands are delegated to the embedded
 browser workspace and preserve its revision checks.
 
+### Native Pi slash-command modal
+
+The Agent surface has two command namespaces. `/` opens the Pi
+`AgentSession` command modal; `:` opens Glass workspace actions. The modal
+contains all 23 built-ins from the pinned Pi SDK: `/settings`, `/model`,
+`/tree`, `/thinking`, `/scoped-models`, `/export`, `/import`, `/share`,
+`/copy`, `/name`, `/session`, `/changelog`, `/hotkeys`, `/fork`, `/clone`,
+`/trust`, `/login`, `/logout`, `/new`, `/compact`, `/resume`, `/reload`, and
+`/quit`. Arrow keys or `j`/`k` select, `Tab` completes, `Ctrl-U` clears, and
+`Enter` dispatches the command with its typed arguments.
+
+The TUI queues the command on the resident Pi worker so the input loop stays
+responsive. Pi emits a structured slash-result event; Glass renders it in the
+Agent transcript and keeps the detailed result on More. Extension commands,
+prompt templates, and enabled skill commands are accepted when typed after
+their resources load. `/login` temporarily gives the terminal to Pi for its
+interactive provider flow, and `/quit` enters the normal Glass quit path. See
+the [native runtime guide](../pi-sdk-runtime.md) for the runtime protocol and
+argument examples.
+
 ## First launch and agent composer
 
 On construction Glass reads workspace trust and Pi readiness without blocking on
@@ -178,16 +199,19 @@ is selected: a ready Pi shows `Ready · describe a coding task`, while an
 unconfigured Pi shows `Pi setup required · press :actions or Enter to continue`.
 The `:actions` routes are `agent setup`, `agent update`, `agent setup login`, and
 `agent doctor`; login temporarily hands the terminal to Pi and resumes Glass.
-`--yolo` is process-scoped unrestricted development mode and is shown in the
-header; it does not create a second workspace.
+The resident Pi session is unrestricted by default because Glass Dev is a
+human-controlled development suite. `--yolo` remains the process-wide switch
+for direct Glass/browser policy paths and is shown in the header; it does not
+create a second workspace.
 
 The shared composer dock is a local draft with a character cursor. `Ctrl-L`
 opens it on any surface. `i`, Enter on the Agent surface, or typing a
 non-digit Agent character also opens it. Default mode is Agent. `Ctrl-Shift-A`
-cycles Ask, Plan, and Agent; `/ask`, `/plan`, `/agent`, and `/todo` also set
-the mode. Ask inspects only. Plan writes a bounded numbered plan. Only Agent
-may mutate. `Enter` submits immediately and keeps the composer open; submitted
-text is rendered optimistically, while the worker/event stream appends
+cycles Ask, Plan, and Agent; the legacy composer aliases `/ask`, `/plan`,
+`/agent`, and `/todo` set the mode or checklist view when entered in the
+composer. Native Pi commands use the dedicated `/` modal. Ask inspects only.
+Plan writes a bounded numbered plan. Only Agent may mutate. `Enter` submits
+immediately and keeps the composer open; submitted text is rendered optimistically, while the worker/event stream appends
 assistant deltas and tool activity. `Ctrl-D` toggles steer mode for an active
 turn; `Ctrl-X` aborts the selected agent. `Ctrl-A/E/U/W` move to start/end,
 clear, or delete a word; Left/Right and Backspace edit the draft. Bracketed

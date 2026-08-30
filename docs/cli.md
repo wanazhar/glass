@@ -14,7 +14,7 @@ remains the authority for installed flags, defaults, and positional arguments.
 
 | Option | Default | Function |
 |---|---|---|
-| `--yolo` | off | Run an unrestricted trusted Pi/Glass session: no tool approvals, all browser policy capabilities allowed, and ambient Pi resources/tools loaded. |
+| `--yolo` | off | Run direct Glass/browser operations and non-TUI Pi callers without process-level mutation confirmation; the Glass Dev TUI's resident Pi session is already human-controlled and unrestricted. |
 | `--policy development\|ci\|polite\|hardened\|untrusted-mcp` | `development` | Select the browser safety preset. |
 | `--policy-allow CAPABILITY` | none | Explicitly allow a privileged capability; repeatable. |
 | `--policy-confirm CAPABILITY` | none | Require a typed confirmation result; repeatable. |
@@ -512,11 +512,18 @@ Pi readiness is separate from the legacy request adapter. Run `glass agent
 doctor` or `glass agent status` to inspect Node, the pinned managed SDK,
 provider/authentication, and session readiness. `glass agent setup` installs
 the managed `@earendil-works/pi-coding-agent` SDK at the exact pinned version
-`0.84.3`; `glass agent setup --update` reinstalls it. Use `--sdk-entry FILE`
+`0.84.4`; `glass agent setup --update` reinstalls it. Use `--sdk-entry FILE`
 to select an existing SDK entry and `--agent-dir DIR` with it to select an
 existing credential/model directory. `--login` opens Pi's provider login flow
 after setup. One-shot Pi requests wait for `agent_settled`; extension UI
-requests are denied because a one-shot caller has no safe approval host.
+requests are denied because a one-shot caller has no interactive UI host.
+
+The resident Glass Dev TUI uses the native `AgentSession` path. On the Agent
+surface, `/` opens Pi's slash-command modal and `:` opens Glass's command
+palette. The modal covers all 23 official commands in the pinned SDK and
+accepts loaded extension, prompt-template, and skill commands by name. Slash
+results are emitted into the Agent transcript and More; `/login` hands the
+terminal to Pi for interactive authentication. See [Native Pi SDK runtime](pi-sdk-runtime.md).
 
 The standard Glass tool behavior is explicit and bounded. `read` accepts
 one-based `offset` and `limit`; `ls` accepts a path prefix and limit; `grep`
@@ -593,12 +600,15 @@ glass --yolo
 glass --yolo agent prompt "Implement and verify the requested change" --harness pi --root .
 ```
 
-This is a process-scoped trust decision. Glass skips its mutation approval
-sheet, the Pi extension does not request approval, and any confirmation RPC
-from another loaded Pi extension is accepted automatically. Ambient context,
-extensions, skills, templates, themes, and registered extension tools are
-enabled. Browser policy capabilities are treated as explicitly allowed, even
-if a confirmation capability was also supplied on the command line.
+This is a process-scoped unrestricted setting for direct Glass/browser work and
+non-TUI callers. Glass skips its mutation approval sheet, the Pi extension does
+not request approval, and any confirmation RPC from another loaded Pi
+extension is accepted automatically. Ambient context, extensions, skills,
+templates, themes, and registered extension tools are enabled. Browser policy
+capabilities are treated as explicitly allowed, even if a confirmation
+capability was also supplied on the command line. The resident Glass Dev TUI
+already uses its human-controlled unrestricted Pi session without requiring
+this flag.
 
 `--yolo` does not turn correctness guards into best effort: project file tools
 remain root-confined, browser revisions remain guarded, workspace/daemon
@@ -609,16 +619,11 @@ operate outside the project root.
 
 Pi's configured providers and `models.json` models are available through
 `agent models` and `agent set-model PROVIDER MODEL_ID`; `agent thinking LEVEL`
-sets the thinking level. The default uses the cached catalog, ephemeral
-session, and only the Glass-owned extension. Set
-`GLASS_PI_ONLINE_CATALOG=1` for catalog refresh,
-`GLASS_PI_PERSIST_SESSION=1` for Pi-managed session persistence, or
-`GLASS_PI_TRUSTED_RESOURCES=1` to load ambient context files, extensions,
-skills, templates, and themes. Trusted resources are executable local code and
-are outside Glass's per-tool authority boundary. This opt-in also removes the
-extension-tool allowlist so installed extension tools can be selected by Pi;
-Glass's raw built-in filesystem and shell tools remain disabled because their
-names are replaced by the Glass-owned overrides.
+sets the thinking level. The legacy one-shot compatibility adapter keeps its
+existing environment-controlled catalog/session behavior. The resident Glass
+Dev TUI loads its configured context files, extensions, skills, templates, and
+themes by default, while Pi's raw built-in filesystem and shell tools remain
+disabled because their names are replaced by Glass-owned overrides.
 
 ## Profiles and files
 

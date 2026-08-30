@@ -55,7 +55,8 @@ source-behavior reference.
   `--browser-runtime native`; it accepts only local `about:blank` and bounded
   `data:text/html` from the CLI and never contacts an endpoint. Its current
   Rust-only presentation artifacts include bounded outer/content box layout with
-  uniform padding/margin and explicit box sizing, bounded vertical viewport scrolling,
+  physical four-side padding/margin shorthands and longhands plus explicit box
+  sizing, bounded vertical viewport scrolling,
   inherited text color, paint
   clips, side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
@@ -243,7 +244,8 @@ solid/dashed/dotted-border paint, bounded physical circular border radii,
 bounded inline-box line placement, bounded fixed pixel line-height flow,
 bounded direct-text flow fragments and source-order text paint, bounded
 word-aware wrapping,
-normal-flow outer/content box geometry with uniform padding/margin,
+  normal-flow outer/content box geometry with physical four-side padding/margin
+  shorthands and longhands,
 explicit box sizing, and bounded vertical viewport scrolling,
 native point hit testing, local click/type actions, and a revision/changed
 effects signal; its Rust-only

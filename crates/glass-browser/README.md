@@ -72,8 +72,9 @@ capabilities. Locators must resolve exactly one current target; stale revisions
 fail before browser input.
 
 The feature-gated native engine additionally derives bounded integer-pixel
-normal-flow rectangles, uniform non-negative padding/margin, explicit
-content-box or border-box sizing, outer/content rectangles, bounded vertical
+normal-flow rectangles, bounded physical four-side padding/margin shorthands
+and longhands, explicit content-box or border-box sizing, outer/content
+rectangles, bounded vertical
 viewport scrolling, inherited text color, bounded paint clips, bounded
   side-specific solid/dashed/dotted-border paint, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
@@ -163,7 +164,7 @@ does not own or close the external browser.
 |---|---:|---|
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
-| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded layout/point input, root vertical viewport scrolling, and Rust-only display/raster artifacts |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded physical box-edge layout/point input, root vertical viewport scrolling, and Rust-only display/raster artifacts |
 
 ## MCP
 

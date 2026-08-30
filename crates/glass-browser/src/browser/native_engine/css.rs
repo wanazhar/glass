@@ -142,6 +142,50 @@ pub(crate) enum DisplayValue {
     Other,
 }
 
+/// Bounded physical top, right, bottom, and left box values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NativeBoxEdges {
+    top: u32,
+    right: u32,
+    bottom: u32,
+    left: u32,
+}
+
+impl NativeBoxEdges {
+    fn from_cascade(values: [Option<CascadeValue<u32>>; 4]) -> Self {
+        Self {
+            top: values[0].map_or(0, |value| value.value),
+            right: values[1].map_or(0, |value| value.value),
+            bottom: values[2].map_or(0, |value| value.value),
+            left: values[3].map_or(0, |value| value.value),
+        }
+    }
+
+    pub(crate) const fn top(self) -> u32 {
+        self.top
+    }
+
+    pub(crate) const fn right(self) -> u32 {
+        self.right
+    }
+
+    pub(crate) const fn bottom(self) -> u32 {
+        self.bottom
+    }
+
+    pub(crate) const fn left(self) -> u32 {
+        self.left
+    }
+
+    pub(crate) const fn horizontal(self) -> u32 {
+        self.left.saturating_add(self.right)
+    }
+
+    pub(crate) const fn vertical(self) -> u32 {
+        self.top.saturating_add(self.bottom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeComputedStyle {
     display: DisplayValue,
@@ -152,8 +196,8 @@ pub(crate) struct NativeComputedStyle {
     background_color: Option<NativeColor>,
     border: Option<NativeBorder>,
     border_radius: NativeBorderRadius,
-    padding: u32,
-    margin: u32,
+    padding: NativeBoxEdges,
+    margin: NativeBoxEdges,
     box_sizing: NativeBoxSizing,
     color: Option<NativeColor>,
     overflow_hidden: bool,
@@ -192,11 +236,11 @@ impl NativeComputedStyle {
         self.border_radius
     }
 
-    pub(crate) const fn padding(self) -> u32 {
+    pub(crate) const fn padding(self) -> NativeBoxEdges {
         self.padding
     }
 
-    pub(crate) const fn margin(self) -> u32 {
+    pub(crate) const fn margin(self) -> NativeBoxEdges {
         self.margin
     }
 
@@ -247,8 +291,8 @@ impl NativeStylesheet {
         let mut background_color = None;
         let mut border: [Option<CascadeValue<NativeBorderSide>>; 4] = [None; 4];
         let mut border_radius = None;
-        let mut padding = None;
-        let mut margin = None;
+        let mut padding: [Option<CascadeValue<u32>>; 4] = [None; 4];
+        let mut margin: [Option<CascadeValue<u32>>; 4] = [None; 4];
         let mut box_sizing = None;
         let mut color = None;
         let mut overflow = None;
@@ -338,26 +382,20 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.padding
-                && wins(rule.selector.specificity, rule.order, false, padding)
-            {
-                padding = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.margin
-                && wins(rule.selector.specificity, rule.order, false, margin)
-            {
-                margin = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_box_edges(
+                &rule.declarations.padding,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut padding,
+            );
+            apply_box_edges(
+                &rule.declarations.margin,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut margin,
+            );
             if let Some(value) = rule.declarations.box_sizing
                 && wins(rule.selector.specificity, rule.order, false, box_sizing)
             {
@@ -469,26 +507,20 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.padding
-                && wins(u16::MAX, usize::MAX, true, padding)
-            {
-                padding = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.margin
-                && wins(u16::MAX, usize::MAX, true, margin)
-            {
-                margin = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_box_edges(
+                &declarations.padding,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut padding,
+            );
+            apply_box_edges(
+                &declarations.margin,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut margin,
+            );
             if let Some(value) = declarations.box_sizing
                 && wins(u16::MAX, usize::MAX, true, box_sizing)
             {
@@ -531,8 +563,8 @@ impl NativeStylesheet {
             background_color: background_color.map(|value| value.value),
             border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
             border_radius: border_radius.map_or(NativeBorderRadius::default(), |value| value.value),
-            padding: padding.map_or(0, |value| value.value),
-            margin: margin.map_or(0, |value| value.value),
+            padding: NativeBoxEdges::from_cascade(padding),
+            margin: NativeBoxEdges::from_cascade(margin),
             box_sizing: box_sizing.map_or(NativeBoxSizing::ContentBox, |value| value.value),
             color: color.map(|value| value.value).or(inherited_color),
             overflow_hidden: overflow.is_some_and(|value| value.value == OverflowValue::Hidden),
@@ -587,6 +619,27 @@ fn apply_border_sides(
     }
 }
 
+fn apply_box_edges(
+    declarations: &[Option<u32>; 4],
+    specificity: u16,
+    order: usize,
+    inline: bool,
+    edges: &mut [Option<CascadeValue<u32>>; 4],
+) {
+    for (index, value) in declarations.iter().enumerate() {
+        if let Some(value) = value
+            && wins(specificity, order, inline, edges[index])
+        {
+            edges[index] = Some(CascadeValue {
+                value: *value,
+                specificity,
+                order,
+                inline,
+            });
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeDeclarations {
     display: Option<DisplayValue>,
@@ -597,8 +650,8 @@ struct NativeDeclarations {
     background_color: Option<NativeColor>,
     border: [Option<NativeBorderSide>; 4],
     border_radius: Option<NativeBorderRadius>,
-    padding: Option<u32>,
-    margin: Option<u32>,
+    padding: [Option<u32>; 4],
+    margin: [Option<u32>; 4],
     box_sizing: Option<NativeBoxSizing>,
     color: Option<NativeColor>,
     overflow: Option<OverflowValue>,
@@ -682,8 +735,8 @@ fn parse_source(
             || declarations.background_color.is_some()
             || declarations.border.iter().any(Option::is_some)
             || declarations.border_radius.is_some()
-            || declarations.padding.is_some()
-            || declarations.margin.is_some()
+            || declarations.padding.iter().any(Option::is_some)
+            || declarations.margin.iter().any(Option::is_some)
             || declarations.box_sizing.is_some()
             || declarations.color.is_some()
             || declarations.overflow.is_some()
@@ -764,10 +817,54 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.border_radius = parse_border_radius(value);
             }
             "padding" => {
-                declarations.padding = parse_dimension(value);
+                if let Some(values) = parse_box_edges(value) {
+                    declarations.padding = values.map(Some);
+                }
             }
             "margin" => {
-                declarations.margin = parse_dimension(value);
+                if let Some(values) = parse_box_edges(value) {
+                    declarations.margin = values.map(Some);
+                }
+            }
+            "padding-top" => {
+                if let Some(value) = parse_dimension(value) {
+                    declarations.padding[0] = Some(value);
+                }
+            }
+            "padding-right" => {
+                if let Some(value) = parse_dimension(value) {
+                    declarations.padding[1] = Some(value);
+                }
+            }
+            "padding-bottom" => {
+                if let Some(value) = parse_dimension(value) {
+                    declarations.padding[2] = Some(value);
+                }
+            }
+            "padding-left" => {
+                if let Some(value) = parse_dimension(value) {
+                    declarations.padding[3] = Some(value);
+                }
+            }
+            "margin-top" => {
+                if let Some(value) = parse_dimension(value) {
+                    declarations.margin[0] = Some(value);
+                }
+            }
+            "margin-right" => {
+                if let Some(value) = parse_dimension(value) {
+                    declarations.margin[1] = Some(value);
+                }
+            }
+            "margin-bottom" => {
+                if let Some(value) = parse_dimension(value) {
+                    declarations.margin[2] = Some(value);
+                }
+            }
+            "margin-left" => {
+                if let Some(value) = parse_dimension(value) {
+                    declarations.margin[3] = Some(value);
+                }
             }
             "box-sizing" => {
                 declarations.box_sizing = parse_box_sizing(value);
@@ -829,6 +926,20 @@ fn parse_border_radius(value: &str) -> Option<NativeBorderRadius> {
             bottom_right: *bottom_right,
             bottom_left: *bottom_left,
         }),
+        _ => None,
+    }
+}
+
+fn parse_box_edges(value: &str) -> Option<[u32; 4]> {
+    let values = value
+        .split_ascii_whitespace()
+        .map(parse_dimension)
+        .collect::<Option<Vec<_>>>()?;
+    match values.as_slice() {
+        [all] => Some([*all; 4]),
+        [vertical, horizontal] => Some([*vertical, *horizontal, *vertical, *horizontal]),
+        [top, horizontal, bottom] => Some([*top, *horizontal, *bottom, *horizontal]),
+        [top, right, bottom, left] => Some([*top, *right, *bottom, *left]),
         _ => None,
     }
 }
@@ -1175,8 +1286,8 @@ mod tests {
                 bottom_left: 4,
             })
         );
-        assert_eq!(declarations.padding, Some(4));
-        assert_eq!(declarations.margin, Some(3));
+        assert_eq!(declarations.padding, [Some(4); 4]);
+        assert_eq!(declarations.margin, [Some(3); 4]);
         assert_eq!(declarations.box_sizing, Some(NativeBoxSizing::BorderBox));
         assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
@@ -1257,6 +1368,29 @@ mod tests {
     }
 
     #[test]
+    fn box_edges_parser_expands_bounded_physical_values() {
+        assert_eq!(parse_box_edges("4px"), Some([4; 4]));
+        assert_eq!(parse_box_edges("1px 2px"), Some([1, 2, 1, 2]));
+        assert_eq!(parse_box_edges("1px 2px 3px"), Some([1, 2, 3, 2]));
+        assert_eq!(parse_box_edges("1px 2px 3px 4px"), Some([1, 2, 3, 4]));
+        assert_eq!(parse_box_edges("1px 2px 3px 4px 5px"), None);
+        assert_eq!(parse_box_edges("50%"), None);
+        assert_eq!(parse_box_edges("-1px"), None);
+
+        let declarations = parse_declarations(
+            "padding: 1px 2px 3px 4px; padding-left: 5px; margin: 6px 7px; margin-bottom: 8px",
+        );
+        assert_eq!(declarations.padding, [Some(1), Some(2), Some(3), Some(5)]);
+        assert_eq!(declarations.margin, [Some(6), Some(7), Some(8), Some(7)]);
+        let declarations = parse_declarations("margin: 6px 7px; margin-bottom: 8px");
+        assert_eq!(declarations.margin, [Some(6), Some(7), Some(8), Some(7)]);
+        let declarations =
+            parse_declarations("padding: 4px; padding-left: 50%; margin: 2px; margin-top: -1px");
+        assert_eq!(declarations.padding, [Some(4); 4]);
+        assert_eq!(declarations.margin, [Some(2); 4]);
+    }
+
+    #[test]
     fn stylesheet_cascade_prefers_specificity_then_inline_style() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "button { display: none; } #shown { display: block; }".into(),
@@ -1302,6 +1436,35 @@ mod tests {
                 top_right: 5,
                 bottom_right: 6,
                 bottom_left: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_box_edges_per_physical_side() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { padding: 1px 2px; margin: 3px; } #card { padding-left: 5px; margin-top: 4px; }"
+                .into(),
+        ])
+        .unwrap();
+        let node = node("<div id='card' style='padding-bottom:6px;margin-right:7px'>Card</div>");
+        let style = stylesheet.computed_for(&node);
+        assert_eq!(
+            style.padding(),
+            NativeBoxEdges {
+                top: 1,
+                right: 2,
+                bottom: 6,
+                left: 5,
+            }
+        );
+        assert_eq!(
+            style.margin(),
+            NativeBoxEdges {
+                top: 4,
+                right: 7,
+                bottom: 3,
+                left: 3,
             }
         );
     }

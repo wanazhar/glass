@@ -115,7 +115,8 @@ pub struct Cli {
     pub chrome_path: Option<PathBuf>,
 
     /// Select the browser runtime for portable semantic one-shot operations.
-    /// Chromium remains the default full BrowserSession/CDP runtime.
+    /// Chromium remains the default full BrowserSession/CDP runtime; native is
+    /// available only in a native-engine feature build.
     #[arg(
         long = "browser-runtime",
         global = true,
@@ -124,7 +125,8 @@ pub struct Cli {
     )]
     pub browser_runtime: BrowserRuntime,
 
-    /// WebDriver BiDi or W3C WebDriver endpoint for a non-Chromium runtime.
+    /// WebDriver BiDi or W3C WebDriver endpoint for Firefox or Safari.
+    /// Native mode is local-only and rejects this option.
     #[arg(long = "browser-endpoint", global = true, value_name = "URL")]
     pub browser_endpoint: Option<String>,
 
@@ -1707,6 +1709,29 @@ mod tests {
             "--browser-endpoint",
             "ws://127.0.0.1:9222/session"
         ));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_runtime_flag_parses_and_forwards() {
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "native",
+            "navigate",
+            "about:blank",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.browser_runtime, BrowserRuntime::Native);
+        let flags = cli.session_cli_flags();
+        assert!(flag_pair(&flags, "--browser-runtime", "native"));
+    }
+
+    #[cfg(not(feature = "native-engine"))]
+    #[test]
+    fn native_runtime_flag_is_absent_from_default_build() {
+        assert!(Cli::try_parse_from(["glass", "--browser-runtime", "native", "text"]).is_err());
     }
 
     #[test]

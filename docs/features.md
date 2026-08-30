@@ -50,6 +50,10 @@ source-behavior reference.
 - The portable `BrowserRuntimeSession` can connect to an externally started
   Firefox WebDriver BiDi or SafariDriver W3C WebDriver endpoint for the
   bounded semantic one-shot command set.
+- A `native-engine` feature build can construct the explicit local
+  `BrowserRuntimeSession::connect_native` path or use
+  `--browser-runtime native`; it accepts only local `about:blank` and bounded
+  `data:text/html` from the CLI and never contacts an endpoint.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
   its profile, launch flags, or shutdown.
 - Incognito uses a disposable profile. Named profiles retain browser-managed
@@ -224,9 +228,9 @@ CDP is the production backend for the full session. Firefox WebDriver BiDi and
 Safari W3C WebDriver are experimental bounded adapters for the portable
 semantic session. The feature-gated native engine is an experimental,
 fixture/data-URL-only Glass-owned backend exposed through the explicit Rust
-factory. Its current semantic surface includes local click/type actions and a
-revision/changed effects signal; it is not a CLI runtime or remote-content
-security boundary. The proof backend is browser-free and only certifies
+factory and local one-shot runtime. Its current semantic surface includes
+local click/type actions and a revision/changed effects signal; it is not a
+remote-content security boundary. The proof backend is browser-free and only certifies
 protocol conformance.
 Capability omission or incompatibility is a typed denial, never a fallback to
 raw transport or another backend.

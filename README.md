@@ -328,8 +328,11 @@ The feature-gated Glass-owned native engine is an experimental Rust backend
 inside `glass-browser`. Its current Phase 2 slice is deterministic and limited
 to `about:blank`, `data:text/html`, and registered local fixtures, with
 semantic click/type actions and revisioned effects for supported local
-controls. It is not a CLI runtime, browser-parity implementation, or
-hostile-content security boundary. See the [native engine architecture](docs/architecture/native-engine.md).
+controls. A `native-engine` feature build exposes the explicit local
+`--browser-runtime native` one-shot path; its default CLI configuration does
+not register fixture files or contact endpoints. It is not a browser-parity
+implementation or hostile-content security boundary. See the [native engine
+architecture](docs/architecture/native-engine.md).
 
 Start with structured evidence:
 
@@ -649,7 +652,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Experimental default-off local-content Rust backend; explicit Rust path only |
+| Native engine | Experimental default-off local-content Rust backend; explicit Rust or feature-gated local CLI path |
 | WebKit / iPhone Safari | No direct Glass browser backend; iPhone Safari is a forwarded viewing client |
 | `glass-browser 0.3.14`, `glass-dev 0.3.14` | Current release source; public registry state is recorded in release evidence |
 | `0.3.13` | Previous published stable release |

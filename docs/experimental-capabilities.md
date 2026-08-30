@@ -131,6 +131,10 @@ and unsupported targets fail before mutation. It does not provide network access
 filesystem navigation, general CSS/layout/paint, JavaScript, storage, screenshots,
 prompts, downloads, coordinate hit testing, default link navigation, or raw
 form-value evidence. The backend is explicit-only and never silently falls
-back to Chromium or the semantic proof backend. Because it is in-process and
-incomplete, it is not a security boundary and must not be used to claim safe
-handling of hostile remote content.
+back to Chromium or the semantic proof backend. A `native-engine` feature
+build also exposes the local one-shot `--browser-runtime native` path and the
+explicit Rust `BrowserRuntimeSession::connect_native` constructor. The CLI
+default configuration supports only `about:blank` and bounded
+`data:text/html`; registered fixtures remain a Rust configuration path.
+Because it is in-process and incomplete, it is not a security boundary and
+must not be used to claim safe handling of hostile remote content.

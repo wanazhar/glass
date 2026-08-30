@@ -133,8 +133,8 @@ does not own or close the external browser.
 | Workflows | `WorkflowDefinition`, `WorkflowCheckpoint` | Typed bounded execution, proof, resume, and recovery |
 | Knowledge | `KnowledgeStore` | Scoped advisory persistence and freshness assessment |
 | Backend interface | `browser_backend` | Capability-evidenced semantic backend dispatch |
-| Alternative runtimes | `BrowserRuntimeSession` | Portable Firefox BiDi and Safari WebDriver session |
-| Native engine | `BackendFactory::native` (feature-gated) | Experimental local fixture/data-URL engine; explicit Rust path only |
+| Alternative runtimes | `BrowserRuntimeSession` | Portable Firefox BiDi and Safari WebDriver session; feature-gated native local session |
+| Native engine | `BackendFactory::native`, `BrowserRuntimeSession::connect_native` (feature-gated) | Experimental local fixture/data-URL engine; native CLI is explicit and local-only |
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -173,9 +173,11 @@ agreement reports exact schema and capability status.
   unavailable capability fails closed rather than falling back to raw
   transport.
 - The native engine is experimental, default-off, fixture/data-URL-only, and
-  available through the explicit Rust backend factory. Its current semantic
-  slice supports bounded click/type actions and revision effects for local
-  controls. It is not a CLI runtime, browser-parity claim, or security boundary
+  available through the explicit Rust backend factory and feature-gated local
+  CLI runtime. Its current semantic slice supports bounded click/type actions
+  and revision effects for local controls. The CLI default configuration
+  accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
+  configuration path. It is not a browser-parity claim or security boundary
   for hostile remote content.
 - Native extensions require explicit opt-in and a platform sandbox gate.
 

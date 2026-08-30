@@ -55,6 +55,14 @@ JavaScript, network, and raw form-value evidence are not claimed.
 CSS-presentation model for selector-driven `display`/`visibility` state.
 General CSS, layout, and paint remain unimplemented.
 
+The active runtime integration slice is
+[native-engine-008](tasks/native-engine-008.md). It adds a feature-gated
+`BrowserRuntime::Native`, an explicit Rust session constructor, and a local
+one-shot CLI path for navigate/click/type/text/observe/targets. The CLI default
+configuration accepts only `about:blank` and bounded `data:text/html`; it does
+not register fixtures or contact endpoints. Unsupported flags, remote URLs,
+script/evaluate, MCP, and TUI remain fail-closed.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

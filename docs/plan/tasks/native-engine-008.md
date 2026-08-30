@@ -1,7 +1,7 @@
 ---
 id: native-engine-008
 scope: glass-browser/native-engine/runtime-cli
-status: in-progress
+status: done
 depends-on: [native-engine-007]
 ---
 
@@ -23,7 +23,9 @@ the default runtime:
 
 Native runtime construction remains explicit and never participates in
 automatic backend selection or fallback. Default builds must not gain the
-native feature or the native CLI value.
+native feature or the native CLI value. The CLI's default native
+configuration accepts `about:blank` and bounded `data:text/html` only; fixture
+registration remains a Rust configuration capability in this slice.
 
 ## Context
 
@@ -43,9 +45,9 @@ native feature or the native CLI value.
 enabled. Rust callers construct it with `BrowserRuntimeSession::connect_native`
 and provide the native configuration; no endpoint is contacted. Native CLI
 mode constructs the default local configuration and accepts only
-`about:blank`, bounded `data:text/html`, and configured fixture URLs available
-to the process. It accepts semantic native locators (`ref`, `id`, `role`,
-`name`, and `text`), not CSS selectors.
+`about:blank` and bounded `data:text/html`; configured fixture URLs remain
+available to Rust callers. It accepts semantic native locators (`ref`, `id`,
+`role`, `name`, and `text`), not CSS selectors.
 
 The CLI must reject `--browser-endpoint` and external-browser lifecycle flags
 for native mode. Script/evaluate, MCP, TUI, persistent profiles, screenshots,

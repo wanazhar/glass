@@ -62,7 +62,7 @@ APIs.
 |---|---:|---|
 | `visual-compare` | no | PNG comparison helpers for explicit screenshot checks |
 | `fuzzing` | no | Fuzz-only hooks; do not enable in normal applications |
-| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser engine; explicit Rust backend path only |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser engine; explicit Rust API and local CLI runtime |
 
 docs.rs builds all features. The default `glass-browser` library remains
 browser-focused; development runtime dependencies such as PTY integration are
@@ -72,8 +72,10 @@ in `glass-dev`, not optional browser features.
 
 The native engine is an explicit, default-off backend inside `glass-browser`.
 It currently supports only local `about:blank`, bounded `data:text/html`, and
-registered `fixture://` documents. Construct it through the backend factory;
-do not treat it as a replacement for `BrowserSession` or Chromium:
+registered `fixture://` documents. Rust callers can construct it through the
+backend factory or `BrowserRuntimeSession::connect_native`; a feature-enabled
+binary also exposes the local one-shot `--browser-runtime native` path. Do not
+treat it as a replacement for `BrowserSession` or Chromium:
 
 ```rust,no_run
 #[cfg(feature = "native-engine")]

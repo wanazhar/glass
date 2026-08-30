@@ -4,6 +4,7 @@ use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
 use super::layout::NativeLayoutSnapshot;
 use super::paint::NativeDisplayList;
+use super::raster::NativeSurface;
 use super::{config::Viewport, css::NativeComputedStyle};
 use std::collections::BTreeMap;
 
@@ -361,6 +362,11 @@ impl NativeDocument {
     pub fn display_list(&self, viewport: Viewport) -> Result<NativeDisplayList, NativeEngineError> {
         let layout = self.layout(viewport)?;
         NativeDisplayList::build(self, &layout)
+    }
+
+    /// Derive and replay the current document into a bounded logical surface.
+    pub fn rasterize(&self, viewport: Viewport) -> Result<NativeSurface, NativeEngineError> {
+        self.display_list(viewport)?.rasterize()
     }
 
     /// Resolve one explicit semantic locator to exactly one current element.

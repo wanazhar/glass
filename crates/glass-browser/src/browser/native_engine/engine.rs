@@ -8,6 +8,7 @@ use super::layout::NativeLayoutSnapshot;
 use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
+use super::raster::NativeSurface;
 use super::resource_loader::{NativeResource, NativeResourceLoader};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use std::collections::VecDeque;
@@ -162,6 +163,12 @@ impl NativeEngine {
     pub fn display_list(&self) -> Result<NativeDisplayList, NativeEngineError> {
         self.require_running("display list")?;
         self.document.display_list(self.config.viewport)
+    }
+
+    /// Replay the current document's display list into a bounded Rust surface.
+    pub fn rasterize(&self) -> Result<NativeSurface, NativeEngineError> {
+        self.require_running("raster surface")?;
+        self.document.rasterize(self.config.viewport)
     }
 
     /// Apply one semantic action and advance the document revision exactly

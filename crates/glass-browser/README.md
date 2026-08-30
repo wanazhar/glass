@@ -72,9 +72,10 @@ capabilities. Locators must resolve exactly one current target; stale revisions
 fail before browser input.
 
 The feature-gated native engine additionally derives bounded integer-pixel
-normal-flow rectangles and accepts native `point=x,y` click targets through its
-Rust API/CLI path. This is experimental local-content behavior, not a CSS/layout
-or screenshot compatibility claim.
+normal-flow rectangles, a deterministic clear/fill/text display list, and a
+logical RGBA software surface; it accepts native `point=x,y` click targets
+through its Rust API/CLI path. These are experimental local-content artifacts,
+not CSS/layout, font, or screenshot compatibility claims.
 
 The standalone browser TUI starts structured-only by default. Its first screen
 offers `l` to launch a local browser, `a` to attach a verified DevTools port,
@@ -139,7 +140,7 @@ does not own or close the external browser.
 | Knowledge | `KnowledgeStore` | Scoped advisory persistence and freshness assessment |
 | Backend interface | `browser_backend` | Capability-evidenced semantic backend dispatch |
 | Alternative runtimes | `BrowserRuntimeSession` | Portable Firefox BiDi and Safari WebDriver session; feature-gated native local session |
-| Native engine | `BackendFactory::native`, `BrowserRuntimeSession::connect_native` (feature-gated) | Experimental local fixture/data-URL engine with bounded layout/point input; native CLI is explicit and local-only |
+| Native engine | `BackendFactory::native`, `BrowserRuntimeSession::connect_native` (feature-gated) | Experimental local fixture/data-URL engine with bounded layout/point input and Rust-only display/raster artifacts; native CLI is explicit and local-only |
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -151,7 +152,7 @@ does not own or close the external browser.
 |---|---:|---|
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
-| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded layout/point input |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded layout/point input and Rust-only display/raster artifacts |
 
 ## MCP
 

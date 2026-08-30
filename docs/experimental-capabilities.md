@@ -114,12 +114,12 @@ cargo check -p glass-browser --features native-engine --locked
 cargo test -p glass-browser --features native-engine --test native_engine --locked
 ```
 
-Phase 2 and the initial Phase 3 layout seed are headless and deterministic. It accepts `about:blank`, bounded
-percent-decoded `data:text/html` URLs, and registered `fixture://` documents
-through the Rust API. It exposes lifecycle, navigation, one context,
-bounded URL/title/visible-text evidence, semantic click/type actions for local
-controls, and a revision/changed effects signal through the existing backend
-dispatcher.
+Phase 2 and the initial Phase 3 layout/display-list/software-surface seeds are
+headless and deterministic. It accepts `about:blank`, bounded percent-decoded
+`data:text/html` URLs, and registered `fixture://` documents through the Rust
+API. It exposes lifecycle, navigation, one context, bounded URL/title/visible-
+text evidence, semantic click/type actions for local controls, and a
+revision/changed effects signal through the existing backend dispatcher.
 
 The action surface focuses supported controls, toggles checkbox/radio state,
 selects an option in a single-select control, and replaces private text state
@@ -128,11 +128,12 @@ for `input`/`textarea` controls. Its bounded visibility gate excludes
 subtrees from visible text and rejects those action targets before mutation.
 Explicit references are revision-bound; ambiguous, stale, disabled, read-only,
 and unsupported targets fail before mutation. It provides only bounded
-presentation, normal-flow geometry, and native point hit testing; it does not
-provide network access, filesystem navigation, general CSS/scrolling/stacking
-layout, paint, JavaScript, storage, screenshots, prompts, downloads, default
-link navigation, or raw form-value evidence. The backend is explicit-only and
-never silently falls
+presentation, normal-flow geometry, native point hit testing, and Rust-only
+display-list/software-surface artifacts; it does not provide network access,
+filesystem navigation, general CSS/scrolling/stacking layout,
+screenshot/capture transport, font/image fidelity, JavaScript, storage,
+prompts, downloads, default link navigation, or raw form-value evidence. The
+backend is explicit-only and never silently falls
 back to Chromium or the semantic proof backend. A `native-engine` feature
 build also exposes the local one-shot `--browser-runtime native` path and the
 explicit Rust `BrowserRuntimeSession::connect_native` constructor. The CLI

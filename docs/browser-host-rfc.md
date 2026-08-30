@@ -96,14 +96,16 @@ Protocol references:
 ## Native browser feasibility
 
 The native-engine program now has real Phase 2 semantic interaction and
-initial Phase 3 presentation/layout slices behind the default-off
-`native-engine` feature. It owns one deterministic in-process context, local
-`about:blank`, `data:text/html`, and registered `fixture://` resources, a small
-DOM/text projection, history, revisions, bounded CSS presentation, integer
-normal-flow rectangles, point hit testing, semantic click/type actions for
-local controls, and a bounded effects signal. It does not yet provide general
-CSS/scrolling/stacking layout, painting, JavaScript, network/security policy,
-cookies/storage, screenshots, downloads, or platform windowing.
+initial Phase 3 presentation/layout/display-list/software-surface slices
+behind the default-off `native-engine` feature. It owns one deterministic
+in-process context, local `about:blank`, `data:text/html`, and registered
+`fixture://` resources, a small DOM/text projection, history, revisions,
+bounded CSS presentation, integer normal-flow rectangles, point hit testing,
+semantic click/type actions for local controls, a bounded effects signal, and
+Rust-only display-list/software-surface artifacts. It does not yet provide
+general CSS/scrolling/stacking layout, screenshot/capture transport,
+font/image fidelity, JavaScript, network/security policy, cookies/storage,
+downloads, or platform windowing.
 
 `BrowserRuntimeSession` remains the transport adapter for externally managed
 Firefox and Safari. With the `native-engine` feature, the native backend is

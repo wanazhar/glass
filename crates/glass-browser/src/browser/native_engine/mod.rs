@@ -16,6 +16,7 @@ mod layout;
 mod lifecycle;
 mod origin;
 mod paint;
+mod raster;
 mod resource_loader;
 mod scheduler;
 
@@ -35,5 +36,6 @@ pub use layout::{NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect}
 pub use lifecycle::NativeLifecycleState;
 pub use origin::NativeOrigin;
 pub use paint::{MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList};
+pub use raster::{MAX_NATIVE_SURFACE_PIXELS, NativeSurface};
 pub use resource_loader::{NativeResource, NativeResourceLoader};
 pub use scheduler::{DeterministicClock, DeterministicScheduler, NativeTask, ScheduledTask};

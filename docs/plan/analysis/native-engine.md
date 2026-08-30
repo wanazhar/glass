@@ -15,6 +15,8 @@ The 021 bounded inline line-placement slice is complete locally and its
 checkpoint evidence is recorded on issue #40.
 The 022 bounded fixed line-height slice is complete locally and its checkpoint
 evidence is recorded on issue #40.
+The 023 bounded direct-text-flow slice is complete locally and its checkpoint
+evidence is recorded on issue #40.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -70,8 +72,8 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
 | `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, pixel dimensions, fixed pixel line-height, physical solid/dashed/dotted borders, and circular border radii | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
-| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, fixed line-height floors, root scroll projection, and rounded point hit testing | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/content rectangles, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
-| `native_engine::paint` | revisioned clear/fill/text/physical-border display-list derivation, bounded rounded paint masks, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
+| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, fixed line-height floors, direct-text fragments, source-order paint entries, root scroll projection, and rounded point hit testing | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
 | `native_engine::interaction` | action/effect types and bounded effect records | semantic action and event kind | revisioned interaction metadata | native DOM IDs |
@@ -145,8 +147,9 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-018` | independently cascaded physical side-specific solid borders, side-aware box insets, display-list paint data, and clipped/scrolled replay | `native-engine-017` | non-solid styles, radius/images/gradients, logical sides/writing modes, corner joins, general CSS, browser parity |
 | `native-engine-019` | bounded physical `solid`/`dashed`/`dotted` border styles, typed paint data, deterministic integer patterns, and clipped/scrolled replay | `native-engine-018` | other border styles, radius/images/gradients, standalone style properties, logical sides/writing modes, browser corner metrics, general CSS, browser parity |
 | `native-engine-020` | bounded one-to-four-value physical `border-radius`, conservative corner normalization, rounded fill/border replay, and rounded point hit testing | `native-engine-019` | percentages, elliptical radii, corner longhands, rounded descendant clips, transforms, anti-aliasing, browser corner fidelity, general CSS |
-| `native-engine-021` | bounded inline-box line placement with preflight width/margin checks and deterministic line-height flow | `native-engine-020` | font shaping/metrics, text fragments, whitespace/word wrapping, baselines, bidi, floats, replaced elements, flex/grid, browser parity |
+| `native-engine-021` | bounded inline-box line placement with preflight width/margin checks and deterministic line-height flow | `native-engine-020` | font shaping/metrics, word-aware text fragments, CSS whitespace modes, word breaking, baselines, bidi, floats, replaced elements, flex/grid, browser parity |
 | `native-engine-022` | bounded positive-pixel `line-height` parsing/cascade, flow minimum line-height, and inline auto-height precedence | `native-engine-021` | `normal`, unitless/relative/percentage values, general inheritance, font metrics, baselines, vertical-align, browser parity |
+| `native-engine-023` | bounded direct-text fragments at actual flow origins, collapsed bounded text width, and source-order display-list paint | `native-engine-022` | font metrics/shaping, CSS whitespace modes, word breaking, baselines, bidi, cross-node whitespace joining, browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -225,6 +228,10 @@ Phase 2 integration chains added by these slices are:
     direct text and inline boxes share a deterministic minimum line height while
     explicit element heights retain box-model precedence for layout, paint, and
     hit-test consumers.
+28. Native direct text is collapsed and fragmented during the same flow pass
+    that places inline boxes, so display-list origins and source order match
+    layout coordinates while style and ancestor clips remain owned by the
+    containing element.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -259,13 +266,14 @@ stacking, or that clicking a link performs browser navigation.
 | bounded circular border radius | makes common rounded controls/cards and their hit ownership observable without importing a CSS geometry engine | no percentages, elliptical radii, corner longhands, rounded descendant clips, anti-aliasing, or browser corner fidelity | expand one-to-four integer-pixel shorthand values, conservatively normalize to each box, and share the rounded mask between hit testing and software replay |
 | bounded inline line placement | prevents inline element boxes from being committed at an overflowing x-coordinate before the cursor is flushed | no font metrics, whitespace/word fragments, baseline/bidi/floats, replaced elements, or flex/grid | preflight the same integer outer width used by final layout, flush whole boxes at line boundaries, and retain deterministic fixed line-height behavior |
 | bounded fixed line height | makes fixture line boxes intentionally dense or spacious without importing font metrics | no `normal`, relative/percentage values, general inheritance, baselines, vertical-align, or browser line metrics | parse one positive pixel value, apply it as a local flow floor, and keep explicit height authoritative |
+| bounded direct-text flow fragments | prevents mixed direct text and inline descendants from overlapping or being painted at a stale content origin | no font metrics/shaping, CSS whitespace modes, word breaking, baselines, bidi, cross-node whitespace joining, or browser inline parity | collapse once, fragment from the shared flow cursor, and carry bounded source-order entries into paint |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-022.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-021.md` is the preceding completed checkpoint.
+`docs/plan/tasks/native-engine-023.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-022.md` is the preceding completed checkpoint.
 A checkpoint is complete only when
 the native feature tests pass, strict lint
 passes for the touched code, and the diff confirms no unrelated browser/TUI/

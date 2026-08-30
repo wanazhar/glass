@@ -52,6 +52,25 @@ pub struct NativeLayoutBox {
     pub depth: usize,
 }
 
+/// One bounded direct-text fragment placed by the native flow cursor.
+///
+/// The `node_id` identifies the containing element that owns the fragment's
+/// computed style and clipping context. Text nodes themselves do not carry
+/// independent CSS in this bounded model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeTextLayout {
+    pub node_id: NativeNodeId,
+    pub origin: NativePoint,
+    pub text: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeLayoutPaintOrder {
+    Box(usize),
+    Text(usize),
+}
+
 /// Deterministic layout derived from one current native document revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeLayoutSnapshot {
@@ -62,6 +81,8 @@ pub struct NativeLayoutSnapshot {
     /// The bounded document height before the viewport is translated.
     pub content_height: u32,
     pub boxes: Vec<NativeLayoutBox>,
+    pub text_runs: Vec<NativeTextLayout>,
+    pub(crate) paint_order: Vec<NativeLayoutPaintOrder>,
 }
 
 impl NativeLayoutSnapshot {
@@ -73,6 +94,8 @@ impl NativeLayoutSnapshot {
         let mut builder = LayoutBuilder {
             document,
             boxes: Vec::new(),
+            text_runs: Vec::new(),
+            paint_order: Vec::new(),
         };
         let flow = builder.layout_children(document.root(), 0, 0, viewport.width, 0);
         let max_box_bottom = builder
@@ -87,6 +110,8 @@ impl NativeLayoutSnapshot {
             scroll_offset: NativePoint { x: 0, y: 0 },
             content_height: viewport.height.max(flow.height).max(max_box_bottom),
             boxes: builder.boxes,
+            text_runs: builder.text_runs,
+            paint_order: builder.paint_order,
         })
     }
 
@@ -281,6 +306,8 @@ pub(crate) fn rounded_rect_contains(
 struct LayoutBuilder<'a> {
     document: &'a NativeDocument,
     boxes: Vec<NativeLayoutBox>,
+    text_runs: Vec<NativeTextLayout>,
+    paint_order: Vec<NativeLayoutPaintOrder>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -335,19 +362,28 @@ impl FlowCursor {
             && self.x.saturating_sub(self.start_x).saturating_add(width) > self.available_width
     }
 
-    fn place_inline(&mut self, mut width: u32, height: u32) {
+    fn place_inline(&mut self, width: u32, height: u32) {
+        let _ = self.place_inline_with_origin(width, height);
+    }
+
+    fn place_inline_with_origin(&mut self, mut width: u32, height: u32) -> Option<NativePoint> {
         if self.available_width == 0 {
-            return;
+            return None;
         }
         width = width.min(self.available_width);
         if self.would_wrap(width) {
             self.flush_line();
         }
+        let origin = NativePoint {
+            x: self.x,
+            y: self.y,
+        };
         self.x = self.x.saturating_add(width);
         self.line_height = self.line_height.max(height.max(self.minimum_line_height));
         self.line_has_content = true;
         self.max_right = self.max_right.max(self.x);
         self.max_bottom = self.max_bottom.max(self.y.saturating_add(self.line_height));
+        Some(origin)
     }
 
     fn place_block(&mut self, height: u32) {
@@ -400,7 +436,8 @@ impl<'a> LayoutBuilder<'a> {
             };
             match node.kind() {
                 NativeNodeKind::Text(value) => {
-                    self.place_text(flow, value);
+                    let value = value.clone();
+                    self.place_text(parent, flow, &value);
                 }
                 NativeNodeKind::Document => {
                     self.process_children(child, flow, depth);
@@ -524,6 +561,8 @@ impl<'a> LayoutBuilder<'a> {
             border_radius: style.border_radius(),
             depth,
         });
+        self.paint_order
+            .push(NativeLayoutPaintOrder::Box(box_index));
 
         let content_width = width.saturating_sub(horizontal_inset);
         let children = self.layout_children(
@@ -586,36 +625,51 @@ impl<'a> LayoutBuilder<'a> {
         width.min(available_width)
     }
 
-    fn place_text(&self, flow: &mut FlowCursor, value: &str) {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
+    fn place_text(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {
+        let (text, truncated) = NativeDocument::collapse_text_for_layout(value);
+        if text.is_empty() {
             return;
         }
-        let characters = u32::try_from(trimmed.chars().count()).unwrap_or(u32::MAX);
-        let width = characters
-            .saturating_mul(CHARACTER_WIDTH)
-            .max(CHARACTER_WIDTH);
         if flow.available_width == 0 {
             return;
         }
-        let lines = width
-            .saturating_add(flow.available_width.saturating_sub(1))
-            .checked_div(flow.available_width)
-            .unwrap_or(1)
-            .max(1);
-        if lines > 1 && flow.line_has_content {
-            flow.flush_line();
-        }
-        for line in 0..lines {
-            if line > 0 {
+        let characters = text.chars().collect::<Vec<_>>();
+        let mut offset = 0;
+        while offset < characters.len() {
+            let remaining_width = flow
+                .available_width
+                .saturating_sub(flow.x.saturating_sub(flow.start_x));
+            if remaining_width == 0 && flow.line_has_content {
+                flow.flush_line();
+                continue;
+            }
+            let characters_on_line = usize::try_from(remaining_width / CHARACTER_WIDTH)
+                .unwrap_or_default()
+                .max(1);
+            let fragment_length = characters_on_line.min(characters.len() - offset);
+            let fragment = characters[offset..offset + fragment_length]
+                .iter()
+                .collect::<String>();
+            let fragment_width = u32::try_from(fragment_length)
+                .unwrap_or(u32::MAX)
+                .saturating_mul(CHARACTER_WIDTH);
+            let Some(origin) = flow.place_inline_with_origin(fragment_width, DEFAULT_LINE_HEIGHT)
+            else {
+                break;
+            };
+            let text_index = self.text_runs.len();
+            self.text_runs.push(NativeTextLayout {
+                node_id: parent,
+                origin,
+                text: fragment,
+                truncated: truncated && offset + fragment_length == characters.len(),
+            });
+            self.paint_order
+                .push(NativeLayoutPaintOrder::Text(text_index));
+            offset += fragment_length;
+            if offset < characters.len() {
                 flow.flush_line();
             }
-            let line_width = if line + 1 == lines {
-                width.saturating_sub(flow.available_width.saturating_mul(line))
-            } else {
-                flow.available_width
-            };
-            flow.place_inline(line_width, DEFAULT_LINE_HEIGHT);
         }
     }
 

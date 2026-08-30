@@ -681,6 +681,99 @@ fn native_fixed_line_height_controls_wrapped_flow_and_preserves_explicit_height(
 }
 
 #[test]
+fn native_text_fragments_follow_inline_flow_and_source_order() {
+    let document = NativeDocument::parse(
+        "<div id='container' style='width:24px'>AB<span id='middle' style='display:inline;width:8px;color:red'>C</span>DE</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let container = document.resolve_target("id=container").unwrap();
+    let middle = document.resolve_target("id=middle").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(container),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 40,
+        })
+    );
+    assert_eq!(layout.text_runs.len(), 3);
+    assert_eq!(layout.text_runs[0].node_id, container);
+    assert_eq!(layout.text_runs[0].origin, NativePoint { x: 0, y: 0 });
+    assert_eq!(layout.text_runs[0].text, "AB");
+    assert_eq!(layout.text_runs[1].node_id, middle);
+    assert_eq!(layout.text_runs[1].origin, NativePoint { x: 16, y: 0 });
+    assert_eq!(layout.text_runs[1].text, "C");
+    assert_eq!(layout.text_runs[2].node_id, container);
+    assert_eq!(layout.text_runs[2].origin, NativePoint { x: 0, y: 20 });
+    assert_eq!(layout.text_runs[2].text, "DE");
+
+    let list = document.display_list(viewport).unwrap();
+    let runs = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id,
+                origin,
+                text,
+                truncated,
+                ..
+            } => Some((*node_id, *origin, text.as_str(), *truncated)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        runs,
+        vec![
+            (container, NativePoint { x: 0, y: 0 }, "AB", false),
+            (middle, NativePoint { x: 16, y: 0 }, "C", false),
+            (container, NativePoint { x: 0, y: 20 }, "DE", false),
+        ]
+    );
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 0), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(17, 0), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(0, 20), Some([0, 0, 0, 255]));
+}
+
+#[test]
+fn native_text_fragments_use_collapsed_bounded_text_for_width_and_paint() {
+    let document = NativeDocument::parse(
+        "<div id='container' style='width:16px'> A   B </div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 48,
+        device_scale_factor_milli: 1000,
+    };
+    let container = document.resolve_target("id=container").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(container).unwrap().height, 40);
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .map(|run| (run.origin, run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "A ", false),
+            (NativePoint { x: 0, y: 20 }, "B", false),
+        ]
+    );
+}
+
+#[test]
 fn native_box_model_lays_out_content_padding_border_and_margin() {
     let document = NativeDocument::parse(
         "<style>#outer { width: 20px; height: 10px; padding: 2px; border: 1px solid red; } #child { display: block; width: 4px; height: 4px; margin: 3px; } #fixed { width: 20px; height: 10px; padding: 2px; border: 1px solid blue; box-sizing: border-box; }</style><div id='outer'><div id='child'>A</div></div><div id='fixed'>B</div>",

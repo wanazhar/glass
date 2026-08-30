@@ -162,6 +162,12 @@ The completed bounded line-height slice is
 precedence and leaving font metrics, general inheritance, and browser
 line-layout behavior unsupported.
 
+The completed bounded direct-text-flow slice is
+[native-engine-023](tasks/native-engine-023.md). It carries collapsed direct
+text fragments from the shared flow cursor into source-ordered display paint,
+repairing mixed text/inline origins while leaving typography and CSS whitespace
+behavior unsupported.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

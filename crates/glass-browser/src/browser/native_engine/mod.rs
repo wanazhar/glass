@@ -33,7 +33,9 @@ pub use engine::{NativeActionResult, NativeEffectsSnapshot, NativeEngine, Native
 pub use error::NativeEngineError;
 pub use history::{NativeHistory, NativeHistoryEntry};
 pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
-pub use layout::{NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect};
+pub use layout::{
+    NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeTextLayout,
+};
 pub use lifecycle::NativeLifecycleState;
 pub use origin::NativeOrigin;
 pub use paint::{

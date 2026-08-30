@@ -45,8 +45,10 @@ DOM projection and revision-bound locators, and
 [native-engine-003](tasks/native-engine-003.md), which adds the first
 revisioned click/type/focus mutation path and effects signal, and
 [native-engine-004](tasks/native-engine-004.md), which adds deterministic
-single-select/option state. They remain semantic-only: CSS/layout hit testing,
-JavaScript, network, and raw form-value evidence are not claimed.
+single-select/option state, and [native-engine-005](tasks/native-engine-005.md),
+which adds a bounded visibility/actionability gate. They remain semantic-only:
+CSS/layout hit testing, JavaScript, network, and raw form-value evidence are
+not claimed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

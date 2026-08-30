@@ -123,9 +123,11 @@ dispatcher.
 
 The action surface focuses supported controls, toggles checkbox/radio state,
 selects an option in a single-select control, and replaces private text state
-for `input`/`textarea` controls. Explicit references are revision-bound;
-ambiguous, stale, disabled, read-only, and unsupported targets fail before
-mutation. It does not provide network access,
+for `input`/`textarea` controls. Its bounded visibility gate excludes
+`hidden`, `aria-hidden="true"`, and inline `display:none`/`visibility:hidden`
+subtrees from visible text and rejects those action targets before mutation.
+Explicit references are revision-bound; ambiguous, stale, disabled, read-only,
+and unsupported targets fail before mutation. It does not provide network access,
 filesystem navigation, CSS/layout/paint, JavaScript, storage, screenshots,
 prompts, downloads, coordinate hit testing, default link navigation, or raw
 form-value evidence. The backend is explicit-only and never silently falls

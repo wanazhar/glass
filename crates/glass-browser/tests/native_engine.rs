@@ -2,8 +2,8 @@
 
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
-    NativeAction, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineLimits,
-    NativeEventKind, NativeLifecycleState,
+    NativeAction, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
+    NativeEngineLimits, NativeEventKind, NativeLifecycleState,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -524,4 +524,78 @@ fn native_actions_update_state_and_reject_unsafe_targets_before_mutation() {
         Err(glass_browser::NativeEngineError::ReadOnlyTarget)
     ));
     assert_eq!(engine.revision(), revision_before_rejections);
+}
+
+#[test]
+fn visibility_projection_and_actionability_are_consistent() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://visibility",
+            "<button id='visible'>Visible</button><button id='hidden' hidden>Hidden</button><button id='aria' aria-hidden='true'>Aria</button><button id='display' style='display: none'>Display</button><button id='visibility' style='VISIBILITY : HIDDEN'>Visibility</button><div hidden><button id='nested'>Nested</button></div><input id='hidden-input' type='text' style='display:none'><button id='opaque' style='opacity:0'>Opaque</button>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://visibility");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.visible_text, "Visible Opaque");
+    assert!(!snapshot.text_truncated);
+
+    let nodes = engine.semantic_nodes().unwrap();
+    let visible = nodes.iter().find(|node| node.name == "Visible").unwrap();
+    assert!(!visible.hidden);
+    let opaque = nodes.iter().find(|node| node.name == "Opaque").unwrap();
+    assert!(!opaque.hidden);
+    for name in ["Hidden", "Aria", "Display", "Visibility", "Nested"] {
+        assert!(
+            nodes
+                .iter()
+                .find(|node| node.name == name)
+                .is_some_and(|node| node.hidden),
+            "expected {name} to be hidden"
+        );
+    }
+    assert!(
+        nodes
+            .iter()
+            .find(|node| node.role == "textbox" && node.name.is_empty())
+            .is_some_and(|node| node.hidden)
+    );
+
+    let revision_before_rejections = engine.revision();
+    for target in ["hidden", "aria", "display", "visibility", "nested"] {
+        let result = engine.action(NativeAction::Click {
+            target: format!("id={target}"),
+        });
+        assert!(matches!(
+            result,
+            Err(NativeEngineError::TargetNotActionable { reason })
+                if reason == "hidden targets are not actionable"
+        ));
+    }
+    let result = engine.action(NativeAction::Type {
+        target: "id=hidden-input".into(),
+        text: "secret".into(),
+    });
+    assert!(matches!(
+        result,
+        Err(NativeEngineError::TargetNotActionable { reason })
+            if reason == "hidden targets are not actionable"
+    ));
+    assert_eq!(engine.revision(), revision_before_rejections);
+    assert!(
+        engine
+            .effects_since(revision_before_rejections)
+            .unwrap()
+            .effects
+            .is_empty()
+    );
+    assert!(
+        !engine
+            .semantic_nodes()
+            .unwrap()
+            .into_iter()
+            .any(|node| node.focused)
+    );
 }

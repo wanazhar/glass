@@ -125,6 +125,7 @@ pub struct NativeSemanticNode {
     pub empty: Option<bool>,
     pub checked: Option<bool>,
     pub selected: Option<bool>,
+    pub hidden: bool,
     pub disabled: bool,
     pub read_only: bool,
     pub required: bool,
@@ -362,6 +363,11 @@ impl NativeDocument {
         if semantic.disabled {
             return Err(NativeEngineError::DisabledTarget);
         }
+        if semantic.hidden {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hidden targets are not actionable".into(),
+            });
+        }
         if !matches!(
             semantic.role.as_str(),
             "button" | "link" | "checkbox" | "radio" | "textbox" | "combobox" | "option"
@@ -466,6 +472,11 @@ impl NativeDocument {
                 .ok_or_else(|| NativeEngineError::TargetNotActionable {
                     reason: "target has no supported semantic text-control role".into(),
                 })?;
+        if semantic.hidden {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "hidden targets are not actionable".into(),
+            });
+        }
         if semantic.role != "textbox" || !matches!(semantic.tag_name.as_str(), "input" | "textarea")
         {
             return Err(NativeEngineError::TargetNotActionable {
@@ -721,6 +732,7 @@ impl NativeDocument {
             empty,
             checked,
             selected,
+            hidden: self.is_hidden(id),
             disabled: self.is_disabled(id),
             read_only: self.is_read_only(id),
             required: self.is_required(id),
@@ -884,6 +896,22 @@ impl NativeDocument {
         false
     }
 
+    fn is_hidden(&self, id: NativeNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(current_id) = current {
+            let Some(node) = self.node(current_id) else {
+                break;
+            };
+            if let Some(attributes) = node.attributes()
+                && has_hidden_signal(attributes)
+            {
+                return true;
+            }
+            current = node.parent();
+        }
+        false
+    }
+
     fn is_read_only(&self, id: NativeNodeId) -> bool {
         self.node(id).is_some_and(|node| {
             node.attribute("readonly").is_some()
@@ -977,10 +1005,7 @@ impl NativeDocument {
                         name.as_str(),
                         "head" | "script" | "style" | "template" | "title"
                     )
-                    || attributes.contains_key("hidden")
-                    || attributes
-                        .get("aria-hidden")
-                        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+                    || has_hidden_signal(attributes);
                 for child in node.children() {
                     self.collect_visible(*child, hidden, output, truncated, max_bytes);
                 }
@@ -1120,6 +1145,28 @@ fn supported_role(value: &str) -> Option<&'static str> {
         .iter()
         .copied()
         .find(|role| *role == normalized)
+}
+
+fn has_hidden_signal(attributes: &BTreeMap<String, String>) -> bool {
+    if attributes.contains_key("hidden")
+        || attributes
+            .get("aria-hidden")
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+    {
+        return true;
+    }
+    attributes.get("style").is_some_and(|style| {
+        style.split(';').any(|declaration| {
+            let Some((property, value)) = declaration.split_once(':') else {
+                return false;
+            };
+            let property = property.trim();
+            let value = value.trim();
+            (property.eq_ignore_ascii_case("display") && value.eq_ignore_ascii_case("none"))
+                || (property.eq_ignore_ascii_case("visibility")
+                    && value.eq_ignore_ascii_case("hidden"))
+        })
+    })
 }
 
 #[derive(Debug)]

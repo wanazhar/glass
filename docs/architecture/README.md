@@ -79,7 +79,8 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
   Task Protocol, and compiler contracts as live execution.
 - The TUI preserves its current layout, but browser I/O runs in a worker task rather than the render/input loop.
 - The native engine is default-off, fixture/data-URL-only in its current phase,
-  exposes bounded presentation/normal-flow and outer/content box geometry,
+  exposes bounded presentation/normal-flow and outer/content box geometry with
+  physical four-side padding/margin shorthand and longhand cascade,
   root vertical viewport scrolling, plus native point hit testing through explicit Rust or feature-gated local CLI
   paths. Its current Rust-only presentation artifacts include side-specific
   solid/dashed/dotted-border paint, bounded physical circular border radii, a

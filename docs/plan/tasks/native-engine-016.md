@@ -21,8 +21,9 @@ bounded box-model layout:
 - make uniform margins participate in normal block/inline flow; and
 - preserve deterministic point hit testing and paint order over the outer box.
 
-This is a bounded geometry slice, not general CSS box sizing. It does not add
-negative/percentage/auto values, four-side shorthands, margin collapsing,
+This is a bounded geometry slice, not general CSS box sizing. At the 016
+checkpoint it did not add negative/percentage/auto values, four-side
+shorthands, margin collapsing,
 min/max constraints, positioned/flex/grid layout, fractional metrics,
 scrolling, transforms, or browser-parity claims.
 
@@ -68,8 +69,10 @@ layout derivation; layout remains a Rust-only derived artifact.
   border fixtures grow when borders are present; the change is intentional and
   is covered by updated geometry assertions.
 - Uniform margins are useful for deterministic fixtures, but ignoring margin
-  collapsing and four-side values means this is not a general CSS layout
-  engine. Unsupported values remain explicit by omission.
+  collapsing and four-side values at this checkpoint meant this was not a
+  general CSS layout engine. The later 025 slice owns the bounded physical
+  shorthand and longhand extension; unsupported values remain explicit by
+  omission.
 - No new dependency or stable backend field is introduced, preserving default
   build cost and transport compatibility.
 

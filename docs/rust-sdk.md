@@ -104,7 +104,8 @@ dispatcher.close().await?;
 The backend profile declares lifecycle, navigation, one context, bounded
 evidence, semantic click/type actions, native point hit testing, and revision
 effects. Rust callers can additionally inspect the native layout's outer and
-content rectangles, bounded uniform padding/margin and explicit box sizing,
+content rectangles, bounded physical four-side padding/margin shorthands and
+longhands plus explicit box sizing,
 bounded vertical viewport scrolling, inherited text color, bounded paint clips,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height

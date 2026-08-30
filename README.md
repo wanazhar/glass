@@ -328,9 +328,10 @@ The feature-gated Glass-owned native engine is an experimental Rust backend
 inside `glass-browser`. Its current Phase 2 and initial Phase 3 slices are
 deterministic and limited to `about:blank`, `data:text/html`, and registered
 local fixtures, with bounded presentation, normal-flow geometry, point
-hit-testing, uniform non-negative padding/margin, explicit content-box or
-border-box sizing, outer/content layout rectangles, bounded vertical viewport
-scrolling, semantic click/type actions, revisioned effects for supported local controls, inherited text color
+hit-testing, bounded physical four-side padding/margin shorthands and
+longhands, explicit content-box or border-box sizing, outer/content layout
+rectangles, bounded vertical viewport scrolling, semantic click/type actions,
+revisioned effects for supported local controls, inherited text color
 for nested content, bounded paint clips, bounded side-specific solid/dashed/dotted-border paint, bounded
 physical circular border radii, bounded inline-box line placement, bounded
 fixed pixel line-height flow, bounded direct-text flow fragments and

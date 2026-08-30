@@ -878,6 +878,74 @@ fn native_box_model_lays_out_content_padding_border_and_margin() {
 }
 
 #[test]
+fn native_physical_box_edges_feed_content_origins_and_flow_margins() {
+    let document = NativeDocument::parse(
+        "<div id='outer' style='width:20px;height:10px;padding:1px 2px 3px 4px'><div id='child' style='display:block;width:4px;height:4px;margin:1px 2px 3px 4px'>A</div></div><div id='next' style='display:block;width:8px;height:4px;margin:2px 3px 4px 5px'>B</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let outer = document.resolve_target("id=outer").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let next = document.resolve_target("id=next").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(outer),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 26,
+            height: 14,
+        })
+    );
+    assert_eq!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == outer)
+            .unwrap()
+            .content_rect,
+        NativeRect {
+            x: 4,
+            y: 1,
+            width: 20,
+            height: 10,
+        }
+    );
+    assert_eq!(
+        layout.box_for(child),
+        Some(NativeRect {
+            x: 8,
+            y: 2,
+            width: 4,
+            height: 4,
+        })
+    );
+    assert_eq!(
+        layout.box_for(next),
+        Some(NativeRect {
+            x: 5,
+            y: 16,
+            width: 8,
+            height: 4,
+        })
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == child)
+            .map(|run| (run.origin, run.text.as_str())),
+        Some((NativePoint { x: 8, y: 2 }, "A"))
+    );
+}
+
+#[test]
 fn native_paint_clips_overflow_hidden_descendants() {
     let document = NativeDocument::parse(
         "<style>#clip { overflow: hidden; width: 10px; height: 10px; } #child { display: block; width: 20px; height: 20px; background-color: red; }</style><div id='clip'><div id='child'>Child</div></div>",

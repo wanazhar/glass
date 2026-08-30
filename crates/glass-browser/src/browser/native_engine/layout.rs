@@ -453,44 +453,43 @@ impl<'a> LayoutBuilder<'a> {
                         DisplayValue::Block => {
                             flow.flush_line();
                             let margin = self.document.computed_style_for_layout(child).margin();
-                            let horizontal_margin = margin.saturating_mul(2);
                             let size = self.layout_element(
                                 child,
-                                flow.start_x.saturating_add(margin),
-                                flow.y.saturating_add(margin),
-                                flow.available_width.saturating_sub(horizontal_margin),
+                                flow.start_x.saturating_add(margin.left()),
+                                flow.y.saturating_add(margin.top()),
+                                flow.available_width.saturating_sub(margin.horizontal()),
                                 depth,
                             );
                             flow.max_right = flow.max_right.max(
                                 flow.start_x
-                                    .saturating_add(margin)
+                                    .saturating_add(margin.left())
                                     .saturating_add(size.width)
-                                    .saturating_add(margin),
+                                    .saturating_add(margin.right()),
                             );
-                            flow.place_block(size.height.saturating_add(horizontal_margin));
+                            flow.place_block(size.height.saturating_add(margin.vertical()));
                         }
                         DisplayValue::Auto | DisplayValue::Inline | DisplayValue::Other => {
                             let style = self.document.computed_style_for_layout(child);
                             let margin = style.margin();
-                            let horizontal_margin = margin.saturating_mul(2);
                             let available_width =
-                                flow.available_width.saturating_sub(horizontal_margin);
+                                flow.available_width.saturating_sub(margin.horizontal());
                             let candidate_width =
                                 self.outer_width(child, style, false, available_width);
-                            let candidate_width = candidate_width.saturating_add(horizontal_margin);
+                            let candidate_width =
+                                candidate_width.saturating_add(margin.horizontal());
                             if flow.would_wrap(candidate_width) {
                                 flow.flush_line();
                             }
                             let size = self.layout_element(
                                 child,
-                                flow.x.saturating_add(margin),
-                                flow.y.saturating_add(margin),
+                                flow.x.saturating_add(margin.left()),
+                                flow.y.saturating_add(margin.top()),
                                 available_width,
                                 depth,
                             );
                             flow.place_inline(
-                                size.width.saturating_add(horizontal_margin),
-                                size.height.saturating_add(horizontal_margin),
+                                size.width.saturating_add(margin.horizontal()),
+                                size.height.saturating_add(margin.vertical()),
                             );
                         }
                     }
@@ -530,10 +529,10 @@ impl<'a> LayoutBuilder<'a> {
                     border.left().width(),
                 )
             });
-        let left_inset = border_left.saturating_add(padding);
-        let right_inset = border_right.saturating_add(padding);
-        let top_inset = border_top.saturating_add(padding);
-        let bottom_inset = border_bottom.saturating_add(padding);
+        let left_inset = border_left.saturating_add(padding.left());
+        let right_inset = border_right.saturating_add(padding.right());
+        let top_inset = border_top.saturating_add(padding.top());
+        let bottom_inset = border_bottom.saturating_add(padding.bottom());
         let horizontal_inset = left_inset.saturating_add(right_inset);
         let vertical_inset = top_inset.saturating_add(bottom_inset);
         let width = self.outer_width(id, style, is_block, available_width);
@@ -606,9 +605,9 @@ impl<'a> LayoutBuilder<'a> {
             (border.left().width(), border.right().width())
         });
         let horizontal_inset = border_left
-            .saturating_add(padding)
+            .saturating_add(padding.left())
             .saturating_add(border_right)
-            .saturating_add(padding);
+            .saturating_add(padding.right());
         let default_outer_width = if is_block {
             available_width
         } else {

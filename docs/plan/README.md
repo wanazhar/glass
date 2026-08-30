@@ -173,6 +173,14 @@ The completed bounded word-wrap slice is
 together when the fixed line fits and splits only over-wide words, while
 retaining source-ordered fragments and the existing typography limitations.
 
+The completed physical box-edges slice is
+[native-engine-025](tasks/native-engine-025.md). It expands bounded one-to-four
+value physical `padding`/`margin` shorthands, supports their top/right/bottom/
+left longhands with independent cascade, and feeds side-aware values through
+content origins and normal-flow margins. Logical sides, invalid/negative/
+percentage/`auto` values, margin collapsing, and general CSS layout remain
+outside the native capability claim.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

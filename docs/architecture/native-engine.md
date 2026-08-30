@@ -4,7 +4,7 @@ Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
-bounded-word-wrap slices,
+bounded-word-wrap/bounded-physical-box-edges slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -32,8 +32,9 @@ inherited text color through DOM parent links, bounded `overflow:hidden` paint
 clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
 bounded circular border radii, bounded outer/content box geometry, explicit root
 viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
-line-height flow, bounded direct-text fragments at actual flow origins, and
-source-order text paint, and bounded word-aware wrapping. The engine does not
+line-height flow, bounded direct-text fragments at actual flow origins,
+source-order text paint, bounded word-aware wrapping, and bounded physical
+four-side padding/margin edges. The engine does not
 yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
@@ -202,8 +203,8 @@ presentation state and configured viewport using normal block/inline flow.
 The 016 box-model extension adds bounded uniform `padding:Npx` and
 `margin:Npx`, explicit `box-sizing:content-box|border-box`, and a derived
 content rectangle after border/padding insets. Percentages, negative/auto
-values, four-side padding/margin shorthands, margin collapsing, positioning, flex, grid,
-transforms, and font metrics remain unsupported. Layout is recomputed as a
+values, logical sides, margin collapsing, positioning, flex, grid, transforms,
+and font metrics remain unsupported at that checkpoint. Layout is recomputed as a
 Rust-only derived view. `display:none`, explicit hidden signals, and
 `visibility:hidden` remove boxes; `display:contents` preserves eligible
 descendants without creating its own box.
@@ -282,6 +283,17 @@ adding CSS whitespace modes, word-break/overflow-wrap behavior, hyphenation,
 font metrics/shaping, baselines, bidi, cross-node whitespace joining, or
 browser inline-formatting parity.
 
+The 025 bounded-physical-box-edges boundary extends the 016 uniform box-model
+seed with one-to-four-value physical `padding` and `margin` shorthands plus
+the top/right/bottom/left longhands. Each side is cascaded independently using
+the existing specificity, source-order, and inline precedence rules. The
+resulting side values feed outer/content rectangles, child and direct-text
+origins, block/inline normal-flow margins, and the existing paint, hit-test,
+and root-scroll projections. Values remain bounded non-negative integer pixels;
+invalid, negative, percentage, unitless, `auto`, logical-side, and more than
+four-value declarations are ignored. Margin collapsing, positioning, flex,
+grid, and general CSS layout remain unsupported.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -317,12 +329,14 @@ the stable capture-byte limit. JPEG and PDF are explicit denials, and
 evidence result has no image payload. The native CLI still has no screenshot
 command.
 
-The 016 box-model boundary accepts only uniform, non-negative `padding:Npx`
-and `margin:Npx` values plus `box-sizing:content-box|border-box`. It keeps
+The 016 box-model boundary accepted only uniform, non-negative `padding:Npx`
+and `margin:Npx` values plus `box-sizing:content-box|border-box`. The current
+025 boundary additionally accepts bounded physical shorthand and longhand
+values per side. It keeps
 `NativeLayoutBox::rect` as the outer border box and exposes a derived content
 rectangle after border and padding insets; child flow and direct text begin at
-that content origin. Uniform margins consume normal-flow space without margin
-collapsing. Percentages, negative/auto values, four-side padding/margin shorthands, min/max
+that content origin. Side-specific margins consume normal-flow space without
+margin collapsing. Percentages, negative/auto values, logical sides, min/max
 constraints, positioning, flex/grid, fractional metrics, and nested or
 horizontal scrolling remain unsupported.
 
@@ -437,8 +451,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded stylesheet/inline selector matching and display/visibility cascade
   feeding visible text and semantic actionability.
 - deterministic integer-pixel normal-flow layout, bounded width/height
-  declarations, uniform padding/margin and explicit box sizing, outer/content
-  rectangles, hidden-box exclusion, and Rust-only layout inspection.
+  declarations, physical padding/margin shorthand and longhand cascade,
+  explicit box sizing, outer/content rectangles, hidden-box exclusion, and
+  Rust-only layout inspection.
 - point hit testing with viewport bounds, deepest-hit ordering, actionable
   ancestor resolution, and pre-mutation rejection for empty/out-of-viewport
   points.
@@ -468,8 +483,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded logical-surface PNG encoding, capture-byte enforcement, read-only
   revision behavior, real native backend dispatch, and explicit JPEG/PDF
   denials.
-- bounded uniform padding/margin cascade, content-box/border-box sizing,
-  outer/content layout rectangles, margin flow, and content-origin text paint.
+- bounded physical padding/margin cascade, content-box/border-box sizing,
+  outer/content layout rectangles, side-aware margin flow, and content-origin
+  text paint.
 - bounded root viewport scrolling, content-height/max-offset derivation,
   viewport-to-document hit-test mapping, translated software replay/capture,
   clamping, and revision/effect behavior for moved scroll actions.

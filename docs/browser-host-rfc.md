@@ -106,11 +106,12 @@ bounded inherited text color, paint clips, side-specific solid/dashed/dotted-bor
 bounded physical circular border radii, bounded inline-box line placement,
 bounded fixed pixel line-height flow, bounded direct-text flow fragments and
 source-order text paint, bounded word-aware wrapping,
-bounded outer/content box geometry with uniform padding/margin and explicit
-box sizing, bounded vertical viewport scrolling, and bounded PNG capture through the explicit backend operation,
+bounded outer/content box geometry with physical four-side padding/margin
+shorthands and longhands plus explicit box sizing, bounded vertical viewport
+scrolling, and bounded PNG capture through the explicit backend operation,
 plus Rust-only display-list/software-surface artifacts. It does not yet provide
-general CSS/nested/horizontal/stacking layout, four-side padding/margin, negative/percentage/auto box
-model values, positioned/flex/grid layout,
+general CSS/nested/horizontal/stacking layout, logical writing-mode sides,
+negative/percentage/auto box-model values, positioned/flex/grid layout,
 screen-shot-containing evidence, JPEG/PDF capture, or physical-pixel capture,
 font/image fidelity, JavaScript, network/security policy, cookies/storage,
 downloads, or platform windowing.

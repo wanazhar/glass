@@ -128,8 +128,9 @@ for `input`/`textarea` controls. Its bounded visibility gate excludes
 subtrees from visible text and rejects those action targets before mutation.
 Explicit references are revision-bound; ambiguous, stale, disabled, read-only,
 and unsupported targets fail before mutation. It provides only bounded
-presentation, normal-flow outer/content box geometry with uniform
-non-negative padding/margin and explicit box sizing, bounded vertical viewport
+presentation, normal-flow outer/content box geometry with bounded physical
+four-side padding/margin shorthands and longhands plus explicit box sizing,
+bounded vertical viewport
 scrolling, inherited text color,
 bounded paint clips, side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
@@ -139,8 +140,9 @@ Rust-only
 display-list/software-surface artifacts;
 it does not
 provide network access,
-filesystem navigation, general CSS/nested/horizontal/stacking layout, four-side padding/margin,
-negative, percentage, or auto box-model values, positioned/flex/grid layout,
+filesystem navigation, general CSS/nested/horizontal/stacking layout, logical
+writing-mode sides, negative, percentage, or auto box-model values,
+positioned/flex/grid layout,
 screen-shot-containing evidence, JPEG/PDF capture, physical pixels,
 font/image fidelity, JavaScript, storage,
 prompts, downloads, default link navigation, or raw form-value evidence. The

@@ -100,6 +100,15 @@ them during Rust-only surface replay. It does not add scrolling, stacking,
 borders, transforms, screenshots, or capture transport. The next renderer slice
 must be documented and committed separately before it expands this boundary.
 
+The completed uniform-border slice is
+[native-engine-014](tasks/native-engine-014.md). It adds a bounded
+`border:Npx solid <color>` CSS declaration, a revisioned `BorderRect` display
+command, and inside-the-box software replay using the existing clip and
+source-over rules. It does not add border box-model geometry, padding,
+box-sizing, individual sides, non-solid styles, scrolling, transforms,
+screenshots, or capture transport. The next renderer slice must be documented
+and committed separately before expanding this boundary.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

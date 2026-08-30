@@ -59,6 +59,13 @@ impl NativeSurface {
                 NativeDisplayCommand::FillRect {
                     rect, color, clip, ..
                 } => surface.fill_rect(*rect, *color, *clip),
+                NativeDisplayCommand::BorderRect {
+                    rect,
+                    width,
+                    color,
+                    clip,
+                    ..
+                } => surface.border_rect(*rect, *width, *color, *clip),
                 NativeDisplayCommand::TextRun {
                     origin,
                     text,
@@ -117,6 +124,44 @@ impl NativeSurface {
         color: super::css::NativeColor,
         clip: Option<NativeRect>,
     ) {
+        let Some((left, top, right, bottom)) = self.clipped_bounds(rect, clip) else {
+            return;
+        };
+        for y in top..bottom {
+            for x in left..right {
+                self.blend_pixel(x, y, color);
+            }
+        }
+    }
+
+    fn border_rect(
+        &mut self,
+        rect: NativeRect,
+        width: u32,
+        color: super::css::NativeColor,
+        clip: Option<NativeRect>,
+    ) {
+        let Some((left, top, right, bottom)) = self.clipped_bounds(rect, clip) else {
+            return;
+        };
+        let inner_left = rect.x.saturating_add(width);
+        let inner_top = rect.y.saturating_add(width);
+        let inner_right = rect.right().saturating_sub(width);
+        let inner_bottom = rect.bottom().saturating_sub(width);
+        for y in top..bottom {
+            for x in left..right {
+                if x < inner_left || x >= inner_right || y < inner_top || y >= inner_bottom {
+                    self.blend_pixel(x, y, color);
+                }
+            }
+        }
+    }
+
+    fn clipped_bounds(
+        &self,
+        rect: NativeRect,
+        clip: Option<NativeRect>,
+    ) -> Option<(u32, u32, u32, u32)> {
         let mut left = rect.x.min(self.width);
         let mut top = rect.y.min(self.height);
         let mut right = rect.right().min(self.width);
@@ -127,14 +172,7 @@ impl NativeSurface {
             right = right.min(clip.right().min(self.width));
             bottom = bottom.min(clip.bottom().min(self.height));
         }
-        if left >= right || top >= bottom {
-            return;
-        }
-        for y in top..bottom {
-            for x in left..right {
-                self.blend_pixel(x, y, color);
-            }
-        }
+        (left < right && top < bottom).then_some((left, top, right, bottom))
     }
 
     fn draw_text(
@@ -477,6 +515,44 @@ mod tests {
         assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
         assert_eq!(surface.pixel(2, 1), Some([255, 0, 0, 255]));
         assert_eq!(surface.pixel(3, 1), Some([255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn surface_replays_inside_border_ring_and_clip() {
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::BorderRect {
+                    node_id: NativeDocument::empty().root(),
+                    rect: NativeRect {
+                        x: 1,
+                        y: 1,
+                        width: 4,
+                        height: 3,
+                    },
+                    width: 1,
+                    color: NativeColor::RED,
+                    clip: Some(NativeRect {
+                        x: 1,
+                        y: 1,
+                        width: 3,
+                        height: 2,
+                    }),
+                },
+            ],
+            6,
+            5,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+        assert_eq!(surface.pixel(3, 1), Some([255, 0, 0, 255]));
+        assert_eq!(surface.pixel(1, 2), Some([255, 0, 0, 255]));
+        assert_eq!(surface.pixel(2, 2), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(4, 1), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(2, 3), Some([255, 255, 255, 255]));
     }
 
     #[test]

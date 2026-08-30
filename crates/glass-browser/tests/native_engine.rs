@@ -164,6 +164,7 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
     }));
     assert!(!list.commands.iter().any(|command| match command {
         NativeDisplayCommand::FillRect { node_id, .. }
+        | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. } => *node_id == hidden,
         NativeDisplayCommand::Clear { .. } => false,
     }));
@@ -202,6 +203,64 @@ fn native_display_list_inherits_text_color_and_preserves_transparent_override() 
                     && *color == NativeColor { red: 0, green: 0, blue: 0, alpha: 0 }
         )
     }));
+}
+
+#[test]
+fn native_display_list_emits_uniform_border_before_text_and_keeps_layout_stable() {
+    let document = NativeDocument::parse(
+        "<div id='card' style='width: 8px; height: 8px; border: 2px solid blue'>Card</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 12,
+        height: 12,
+        device_scale_factor_milli: 1000,
+    };
+    let card = document.resolve_target("id=card").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(card),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        })
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let border_index = list
+        .commands
+        .iter()
+        .position(|command| matches!(command, NativeDisplayCommand::BorderRect { .. }))
+        .unwrap();
+    let text_index = list
+        .commands
+        .iter()
+        .position(|command| matches!(command, NativeDisplayCommand::TextRun { .. }))
+        .unwrap();
+    assert!(border_index < text_index);
+    assert!(matches!(
+        &list.commands[border_index],
+        NativeDisplayCommand::BorderRect {
+            node_id,
+            rect,
+            width,
+            color,
+            clip: None,
+        } if *node_id == card
+            && *rect == NativeRect { x: 0, y: 0, width: 8, height: 8 }
+            && *width == 2
+            && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+    ));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(0, 0), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(1, 1), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(2, 2), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(5, 5), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(7, 7), Some([0, 0, 255, 255]));
 }
 
 #[test]

@@ -37,6 +37,22 @@ impl NativeColor {
     };
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeBorder {
+    width: u32,
+    color: NativeColor,
+}
+
+impl NativeBorder {
+    pub(crate) const fn width(self) -> u32 {
+        self.width
+    }
+
+    pub(crate) const fn color(self) -> NativeColor {
+        self.color
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum DisplayValue {
     #[default]
@@ -55,6 +71,7 @@ pub(crate) struct NativeComputedStyle {
     width: Option<u32>,
     height: Option<u32>,
     background_color: Option<NativeColor>,
+    border: Option<NativeBorder>,
     color: Option<NativeColor>,
     overflow_hidden: bool,
 }
@@ -78,6 +95,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn background_color(self) -> Option<NativeColor> {
         self.background_color
+    }
+
+    pub(crate) const fn border(self) -> Option<NativeBorder> {
+        self.border
     }
 
     pub(crate) const fn color(self) -> Option<NativeColor> {
@@ -120,6 +141,7 @@ impl NativeStylesheet {
         let mut width = None;
         let mut height = None;
         let mut background_color = None;
+        let mut border = None;
         let mut color = None;
         let mut overflow = None;
         for rule in &self.rules {
@@ -175,6 +197,16 @@ impl NativeStylesheet {
                 )
             {
                 background_color = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.border
+                && wins(rule.selector.specificity, rule.order, false, border)
+            {
+                border = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -255,6 +287,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.border
+                && wins(u16::MAX, usize::MAX, true, border)
+            {
+                border = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.color
                 && wins(u16::MAX, usize::MAX, true, color)
             {
@@ -284,6 +326,7 @@ impl NativeStylesheet {
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             background_color: background_color.map(|value| value.value),
+            border: border.map(|value| value.value),
             color: color.map(|value| value.value).or(inherited_color),
             overflow_hidden: overflow.is_some_and(|value| value.value == OverflowValue::Hidden),
         }
@@ -323,6 +366,7 @@ struct NativeDeclarations {
     width: Option<u32>,
     height: Option<u32>,
     background_color: Option<NativeColor>,
+    border: Option<NativeBorder>,
     color: Option<NativeColor>,
     overflow: Option<OverflowValue>,
 }
@@ -402,6 +446,7 @@ fn parse_source(
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.background_color.is_some()
+            || declarations.border.is_some()
             || declarations.color.is_some()
             || declarations.overflow.is_some()
         {
@@ -457,6 +502,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "background-color" => {
                 declarations.background_color = parse_color(value);
             }
+            "border" => {
+                declarations.border = parse_border(value);
+            }
             "color" => {
                 declarations.color = parse_color(value);
             }
@@ -467,6 +515,19 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
         }
     }
     declarations
+}
+
+fn parse_border(value: &str) -> Option<NativeBorder> {
+    let mut parts = value.split_ascii_whitespace();
+    let width = parse_dimension(parts.next()?)?;
+    if !parts.next()?.eq_ignore_ascii_case("solid") {
+        return None;
+    }
+    let color = parts.collect::<Vec<_>>().join(" ");
+    Some(NativeBorder {
+        width,
+        color: parse_color(&color)?,
+    })
 }
 
 fn parse_color(value: &str) -> Option<NativeColor> {
@@ -734,16 +795,41 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; border: 2px solid #102030; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.color, Some(NativeColor::RED));
+        assert_eq!(
+            declarations.border,
+            Some(NativeBorder {
+                width: 2,
+                color: NativeColor {
+                    red: 16,
+                    green: 32,
+                    blue: 48,
+                    alpha: 255,
+                },
+            })
+        );
         assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("clip"), None);
+        assert_eq!(parse_border("1px dashed red"), None);
+        assert_eq!(
+            parse_border("1px solid rgb(1, 2, 3)"),
+            Some(NativeBorder {
+                width: 1,
+                color: NativeColor {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                    alpha: 255
+                },
+            })
+        );
     }
 
     #[test]
@@ -754,6 +840,27 @@ mod tests {
         .unwrap();
         let node = node("<button id='shown' style='display:none'>Shown</button>");
         assert!(stylesheet.computed_for(&node).hidden());
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_uniform_border_with_inline_precedence() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { border: 1px solid red; } #card { border: 2px solid blue; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='card' style='border: 3px solid green'>Card</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).border(),
+            Some(NativeBorder {
+                width: 3,
+                color: NativeColor {
+                    red: 0,
+                    green: 128,
+                    blue: 0,
+                    alpha: 255,
+                },
+            })
+        );
     }
 
     #[test]

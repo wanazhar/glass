@@ -5,6 +5,38 @@ use super::error::NativeEngineError;
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 const MAX_SELECTOR_BYTES: usize = 256;
 
+/// A bounded RGBA color used by the native display-list seed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeColor {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub alpha: u8,
+}
+
+impl NativeColor {
+    pub const BLACK: Self = Self {
+        red: 0,
+        green: 0,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+
+    pub const WHITE: Self = Self {
+        red: u8::MAX,
+        green: u8::MAX,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+
+    pub const RED: Self = Self {
+        red: u8::MAX,
+        green: 0,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum DisplayValue {
     #[default]
@@ -22,6 +54,8 @@ pub(crate) struct NativeComputedStyle {
     visibility_hidden: bool,
     width: Option<u32>,
     height: Option<u32>,
+    background_color: Option<NativeColor>,
+    color: Option<NativeColor>,
 }
 
 impl NativeComputedStyle {
@@ -39,6 +73,14 @@ impl NativeComputedStyle {
 
     pub(crate) const fn height(self) -> Option<u32> {
         self.height
+    }
+
+    pub(crate) const fn background_color(self) -> Option<NativeColor> {
+        self.background_color
+    }
+
+    pub(crate) const fn color(self) -> Option<NativeColor> {
+        self.color
     }
 }
 
@@ -64,6 +106,8 @@ impl NativeStylesheet {
         let mut visibility = None;
         let mut width = None;
         let mut height = None;
+        let mut background_color = None;
+        let mut color = None;
         for rule in &self.rules {
             if !rule.selector.matches(node) {
                 continue;
@@ -102,6 +146,31 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, height)
             {
                 height = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.background_color
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    background_color,
+                )
+            {
+                background_color = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.color
+                && wins(rule.selector.specificity, rule.order, false, color)
+            {
+                color = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -152,6 +221,26 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.background_color
+                && wins(u16::MAX, usize::MAX, true, background_color)
+            {
+                background_color = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
+            if let Some(value) = declarations.color
+                && wins(u16::MAX, usize::MAX, true, color)
+            {
+                color = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
         }
 
         NativeComputedStyle {
@@ -160,6 +249,8 @@ impl NativeStylesheet {
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
+            background_color: background_color.map(|value| value.value),
+            color: color.map(|value| value.value),
         }
     }
 }
@@ -190,6 +281,8 @@ struct NativeDeclarations {
     visibility: Option<VisibilityValue>,
     width: Option<u32>,
     height: Option<u32>,
+    background_color: Option<NativeColor>,
+    color: Option<NativeColor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +359,8 @@ fn parse_source(
             || declarations.visibility.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
+            || declarations.background_color.is_some()
+            || declarations.color.is_some()
         {
             for selector_text in source[cursor..open].split(',') {
                 let Some(selector) = parse_selector(selector_text) else {
@@ -316,10 +411,88 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "height" => {
                 declarations.height = parse_dimension(value);
             }
+            "background-color" => {
+                declarations.background_color = parse_color(value);
+            }
+            "color" => {
+                declarations.color = parse_color(value);
+            }
             _ => {}
         }
     }
     declarations
+}
+
+fn parse_color(value: &str) -> Option<NativeColor> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "black" => Some(NativeColor::BLACK),
+        "white" => Some(NativeColor::WHITE),
+        "red" => Some(NativeColor::RED),
+        "green" => Some(NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: u8::MAX,
+        }),
+        "blue" => Some(NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        }),
+        "transparent" => Some(NativeColor {
+            red: 0,
+            green: 0,
+            blue: 0,
+            alpha: 0,
+        }),
+        _ if value.starts_with('#') => parse_hex_color(&value[1..]),
+        _ if value.starts_with("rgb(") && value.ends_with(')') => {
+            let values = value[4..value.len() - 1]
+                .split(',')
+                .map(str::trim)
+                .collect::<Vec<_>>();
+            if values.len() != 3 {
+                return None;
+            }
+            Some(NativeColor {
+                red: values[0].parse().ok()?,
+                green: values[1].parse().ok()?,
+                blue: values[2].parse().ok()?,
+                alpha: u8::MAX,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn parse_hex_color(value: &str) -> Option<NativeColor> {
+    if !value.is_ascii() {
+        return None;
+    }
+    let component = |value: &str| u8::from_str_radix(value, 16).ok();
+    match value.len() {
+        3 => Some(NativeColor {
+            red: component(&value[0..1])?.saturating_mul(17),
+            green: component(&value[1..2])?.saturating_mul(17),
+            blue: component(&value[2..3])?.saturating_mul(17),
+            alpha: u8::MAX,
+        }),
+        6 => Some(NativeColor {
+            red: component(&value[0..2])?,
+            green: component(&value[2..4])?,
+            blue: component(&value[4..6])?,
+            alpha: u8::MAX,
+        }),
+        8 => Some(NativeColor {
+            red: component(&value[0..2])?,
+            green: component(&value[2..4])?,
+            blue: component(&value[4..6])?,
+            alpha: component(&value[6..8])?,
+        }),
+        _ => None,
+    }
 }
 
 fn parse_display(value: &str) -> Option<DisplayValue> {
@@ -513,6 +686,7 @@ mod tests {
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
+        assert_eq!(declarations.color, Some(NativeColor::RED));
     }
 
     #[test]
@@ -531,5 +705,38 @@ mod tests {
         assert_eq!(parse_dimension("240"), None);
         assert_eq!(parse_dimension("50%"), None);
         assert_eq!(parse_dimension("20000px"), None);
+    }
+
+    #[test]
+    fn color_parser_accepts_bounded_forms_only() {
+        assert_eq!(
+            parse_color("#abc"),
+            Some(NativeColor {
+                red: 170,
+                green: 187,
+                blue: 204,
+                alpha: 255,
+            })
+        );
+        assert_eq!(
+            parse_color("#10203080"),
+            Some(NativeColor {
+                red: 16,
+                green: 32,
+                blue: 48,
+                alpha: 128,
+            })
+        );
+        assert_eq!(
+            parse_color("rgb(1, 2, 3)"),
+            Some(NativeColor {
+                red: 1,
+                green: 2,
+                blue: 3,
+                alpha: 255,
+            })
+        );
+        assert_eq!(parse_color("rgba(1, 2, 3, 0.5)"), None);
+        assert_eq!(parse_color("rgb(101%, 2, 3)"), None);
     }
 }

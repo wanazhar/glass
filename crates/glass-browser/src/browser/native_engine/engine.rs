@@ -7,6 +7,7 @@ use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeE
 use super::layout::NativeLayoutSnapshot;
 use super::lifecycle::NativeLifecycleState;
 use super::origin::NativeOrigin;
+use super::paint::NativeDisplayList;
 use super::resource_loader::{NativeResource, NativeResourceLoader};
 use super::scheduler::{DeterministicScheduler, NativeTask};
 use std::collections::VecDeque;
@@ -155,6 +156,12 @@ impl NativeEngine {
     ) -> Result<Option<super::dom::NativeNodeId>, NativeEngineError> {
         self.require_running("hit testing")?;
         self.document.hit_test(self.config.viewport, x, y)
+    }
+
+    /// Return the current document's immutable Rust display-list projection.
+    pub fn display_list(&self) -> Result<NativeDisplayList, NativeEngineError> {
+        self.require_running("display list")?;
+        self.document.display_list(self.config.viewport)
     }
 
     /// Apply one semantic action and advance the document revision exactly

@@ -3,7 +3,7 @@
 Status: Active implementation analysis for issue #40; Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
-committed locally.
+committed locally, including the bounded 010 display-list seed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -60,6 +60,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
 | `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, and pixel dimensions | style text, inline style, native element attributes | deterministic computed presentation values | native DOM element surface |
 | `native_engine::layout` | viewport-bounded normal-flow geometry and point hit testing | DOM, computed display/visibility, viewport | layout boxes and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::paint` | revisioned clear/fill/text display-list derivation | current layout and bounded computed colors/text | immutable display-list commands | native DOM + layout |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
 | `native_engine::interaction` | action/effect types and bounded effect records | semantic action and event kind | revisioned interaction metadata | native DOM IDs |
 | `native_engine::engine` | sole mutable page-state coordinator | lifecycle/navigation/action requests | snapshots/context/history/effects | all engine modules |
@@ -95,8 +96,9 @@ The first slice must prove these real call chains:
 ## Non-goals for this checkpoint
 
 - network, filesystem navigation, redirects, HTTP semantics, or cookies;
-- general CSS parsing/cascade, painting, screenshots, or fonts; the bounded
-  009 layout seed does not imply general layout;
+- general CSS parsing/cascade, raster painting, screenshots, or fonts; the
+  bounded 009 layout and 010 display-list seeds do not imply general layout or
+  rendering;
 - JavaScript, event loops, timers, storage, workers, Web APIs, or downloads;
 - MCP/TUI integration, external browser lifecycle, or platform windows;
 - claiming standards compatibility, browser parity, or remote-content safety;
@@ -117,6 +119,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-007` | bounded compound selectors and display/visibility cascade feeding text/actionability | `native-engine-006` | general CSS, inheritance, layout, hit testing, paint |
 | `native-engine-008` | feature-gated `BrowserRuntime::Native`, explicit Rust session construction, local CLI dispatch, and fail-closed runtime validation | `native-engine-007` | remote endpoints, external lifecycle, script/evaluate, MCP/TUI, browser parity |
 | `native-engine-009` | bounded integer-pixel normal-flow geometry, Rust layout inspection, deterministic point hit testing, and native `point=x,y` click resolution | `native-engine-008` | general CSS/layout, scrolling, paint, screenshots, stacking contexts, fractional units, browser parity |
+| `native-engine-010` | bounded solid-color computed values and revisioned clear/fill/text display-list derivation | `native-engine-009` | rasterization, screenshots, fonts, images, borders, clipping, scrolling, stacking contexts, browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -157,6 +160,8 @@ Phase 2 integration chains added by these slices are:
 14. Native point clicks reject malformed/out-of-viewport points and resolve
     through the deepest layout hit to an actionable semantic ancestor before
     any mutation.
+15. Native display lists are derived from a matching layout revision and emit
+    bounded deterministic commands without adding a capture capability.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -178,13 +183,13 @@ stacking, or that clicking a link performs browser navigation.
 | bounded CSS presentation seed | makes stylesheet-driven hiding observable without adding a rendering stack | no general CSS, inheritance, layout, or paint semantics | keep selectors/properties explicit and reject unsupported syntax by omission |
 | feature-gated runtime/CLI entry | makes the experiment runnable through the same explicit one-shot contract | native CLI cannot register fixtures, start a browser, or accept remote URLs; feature builds have another compile path | keep default builds unchanged, use the Rust constructor for fixtures, and validate native/default matrices separately |
 | bounded normal-flow layout and point hit testing | exercises geometry ownership and input validation without a renderer | no browser line metrics, scrolling, stacking contexts, or fractional CSS | keep rectangles Rust-only, use integer pixels, and reject unsupported dimensions/points explicitly |
+| derived display-list seed | establishes a renderer-owned immutable artifact without pixel dependencies | no rasterization, fonts, image decode, clipping, or visual evidence | require a matching layout revision, bound commands, and keep the list Rust-only |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-the completed layout/hit-testing slice is
-`docs/plan/tasks/native-engine-009.md`. A checkpoint is complete only when the
-default feature set remains green, the native feature tests pass, strict lint
+`docs/plan/tasks/native-engine-010.md` is the latest completed checkpoint. A
+checkpoint is complete only when the native feature tests pass, strict lint
 passes for the touched code, and the diff confirms no unrelated browser/TUI/
 release behavior changed.

@@ -15,6 +15,7 @@ mod interaction;
 mod layout;
 mod lifecycle;
 mod origin;
+mod paint;
 mod resource_loader;
 mod scheduler;
 
@@ -24,6 +25,7 @@ pub use config::{
     MAX_NATIVE_HISTORY_ENTRIES, MAX_NATIVE_NODES, MAX_NATIVE_SCHEDULER_TASKS,
     MAX_NATIVE_VIEWPORT_DIMENSION, NativeEngineConfig, NativeEngineLimits, NativeFixture, Viewport,
 };
+pub use css::NativeColor;
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
 pub use engine::{NativeActionResult, NativeEffectsSnapshot, NativeEngine, NativeEngineSnapshot};
 pub use error::NativeEngineError;
@@ -32,5 +34,6 @@ pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEven
 pub use layout::{NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect};
 pub use lifecycle::NativeLifecycleState;
 pub use origin::NativeOrigin;
+pub use paint::{MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList};
 pub use resource_loader::{NativeResource, NativeResourceLoader};
 pub use scheduler::{DeterministicClock, DeterministicScheduler, NativeTask, ScheduledTask};

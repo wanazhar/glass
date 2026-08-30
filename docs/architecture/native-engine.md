@@ -2,8 +2,9 @@
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
-viewport-scroll/side-specific-border slices, including bounded style
-inheritance, paint clipping, solid-border painting, and content-box geometry,
+viewport-scroll/side-specific-border/bounded-pattern-border slices, including
+bounded style inheritance, paint clipping, solid/dashed/dotted border painting,
+and content-box geometry,
 plus feature-gated
 runtime/CLI integration; not a stable browser compatibility or security
 boundary.
@@ -24,7 +25,7 @@ parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
 normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
 display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden` paint
-clipping, bounded side-specific solid-border paint primitives, and bounded outer/content
+clipping, bounded side-specific solid/dashed/dotted-border paint primitives, and bounded outer/content
 box geometry and explicit root viewport scrolling. The engine does not yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
@@ -193,7 +194,7 @@ presentation state and configured viewport using normal block/inline flow.
 The 016 box-model extension adds bounded uniform `padding:Npx` and
 `margin:Npx`, explicit `box-sizing:content-box|border-box`, and a derived
 content rectangle after border/padding insets. Percentages, negative/auto
-values, four-side shorthands, margin collapsing, positioning, flex, grid,
+values, four-side padding/margin shorthands, margin collapsing, positioning, flex, grid,
 transforms, and font metrics remain unsupported. Layout is recomputed as a
 Rust-only derived view. `display:none`, explicit hidden signals, and
 `visibility:hidden` remove boxes; `display:contents` preserves eligible
@@ -208,14 +209,23 @@ rectangles/points into viewport coordinates. Scroll deltas are explicit native
 actions, clamp at the document edges, and never scroll a semantic target
 implicitly into view.
 
-The 018 side-specific-border boundary keeps the existing uniform `border:`
+The 018 side-specific-border boundary kept the existing uniform `border:`
 shorthand and adds independently cascaded physical `border-top`,
 `border-right`, `border-bottom`, and `border-left` declarations in the same
 bounded `Npx solid <color>` grammar. Each side contributes its own outer/content
 inset and paint data; software replay uses a deterministic corner precedence
-after ancestor clipping and root-scroll translation. Non-solid styles, radii,
-border images, gradients, logical writing-mode sides, and browser corner joins
-remain unsupported.
+after ancestor clipping and root-scroll translation. At that checkpoint, other
+border styles, radii, border images, gradients, logical writing-mode sides, and
+browser corner joins remained unsupported.
+
+The 019 bounded-pattern-border boundary extends the same physical declarations
+with `Npx dashed <color>` and `Npx dotted <color>`. Styles are typed through
+computed CSS and the immutable display list. Software replay uses bounded
+integer dash/gap or dot/gap periods anchored to document-space geometry, then
+applies the existing side precedence, ancestor clips, source-over blending,
+and root-scroll translation. Other border styles, standalone `border-style`
+properties, radii, images, gradients, logical sides, anti-aliased joins, and
+browser-parity dash distribution remain unsupported.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -257,7 +267,7 @@ and `margin:Npx` values plus `box-sizing:content-box|border-box`. It keeps
 `NativeLayoutBox::rect` as the outer border box and exposes a derived content
 rectangle after border and padding insets; child flow and direct text begin at
 that content origin. Uniform margins consume normal-flow space without margin
-collapsing. Percentages, negative/auto values, four-side shorthands, min/max
+collapsing. Percentages, negative/auto values, four-side padding/margin shorthands, min/max
 constraints, positioning, flex/grid, fractional metrics, and nested or
 horizontal scrolling remain unsupported.
 
@@ -388,9 +398,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   capability.
 - bounded solid-border parsing, deterministic `BorderRect` command ordering,
   inside-the-box border replay, and clip/source-over enforcement.
-- independently cascaded physical side-specific solid borders, side-aware
-  content-box/border-box insets, deterministic side paint data, corner
-  precedence, ancestor clipping, and root-scroll replay.
+- independently cascaded physical side-specific solid/dashed/dotted borders,
+  side-aware content-box/border-box insets, deterministic side paint data,
+  integer pattern phase, corner precedence, ancestor clipping, and root-scroll
+  replay.
 - bounded logical-surface PNG encoding, capture-byte enforcement, read-only
   revision behavior, real native backend dispatch, and explicit JPEG/PDF
   denials.

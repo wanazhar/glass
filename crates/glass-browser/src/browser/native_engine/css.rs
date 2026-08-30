@@ -38,8 +38,16 @@ impl NativeColor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeBorderStyle {
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeBorderSide {
     width: u32,
+    style: NativeBorderStyle,
     color: NativeColor,
 }
 
@@ -50,6 +58,10 @@ impl NativeBorderSide {
 
     pub(crate) const fn color(self) -> NativeColor {
         self.color
+    }
+
+    pub(crate) const fn style(self) -> NativeBorderStyle {
+        self.style
     }
 }
 
@@ -70,6 +82,7 @@ impl NativeBorder {
         }
         let zero = NativeBorderSide {
             width: 0,
+            style: NativeBorderStyle::Solid,
             color: NativeColor::BLACK,
         };
         Some(Self {
@@ -700,14 +713,22 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
 fn parse_border(value: &str) -> Option<NativeBorderSide> {
     let mut parts = value.split_ascii_whitespace();
     let width = parse_dimension(parts.next()?)?;
-    if !parts.next()?.eq_ignore_ascii_case("solid") {
-        return None;
-    }
+    let style = parse_border_style(parts.next()?)?;
     let color = parts.collect::<Vec<_>>().join(" ");
     Some(NativeBorderSide {
         width,
+        style,
         color: parse_color(&color)?,
     })
+}
+
+fn parse_border_style(value: &str) -> Option<NativeBorderStyle> {
+    match value.to_ascii_lowercase().as_str() {
+        "solid" => Some(NativeBorderStyle::Solid),
+        "dashed" => Some(NativeBorderStyle::Dashed),
+        "dotted" => Some(NativeBorderStyle::Dotted),
+        _ => None,
+    }
 }
 
 fn set_border_side(sides: &mut [Option<NativeBorderSide>; 4], index: usize, value: &str) {
@@ -979,7 +1000,19 @@ mod tests {
     }
 
     fn border_side(width: u32, color: NativeColor) -> NativeBorderSide {
-        NativeBorderSide { width, color }
+        styled_border_side(width, NativeBorderStyle::Solid, color)
+    }
+
+    fn styled_border_side(
+        width: u32,
+        style: NativeBorderStyle,
+        color: NativeColor,
+    ) -> NativeBorderSide {
+        NativeBorderSide {
+            width,
+            style,
+            color,
+        }
     }
 
     fn uniform_border(width: u32, color: NativeColor) -> NativeBorder {
@@ -1023,9 +1056,29 @@ mod tests {
         assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("clip"), None);
-        assert_eq!(parse_border("1px dashed red"), None);
+        assert_eq!(
+            parse_border("1px dashed red"),
+            Some(styled_border_side(
+                1,
+                NativeBorderStyle::Dashed,
+                NativeColor::RED
+            ))
+        );
+        assert_eq!(
+            parse_border("2px DOTTED blue"),
+            Some(styled_border_side(
+                2,
+                NativeBorderStyle::Dotted,
+                NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: 255,
+                    alpha: 255,
+                }
+            ))
+        );
         let unsupported_sides = parse_declarations(
-            "border-top: 1px dashed red; border-right: -1px solid blue; border-bottom: 20000px solid red; border-left: 1em solid green",
+            "border-top: 1px double red; border-right: -1px solid blue; border-bottom: 20000px solid red; border-left: 1em solid green",
         );
         assert_eq!(unsupported_sides.border, [None; 4]);
         assert_eq!(

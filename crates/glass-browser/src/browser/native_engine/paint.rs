@@ -1,5 +1,5 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES};
-use super::css::NativeColor;
+use super::css::{NativeBorderStyle, NativeColor};
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
@@ -11,6 +11,7 @@ pub const MAX_NATIVE_DISPLAY_COMMANDS: usize = MAX_NATIVE_NODES.saturating_mul(2
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeBorderPaintSide {
     pub width: u32,
+    pub style: NativeBorderStyle,
     pub color: NativeColor,
 }
 
@@ -37,6 +38,7 @@ impl NativeBorderPaint {
     const fn side_from_style(side: super::css::NativeBorderSide) -> NativeBorderPaintSide {
         NativeBorderPaintSide {
             width: side.width(),
+            style: side.style(),
             color: side.color(),
         }
     }

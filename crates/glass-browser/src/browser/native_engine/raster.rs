@@ -217,20 +217,49 @@ impl NativeSurface {
             for x in left..right {
                 let signed_x = i64::from(x);
                 let signed_y = i64::from(y);
-                let color = if signed_y < outer_top.saturating_add(i64::from(borders.top.width)) {
-                    Some(borders.top.color)
+                let document_x = signed_x.saturating_add(i64::from(scroll_offset.x));
+                let document_y = signed_y.saturating_add(i64::from(scroll_offset.y));
+                let paint = if signed_y < outer_top.saturating_add(i64::from(borders.top.width)) {
+                    Some((borders.top, document_x.saturating_sub(i64::from(rect.x))))
                 } else if signed_x >= outer_right.saturating_sub(i64::from(borders.right.width)) {
-                    Some(borders.right.color)
+                    Some((borders.right, document_y.saturating_sub(i64::from(rect.y))))
                 } else if signed_y >= outer_bottom.saturating_sub(i64::from(borders.bottom.width)) {
-                    Some(borders.bottom.color)
+                    Some((borders.bottom, document_x.saturating_sub(i64::from(rect.x))))
                 } else if signed_x < outer_left.saturating_add(i64::from(borders.left.width)) {
-                    Some(borders.left.color)
+                    Some((borders.left, document_y.saturating_sub(i64::from(rect.y))))
                 } else {
                     None
                 };
-                if let Some(color) = color {
-                    self.blend_pixel(x, y, color);
+                if let Some((side, position)) = paint
+                    && Self::border_pattern_paints(side.style, side.width, position)
+                {
+                    self.blend_pixel(x, y, side.color);
                 }
+            }
+        }
+    }
+
+    fn border_pattern_paints(
+        style: super::css::NativeBorderStyle,
+        width: u32,
+        position: i64,
+    ) -> bool {
+        if width == 0 || position < 0 {
+            return false;
+        }
+        let position = u32::try_from(position).unwrap_or(u32::MAX);
+        match style {
+            super::css::NativeBorderStyle::Solid => true,
+            super::css::NativeBorderStyle::Dashed => {
+                let dash = width.saturating_mul(3).max(1);
+                let gap = width.saturating_mul(2).max(1);
+                let period = dash.saturating_add(gap);
+                position % period < dash
+            }
+            super::css::NativeBorderStyle::Dotted => {
+                let dot = width.max(1);
+                let period = dot.saturating_mul(2);
+                position % period < dot
             }
         }
     }
@@ -512,8 +541,8 @@ fn glyph_rows(character: char) -> Option<[u8; 7]> {
 mod tests {
     use super::*;
     use crate::browser::native_engine::{
-        NativeBorderPaint, NativeBorderPaintSide, NativeColor, NativeDisplayCommand,
-        NativeDisplayList, NativeDocument, NativePoint, Viewport,
+        NativeBorderPaint, NativeBorderPaintSide, NativeBorderStyle, NativeColor,
+        NativeDisplayCommand, NativeDisplayList, NativeDocument, NativePoint, Viewport,
     };
     use std::io::Cursor;
 
@@ -535,12 +564,28 @@ mod tests {
     }
 
     fn uniform_border(width: u32, color: NativeColor) -> NativeBorderPaint {
-        let side = NativeBorderPaintSide { width, color };
+        let side = NativeBorderPaintSide {
+            width,
+            style: NativeBorderStyle::Solid,
+            color,
+        };
         NativeBorderPaint {
             top: side,
             right: side,
             bottom: side,
             left: side,
+        }
+    }
+
+    fn styled_border(
+        width: u32,
+        style: NativeBorderStyle,
+        color: NativeColor,
+    ) -> NativeBorderPaintSide {
+        NativeBorderPaintSide {
+            width,
+            style,
+            color,
         }
     }
 
@@ -729,10 +774,12 @@ mod tests {
                     borders: NativeBorderPaint {
                         top: NativeBorderPaintSide {
                             width: 1,
+                            style: NativeBorderStyle::Solid,
                             color: NativeColor::RED,
                         },
                         right: NativeBorderPaintSide {
                             width: 1,
+                            style: NativeBorderStyle::Solid,
                             color: NativeColor {
                                 red: 0,
                                 green: 128,
@@ -742,6 +789,7 @@ mod tests {
                         },
                         bottom: NativeBorderPaintSide {
                             width: 1,
+                            style: NativeBorderStyle::Solid,
                             color: NativeColor {
                                 red: 0,
                                 green: 0,
@@ -751,6 +799,7 @@ mod tests {
                         },
                         left: NativeBorderPaintSide {
                             width: 1,
+                            style: NativeBorderStyle::Solid,
                             color: NativeColor::BLACK,
                         },
                     },
@@ -768,6 +817,68 @@ mod tests {
         assert_eq!(surface.pixel(3, 5), Some([0, 0, 255, 255]));
         assert_eq!(surface.pixel(1, 3), Some([0, 0, 0, 255]));
         assert_eq!(surface.pixel(3, 3), Some([255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn surface_replays_dashed_and_dotted_borders_with_document_phase() {
+        let mut list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::BorderRect {
+                    node_id: NativeDocument::empty().root(),
+                    rect: NativeRect {
+                        x: 1,
+                        y: 0,
+                        width: 8,
+                        height: 6,
+                    },
+                    borders: NativeBorderPaint {
+                        top: styled_border(1, NativeBorderStyle::Dashed, NativeColor::RED),
+                        right: styled_border(
+                            1,
+                            NativeBorderStyle::Dotted,
+                            NativeColor {
+                                red: 0,
+                                green: 128,
+                                blue: 0,
+                                alpha: 255,
+                            },
+                        ),
+                        bottom: styled_border(
+                            1,
+                            NativeBorderStyle::Solid,
+                            NativeColor {
+                                red: 0,
+                                green: 0,
+                                blue: 255,
+                                alpha: 255,
+                            },
+                        ),
+                        left: styled_border(0, NativeBorderStyle::Solid, NativeColor::BLACK),
+                    },
+                    clip: None,
+                },
+            ],
+            10,
+            6,
+        );
+        let unscrolled = list.rasterize().unwrap();
+
+        assert_eq!(unscrolled.pixel(1, 0), Some([255, 0, 0, 255]));
+        assert_eq!(unscrolled.pixel(3, 0), Some([255, 0, 0, 255]));
+        assert_eq!(unscrolled.pixel(4, 0), Some([255, 255, 255, 255]));
+        assert_eq!(unscrolled.pixel(5, 0), Some([255, 255, 255, 255]));
+        assert_eq!(unscrolled.pixel(6, 0), Some([255, 0, 0, 255]));
+        assert_eq!(unscrolled.pixel(8, 0), Some([255, 0, 0, 255]));
+        assert_eq!(unscrolled.pixel(8, 1), Some([255, 255, 255, 255]));
+        assert_eq!(unscrolled.pixel(8, 2), Some([0, 128, 0, 255]));
+
+        list.scroll_offset = NativePoint { x: 0, y: 1 };
+        let scrolled = list.rasterize().unwrap();
+        assert_eq!(scrolled.pixel(8, 0), unscrolled.pixel(8, 1));
+        assert_eq!(scrolled.pixel(8, 1), unscrolled.pixel(8, 2));
     }
 
     #[test]

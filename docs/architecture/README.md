@@ -80,8 +80,9 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
 - The TUI preserves its current layout, but browser I/O runs in a worker task rather than the render/input loop.
 - The native engine is default-off, fixture/data-URL-only in its current phase,
   exposes bounded presentation/normal-flow geometry and native point hit
-  testing through explicit Rust or feature-gated local CLI paths, and never
-  enters automatic backend selection.
+  testing through explicit Rust or feature-gated local CLI paths. Its current
+  Rust-only presentation artifacts include a display list and logical RGBA
+  software surface; it never enters automatic backend selection.
 
 ## Module index
 

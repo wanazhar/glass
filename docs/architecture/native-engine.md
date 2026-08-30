@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
-presentation/layout and display-list slices, and feature-gated runtime/CLI
-integration; not a stable browser compatibility or security boundary.
+presentation/layout/display-list and bounded software-surface slices, and
+feature-gated runtime/CLI integration; not a stable browser compatibility or
+security boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -17,9 +18,10 @@ HTML-to-DOM parsing, history, revisions, bounded semantic evidence, and a small
 revisioned semantic interaction/effects model for text, checkbox, radio, and
 single-select controls, plus bounded visibility/actionability and raw-text/RCDATA
 parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
-normal-flow geometry with point hit testing, and a Rust-only clear/fill/text
-display list. The engine does not yet own general CSS, scrolling/stacking
-layout, raster painting, hit-test visuals, JavaScript,
+normal-flow geometry with point hit testing, a Rust-only clear/fill/text display
+list, and a bounded logical RGBA software surface. The engine does not yet own
+general CSS, scrolling/stacking layout, screenshot capture, font/image
+fidelity, hit-test visuals, JavaScript,
 network access, storage, downloads, prompts, or platform windows.
 
 ```text
@@ -31,10 +33,10 @@ NativeEngineBackend       <- semantic backend profile and lifecycle adapter
             v
 NativeEngine              <- the only mutable page-state owner
     +-------+--------+----------------+----------+-----------+
-    |       |        |                |          |           |
-  DOM   history  scheduler      resource loader layout    display list
-    |       |        |                |          |           |
-    +--- semantic projection ---------+---- hit test --- paint commands
+    |       |        |                |          |           |          |
+  DOM   history  scheduler      resource loader layout    display list  raster
+    |       |        |                |          |           |          |
+    +--- semantic projection ---------+---- hit test --- paint commands -> RGBA
             |
             v
    bounded URL/title/text evidence
@@ -190,8 +192,10 @@ descendants without creating its own box.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
-runs. It is an inspection artifact only; there is no rasterizer, font engine,
-image decoder, screenshot capability, or GPU path yet.
+runs. The 011 raster boundary replays that list into a capped logical RGBA
+surface using integer source-over blending and a fixed 5x7 ASCII glyph subset.
+Both are Rust inspection artifacts only; there is no PNG/screenshot transport,
+font engine, image decoder, or GPU path.
 
 The native locator grammar is explicit and bounded:
 
@@ -306,6 +310,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   points.
 - matching-revision display-list generation with bounded clear/fill/text
   commands and explicit unsupported-paint boundaries.
+- deterministic bounded RGBA surface replay, source-over blending, fixed-glyph
+  text drawing, viewport clipping, and explicit surface-allocation limits.
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local URL shapes, including rejection of remote endpoints and unsupported
   browser-only flags.

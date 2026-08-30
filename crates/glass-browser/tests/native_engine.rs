@@ -4,7 +4,7 @@ use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
     NativeAction, NativeColor, NativeDisplayCommand, NativeDocument, NativeEngine,
     NativeEngineConfig, NativeEngineError, NativeEngineLimits, NativeEventKind,
-    NativeLifecycleState, NativeRect, Viewport,
+    NativeLifecycleState, NativeRect, NativeSurface, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -188,6 +188,33 @@ fn native_engine_display_list_revision_tracks_accepted_actions() {
     let after_action = engine.display_list().unwrap();
     assert_eq!(after_action.revision, 2);
     assert_ne!(initial, after_action);
+}
+
+#[test]
+fn native_engine_raster_surface_is_bounded_and_does_not_mutate_revision() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 32,
+            height: 24,
+            device_scale_factor_milli: 2000,
+        })
+        .with_fixture(
+            "fixture://surface",
+            "<style>#card { background-color: red; color: blue; }</style><div id='card'>A</div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://surface");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let before = engine.revision();
+    let surface: NativeSurface = engine.rasterize().unwrap();
+    assert_eq!(engine.revision(), before);
+    assert_eq!(surface.width(), 32);
+    assert_eq!(surface.height(), 24);
+    assert_eq!(surface.rgba().len(), 32 * 24 * 4);
+    assert_eq!(surface.pixel(31, 19), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(1, 0), Some([0, 0, 255, 255]));
 }
 
 #[test]

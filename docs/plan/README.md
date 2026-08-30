@@ -53,7 +53,9 @@ RCDATA handling. They remain semantic-only: CSS/layout hit testing,
 JavaScript, network, and raw form-value evidence are not claimed.
 [native-engine-007](tasks/native-engine-007.md), which adds a narrow
 CSS-presentation model for selector-driven `display`/`visibility` state.
-General CSS, scrolling/stacking layout, and paint remain unimplemented.
+General CSS, scrolling/stacking layout, and screenshot/capture paint remain
+unimplemented; later native slices add only bounded display-list and
+software-surface artifacts.
 
 The completed runtime integration slice is
 [native-engine-008](tasks/native-engine-008.md). It adds a feature-gated
@@ -67,14 +69,21 @@ The completed layout/input slice is
 [native-engine-009](tasks/native-engine-009.md). It owns bounded integer-pixel
 normal-flow geometry, Rust-only layout inspection, deterministic point
 hit-testing, and the native `point=x,y` click-target extension. It does not
-add screenshots, paint, scrolling, general CSS, or geometry to the stable
+add screenshots, capture, scrolling, general CSS, or geometry to the stable
 transport evidence contract.
 
 The completed display-list slice is
 [native-engine-010](tasks/native-engine-010.md). It adds a deterministic,
 Rust-only clear/fill/text display list from the current layout revision and a
-bounded solid-color CSS subset. It does not add rasterization, screenshots,
-fonts, images, or a paint capability to the stable backend contract.
+bounded solid-color CSS subset. It does not add screenshots, fonts, images, or
+a paint capability to the stable backend contract.
+
+The completed software-surface slice is
+[native-engine-011](tasks/native-engine-011.md). It consumes that list into a
+bounded logical RGBA surface with a small built-in glyph subset. It does not
+add PNG/screenshots, font loading, GPU/window APIs, or a capture capability to
+the stable backend contract. The next renderer slice must be documented and
+committed separately before it expands this boundary.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

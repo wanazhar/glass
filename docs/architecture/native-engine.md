@@ -14,9 +14,9 @@ The native engine owns a deterministic, headless browser-platform kernel. The
 current slices own lifecycle, one browsing context, local document resources,
 HTML-to-DOM parsing, history, revisions, bounded semantic evidence, and a small
 revisioned semantic interaction/effects model for text, checkbox, radio, and
-single-select controls. The engine does not yet own CSS, layout, painting, hit
-testing, JavaScript, network access, storage, downloads, prompts, or platform
-windows.
+single-select controls, plus a bounded visibility/actionability gate. The
+engine does not yet own CSS, layout, painting, hit testing, JavaScript, network
+access, storage, downloads, prompts, or platform windows.
 
 ```text
 BrowserBackendDispatcher
@@ -170,12 +170,15 @@ slice. Click focuses supported buttons, links, checkboxes, radios, textboxes,
 and comboboxes; checkbox and radio state changes are retained in the document
 owner. Clicking an option in a single-select combobox selects it and clears its
 siblings. Type replaces private state for native `input` and `textarea`
-textboxes. Links do not perform default navigation, and no action performs
-keyboard navigation, multi-select, coordinate hit testing, or JavaScript
-execution. Each accepted action advances the document revision exactly once,
-so earlier references must be re-observed. The effects operation returns the
-current revision and changed bit; bounded native event metadata remains an
-internal Rust inspection surface.
+textboxes. A bounded visibility gate recognizes `hidden`,
+`aria-hidden="true"`, and inline `display:none`/`visibility:hidden`; hidden
+subtrees are omitted from text and hidden action targets fail before mutation.
+Links do not perform default navigation, and no action performs keyboard
+navigation, multi-select, coordinate hit testing, or JavaScript execution. Each
+accepted action advances the document revision exactly once, so earlier
+references must be re-observed. The effects operation returns the current
+revision and changed bit; bounded native event metadata remains an internal
+Rust inspection surface.
 
 ## Backend capability contract
 
@@ -240,6 +243,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   pre-mutation rejection of stale, disabled, read-only, and unsupported targets;
 - deterministic single-select defaults, option selection, sibling clearing, and
   rejection of unsupported multi-select behavior.
+- hidden-subtree text exclusion, semantic hidden metadata, and pre-mutation
+  rejection of hidden controls.
 
 This slice is not browser parity. It cannot be promoted or advertised as safe
 for arbitrary remote content until CSS/layout, security policy, process

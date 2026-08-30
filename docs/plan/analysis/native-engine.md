@@ -105,6 +105,7 @@ identity is established before mutation can consume it:
 | `native-engine-002` | supported role/name projection, bounded attributes, explicit semantic locators, revision-bound references | `native-engine-001` | CSS selectors, layout, hit testing, raw form values |
 | `native-engine-003` | click/type/focus mutation for supported controls, checkbox/radio state, revisioned native effects, action/effects backend dispatch | `native-engine-002` | JavaScript, default navigation, coordinate input, full event loop |
 | `native-engine-004` | deterministic single-select/option state and semantic option clicks | `native-engine-003` | keyboard navigation, multi-select, submission, network, layout hit testing |
+| `native-engine-005` | bounded hidden-state projection, hidden-subtree text exclusion, and pre-mutation visibility gating | `native-engine-004` | CSS selectors/cascade, layout, hit testing, opacity, paint |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -126,6 +127,8 @@ Phase 2 integration chains added by these slices are:
 6. Single-select parsing establishes a deterministic option state; an option
    click updates that group, invalidates its prior reference, and records a
    bounded change effect.
+7. Hidden-state derivation excludes hidden text, marks semantic targets, and
+   rejects hidden actions before mutation.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving geometry ownership to Phase 3.
@@ -142,13 +145,14 @@ clicking a link performs browser navigation.
 | in-process single owner | simple revision/history invariants and reproducible tests | no crash isolation or hostile-content safety | keep content local-only; process isolation is a promotion gate |
 | no async task callbacks | deterministic scheduler with no hidden sleeps/threads | no script/event-loop realism | typed task kinds and test clock establish the future seam |
 | single-select only | useful basic form semantics with a small deterministic state model | no keyboard, multi-select, or submission behavior | reject unsupported variants explicitly and keep values private |
+| bounded visibility gate | keeps semantic text/actionability consistent without a CSS dependency | no cascade, layout, opacity, or paint semantics | recognize only explicit hidden signals and document the boundary |
 | profile exposes six capabilities | accurate discovery and fail-closed operations | no user-facing native CLI path yet; semantic actions are intentionally narrow | public Rust factory first; CLI/runtime integration is a later task |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-the current interaction slice is `docs/plan/tasks/native-engine-003.md`. A
+the current interaction slice is `docs/plan/tasks/native-engine-005.md`. A
 checkpoint is complete only when the default feature set remains green, the
 native feature tests pass, strict lint passes for the touched code, and the
 diff confirms no unrelated browser/TUI/release behavior changed.

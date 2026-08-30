@@ -21,7 +21,9 @@ uses for inline content:
 This repairs the current `text -> inline element -> text` failure mode, where
 layout advances the flow correctly but paint places an element's aggregate
 direct text back at its content origin. It remains a fixed-glyph fixture
-model, not a general inline formatting implementation.
+model, not a general inline formatting implementation. The later
+native-engine-024 checkpoint adds bounded word-aware wrapping on top of this
+fragment contract.
 
 ## Contract
 
@@ -52,8 +54,8 @@ browser-parity claim.
   positioning rule, but adds bounded layout metadata and an internal paint
   order sequence.
 - Collapsing whitespace before width calculation keeps layout and raster text
-  consistent, but does not implement CSS whitespace modes, word breaking, or
-  preservation of author formatting.
+  consistent, but does not implement CSS whitespace modes, general word-breaking
+  variants, or preservation of author formatting.
 - The fixed integer character width is deterministic and cheap, but it is not
   the rasterizer's 5x7 glyph advance and cannot represent font metrics,
   shaping, baselines, bidi, or Unicode fallback.

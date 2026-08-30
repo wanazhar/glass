@@ -84,8 +84,8 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
   paths. Its current Rust-only presentation artifacts include side-specific
   solid/dashed/dotted-border paint, bounded physical circular border radii, a
   bounded inline-box line placement, bounded fixed pixel line-height flow,
-  bounded direct-text flow fragments/source-order text paint, a display list, a
-  logical RGBA software surface, and
+  bounded direct-text flow fragments/source-order text paint, bounded word-aware
+  wrapping, a display list, a logical RGBA software surface, and
   bounded PNG capture; it never enters automatic backend selection.
 
 ## Module index

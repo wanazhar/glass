@@ -767,8 +767,38 @@ fn native_text_fragments_use_collapsed_bounded_text_for_width_and_paint() {
             .map(|run| (run.origin, run.text.as_str(), run.truncated))
             .collect::<Vec<_>>(),
         vec![
-            (NativePoint { x: 0, y: 0 }, "A ", false),
+            (NativePoint { x: 0, y: 0 }, "A", false),
             (NativePoint { x: 0, y: 20 }, "B", false),
+        ]
+    );
+}
+
+#[test]
+fn native_text_fragments_wrap_words_and_split_only_wide_words() {
+    let document = NativeDocument::parse(
+        "<div id='container' style='width:24px'>AB CD EFGHI</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 96,
+        device_scale_factor_milli: 1000,
+    };
+    let container = document.resolve_target("id=container").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(container).unwrap().height, 80);
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "AB"),
+            (NativePoint { x: 0, y: 20 }, "CD"),
+            (NativePoint { x: 0, y: 40 }, "EFG"),
+            (NativePoint { x: 0, y: 60 }, "HI"),
         ]
     );
 }

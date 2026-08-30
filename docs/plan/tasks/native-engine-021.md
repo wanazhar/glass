@@ -52,8 +52,8 @@ or screenshot evidence contract changes.
 - Reusing the integer width calculation keeps layout and placement consistent,
   but at this checkpoint it still missed font metrics, whitespace collapsing,
   baseline behavior, and real word-aware wrapping. The later native-engine-023
-  checkpoint owns the bounded collapsed direct-text fragments and their paint
-  origins.
+  and native-engine-024 checkpoints own the bounded collapsed direct-text
+  fragments, word-aware wrapping, and their paint origins.
 - Flushing whole inline boxes preserves atomic element ownership and simple
   hit testing, but a long inline box is not split into fragments.
 - The two-crate boundary and dependency-free renderer remain intact; source

@@ -3,7 +3,8 @@
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
-bounded-inline-flow/bounded-fixed-line-height slices, including bounded style
+bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow slices,
+including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
 and content-box geometry,
@@ -30,7 +31,8 @@ inherited text color through DOM parent links, bounded `overflow:hidden` paint
 clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
 bounded circular border radii, bounded outer/content box geometry, explicit root
 viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
-line-height flow. The engine does not yet own
+line-height flow, bounded direct-text fragments at actual flow origins, and
+source-order text paint. The engine does not yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
@@ -245,8 +247,8 @@ inline element boxes by preflighting their integer outer width and margins
 against the remaining line width before creating their layout boxes. It keeps
 whole inline boxes atomic, preserves fixed line-height flow, and feeds the
 same document-space coordinates to display-list, hit-test, and root-scroll
-consumers. Font metrics/shaping, word-aware text fragments, whitespace
-collapsing, baselines, bidi, floats, replaced elements, flex/grid, and general
+consumers. Font metrics/shaping, word-aware text fragments, CSS whitespace
+modes, baselines, bidi, floats, replaced elements, flex/grid, and general
 inline-formatting parity remain unsupported.
 
 The 022 bounded-fixed-line-height boundary accepts one positive integer-pixel
@@ -256,6 +258,16 @@ inline element's own value raises its auto content height and never overrides
 an explicit `height`. Unitless, relative, percentage, `normal`, general
 inheritance, font metrics, baselines, vertical alignment, and browser
 line-layout parity remain unsupported.
+
+The 023 bounded-direct-text-flow boundary collapses each visible direct text
+node through the existing bounded text policy, fragments it from the same
+integer flow cursor that places inline boxes, and records the resulting
+document-space origins. Layout also retains source-order box/text entries, so
+the display list no longer re-derives aggregate direct text at an element's
+content origin. Fragments use the containing element's computed color and
+ancestor clip and remain subject to root-scroll translation. CSS whitespace
+modes, word-aware breaking, font metrics/shaping, baselines, bidi, whitespace
+joining across nodes, and browser inline-formatting parity remain unsupported.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

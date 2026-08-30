@@ -59,7 +59,8 @@ source-behavior reference.
   inherited text color, paint
   clips, side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
-  line-height flow, a display list, a logical RGBA software surface,
+  line-height flow, bounded direct-text flow fragments and source-order text
+  paint, a display list, a logical RGBA software surface,
   and bounded PNG capture; these are not screenshot-containing evidence.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
   its profile, launch flags, or shutdown.
@@ -239,6 +240,7 @@ factory and local one-shot runtime. Its current semantic surface includes
 bounded presentation, inherited text color, paint clips, side-specific
 solid/dashed/dotted-border paint, bounded physical circular border radii,
 bounded inline-box line placement, bounded fixed pixel line-height flow,
+bounded direct-text flow fragments and source-order text paint,
 normal-flow outer/content box geometry with uniform padding/margin,
 explicit box sizing, and bounded vertical viewport scrolling,
 native point hit testing, local click/type actions, and a revision/changed

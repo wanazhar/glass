@@ -2,7 +2,7 @@ use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES};
 use super::css::{NativeBorderRadius, NativeBorderStyle, NativeColor};
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
-use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
+use super::layout::{NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect};
 
 /// Maximum number of immutable commands retained in one native display list.
 pub const MAX_NATIVE_DISPLAY_COMMANDS: usize = MAX_NATIVE_NODES.saturating_mul(2).saturating_add(1);
@@ -95,59 +95,82 @@ impl NativeDisplayList {
                 "layout revision does not match the current native document",
             ));
         }
-        let mut commands = Vec::with_capacity(layout.boxes.len().saturating_add(1));
+        let mut commands = Vec::with_capacity(
+            layout
+                .boxes
+                .len()
+                .saturating_add(layout.text_runs.len())
+                .saturating_add(1),
+        );
         push_command(
             &mut commands,
             NativeDisplayCommand::Clear {
                 color: NativeColor::WHITE,
             },
         )?;
-        for layout_box in &layout.boxes {
-            let style = document.computed_style_for_layout(layout_box.node_id);
-            let clip = paint_clip(document, layout, layout_box.node_id);
-            if let Some(color) = style.background_color() {
-                push_command(
-                    &mut commands,
-                    NativeDisplayCommand::FillRect {
-                        node_id: layout_box.node_id,
-                        rect: layout_box.rect,
-                        radius: style.border_radius(),
-                        color,
-                        clip,
-                    },
-                )?;
-            }
-            if let Some(border) = style.border()
-                && border.any_width()
-            {
-                let borders = NativeBorderPaint::from_style(border);
-                push_command(
-                    &mut commands,
-                    NativeDisplayCommand::BorderRect {
-                        node_id: layout_box.node_id,
-                        rect: layout_box.rect,
-                        radius: style.border_radius(),
-                        borders,
-                        clip,
-                    },
-                )?;
-            }
-            let (text, truncated) = document.direct_text(layout_box.node_id);
-            if !text.is_empty() {
-                push_command(
-                    &mut commands,
-                    NativeDisplayCommand::TextRun {
-                        node_id: layout_box.node_id,
-                        origin: NativePoint {
-                            x: layout_box.content_rect.x,
-                            y: layout_box.content_rect.y,
+        for entry in &layout.paint_order {
+            match *entry {
+                NativeLayoutPaintOrder::Box(box_index) => {
+                    let layout_box = layout.boxes.get(box_index).ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "layout paint order",
+                            "box entry is missing from the layout snapshot",
+                        )
+                    })?;
+                    let style = document.computed_style_for_layout(layout_box.node_id);
+                    let clip = paint_clip(document, layout, layout_box.node_id);
+                    if let Some(color) = style.background_color() {
+                        push_command(
+                            &mut commands,
+                            NativeDisplayCommand::FillRect {
+                                node_id: layout_box.node_id,
+                                rect: layout_box.rect,
+                                radius: style.border_radius(),
+                                color,
+                                clip,
+                            },
+                        )?;
+                    }
+                    if let Some(border) = style.border()
+                        && border.any_width()
+                    {
+                        let borders = NativeBorderPaint::from_style(border);
+                        push_command(
+                            &mut commands,
+                            NativeDisplayCommand::BorderRect {
+                                node_id: layout_box.node_id,
+                                rect: layout_box.rect,
+                                radius: style.border_radius(),
+                                borders,
+                                clip,
+                            },
+                        )?;
+                    }
+                }
+                NativeLayoutPaintOrder::Text(text_index) => {
+                    let text_run = layout.text_runs.get(text_index).ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "layout paint order",
+                            "text entry is missing from the layout snapshot",
+                        )
+                    })?;
+                    if text_run.text.is_empty() {
+                        continue;
+                    }
+                    let style = document.computed_style_for_layout(text_run.node_id);
+                    let clip = paint_clip(document, layout, text_run.node_id);
+                    push_command(
+                        &mut commands,
+                        NativeDisplayCommand::TextRun {
+                            node_id: text_run.node_id,
+                            origin: text_run.origin,
+                            text: text_run.text.clone(),
+                            truncated: text_run.truncated,
+                            color: style.color().unwrap_or(NativeColor::BLACK),
+                            clip,
                         },
-                        text,
-                        truncated,
-                        color: style.color().unwrap_or(NativeColor::BLACK),
-                        clip,
-                    },
-                )?;
+                    )?;
+                }
             }
         }
         Ok(Self {

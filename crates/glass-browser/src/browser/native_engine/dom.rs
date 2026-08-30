@@ -835,22 +835,8 @@ impl NativeDocument {
             .unwrap_or_default()
     }
 
-    pub(crate) fn direct_text(&self, id: NativeNodeId) -> (String, bool) {
-        let mut text = String::new();
-        let children = self
-            .node(id)
-            .map(|node| node.children().to_vec())
-            .unwrap_or_default();
-        for child_id in children {
-            if let Some(NativeNode {
-                kind: NativeNodeKind::Text(value),
-                ..
-            }) = self.node(child_id)
-            {
-                text.push_str(value);
-            }
-        }
-        collapse_text(&text, MAX_LOCATOR_BYTES)
+    pub(crate) fn collapse_text_for_layout(value: &str) -> (String, bool) {
+        collapse_text(value, MAX_LOCATOR_BYTES)
     }
 
     pub(crate) fn nearest_clickable_ancestor(&self, id: NativeNodeId) -> Option<NativeNodeId> {

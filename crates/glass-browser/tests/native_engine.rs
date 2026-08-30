@@ -336,13 +336,18 @@ fn native_display_list_emits_uniform_border_after_box_model_layout() {
         NativeDisplayCommand::BorderRect {
             node_id,
             rect,
-            width,
-            color,
+            borders,
             clip: None,
         } if *node_id == card
             && *rect == NativeRect { x: 0, y: 0, width: 12, height: 12 }
-            && *width == 2
-            && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+            && borders.top.width == 2
+            && borders.right.width == 2
+            && borders.bottom.width == 2
+            && borders.left.width == 2
+            && borders.top.color == (NativeColor { red: 0, green: 0, blue: 255, alpha: 255 })
+            && borders.right.color == borders.top.color
+            && borders.bottom.color == borders.top.color
+            && borders.left.color == borders.top.color
     ));
     assert!(matches!(
         &list.commands[text_index],
@@ -359,6 +364,85 @@ fn native_display_list_emits_uniform_border_after_box_model_layout() {
     assert_eq!(surface.pixel(2, 2), Some([255, 255, 255, 255]));
     assert_eq!(surface.pixel(2, 5), Some([0, 0, 0, 255]));
     assert_eq!(surface.pixel(11, 11), Some([0, 0, 255, 255]));
+}
+
+#[test]
+fn native_side_specific_borders_feed_box_model_and_paint() {
+    let document = NativeDocument::parse(
+        "<div id='card' style='width:20px;height:10px;padding:1px;border-top:1px solid red;border-right:2px solid green;border-bottom:3px solid blue;border-left:4px solid black'>Card</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 20,
+        device_scale_factor_milli: 1000,
+    };
+    let card = document.resolve_target("id=card").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(card),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 28,
+            height: 16,
+        })
+    );
+    let card_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == card)
+        .unwrap();
+    assert_eq!(
+        card_box.content_rect,
+        NativeRect {
+            x: 5,
+            y: 2,
+            width: 20,
+            height: 10,
+        }
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let border = list
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            NativeDisplayCommand::BorderRect { borders, .. } => Some(*borders),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(border.top.width, 1);
+    assert_eq!(border.right.width, 2);
+    assert_eq!(border.bottom.width, 3);
+    assert_eq!(border.left.width, 4);
+    assert_eq!(border.top.color, NativeColor::RED);
+    assert_eq!(
+        border.right.color,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255
+        }
+    );
+    assert_eq!(
+        border.bottom.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255
+        }
+    );
+    assert_eq!(border.left.color, NativeColor::BLACK);
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(10, 0), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(27, 10), Some([0, 128, 0, 255]));
+    assert_eq!(surface.pixel(10, 14), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(0, 5), Some([0, 0, 0, 255]));
 }
 
 #[test]

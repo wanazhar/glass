@@ -74,8 +74,8 @@ fail before browser input.
 The feature-gated native engine additionally derives bounded integer-pixel
 normal-flow rectangles, uniform non-negative padding/margin, explicit
 content-box or border-box sizing, outer/content rectangles, bounded vertical
-viewport scrolling, inherited text color, bounded paint clips, uniform
-solid-border paint, a deterministic clear/fill/text/border display list, a
+viewport scrolling, inherited text color, bounded paint clips, bounded
+side-specific solid-border paint, a deterministic clear/fill/text/border display list, a
 logical RGBA software surface, and
 bounded PNG capture through the explicit backend operation;
 it accepts native

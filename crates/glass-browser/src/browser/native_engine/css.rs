@@ -38,18 +38,66 @@ impl NativeColor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct NativeBorder {
+pub(crate) struct NativeBorderSide {
     width: u32,
     color: NativeColor,
 }
 
-impl NativeBorder {
+impl NativeBorderSide {
     pub(crate) const fn width(self) -> u32 {
         self.width
     }
 
     pub(crate) const fn color(self) -> NativeColor {
         self.color
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeBorder {
+    top: NativeBorderSide,
+    right: NativeBorderSide,
+    bottom: NativeBorderSide,
+    left: NativeBorderSide,
+}
+
+impl NativeBorder {
+    fn from_sides(sides: [Option<NativeBorderSide>; 4]) -> Option<Self> {
+        let [top, right, bottom, left] = sides;
+        let empty = top.is_none() && right.is_none() && bottom.is_none() && left.is_none();
+        if empty {
+            return None;
+        }
+        let zero = NativeBorderSide {
+            width: 0,
+            color: NativeColor::BLACK,
+        };
+        Some(Self {
+            top: top.unwrap_or(zero),
+            right: right.unwrap_or(zero),
+            bottom: bottom.unwrap_or(zero),
+            left: left.unwrap_or(zero),
+        })
+    }
+
+    pub(crate) const fn top(self) -> NativeBorderSide {
+        self.top
+    }
+
+    pub(crate) const fn right(self) -> NativeBorderSide {
+        self.right
+    }
+
+    pub(crate) const fn bottom(self) -> NativeBorderSide {
+        self.bottom
+    }
+
+    pub(crate) const fn left(self) -> NativeBorderSide {
+        self.left
+    }
+
+    pub(crate) const fn any_width(self) -> bool {
+        self.top.width > 0 || self.right.width > 0 || self.bottom.width > 0 || self.left.width > 0
     }
 }
 
@@ -163,7 +211,7 @@ impl NativeStylesheet {
         let mut width = None;
         let mut height = None;
         let mut background_color = None;
-        let mut border = None;
+        let mut border: [Option<CascadeValue<NativeBorderSide>>; 4] = [None; 4];
         let mut padding = None;
         let mut margin = None;
         let mut box_sizing = None;
@@ -228,16 +276,13 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.border
-                && wins(rule.selector.specificity, rule.order, false, border)
-            {
-                border = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_border_sides(
+                &rule.declarations.border,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut border,
+            );
             if let Some(value) = rule.declarations.padding
                 && wins(rule.selector.specificity, rule.order, false, padding)
             {
@@ -342,16 +387,13 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.border
-                && wins(u16::MAX, usize::MAX, true, border)
-            {
-                border = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_border_sides(
+                &declarations.border,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut border,
+            );
             if let Some(value) = declarations.padding
                 && wins(u16::MAX, usize::MAX, true, padding)
             {
@@ -411,7 +453,7 @@ impl NativeStylesheet {
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             background_color: background_color.map(|value| value.value),
-            border: border.map(|value| value.value),
+            border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
             padding: padding.map_or(0, |value| value.value),
             margin: margin.map_or(0, |value| value.value),
             box_sizing: box_sizing.map_or(NativeBoxSizing::ContentBox, |value| value.value),
@@ -447,6 +489,27 @@ fn wins<T>(specificity: u16, order: usize, inline: bool, current: Option<Cascade
     })
 }
 
+fn apply_border_sides(
+    declarations: &[Option<NativeBorderSide>; 4],
+    specificity: u16,
+    order: usize,
+    inline: bool,
+    border: &mut [Option<CascadeValue<NativeBorderSide>>; 4],
+) {
+    for (index, value) in declarations.iter().enumerate() {
+        if let Some(value) = value
+            && wins(specificity, order, inline, border[index])
+        {
+            border[index] = Some(CascadeValue {
+                value: *value,
+                specificity,
+                order,
+                inline,
+            });
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeDeclarations {
     display: Option<DisplayValue>,
@@ -454,7 +517,7 @@ struct NativeDeclarations {
     width: Option<u32>,
     height: Option<u32>,
     background_color: Option<NativeColor>,
-    border: Option<NativeBorder>,
+    border: [Option<NativeBorderSide>; 4],
     padding: Option<u32>,
     margin: Option<u32>,
     box_sizing: Option<NativeBoxSizing>,
@@ -537,7 +600,7 @@ fn parse_source(
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.background_color.is_some()
-            || declarations.border.is_some()
+            || declarations.border.iter().any(Option::is_some)
             || declarations.padding.is_some()
             || declarations.margin.is_some()
             || declarations.box_sizing.is_some()
@@ -597,7 +660,21 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.background_color = parse_color(value);
             }
             "border" => {
-                declarations.border = parse_border(value);
+                if let Some(border) = parse_border(value) {
+                    declarations.border = [Some(border); 4];
+                }
+            }
+            "border-top" => {
+                set_border_side(&mut declarations.border, 0, value);
+            }
+            "border-right" => {
+                set_border_side(&mut declarations.border, 1, value);
+            }
+            "border-bottom" => {
+                set_border_side(&mut declarations.border, 2, value);
+            }
+            "border-left" => {
+                set_border_side(&mut declarations.border, 3, value);
             }
             "padding" => {
                 declarations.padding = parse_dimension(value);
@@ -620,17 +697,23 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
     declarations
 }
 
-fn parse_border(value: &str) -> Option<NativeBorder> {
+fn parse_border(value: &str) -> Option<NativeBorderSide> {
     let mut parts = value.split_ascii_whitespace();
     let width = parse_dimension(parts.next()?)?;
     if !parts.next()?.eq_ignore_ascii_case("solid") {
         return None;
     }
     let color = parts.collect::<Vec<_>>().join(" ");
-    Some(NativeBorder {
+    Some(NativeBorderSide {
         width,
         color: parse_color(&color)?,
     })
+}
+
+fn set_border_side(sides: &mut [Option<NativeBorderSide>; 4], index: usize, value: &str) {
+    if let Some(border) = parse_border(value) {
+        sides[index] = Some(border);
+    }
 }
 
 fn parse_box_sizing(value: &str) -> Option<NativeBoxSizing> {
@@ -895,6 +978,20 @@ mod tests {
         document.node(child).expect("fixture element").clone()
     }
 
+    fn border_side(width: u32, color: NativeColor) -> NativeBorderSide {
+        NativeBorderSide { width, color }
+    }
+
+    fn uniform_border(width: u32, color: NativeColor) -> NativeBorder {
+        let side = border_side(width, color);
+        NativeBorder {
+            top: side,
+            right: side,
+            bottom: side,
+            left: side,
+        }
+    }
+
     #[test]
     fn selector_parser_supports_one_compound_selector() {
         let selector = parse_selector("button.primary[data-state=ready]").unwrap();
@@ -913,18 +1010,13 @@ mod tests {
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.color, Some(NativeColor::RED));
-        assert_eq!(
-            declarations.border,
-            Some(NativeBorder {
-                width: 2,
-                color: NativeColor {
-                    red: 16,
-                    green: 32,
-                    blue: 48,
-                    alpha: 255,
-                },
-            })
-        );
+        let parsed_color = NativeColor {
+            red: 16,
+            green: 32,
+            blue: 48,
+            alpha: 255,
+        };
+        assert_eq!(declarations.border, [Some(border_side(2, parsed_color)); 4]);
         assert_eq!(declarations.padding, Some(4));
         assert_eq!(declarations.margin, Some(3));
         assert_eq!(declarations.box_sizing, Some(NativeBoxSizing::BorderBox));
@@ -932,17 +1024,21 @@ mod tests {
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("clip"), None);
         assert_eq!(parse_border("1px dashed red"), None);
+        let unsupported_sides = parse_declarations(
+            "border-top: 1px dashed red; border-right: -1px solid blue; border-bottom: 20000px solid red; border-left: 1em solid green",
+        );
+        assert_eq!(unsupported_sides.border, [None; 4]);
         assert_eq!(
             parse_border("1px solid rgb(1, 2, 3)"),
-            Some(NativeBorder {
-                width: 1,
-                color: NativeColor {
+            Some(border_side(
+                1,
+                NativeColor {
                     red: 1,
                     green: 2,
                     blue: 3,
-                    alpha: 255
+                    alpha: 255,
                 },
-            })
+            ))
         );
     }
 
@@ -965,14 +1061,48 @@ mod tests {
         let node = node("<div id='card' style='border: 3px solid green'>Card</div>");
         assert_eq!(
             stylesheet.computed_for(&node).border(),
-            Some(NativeBorder {
-                width: 3,
-                color: NativeColor {
+            Some(uniform_border(
+                3,
+                NativeColor {
                     red: 0,
                     green: 128,
                     blue: 0,
                     alpha: 255,
                 },
+            ))
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_physical_border_sides_independently() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { border: 1px solid red; } #card { border-left: 3px solid blue; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='card' style='border-top: 2px solid green'>Card</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).border(),
+            Some(NativeBorder {
+                top: border_side(
+                    2,
+                    NativeColor {
+                        red: 0,
+                        green: 128,
+                        blue: 0,
+                        alpha: 255,
+                    },
+                ),
+                right: border_side(1, NativeColor::RED),
+                bottom: border_side(1, NativeColor::RED),
+                left: border_side(
+                    3,
+                    NativeColor {
+                        red: 0,
+                        green: 0,
+                        blue: 255,
+                        alpha: 255,
+                    },
+                ),
             })
         );
     }

@@ -70,15 +70,14 @@ impl NativeSurface {
                 }
                 NativeDisplayCommand::BorderRect {
                     rect,
-                    width,
-                    color,
+                    borders,
                     clip,
                     ..
                 } => {
                     let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
                         continue;
                     };
-                    surface.border_rect(*rect, *width, *color, clip, scroll_offset);
+                    surface.border_rect(*rect, *borders, clip, scroll_offset);
                 }
                 NativeDisplayCommand::TextRun {
                     origin,
@@ -201,8 +200,7 @@ impl NativeSurface {
     fn border_rect(
         &mut self,
         rect: NativeRect,
-        width: u32,
-        color: super::css::NativeColor,
+        borders: super::paint::NativeBorderPaint,
         clip: Option<NativeRect>,
         scroll_offset: NativePoint,
     ) {
@@ -215,19 +213,22 @@ impl NativeSurface {
         else {
             return;
         };
-        let inner_left = outer_left.saturating_add(i64::from(width));
-        let inner_top = outer_top.saturating_add(i64::from(width));
-        let inner_right = outer_right.saturating_sub(i64::from(width));
-        let inner_bottom = outer_bottom.saturating_sub(i64::from(width));
         for y in top..bottom {
             for x in left..right {
                 let signed_x = i64::from(x);
                 let signed_y = i64::from(y);
-                if signed_x < inner_left
-                    || signed_x >= inner_right
-                    || signed_y < inner_top
-                    || signed_y >= inner_bottom
-                {
+                let color = if signed_y < outer_top.saturating_add(i64::from(borders.top.width)) {
+                    Some(borders.top.color)
+                } else if signed_x >= outer_right.saturating_sub(i64::from(borders.right.width)) {
+                    Some(borders.right.color)
+                } else if signed_y >= outer_bottom.saturating_sub(i64::from(borders.bottom.width)) {
+                    Some(borders.bottom.color)
+                } else if signed_x < outer_left.saturating_add(i64::from(borders.left.width)) {
+                    Some(borders.left.color)
+                } else {
+                    None
+                };
+                if let Some(color) = color {
                     self.blend_pixel(x, y, color);
                 }
             }
@@ -511,7 +512,8 @@ fn glyph_rows(character: char) -> Option<[u8; 7]> {
 mod tests {
     use super::*;
     use crate::browser::native_engine::{
-        NativeColor, NativeDisplayCommand, NativeDisplayList, NativeDocument, NativePoint, Viewport,
+        NativeBorderPaint, NativeBorderPaintSide, NativeColor, NativeDisplayCommand,
+        NativeDisplayList, NativeDocument, NativePoint, Viewport,
     };
     use std::io::Cursor;
 
@@ -529,6 +531,16 @@ mod tests {
             },
             scroll_offset: NativePoint { x: 0, y: 0 },
             commands,
+        }
+    }
+
+    fn uniform_border(width: u32, color: NativeColor) -> NativeBorderPaint {
+        let side = NativeBorderPaintSide { width, color };
+        NativeBorderPaint {
+            top: side,
+            right: side,
+            bottom: side,
+            left: side,
         }
     }
 
@@ -677,8 +689,7 @@ mod tests {
                         width: 4,
                         height: 3,
                     },
-                    width: 1,
-                    color: NativeColor::RED,
+                    borders: uniform_border(1, NativeColor::RED),
                     clip: Some(NativeRect {
                         x: 1,
                         y: 1,
@@ -701,6 +712,65 @@ mod tests {
     }
 
     #[test]
+    fn surface_replays_side_specific_borders_with_deterministic_corners() {
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::BorderRect {
+                    node_id: NativeDocument::empty().root(),
+                    rect: NativeRect {
+                        x: 1,
+                        y: 1,
+                        width: 6,
+                        height: 5,
+                    },
+                    borders: NativeBorderPaint {
+                        top: NativeBorderPaintSide {
+                            width: 1,
+                            color: NativeColor::RED,
+                        },
+                        right: NativeBorderPaintSide {
+                            width: 1,
+                            color: NativeColor {
+                                red: 0,
+                                green: 128,
+                                blue: 0,
+                                alpha: 255,
+                            },
+                        },
+                        bottom: NativeBorderPaintSide {
+                            width: 1,
+                            color: NativeColor {
+                                red: 0,
+                                green: 0,
+                                blue: 255,
+                                alpha: 255,
+                            },
+                        },
+                        left: NativeBorderPaintSide {
+                            width: 1,
+                            color: NativeColor::BLACK,
+                        },
+                    },
+                    clip: None,
+                },
+            ],
+            8,
+            8,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+        assert_eq!(surface.pixel(3, 1), Some([255, 0, 0, 255]));
+        assert_eq!(surface.pixel(6, 3), Some([0, 128, 0, 255]));
+        assert_eq!(surface.pixel(3, 5), Some([0, 0, 255, 255]));
+        assert_eq!(surface.pixel(1, 3), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(3, 3), Some([255, 255, 255, 255]));
+    }
+
+    #[test]
     fn surface_translates_scrolled_geometry_without_pinning_offscreen_edges() {
         let mut list = display_list(
             vec![
@@ -715,8 +785,7 @@ mod tests {
                         width: 16,
                         height: 20,
                     },
-                    width: 2,
-                    color: NativeColor::RED,
+                    borders: uniform_border(2, NativeColor::RED),
                     clip: None,
                 },
                 NativeDisplayCommand::TextRun {

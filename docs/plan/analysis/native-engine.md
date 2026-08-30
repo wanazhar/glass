@@ -1,7 +1,7 @@
 # Native engine Phase 1/Phase 2 analysis
 
 Status: Active implementation analysis for issue #40; Phase 0/1 and the first
-Phase 2 semantic/action/form-control slices are committed locally.
+Phase 2 semantic/action/form-control/parser slices are committed locally.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -97,8 +97,8 @@ The first slice must prove these real call chains:
 
 ## Phase 2 slice decomposition
 
-The next work is deliberately split into two serial slices so that semantic
-identity is established before mutation can consume it:
+The Phase 2 work is deliberately split into dependency-ordered slices so that
+semantic identity is established before mutation and parser state consume it:
 
 | Task | Owns | Depends on | Does not claim |
 |---|---|---|---|
@@ -106,6 +106,7 @@ identity is established before mutation can consume it:
 | `native-engine-003` | click/type/focus mutation for supported controls, checkbox/radio state, revisioned native effects, action/effects backend dispatch | `native-engine-002` | JavaScript, default navigation, coordinate input, full event loop |
 | `native-engine-004` | deterministic single-select/option state and semantic option clicks | `native-engine-003` | keyboard navigation, multi-select, submission, network, layout hit testing |
 | `native-engine-005` | bounded hidden-state projection, hidden-subtree text exclusion, and pre-mutation visibility gating | `native-engine-004` | CSS selectors/cascade, layout, hit testing, opacity, paint |
+| `native-engine-006` | raw-text/RCDATA tokenizer state for script, style, title, and textarea content | `native-engine-005` | HTML5 insertion modes, foreign content, CSS, JavaScript execution |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -129,6 +130,8 @@ Phase 2 integration chains added by these slices are:
    bounded change effect.
 7. Hidden-state derivation excludes hidden text, marks semantic targets, and
    rejects hidden actions before mutation.
+8. Raw-text/RCDATA tokenizer state prevents markup-looking script, style,
+   title, and textarea content from creating nested semantic elements.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving geometry ownership to Phase 3.
@@ -146,13 +149,14 @@ clicking a link performs browser navigation.
 | no async task callbacks | deterministic scheduler with no hidden sleeps/threads | no script/event-loop realism | typed task kinds and test clock establish the future seam |
 | single-select only | useful basic form semantics with a small deterministic state model | no keyboard, multi-select, or submission behavior | reject unsupported variants explicitly and keep values private |
 | bounded visibility gate | keeps semantic text/actionability consistent without a CSS dependency | no cascade, layout, opacity, or paint semantics | recognize only explicit hidden signals and document the boundary |
+| bounded raw-text/RCDATA modes | prevents fake semantic nodes in embedded text while preserving the small parser | no full HTML5 insertion-mode or foreign-content recovery | keep the mode set explicit and cover unterminated content with fixtures |
 | profile exposes six capabilities | accurate discovery and fail-closed operations | no user-facing native CLI path yet; semantic actions are intentionally narrow | public Rust factory first; CLI/runtime integration is a later task |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-the current interaction slice is `docs/plan/tasks/native-engine-005.md`. A
+the current parser/interaction slice is `docs/plan/tasks/native-engine-006.md`. A
 checkpoint is complete only when the default feature set remains green, the
 native feature tests pass, strict lint passes for the touched code, and the
 diff confirms no unrelated browser/TUI/release behavior changed.

@@ -252,6 +252,15 @@ impl NativeDocument {
                         )?;
                     }
                 }
+                HtmlToken::RawText(value) => {
+                    if !value.is_empty() {
+                        let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "tree builder lost its document root".into(),
+                        })?;
+                        document.add_node(parent, NativeNodeKind::Text(value), limits.max_nodes)?;
+                    }
+                }
             }
         }
         document.normalize_select_defaults();
@@ -1178,6 +1187,7 @@ enum HtmlToken {
     },
     EndTag(String),
     Text(String),
+    RawText(String),
 }
 
 fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEngineError> {
@@ -1229,6 +1239,7 @@ fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEng
                 reason: "unterminated HTML tag".into(),
             });
         };
+        let mut next_position = end + 1;
         if is_end_tag {
             let raw = &source[name_position..end];
             let Some((name, _)) = read_name(raw, 0) else {
@@ -1241,17 +1252,48 @@ fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEng
         } else {
             let raw = &source[name_position..end];
             let (name, attributes, self_closing) = parse_start_tag(raw, position)?;
+            let special_text_mode = special_text_mode(&name);
             push_token(
                 &mut tokens,
                 HtmlToken::StartTag {
-                    name,
+                    name: name.clone(),
                     attributes,
                     self_closing,
                 },
                 max_tokens,
             )?;
+            if let Some(decode_entities) = special_text_mode
+                && !self_closing
+                && !is_void_element(&name)
+            {
+                let text_start = end + 1;
+                let Some(text_end) = find_raw_text_end(source, text_start, &name) else {
+                    let value = source[text_start..].to_owned();
+                    push_token(
+                        &mut tokens,
+                        if decode_entities {
+                            HtmlToken::Text(value)
+                        } else {
+                            HtmlToken::RawText(value)
+                        },
+                        max_tokens,
+                    )?;
+                    break;
+                };
+                let value = source[text_start..text_end].to_owned();
+                push_token(
+                    &mut tokens,
+                    if decode_entities {
+                        HtmlToken::Text(value)
+                    } else {
+                        HtmlToken::RawText(value)
+                    },
+                    max_tokens,
+                )?;
+                next_position = text_end;
+            }
         }
-        position = end + 1;
+        position = next_position;
     }
     Ok(tokens)
 }
@@ -1268,7 +1310,7 @@ fn push_token(
             tokens.len().saturating_add(1),
         ));
     }
-    if matches!(&token, HtmlToken::Text(value) if value.is_empty()) {
+    if matches!(&token, HtmlToken::Text(value) | HtmlToken::RawText(value) if value.is_empty()) {
         return Ok(());
     }
     tokens.push(token);
@@ -1385,6 +1427,36 @@ fn is_tag_name_start(byte: u8) -> bool {
 
 fn is_tag_name_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')
+}
+
+fn special_text_mode(name: &str) -> Option<bool> {
+    match name {
+        "script" | "style" => Some(false),
+        "title" | "textarea" => Some(true),
+        _ => None,
+    }
+}
+
+fn find_raw_text_end(source: &str, start: usize, name: &str) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut candidate = start;
+    while candidate < bytes.len() {
+        let relative = source[candidate..].find('<')?;
+        let opening = candidate + relative;
+        let name_start = opening.checked_add(2)?;
+        let name_end = name_start.checked_add(name.len())?;
+        if bytes.get(opening + 1) == Some(&b'/')
+            && name_end <= bytes.len()
+            && bytes[name_start..name_end].eq_ignore_ascii_case(name.as_bytes())
+            && bytes
+                .get(name_end)
+                .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'>')
+        {
+            return Some(opening);
+        }
+        candidate = opening.saturating_add(1);
+    }
+    None
 }
 
 fn is_void_element(name: &str) -> bool {
@@ -1534,6 +1606,40 @@ mod tests {
         assert_eq!(document.title(1024), ("Example".into(), false));
         assert_eq!(document.visible_text(1024), ("Hello & Glass".into(), false));
         assert!(document.node_count() > 1);
+    }
+
+    #[test]
+    fn raw_text_and_rcdata_elements_do_not_create_nested_semantic_nodes() {
+        let limits = NativeEngineLimits::default();
+        let document = NativeDocument::parse(
+            "<ScRiPt>const markup = '<button id=\"fake-script\">Fake</button>';</SCRIPT><STYLE><button id=\"fake-style\">Fake</button></style><title>Doc &amp; <b>Title</b></TITLE><textarea>&lt;button id='fake-textarea'&gt;Fake&lt;/button&gt;</textarea><button id='real'>Real</button>",
+            &limits,
+        )
+        .unwrap();
+
+        assert_eq!(document.title(1024), ("Doc & <b>Title</b>".into(), false));
+        let nodes = document.semantic_nodes();
+        assert_eq!(nodes.iter().filter(|node| node.role == "button").count(), 1);
+        let textarea = nodes.iter().find(|node| node.role == "textbox").unwrap();
+        assert_eq!(textarea.name, "<button id='fake-textarea'>Fake</button>");
+        assert_eq!(
+            nodes
+                .iter()
+                .find(|node| node.name == "Real")
+                .map(|node| node.role.as_str()),
+            Some("button")
+        );
+    }
+
+    #[test]
+    fn unterminated_raw_text_consumes_the_bounded_remainder() {
+        let document = NativeDocument::parse(
+            "<script><button id='fake'>Fake</button>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        assert!(document.semantic_nodes().is_empty());
     }
 
     #[test]

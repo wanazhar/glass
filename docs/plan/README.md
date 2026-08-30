@@ -41,14 +41,16 @@ It does not claim browser parity or remote-content safety.
 
 The completed dependency-ordered slices are
 [native-engine-002](tasks/native-engine-002.md), which adds bounded semantic
-DOM projection and revision-bound locators, and
+DOM projection and revision-bound locators;
 [native-engine-003](tasks/native-engine-003.md), which adds the first
-revisioned click/type/focus mutation path and effects signal, and
+revisioned click/type/focus mutation path and effects signal;
 [native-engine-004](tasks/native-engine-004.md), which adds deterministic
-single-select/option state, and [native-engine-005](tasks/native-engine-005.md),
-which adds a bounded visibility/actionability gate. They remain semantic-only:
-CSS/layout hit testing, JavaScript, network, and raw form-value evidence are
-not claimed.
+single-select/option state;
+[native-engine-005](tasks/native-engine-005.md), which adds a bounded
+visibility/actionability gate; and
+[native-engine-006](tasks/native-engine-006.md), which hardens raw-text and
+RCDATA handling. They remain semantic-only: CSS/layout hit testing,
+JavaScript, network, and raw form-value evidence are not claimed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

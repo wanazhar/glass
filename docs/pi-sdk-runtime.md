@@ -130,13 +130,15 @@ All tool execution returns through the authoritative workspace router. The route
 
 In the human-controlled Glass Dev TUI, resident Pi tool calls run unrestricted by default, so they do not stop on a second Pi approval sheet. The Glass workspace router still owns the call and reports its result. Other runtime modes can produce `glass_tool_approval_request` with redacted arguments; the host must resolve the matching frame with approve or deny. Approval is consumed once and applies only to that exact call. There is no source-level 120-second approval expiry in the native adapter. Stale, unknown, duplicate, or concurrent approval frames fail closed. The one-shot compatibility adapter has no interactive approval host and denies Pi extension UI requests immediately.
 
-`glass --yolo` remains an explicit unrestricted mode for direct Glass/browser
-operations and non-TUI callers. It skips their mutation confirmation, accepts
-Pi extension confirmation RPCs, enables ambient Pi resources and extension
-tools, and allows configured browser capabilities. It does not remove stale
-revision checks, path checks, leases, protocol bounds, timeouts, or result
-limits. Treat installed extensions, shell commands, and project instructions
-as local code under the operating-system account.
+`glass --yolo` remains an explicit unrestricted mode for Glass Dev, direct
+Glass/browser operations, and non-TUI callers. It skips mutation confirmation,
+bypasses the Glass Dev workspace-trust execution gate for the current process,
+accepts Pi extension confirmation RPCs, enables ambient Pi resources and
+extension tools, and allows configured browser capabilities. It does not write
+to the trust store or remove stale revision checks, path checks, leases,
+protocol bounds, timeouts, or result limits. Treat installed extensions, shell
+commands, and project instructions as local code under the operating-system
+account.
 
 ## Persistent sessions and migration failures
 

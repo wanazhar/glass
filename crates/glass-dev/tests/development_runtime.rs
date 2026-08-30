@@ -203,20 +203,22 @@ fn cli_project_and_agent_paths_are_browser_free() {
 }
 
 #[test]
-fn yolo_does_not_bypass_workspace_trust_and_normal_mode_stays_gated() {
+fn yolo_bypasses_workspace_trust_and_normal_mode_stays_gated() {
     let root = temp_project();
     let binary = glass_binary();
+    let trust_store = root.with_extension("trust.json");
     let call = r#"{"id":"write","name":"glass.file.write","arguments":{"path":"yolo.txt","content":"approval-free\n"}}"#;
 
     let denied = Command::new(&binary)
         .args(["agent", "tool", call, "--root", root.to_str().unwrap()])
+        .env("GLASS_TRUST_STORE_PATH", &trust_store)
         .output()
         .expect("normal agent tool should run");
     assert!(!denied.status.success());
     assert!(!root.join("yolo.txt").exists());
     assert!(String::from_utf8_lossy(&denied.stderr).contains("trust"));
 
-    let untrusted_yolo = Command::new(&binary)
+    let yolo = Command::new(&binary)
         .args([
             "--yolo",
             "agent",
@@ -225,38 +227,29 @@ fn yolo_does_not_bypass_workspace_trust_and_normal_mode_stays_gated() {
             "--root",
             root.to_str().unwrap(),
         ])
+        .env("GLASS_TRUST_STORE_PATH", &trust_store)
         .output()
         .expect("YOLO agent tool should run");
-    assert!(!untrusted_yolo.status.success());
-    assert!(!root.join("yolo.txt").exists());
-    assert!(String::from_utf8_lossy(&untrusted_yolo.stderr).contains("trusted"));
-
-    let trust_store = trusted_store(&root);
-    let allowed = Command::new(&binary)
-        .args([
-            "--yolo",
-            "agent",
-            "tool",
-            call,
-            "--root",
-            root.to_str().unwrap(),
-        ])
-        .env("GLASS_TRUST_STORE_PATH", trust_store)
-        .output()
-        .expect("trusted YOLO agent tool should run");
     assert!(
-        allowed.status.success(),
+        yolo.status.success(),
         "YOLO agent tool failed: {:?}",
-        allowed.stderr
+        yolo.stderr
     );
-    let report: Value = serde_json::from_slice(&allowed.stdout).unwrap();
+    let report: Value = serde_json::from_slice(&yolo.stdout).unwrap();
     assert_eq!(report["written"], true);
     assert_eq!(
         std::fs::read_to_string(root.join("yolo.txt")).unwrap(),
         "approval-free\n"
     );
+    let reopened = glass_dev::DevelopmentWorkspace::open_with_store(
+        &root,
+        glass_dev::WorkspaceTrustStore::at(&trust_store),
+    )
+    .unwrap();
+    assert_eq!(reopened.trust(), glass_dev::WorkspaceTrust::Untrusted);
 
     std::fs::remove_dir_all(root).expect("temporary project should be removed");
+    let _ = std::fs::remove_file(trust_store);
 }
 
 #[test]

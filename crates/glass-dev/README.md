@@ -227,11 +227,12 @@ audit events. Mutating tools require authority and explicit confirmation.
 The Glass Dev TUI is a human-controlled development suite: its resident Pi
 session is unrestricted by default, loads the workspace's Pi resources, and
 does not add a second Pi approval sheet. The workspace Trust surface remains a
-separate project-state decision. `glass --yolo` still applies the process-wide
-unrestricted behavior to direct Glass/browser operations and non-TUI callers;
-the TUI displays its `YOLO` marker when that flag is present. Revision guards,
-daemon/workspace leases, explicit host denials, and transport/result bounds
-remain enforced.
+separate persisted project-state decision. `glass --yolo` applies the
+process-local unrestricted behavior to direct Glass/browser operations,
+non-TUI callers, and the TUI itself; in Glass Dev it also activates repository
+configuration without writing a trust record. The TUI displays its `YOLO`
+marker when that flag is present. Revision guards, daemon/workspace leases,
+explicit host denials, and transport/result bounds remain enforced.
 
 The resident Pi SDK session uses a Glass-specific system prompt and one
 Glass-owned gateway into project, runtime, diagnostic, Web IR, task, browser,

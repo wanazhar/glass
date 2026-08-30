@@ -82,7 +82,9 @@ as `Untrusted`, does not run `workspace.opened`, and does not inject project
 skills into privileged Pi instructions. Inspect exact `glass.toml`,
 `.glass.toml`, skill, hook, tool, test, LSP, and DAP sources before choosing
 trust-once or identity-bound project trust. A shell tool cannot bypass this
-boundary with `mutating = false`, and `--yolo` cannot elevate trust. See
+boundary with `mutating = false`. The explicit Glass Dev `--yolo` mode can
+activate repository-controlled execution for the current process, but it does
+not persist trust; a later process still requires the normal decision. See
 [`docs/workspace-trust.md`](docs/workspace-trust.md).
 
 After trust, review command arguments, environment variables, compiler/build

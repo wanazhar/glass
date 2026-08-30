@@ -49,6 +49,7 @@ pub struct DevelopmentWorkspace {
     tasks: TaskScheduler,
     tools: DevelopmentToolRouter,
     trust: WorkspaceTrust,
+    unrestricted_execution: bool,
     trust_identity: WorkspaceIdentity,
     trust_store: WorkspaceTrustStore,
     trusted_configuration_active: bool,
@@ -192,6 +193,7 @@ impl DevelopmentWorkspace {
             tasks,
             tools,
             trust,
+            unrestricted_execution: false,
             trust_identity,
             trust_store,
             trusted_configuration_active: false,
@@ -270,7 +272,7 @@ impl DevelopmentWorkspace {
     }
 
     pub fn create_task(&mut self, spec: TaskSpec) -> DevelopmentResult<TaskId> {
-        if !self.trust.permits_project_execution() {
+        if !self.project_execution_permitted() {
             return Err(crate::development::DevelopmentError::Conflict(
                 "task execution is blocked until the workspace is trusted".into(),
             ));
@@ -280,7 +282,7 @@ impl DevelopmentWorkspace {
 
     /// Queue the overnight factory crew in a confined worktree when Git is available.
     pub fn create_crew(&mut self, goal: &str) -> DevelopmentResult<CrewWake> {
-        if !self.trust.permits_project_execution() {
+        if !self.project_execution_permitted() {
             return Err(crate::development::DevelopmentError::Conflict(
                 "task execution is blocked until the workspace is trusted".into(),
             ));
@@ -472,7 +474,7 @@ impl DevelopmentWorkspace {
         passed: bool,
         details: serde_json::Value,
     ) -> DevelopmentResult<()> {
-        if !self.trust.permits_project_execution() {
+        if !self.project_execution_permitted() {
             return Err(crate::development::DevelopmentError::Conflict(
                 "task verification evidence is blocked until the workspace is trusted".into(),
             ));
@@ -567,7 +569,7 @@ impl DevelopmentWorkspace {
                 let result = self.customization.execute_tool(
                     name,
                     &serde_json::Value::Null,
-                    self.trust,
+                    self.execution_trust(),
                     "glassd:task-verifier",
                 );
                 let (passed, details) = match result {
@@ -602,6 +604,38 @@ impl DevelopmentWorkspace {
         self.trust
     }
 
+    /// Enable process-local YOLO execution without changing the persisted
+    /// workspace trust decision. This explicitly opts the development suite
+    /// into repository-controlled configuration for the current process.
+    pub fn enable_unrestricted_execution(&mut self) -> DevelopmentResult<()> {
+        if self.unrestricted_execution {
+            return Ok(());
+        }
+        self.unrestricted_execution = true;
+        let execution_trust = self.execution_trust();
+        self.tools =
+            DevelopmentToolRouter::with_customization(&self.customization, execution_trust);
+        self.agents
+            .set_additional_system_prompt(self.customization.agent_instructions(execution_trust))?;
+        self.activate_trusted_configuration()
+    }
+
+    pub(crate) fn unrestricted_execution(&self) -> bool {
+        self.unrestricted_execution
+    }
+
+    pub(crate) fn execution_trust(&self) -> WorkspaceTrust {
+        if self.unrestricted_execution && self.trust == WorkspaceTrust::Untrusted {
+            WorkspaceTrust::TrustedOnce
+        } else {
+            self.trust
+        }
+    }
+
+    fn project_execution_permitted(&self) -> bool {
+        self.execution_trust().permits_project_execution()
+    }
+
     pub fn trust_identity(&self) -> &WorkspaceIdentity {
         &self.trust_identity
     }
@@ -634,10 +668,12 @@ impl DevelopmentWorkspace {
             ));
         }
         self.trust = trust;
-        self.tools = DevelopmentToolRouter::with_customization(&self.customization, trust);
+        let execution_trust = self.execution_trust();
+        self.tools =
+            DevelopmentToolRouter::with_customization(&self.customization, execution_trust);
         self.agents
-            .set_additional_system_prompt(self.customization.agent_instructions(trust))?;
-        if trust.permits_project_execution() {
+            .set_additional_system_prompt(self.customization.agent_instructions(execution_trust))?;
+        if execution_trust.permits_project_execution() {
             self.activate_trusted_configuration()?;
         }
         Ok(self.trust)
@@ -668,7 +704,7 @@ impl DevelopmentWorkspace {
     }
 
     pub fn experiments(&mut self) -> DevelopmentResult<&mut ExperimentManager> {
-        if !self.trust.permits_project_execution() {
+        if !self.project_execution_permitted() {
             return Err(crate::development::DevelopmentError::Conflict(
                 "experiments are blocked until the workspace is trusted".into(),
             ));
@@ -685,7 +721,9 @@ impl DevelopmentWorkspace {
                 .unwrap_or(&self.root)
                 .join(format!(".glass-{repository_name}-experiments"));
             self.experiments = Some(Box::new(ExperimentManager::new_governed(
-                &self.root, worktrees, self.trust,
+                &self.root,
+                worktrees,
+                self.execution_trust(),
             )?));
         }
         Ok(self.experiments.as_deref_mut().expect("initialized above"))
@@ -831,8 +869,14 @@ impl DevelopmentWorkspace {
                 call.name
             )));
         }
+        let mut effective_context = context.clone();
+        if self.unrestricted_execution {
+            effective_context.authorization.allow_mutation = true;
+            effective_context.authorization.confirmed = true;
+            effective_context.authorization.unrestricted = true;
+        }
         let router = self.tools.clone();
-        router.execute(self, call, context)
+        router.execute(self, call, &effective_context)
     }
 
     pub fn agent_turn_mode(&self) -> AgentTurnMode {
@@ -892,7 +936,7 @@ impl DevelopmentWorkspace {
         self.customization.run_hooks(
             "workspace.opened",
             &serde_json::json!({"root":self.root,"generation":self.generation}),
-            self.trust,
+            self.execution_trust(),
             "glassd",
         )?;
         self.trusted_configuration_active = true;
@@ -993,10 +1037,20 @@ impl SharedDevelopmentWorkspace {
         root: impl AsRef<Path>,
         policy_preset: PolicyPreset,
     ) -> DevelopmentResult<Self> {
-        let inner = Arc::new(Mutex::new(DevelopmentWorkspace::open_with_policy(
-            root,
-            policy_preset,
-        )?));
+        Self::open_with_policy_and_unrestricted(root, policy_preset, false)
+    }
+
+    pub fn open_with_policy_and_unrestricted(
+        root: impl AsRef<Path>,
+        policy_preset: PolicyPreset,
+        unrestricted: bool,
+    ) -> DevelopmentResult<Self> {
+        let mut development_workspace =
+            DevelopmentWorkspace::open_with_policy(root, policy_preset)?;
+        if unrestricted {
+            development_workspace.enable_unrestricted_execution()?;
+        }
+        let inner = Arc::new(Mutex::new(development_workspace));
         let weak = Arc::downgrade(&inner);
         let executor: PiToolExecutor = Arc::new(move |call, allow_mutation, confirmed| {
             let inner = weak.upgrade().ok_or_else(|| {

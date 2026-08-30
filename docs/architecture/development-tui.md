@@ -200,9 +200,10 @@ unconfigured Pi shows `Pi setup required · press :actions or Enter to continue`
 The `:actions` routes are `agent setup`, `agent update`, `agent setup login`, and
 `agent doctor`; login temporarily hands the terminal to Pi and resumes Glass.
 The resident Pi session is unrestricted by default because Glass Dev is a
-human-controlled development suite. `--yolo` remains the process-wide switch
-for direct Glass/browser policy paths and is shown in the header; it does not
-create a second workspace.
+human-controlled development suite. `--yolo` is the process-wide switch for
+direct Glass/browser policy paths and Glass Dev project execution; it bypasses
+the workspace-trust execution gate for that process without persisting a trust
+record and is shown in the header. It does not create a second workspace.
 
 The shared composer dock is a local draft with a character cursor. `Ctrl-L`
 opens it on any surface. `i`, Enter on the Agent surface, or typing a

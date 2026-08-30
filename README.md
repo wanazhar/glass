@@ -430,14 +430,15 @@ unrestricted mode, launch the cockpit with:
 glass --yolo
 ```
 
-`--yolo` disables Glass tool confirmations for that process, automatically
-accepts confirmation requests from loaded Pi extensions, grants browser policy
-capabilities without confirmation, and loads trusted Pi resources plus all
-their registered tools. The resident Glass Dev TUI already treats its Pi
-session as human-controlled and unrestricted; `--yolo` remains relevant to the
-other process-wide Glass/browser policy paths. It does not disable revision
-checks, workspace/daemon leases, explicit host denials, protocol bounds, or
-result-size limits.
+`--yolo` disables Glass tool confirmations for that process, bypasses the
+workspace-trust execution gate for Glass Dev, automatically accepts confirmation
+requests from loaded Pi extensions, grants browser policy capabilities without
+confirmation, and loads trusted Pi resources plus all their registered tools.
+The resident Glass Dev TUI already treats its Pi session as human-controlled
+and unrestricted; `--yolo` additionally makes its Glass-owned development
+routes and project configuration executable in the current process. It does
+not persist trust or disable revision checks, workspace/daemon leases, explicit
+host denials, protocol bounds, or result-size limits.
 
 Nothing is downloaded during startup. `agent doctor` and `agent status` report
 the resolved Node/SDK/auth/provider/session state without secrets; `agent

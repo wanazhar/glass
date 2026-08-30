@@ -607,7 +607,11 @@ impl DevTuiState {
         yolo_mode: bool,
         policy_preset: PolicyPreset,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let workspace = SharedDevelopmentWorkspace::open_with_policy(root, policy_preset)?;
+        let workspace = SharedDevelopmentWorkspace::open_with_policy_and_unrestricted(
+            root,
+            policy_preset,
+            yolo_mode,
+        )?;
         // Glass Dev's resident Pi session is an explicitly human-controlled
         // development surface. Resident agents load the trusted workspace
         // resources and run unrestricted by default; workspace trust remains
@@ -626,7 +630,8 @@ impl DevTuiState {
         let snapshot_generation = locked.generation();
         let snapshot_skills_count = locked.customization().skills().count();
         let snapshot_tools_count = locked.customization().config().tools.len();
-        let trust_prompt = trust == crate::WorkspaceTrust::Untrusted
+        let trust_prompt = !yolo_mode
+            && trust == crate::WorkspaceTrust::Untrusted
             && trust_inspection.iter().any(|item| item.trust_required);
         drop(locked);
         let agent_readiness = crate::pi_runtime::pi_readiness()
@@ -2410,7 +2415,7 @@ impl DevTuiState {
     }
     /// Start the shortest in-TUI path to a usable agent conversation.
     pub fn start_agent_interaction(&mut self) {
-        if self.snapshot_trust_label == "untrusted" {
+        if !self.trust_allows_execution() {
             self.surface = DevSurface::Trust;
             self.status = "Trust this workspace before starting the Glass Agent · T or 1".into();
             return;
@@ -2483,9 +2488,13 @@ impl DevTuiState {
         );
     }
 
+    pub(crate) fn trust_allows_execution(&self) -> bool {
+        self.yolo_mode || self.snapshot_trust_label != "untrusted"
+    }
+
     /// Focus the shared chat dock without changing the active surface.
     pub fn focus_composer_dock(&mut self) {
-        if self.snapshot_trust_label == "untrusted" {
+        if !self.trust_allows_execution() {
             self.surface = DevSurface::Trust;
             self.status = "Trust this workspace before chatting · T or 1".into();
             return;
@@ -3230,7 +3239,7 @@ impl DevTuiState {
             self.status = "Background operation running · message kept in composer".into();
             return;
         }
-        if self.snapshot_trust_label == "untrusted" {
+        if !self.trust_allows_execution() {
             self.composer_mode = false;
             self.surface = DevSurface::Trust;
             self.status = "Trust this workspace before starting the Glass Agent · T or 1".into();
@@ -4158,7 +4167,7 @@ impl DevTuiState {
                 return;
             }
         }
-        if self.surface == DevSurface::Agent && self.snapshot_trust_label == "untrusted" {
+        if self.surface == DevSurface::Agent && !self.trust_allows_execution() {
             let decision = match character {
                 't' => Some(crate::LocalTrustDecision::TrustOnce),
                 'T' => Some(crate::LocalTrustDecision::TrustProject),
@@ -4173,7 +4182,7 @@ impl DevTuiState {
         // Agent text wins over navigation. The event loop reserves only
         // explicit modal controls and the `:` command prefix.
         if self.surface == DevSurface::Agent
-            && self.snapshot_trust_label != "untrusted"
+            && self.trust_allows_execution()
             && !character.is_ascii_digit()
         {
             if self.agent_readiness.starts_with("✓ Ready") {
@@ -4220,7 +4229,7 @@ impl DevTuiState {
         };
         if let Some(surface) = surface {
             self.show_surface(surface);
-        } else if self.surface == DevSurface::Agent && self.snapshot_trust_label != "untrusted" {
+        } else if self.surface == DevSurface::Agent && self.trust_allows_execution() {
             self.open_composer();
             self.insert_composer_text(&character.to_string());
         }
@@ -8137,7 +8146,7 @@ impl DevTuiState {
         let debugger_count = workspace.debugger_names().count();
         let detection = workspace.project().detection().clone();
         let trust = workspace.trust();
-        let trust_ready = trust.permits_project_execution();
+        let trust_ready = trust.permits_project_execution() || self.yolo_mode;
         let dev_hint = detection
             .dev_command
             .as_deref()
@@ -8176,7 +8185,7 @@ impl DevTuiState {
             kernel_count,
             debugger_count,
         );
-        if workspace.trust().permits_project_execution()
+        if (workspace.trust().permits_project_execution() || self.yolo_mode)
             && let Ok(experiments) = workspace.experiments()
         {
             let snapshots = experiments.snapshots();

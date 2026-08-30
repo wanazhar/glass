@@ -31,8 +31,10 @@ PROJECT  project-style              .glass/skills/project-style.md
 ```
 
 Project skills are visible as `untrustedProject` before trust but are omitted
-from the privileged agent instructions. User-global skills remain independent
-of project trust.
+from the privileged agent instructions in normal mode. An explicit
+process-local `glass --yolo` run activates them as `trustedProject` execution
+context without persisting a trust decision. User-global skills remain
+independent of project trust.
 
 ## Hook evidence
 
@@ -40,7 +42,8 @@ Every configured hook inspection record includes its event, exact command,
 source config, timeout, authority, trust requirement, failure policy (`fail` or
 `continue`), and latest execution evidence. Evidence contains the actor,
 authority, start time, duration, success, ignored-failure status, bounded result
-size, and error when present. Hooks run only after trust and are never hidden;
+size, and error when present. Hooks run only after a normal trust decision or
+explicit `--yolo` activation and are never hidden;
 `tool.before`, `tool.after`, and `workspace.opened` results update the same
 inspection surface.
 

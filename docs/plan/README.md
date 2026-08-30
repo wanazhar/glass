@@ -85,6 +85,14 @@ add PNG/screenshots, font loading, GPU/window APIs, or a capture capability to
 the stable backend contract. The next renderer slice must be documented and
 committed separately before it expands this boundary.
 
+The completed style-inheritance slice is
+[native-engine-012](tasks/native-engine-012.md). It resolves inherited text
+color through the bounded DOM chain and feeds the existing display-list and
+software-surface artifacts. It does not add general CSS, inherited layout,
+fonts, images, screenshot/capture transport, or stable backend capabilities.
+The next renderer slice must be documented and committed separately before it
+expands this boundary.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

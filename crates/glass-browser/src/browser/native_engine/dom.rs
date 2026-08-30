@@ -5,7 +5,10 @@ use super::interaction::NativeEventKind;
 use super::layout::NativeLayoutSnapshot;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
-use super::{config::Viewport, css::NativeComputedStyle};
+use super::{
+    config::{MAX_NATIVE_DOM_DEPTH, Viewport},
+    css::{NativeColor, NativeComputedStyle},
+};
 use std::collections::BTreeMap;
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
@@ -796,9 +799,30 @@ impl NativeDocument {
     }
 
     pub(crate) fn computed_style_for_layout(&self, id: NativeNodeId) -> NativeComputedStyle {
-        self.node(id)
-            .map(|node| self.stylesheet.computed_for(node))
-            .unwrap_or_default()
+        let mut chain = Vec::new();
+        let mut current = Some(id);
+        for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+            let Some(current_id) = current else {
+                break;
+            };
+            chain.push(current_id);
+            current = self.node(current_id).and_then(NativeNode::parent);
+        }
+
+        let mut inherited_color = Some(NativeColor::BLACK);
+        for current_id in chain.into_iter().rev() {
+            let Some(node) = self.node(current_id) else {
+                continue;
+            };
+            let style = self
+                .stylesheet
+                .computed_for_with_inherited_color(node, inherited_color);
+            inherited_color = style.color().or(inherited_color);
+            if current_id == id {
+                return style;
+            }
+        }
+        NativeComputedStyle::default()
     }
 
     pub(crate) fn is_hidden_for_layout(&self, id: NativeNodeId) -> bool {

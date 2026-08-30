@@ -101,8 +101,9 @@ behind the default-off `native-engine` feature. It owns one deterministic
 in-process context, local `about:blank`, `data:text/html`, and registered
 `fixture://` resources, a small DOM/text projection, history, revisions,
 bounded CSS presentation, integer normal-flow rectangles, point hit testing,
-semantic click/type actions for local controls, a bounded effects signal, and
-Rust-only display-list/software-surface artifacts. It does not yet provide
+semantic click/type actions for local controls, a bounded effects signal,
+bounded inherited text color, and Rust-only display-list/software-surface
+artifacts. It does not yet provide
 general CSS/scrolling/stacking layout, screenshot/capture transport,
 font/image fidelity, JavaScript, network/security policy, cookies/storage,
 downloads, or platform windowing.

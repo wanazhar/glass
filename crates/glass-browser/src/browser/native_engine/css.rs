@@ -102,6 +102,14 @@ impl NativeStylesheet {
     }
 
     pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
+        self.computed_for_with_inherited_color(node, None)
+    }
+
+    pub(crate) fn computed_for_with_inherited_color(
+        &self,
+        node: &NativeNode,
+        inherited_color: Option<NativeColor>,
+    ) -> NativeComputedStyle {
         let mut display = None;
         let mut visibility = None;
         let mut width = None;
@@ -250,7 +258,7 @@ impl NativeStylesheet {
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             background_color: background_color.map(|value| value.value),
-            color: color.map(|value| value.value),
+            color: color.map(|value| value.value).or(inherited_color),
         }
     }
 }

@@ -103,7 +103,8 @@ dispatcher.close().await?;
 
 The backend profile declares lifecycle, navigation, one context, bounded
 evidence, semantic click/type actions, native point hit testing, and revision
-effects. Rust callers can additionally inspect the native layout, deterministic
+effects. Rust callers can additionally inspect the native layout, inherited
+text color, deterministic
 display list, and bounded logical RGBA software surface directly; those
 artifacts are not backend evidence or capture output. Scripts, captures,
 storage, prompts, and downloads are omitted and fail through the dispatcher.

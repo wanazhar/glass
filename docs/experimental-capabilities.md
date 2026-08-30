@@ -133,8 +133,8 @@ non-negative padding/margin and explicit box sizing, bounded vertical viewport
 scrolling, inherited text color,
 bounded paint clips, side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
-flow, bounded direct-text flow fragments and source-order text paint, bounded PNG
-capture, and
+flow, bounded direct-text flow fragments and source-order text paint, bounded
+word-aware wrapping, bounded PNG capture, and
 Rust-only
 display-list/software-surface artifacts;
 it does not

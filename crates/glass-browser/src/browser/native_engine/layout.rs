@@ -633,44 +633,95 @@ impl<'a> LayoutBuilder<'a> {
         if flow.available_width == 0 {
             return;
         }
-        let characters = text.chars().collect::<Vec<_>>();
+        let words = text
+            .split(' ')
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+        for (word_index, word) in words.iter().enumerate() {
+            let is_last_word = word_index + 1 == words.len();
+            let word_width = Self::text_width(word);
+            if flow.line_has_content {
+                let remaining_width = flow
+                    .available_width
+                    .saturating_sub(flow.x.saturating_sub(flow.start_x));
+                if CHARACTER_WIDTH.saturating_add(word_width) <= remaining_width {
+                    let fragment = format!(" {word}");
+                    self.place_text_fragment(parent, flow, &fragment, truncated && is_last_word);
+                    continue;
+                }
+                flow.flush_line();
+            }
+            self.place_word(parent, flow, word, is_last_word, truncated);
+        }
+    }
+
+    fn place_word(
+        &mut self,
+        parent: NativeNodeId,
+        flow: &mut FlowCursor,
+        word: &str,
+        is_last_word: bool,
+        truncated: bool,
+    ) {
+        let word_width = Self::text_width(word);
+        if word_width <= flow.available_width {
+            self.place_text_fragment(parent, flow, word, truncated && is_last_word);
+            return;
+        }
+
+        let characters = word.chars().collect::<Vec<_>>();
         let mut offset = 0;
         while offset < characters.len() {
-            let remaining_width = flow
-                .available_width
-                .saturating_sub(flow.x.saturating_sub(flow.start_x));
-            if remaining_width == 0 && flow.line_has_content {
+            if flow.line_has_content {
                 flow.flush_line();
-                continue;
             }
-            let characters_on_line = usize::try_from(remaining_width / CHARACTER_WIDTH)
+            let characters_on_line = usize::try_from(flow.available_width / CHARACTER_WIDTH)
                 .unwrap_or_default()
                 .max(1);
             let fragment_length = characters_on_line.min(characters.len() - offset);
             let fragment = characters[offset..offset + fragment_length]
                 .iter()
                 .collect::<String>();
-            let fragment_width = u32::try_from(fragment_length)
-                .unwrap_or(u32::MAX)
-                .saturating_mul(CHARACTER_WIDTH);
-            let Some(origin) = flow.place_inline_with_origin(fragment_width, DEFAULT_LINE_HEIGHT)
-            else {
-                break;
-            };
-            let text_index = self.text_runs.len();
-            self.text_runs.push(NativeTextLayout {
-                node_id: parent,
-                origin,
-                text: fragment,
-                truncated: truncated && offset + fragment_length == characters.len(),
-            });
-            self.paint_order
-                .push(NativeLayoutPaintOrder::Text(text_index));
+            let fragment_is_last = offset + fragment_length == characters.len();
+            self.place_text_fragment(
+                parent,
+                flow,
+                &fragment,
+                truncated && is_last_word && fragment_is_last,
+            );
             offset += fragment_length;
-            if offset < characters.len() {
+            if !fragment_is_last {
                 flow.flush_line();
             }
         }
+    }
+
+    fn place_text_fragment(
+        &mut self,
+        parent: NativeNodeId,
+        flow: &mut FlowCursor,
+        fragment: &str,
+        truncated: bool,
+    ) {
+        let width = Self::text_width(fragment);
+        let Some(origin) = flow.place_inline_with_origin(width, DEFAULT_LINE_HEIGHT) else {
+            return;
+        };
+        let text_index = self.text_runs.len();
+        self.text_runs.push(NativeTextLayout {
+            node_id: parent,
+            origin,
+            text: fragment.to_owned(),
+            truncated,
+        });
+        self.paint_order
+            .push(NativeLayoutPaintOrder::Text(text_index));
+    }
+
+    fn text_width(value: &str) -> u32 {
+        u32::try_from(value.chars().count())
+            .unwrap_or(u32::MAX)
+            .saturating_mul(CHARACTER_WIDTH)
     }
 
     fn intrinsic_inline_width(&self, id: NativeNodeId) -> u32 {

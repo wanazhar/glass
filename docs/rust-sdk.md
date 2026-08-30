@@ -108,7 +108,8 @@ content rectangles, bounded uniform padding/margin and explicit box sizing,
 bounded vertical viewport scrolling, inherited text color, bounded paint clips,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
-flow, bounded direct-text flow fragments and source-order text paint,
+flow, bounded direct-text flow fragments and source-order text paint, bounded
+word-aware wrapping,
 deterministic display list, bounded logical RGBA software surface, and bounded PNG capture
 through the native backend directly; screenshot-containing evidence, JPEG/PDF,
 and physical-pixel capture remain unavailable. Scripts,

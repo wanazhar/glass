@@ -168,6 +168,11 @@ text fragments from the shared flow cursor into source-ordered display paint,
 repairing mixed text/inline origins while leaving typography and CSS whitespace
 behavior unsupported.
 
+The completed bounded word-wrap slice is
+[native-engine-024](tasks/native-engine-024.md). It keeps collapsed words
+together when the fixed line fits and splits only over-wide words, while
+retaining source-ordered fragments and the existing typography limitations.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

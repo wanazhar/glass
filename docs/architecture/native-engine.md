@@ -3,7 +3,8 @@
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
-bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow slices,
+bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
+bounded-word-wrap slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -32,7 +33,8 @@ clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
 bounded circular border radii, bounded outer/content box geometry, explicit root
 viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
 line-height flow, bounded direct-text fragments at actual flow origins, and
-source-order text paint. The engine does not yet own
+source-order text paint, and bounded word-aware wrapping. The engine does not
+yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
@@ -247,9 +249,10 @@ inline element boxes by preflighting their integer outer width and margins
 against the remaining line width before creating their layout boxes. It keeps
 whole inline boxes atomic, preserves fixed line-height flow, and feeds the
 same document-space coordinates to display-list, hit-test, and root-scroll
-consumers. Font metrics/shaping, word-aware text fragments, CSS whitespace
-modes, baselines, bidi, floats, replaced elements, flex/grid, and general
-inline-formatting parity remain unsupported.
+consumers. At that checkpoint, font metrics/shaping, general word-aware text
+fragments, CSS whitespace modes, CSS word-breaking variants, baselines, bidi,
+floats, replaced elements, flex/grid, and general inline-formatting parity
+remained unsupported.
 
 The 022 bounded-fixed-line-height boundary accepts one positive integer-pixel
 `line-height` value with the existing cascade precedence. A flow owner's value
@@ -266,8 +269,18 @@ document-space origins. Layout also retains source-order box/text entries, so
 the display list no longer re-derives aggregate direct text at an element's
 content origin. Fragments use the containing element's computed color and
 ancestor clip and remain subject to root-scroll translation. CSS whitespace
-modes, word-aware breaking, font metrics/shaping, baselines, bidi, whitespace
-joining across nodes, and browser inline-formatting parity remain unsupported.
+modes, CSS word-breaking variants, font metrics/shaping, baselines, bidi,
+whitespace joining across nodes, and browser inline-formatting parity remain
+unsupported.
+
+The 024 bounded-word-wrap boundary consumes the 023 collapsed text fragments
+as ASCII-space-separated words. A complete word plus its separator stays on the
+current fixed-width line only when it fits; otherwise the word starts on a
+fresh line without that separator, and a word wider than the full line is
+split by fixed character capacity. This improves fixture readability without
+adding CSS whitespace modes, word-break/overflow-wrap behavior, hyphenation,
+font metrics/shaping, baselines, bidi, cross-node whitespace joining, or
+browser inline-formatting parity.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

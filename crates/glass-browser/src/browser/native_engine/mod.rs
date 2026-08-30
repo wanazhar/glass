@@ -1,7 +1,8 @@
 //! Feature-gated Glass-owned native browser engine kernel.
 //!
-//! Phase 1 is a deterministic, headless fixture/data-URL engine. It is not a
-//! browser-parity implementation, network client, or security boundary.
+//! The current implementation combines a deterministic, headless
+//! fixture/data-URL kernel with a narrow semantic interaction slice. It is not
+//! a browser-parity implementation, network client, or security boundary.
 
 mod browsing_context;
 mod config;
@@ -9,6 +10,7 @@ mod dom;
 mod engine;
 mod error;
 mod history;
+mod interaction;
 mod lifecycle;
 mod origin;
 mod resource_loader;
@@ -21,9 +23,10 @@ pub use config::{
     MAX_NATIVE_VIEWPORT_DIMENSION, NativeEngineConfig, NativeEngineLimits, NativeFixture, Viewport,
 };
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
-pub use engine::{NativeEngine, NativeEngineSnapshot};
+pub use engine::{NativeActionResult, NativeEffectsSnapshot, NativeEngine, NativeEngineSnapshot};
 pub use error::NativeEngineError;
 pub use history::{NativeHistory, NativeHistoryEntry};
+pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
 pub use lifecycle::NativeLifecycleState;
 pub use origin::NativeOrigin;
 pub use resource_loader::{NativeResource, NativeResourceLoader};

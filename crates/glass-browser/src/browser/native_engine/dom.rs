@@ -1,5 +1,6 @@
 use super::config::NativeEngineLimits;
 use super::error::NativeEngineError;
+use super::interaction::NativeEventKind;
 use std::collections::BTreeMap;
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
@@ -339,6 +340,127 @@ impl NativeDocument {
         }
     }
 
+    pub(crate) fn set_revision(&mut self, revision: u64) {
+        self.revision = revision;
+    }
+
+    /// Apply a bounded semantic click after the engine has resolved the target.
+    /// Validation is completed before focus or control state is mutated.
+    pub(crate) fn apply_click(
+        &mut self,
+        id: NativeNodeId,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        let semantic =
+            self.semantic_node(id)
+                .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                    reason: "target has no supported semantic control role".into(),
+                })?;
+        if semantic.disabled {
+            return Err(NativeEngineError::DisabledTarget);
+        }
+        if !matches!(
+            semantic.role.as_str(),
+            "button" | "link" | "checkbox" | "radio" | "textbox" | "combobox"
+        ) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "only supported semantic controls accept click".into(),
+            });
+        }
+
+        let mut events = self.focus_element(id);
+        events.push((id, NativeEventKind::Click));
+        match semantic.role.as_str() {
+            "checkbox" => {
+                let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+                node.state.checked = !node.state.checked;
+                events.push((id, NativeEventKind::Change));
+            }
+            "radio" => {
+                let group_name = self
+                    .node(id)
+                    .and_then(|node| node.attribute("name"))
+                    .map(str::to_owned);
+                let radio_ids = self
+                    .nodes
+                    .iter()
+                    .filter(|node| self.semantic_role(node.id()) == Some("radio"))
+                    .filter(|node| {
+                        node.id() == id
+                            || group_name.as_deref().is_some_and(|name| {
+                                !name.is_empty() && node.attribute("name") == Some(name)
+                            })
+                    })
+                    .map(NativeNode::id)
+                    .collect::<Vec<_>>();
+                for radio_id in radio_ids {
+                    let should_be_checked = radio_id == id;
+                    let was_checked = self
+                        .node(radio_id)
+                        .ok_or(NativeEngineError::DetachedTarget)?
+                        .state
+                        .checked;
+                    if was_checked != should_be_checked {
+                        self.node_mut(radio_id)
+                            .ok_or(NativeEngineError::DetachedTarget)?
+                            .state
+                            .checked = should_be_checked;
+                        events.push((radio_id, NativeEventKind::Change));
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(events)
+    }
+
+    /// Replace a supported text control's value with bounded input text.
+    /// The value itself stays private; semantic projections expose only state.
+    pub(crate) fn apply_type(
+        &mut self,
+        id: NativeNodeId,
+        text: &str,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        let semantic =
+            self.semantic_node(id)
+                .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                    reason: "target has no supported semantic text-control role".into(),
+                })?;
+        if semantic.role != "textbox" || !matches!(semantic.tag_name.as_str(), "input" | "textarea")
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "type requires an input or textarea textbox".into(),
+            });
+        }
+        if semantic.disabled {
+            return Err(NativeEngineError::DisabledTarget);
+        }
+        if semantic.read_only {
+            return Err(NativeEngineError::ReadOnlyTarget);
+        }
+        if text.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "action text",
+                "must not be empty",
+            ));
+        }
+        if text.len() > MAX_LOCATOR_BYTES {
+            return Err(NativeEngineError::limit(
+                "action text",
+                MAX_LOCATOR_BYTES,
+                text.len(),
+            ));
+        }
+
+        let mut events = self.focus_element(id);
+        self.node_mut(id)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .state
+            .value = Some(text.to_owned());
+        events.push((id, NativeEventKind::Input));
+        events.push((id, NativeEventKind::Change));
+        Ok(events)
+    }
+
     pub fn title(&self, max_bytes: usize) -> (String, bool) {
         let Some(title_id) = self.find_element(self.root, "title") else {
             return (String::new(), false);
@@ -405,6 +527,29 @@ impl NativeDocument {
         (id.generation == self.generation)
             .then(|| self.nodes.get_mut(id.index as usize))
             .flatten()
+    }
+
+    fn focus_element(&mut self, id: NativeNodeId) -> Vec<(NativeNodeId, NativeEventKind)> {
+        let focused_ids = self
+            .nodes
+            .iter()
+            .filter(|node| node.state.focused && node.id() != id)
+            .map(NativeNode::id)
+            .collect::<Vec<_>>();
+        let mut events = Vec::new();
+        for focused_id in focused_ids {
+            if let Some(node) = self.node_mut(focused_id) {
+                node.state.focused = false;
+                events.push((focused_id, NativeEventKind::Blur));
+            }
+        }
+        if let Some(node) = self.node_mut(id)
+            && !node.state.focused
+        {
+            node.state.focused = true;
+            events.push((id, NativeEventKind::Focus));
+        }
+        events
     }
 
     fn unique_element_matches(
@@ -574,7 +719,11 @@ impl NativeDocument {
         let Some(node) = self.node(id) else {
             return true;
         };
-        if has_truthy_boolean_attribute(node, "disabled") {
+        if node.attribute("disabled").is_some()
+            || node
+                .attribute("aria-disabled")
+                .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+        {
             return true;
         }
         let mut parent = node.parent();
@@ -583,7 +732,7 @@ impl NativeDocument {
                 break;
             };
             if parent_node.element_name() == Some("fieldset")
-                && has_truthy_boolean_attribute(parent_node, "disabled")
+                && parent_node.attribute("disabled").is_some()
             {
                 return true;
             }
@@ -593,13 +742,17 @@ impl NativeDocument {
     }
 
     fn is_read_only(&self, id: NativeNodeId) -> bool {
-        self.node(id)
-            .is_some_and(|node| has_truthy_boolean_attribute(node, "readonly"))
+        self.node(id).is_some_and(|node| {
+            node.attribute("readonly").is_some()
+                || node
+                    .attribute("aria-readonly")
+                    .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+        })
     }
 
     fn is_required(&self, id: NativeNodeId) -> bool {
         self.node(id)
-            .is_some_and(|node| has_truthy_boolean_attribute(node, "required"))
+            .is_some_and(|node| node.attribute("required").is_some())
     }
 
     fn find_element_by_id(&self, value: &str) -> Option<NativeNodeId> {
@@ -824,16 +977,6 @@ fn supported_role(value: &str) -> Option<&'static str> {
         .iter()
         .copied()
         .find(|role| *role == normalized)
-}
-
-fn has_truthy_boolean_attribute(node: &NativeNode, name: &str) -> bool {
-    let Some(value) = node.attribute(name) else {
-        return false;
-    };
-    value.is_empty()
-        || value.eq_ignore_ascii_case(name)
-        || value.eq_ignore_ascii_case("true")
-        || value == "1"
 }
 
 #[derive(Debug)]

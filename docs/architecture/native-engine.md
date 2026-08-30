@@ -1,7 +1,7 @@
 # Native browser engine
 
-Status: Experimental Phase 2 semantic DOM slice; feature-gated and not a
-stable browser compatibility or security boundary.
+Status: Experimental Phase 2 semantic DOM and interaction slices; feature-gated
+and not a stable browser compatibility or security boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -12,10 +12,10 @@ third crate, a protocol adapter, or an embedded copy of another browser.
 
 The native engine owns a deterministic, headless browser-platform kernel. The
 current slices own lifecycle, one browsing context, local document resources,
-HTML-to-DOM parsing, history, revisions, and bounded semantic evidence. The
-revisioned DOM interaction model is the next serial slice. The engine does not
-yet own CSS, layout, painting, hit testing, JavaScript, network access,
-storage, downloads, prompts, or platform windows.
+HTML-to-DOM parsing, history, revisions, bounded semantic evidence, and a small
+revisioned semantic interaction/effects model. The engine does not yet own CSS,
+layout, painting, hit testing, JavaScript, network access, storage, downloads,
+prompts, or platform windows.
 
 ```text
 BrowserBackendDispatcher
@@ -74,8 +74,8 @@ types never cross the transport-neutral backend boundary.
 
 `NativeEngineConfig` contains an initial URL, a viewport descriptor, fixture
 documents, and `NativeEngineLimits`. The viewport is recorded now so future
-layout and paint work has a stable owner; it does not imply that Phase 1
-performs layout.
+layout and paint work has a stable owner; it does not imply that the current
+engine performs layout.
 
 The default limits are intentionally bounded:
 
@@ -95,7 +95,7 @@ document's explicitly bounded evidence projection.
 
 ## Resource model
 
-Phase 1 supports only:
+The current resource boundary (the Phase 1 loader) supports only:
 
 - `about:blank`, which loads an empty document;
 - `data:text/html,...` with UTF-8 percent-decoded HTML; and
@@ -122,8 +122,8 @@ state, then commits one monotonic revision and one history entry. Failed URL,
 resource, parse, or limit checks leave the previous document, URL, revision,
 and history unchanged. Close is explicit; a closed engine cannot be reopened.
 
-One fixed context ID, `native-context`, is exposed. Phase 1 has no popups,
-frames, workers, or background contexts.
+One fixed context ID, `native-context`, is exposed. The current lifecycle and
+context slice has no popups, frames, workers, or background contexts.
 
 The DOM is an arena of generational `NodeId` values. A navigation constructs a
 new document generation, so a node identity from an earlier document cannot be
@@ -132,9 +132,9 @@ carry the current revision (`ref=r<revision>:n<node-index>`); a reference from
 before any navigation or mutation is rejected as detached.
 
 The scheduler owns a deterministic logical clock and bounded ordered task
-queue. It commits navigation in a reproducible order. Future interaction
-mutation will remain synchronous and single-owner; the scheduler does not
-spawn threads, sleep, or execute arbitrary callbacks.
+queue. It commits navigation in a reproducible order. Interaction mutation is
+synchronous and single-owner; the scheduler does not spawn threads, sleep, or
+execute arbitrary callbacks.
 
 ## Phase 2 semantic DOM and interaction slice
 
@@ -160,28 +160,32 @@ text=<normalized-element-text>
 Resolution must produce exactly one current element. Unknown locator forms,
 missing targets, duplicate matches, stale references, and non-element
 references fail explicitly. Actionability checks for disabled controls,
-read-only textboxes, and unsupported action roles belong to the next
-interaction slice. The grammar is a semantic locator contract, not a CSS
-selector implementation; CSS selectors belong to the later CSS/layout phase.
+read-only textboxes, and unsupported action roles also fail before mutation.
+The grammar is a semantic locator contract, not a CSS selector implementation;
+CSS selectors belong to the later CSS/layout phase.
 
-The next serial interaction slice will accept only semantic `Click` and `Type`
-actions through the native backend. It will focus supported controls, retain
-values only inside native document state, and advance the document revision so
-earlier references must be re-observed. It will not claim coordinate hit
-testing, default navigation, or script-driven behavior.
+The native backend accepts only semantic `Click` and `Type` actions in this
+slice. Click focuses supported buttons, links, checkboxes, radios, textboxes,
+and comboboxes; checkbox and radio state changes are retained in the document
+owner. Type replaces private state for native `input` and `textarea` textboxes.
+Links do not perform default navigation, and no action performs coordinate hit
+testing or invokes JavaScript. Each accepted action advances the document
+revision exactly once, so earlier references must be re-observed. The effects
+operation returns the current revision and changed bit; bounded native event
+metadata remains an internal Rust inspection surface.
 
 ## Backend capability contract
 
 The native profile is `experimental` and declares:
 
-| Capability | Level | Phase 1 contract |
+| Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
 | navigation | available | local `about`, `data`, and registered fixture URLs |
 | contexts | available | one active context |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
-| action | omitted | semantic interaction is the next Phase 2 slice |
-| effects | omitted | mutation/effect dispatch is the next Phase 2 slice |
+| action | available | semantic click/type for supported local controls; no coordinates or default browser behavior |
+| effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | omitted | JavaScript is unavailable |
 | capture | omitted | no screenshots or pixels |
 | storage | omitted | no cookies/local/session storage |
@@ -217,7 +221,7 @@ same transaction, origin, cancellation, and redaction boundaries.
 
 ## Tests and promotion boundary
 
-Phase 1 and current Phase 2 semantic-DOM tests cover:
+Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 
 - lifecycle transitions and repeated/invalid close behavior;
 - `about:blank`, percent-decoded `data:` HTML, and registered fixtures;
@@ -228,7 +232,9 @@ Phase 1 and current Phase 2 semantic-DOM tests cover:
 - dispatcher capability denial and explicit-only backend selection;
 - supported semantic roles, associated labels, attributes, and revision-bound
   references;
-- duplicate and stale semantic targets plus supported control metadata.
+- duplicate and stale semantic targets plus supported control metadata;
+- focus, checkbox/radio state, text-control state, bounded effects, and
+  pre-mutation rejection of stale, disabled, read-only, and unsupported targets.
 
 This slice is not browser parity. It cannot be promoted or advertised as safe
 for arbitrary remote content until CSS/layout, security policy, process

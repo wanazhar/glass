@@ -173,8 +173,10 @@ agreement reports exact schema and capability status.
   unavailable capability fails closed rather than falling back to raw
   transport.
 - The native engine is experimental, default-off, fixture/data-URL-only, and
-  available through the explicit Rust backend factory. It is not a CLI runtime,
-  browser-parity claim, or security boundary for hostile remote content.
+  available through the explicit Rust backend factory. Its current semantic
+  slice supports bounded click/type actions and revision effects for local
+  controls. It is not a CLI runtime, browser-parity claim, or security boundary
+  for hostile remote content.
 - Native extensions require explicit opt-in and a platform sandbox gate.
 
 ## Documentation

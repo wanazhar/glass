@@ -1,4 +1,5 @@
 use super::config::MAX_NATIVE_VIEWPORT_DIMENSION;
+use super::diagnostics::{NativeDiagnosticCode, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::dom::NativeNode;
 use super::error::NativeEngineError;
 
@@ -263,13 +264,28 @@ pub(crate) struct NativeStylesheet {
 }
 
 impl NativeStylesheet {
+    #[cfg(test)]
     pub(crate) fn from_sources(
         sources: impl IntoIterator<Item = String>,
     ) -> Result<Self, NativeEngineError> {
+        let mut diagnostics = NativeDiagnosticSink::default();
+        Self::from_sources_with_diagnostics(sources, &mut diagnostics)
+    }
+
+    pub(crate) fn from_sources_with_diagnostics(
+        sources: impl IntoIterator<Item = String>,
+        diagnostics: &mut NativeDiagnosticSink,
+    ) -> Result<Self, NativeEngineError> {
         let mut stylesheet = Self::default();
         let mut order = 0;
-        for source in sources {
-            parse_source(&source, &mut stylesheet.rules, &mut order)?;
+        for (index, source) in sources.into_iter().enumerate() {
+            parse_source(
+                &source,
+                &mut stylesheet.rules,
+                &mut order,
+                NativeDiagnosticSource::Stylesheet { index },
+                diagnostics,
+            )?;
         }
         Ok(stylesheet)
     }
@@ -717,17 +733,32 @@ fn parse_source(
     source: &str,
     rules: &mut Vec<NativeStyleRule>,
     next_order: &mut usize,
+    diagnostic_source: NativeDiagnosticSource,
+    diagnostics: &mut NativeDiagnosticSink,
 ) -> Result<(), NativeEngineError> {
     let source = strip_comments(source);
     let mut cursor = 0;
+    let mut unclosed_rule = false;
     while let Some(open_relative) = source[cursor..].find('{') {
         let open = cursor + open_relative;
         let Some(close_relative) = source[open + 1..].find('}') else {
+            diagnostics.push(
+                NativeDiagnosticCode::MalformedCss,
+                diagnostic_source,
+                open,
+                "unclosed-rule",
+            );
+            unclosed_rule = true;
             break;
         };
         let close = open + 1 + close_relative;
-        let declarations = parse_declarations(&source[open + 1..close]);
-        if declarations.display.is_some()
+        let declarations = parse_declarations_with_diagnostics(
+            &source[open + 1..close],
+            diagnostic_source,
+            open.saturating_add(1),
+            diagnostics,
+        );
+        let has_supported_declaration = declarations.display.is_some()
             || declarations.visibility.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
@@ -739,12 +770,25 @@ fn parse_source(
             || declarations.margin.iter().any(Option::is_some)
             || declarations.box_sizing.is_some()
             || declarations.color.is_some()
-            || declarations.overflow.is_some()
-        {
-            for selector_text in source[cursor..open].split(',') {
-                let Some(selector) = parse_selector(selector_text) else {
-                    continue;
-                };
+            || declarations.overflow.is_some();
+        let selector_source = &source[cursor..open];
+        let mut selector_offset = cursor;
+        for selector_text in selector_source.split(',') {
+            let Some(selector) = parse_selector(selector_text) else {
+                diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssSelector,
+                    diagnostic_source,
+                    selector_offset.saturating_add(
+                        selector_text
+                            .len()
+                            .saturating_sub(selector_text.trim_start().len()),
+                    ),
+                    selector_diagnostic_detail(selector_text),
+                );
+                selector_offset = selector_offset.saturating_add(selector_text.len() + 1);
+                continue;
+            };
+            if has_supported_declaration {
                 if rules.len() >= MAX_NATIVE_STYLE_RULES {
                     return Err(NativeEngineError::limit(
                         "CSS style rules",
@@ -759,10 +803,165 @@ fn parse_source(
                 });
                 *next_order = next_order.saturating_add(1);
             }
+            selector_offset = selector_offset.saturating_add(selector_text.len() + 1);
         }
         cursor = close + 1;
     }
+    if !unclosed_rule && !source[cursor..].trim().is_empty() {
+        diagnostics.push(
+            NativeDiagnosticCode::MalformedCss,
+            diagnostic_source,
+            cursor,
+            "missing-rule",
+        );
+    }
     Ok(())
+}
+
+fn parse_declarations_with_diagnostics(
+    source: &str,
+    diagnostic_source: NativeDiagnosticSource,
+    base_offset: usize,
+    diagnostics: &mut NativeDiagnosticSink,
+) -> NativeDeclarations {
+    let declarations = parse_declarations(source);
+    let mut declaration_offset = 0;
+    for declaration in source.split(';') {
+        let offset = base_offset.saturating_add(declaration_offset);
+        declaration_offset = declaration_offset.saturating_add(declaration.len().saturating_add(1));
+        let declaration = declaration.trim();
+        if declaration.is_empty() {
+            continue;
+        }
+        let Some((property, value)) = declaration.split_once(':') else {
+            diagnostics.push(
+                NativeDiagnosticCode::MalformedCss,
+                diagnostic_source,
+                offset,
+                "missing-colon",
+            );
+            continue;
+        };
+        let property = property.trim();
+        let value = value.trim();
+        if value.is_empty() {
+            diagnostics.push(
+                NativeDiagnosticCode::MalformedCss,
+                diagnostic_source,
+                offset,
+                "empty-value",
+            );
+            continue;
+        }
+        let value = value.strip_suffix("!important").map_or(value, str::trim);
+        let property_name = property.to_ascii_lowercase();
+        let supported = match property_name.as_str() {
+            "display" => {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "none"
+                        | "block"
+                        | "flow-root"
+                        | "list-item"
+                        | "table"
+                        | "inline"
+                        | "inline-block"
+                        | "inline-flex"
+                        | "inline-grid"
+                        | "contents"
+                )
+            }
+            "visibility" => parse_visibility(value).is_some(),
+            "width" | "height" => parse_dimension(value).is_some(),
+            "line-height" => parse_line_height(value).is_some(),
+            "background-color" | "color" => parse_color(value).is_some(),
+            "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
+                parse_border(value).is_some()
+            }
+            "border-radius" => parse_border_radius(value).is_some(),
+            "padding" | "margin" => parse_box_edges(value).is_some(),
+            "padding-top" | "padding-right" | "padding-bottom" | "padding-left" | "margin-top"
+            | "margin-right" | "margin-bottom" | "margin-left" => parse_dimension(value).is_some(),
+            "box-sizing" => parse_box_sizing(value).is_some(),
+            "overflow" => {
+                parse_overflow(value).is_some_and(|_| value.eq_ignore_ascii_case("hidden"))
+            }
+            _ => {
+                diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssProperty,
+                    diagnostic_source,
+                    offset,
+                    property,
+                );
+                false
+            }
+        };
+        if !supported && is_known_css_property(property_name.as_str()) {
+            diagnostics.push(
+                NativeDiagnosticCode::UnsupportedCssValue,
+                diagnostic_source,
+                offset,
+                property_name.as_str(),
+            );
+        }
+    }
+    declarations
+}
+
+pub(crate) fn collect_declaration_diagnostics(
+    source: &str,
+    diagnostic_source: NativeDiagnosticSource,
+    base_offset: usize,
+    diagnostics: &mut NativeDiagnosticSink,
+) {
+    let _ =
+        parse_declarations_with_diagnostics(source, diagnostic_source, base_offset, diagnostics);
+}
+
+fn is_known_css_property(property: &str) -> bool {
+    matches!(
+        property,
+        "display"
+            | "visibility"
+            | "width"
+            | "height"
+            | "line-height"
+            | "background-color"
+            | "color"
+            | "border"
+            | "border-top"
+            | "border-right"
+            | "border-bottom"
+            | "border-left"
+            | "border-radius"
+            | "padding"
+            | "margin"
+            | "padding-top"
+            | "padding-right"
+            | "padding-bottom"
+            | "padding-left"
+            | "margin-top"
+            | "margin-right"
+            | "margin-bottom"
+            | "margin-left"
+            | "box-sizing"
+            | "overflow"
+    )
+}
+
+fn selector_diagnostic_detail(selector: &str) -> &'static str {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        "empty-selector"
+    } else if selector.len() > MAX_SELECTOR_BYTES {
+        "selector-too-long"
+    } else if selector.contains(':') {
+        "pseudo-selector"
+    } else if selector.chars().any(char::is_whitespace) || selector.contains(['>', '+', '~']) {
+        "selector-combinator"
+    } else {
+        "invalid-selector"
+    }
 }
 
 fn parse_declarations(source: &str) -> NativeDeclarations {

@@ -1,5 +1,6 @@
 use super::config::NativeEngineLimits;
 use super::css::NativeStylesheet;
+use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
 use super::interaction::NativeEventKind;
 use super::layout::NativeLayoutSnapshot;
@@ -148,6 +149,8 @@ pub struct NativeDocument {
     root: NativeNodeId,
     nodes: Vec<NativeNode>,
     stylesheet: NativeStylesheet,
+    diagnostics: Vec<NativeDiagnostic>,
+    diagnostics_truncated: bool,
 }
 
 impl NativeDocument {
@@ -187,6 +190,8 @@ impl NativeDocument {
                 state: NativeElementState::default(),
             }],
             stylesheet: NativeStylesheet::default(),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
         };
         let mut stack = vec![root];
 
@@ -283,7 +288,25 @@ impl NativeDocument {
                 source
             })
             .collect::<Vec<_>>();
-        document.stylesheet = NativeStylesheet::from_sources(style_sources)?;
+        let mut diagnostics = NativeDiagnosticSink::default();
+        document.stylesheet =
+            NativeStylesheet::from_sources_with_diagnostics(style_sources, &mut diagnostics)?;
+        for node in &document.nodes {
+            let Some(inline_style) = node.attribute("style") else {
+                continue;
+            };
+            super::css::collect_declaration_diagnostics(
+                inline_style,
+                NativeDiagnosticSource::InlineStyle {
+                    node_index: node.id().index(),
+                },
+                0,
+                &mut diagnostics,
+            );
+        }
+        let (diagnostics, diagnostics_truncated) = diagnostics.finish();
+        document.diagnostics = diagnostics;
+        document.diagnostics_truncated = diagnostics_truncated;
         document.normalize_select_defaults();
         Ok(document)
     }
@@ -305,7 +328,18 @@ impl NativeDocument {
                 state: NativeElementState::default(),
             }],
             stylesheet: NativeStylesheet::default(),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
         }
+    }
+
+    /// Return the bounded diagnostics collected while parsing this document.
+    pub fn diagnostics(&self) -> &[NativeDiagnostic] {
+        &self.diagnostics
+    }
+
+    pub const fn diagnostics_truncated(&self) -> bool {
+        self.diagnostics_truncated
     }
 
     pub const fn generation(&self) -> u32 {

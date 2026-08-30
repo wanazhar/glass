@@ -341,7 +341,8 @@ source-whitespace boundaries across sibling direct text and supported inline
 flow items, bounded `overflow:hidden` clips shared by paint, viewport
 projection, and point hit-testing, bounded
 PNG capture through the explicit backend operation, and Rust-only
-display-list/software-surface artifacts. A
+display-list/software-surface artifacts, plus bounded revisioned Rust
+diagnostics for unsupported CSS without raw stylesheet echo. A
 `native-engine` feature build exposes the explicit local
 `--browser-runtime native` one-shot path; its default CLI configuration does
 not register fixture files or contact endpoints. It is not a browser-parity

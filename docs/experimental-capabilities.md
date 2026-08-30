@@ -140,6 +140,8 @@ word-aware wrapping, bounded source-whitespace boundaries across supported
 inline flow, bounded PNG capture, and
 Rust-only
 display-list/software-surface artifacts;
+Rust callers can inspect bounded revisioned diagnostics for unsupported CSS
+without raw stylesheet echo;
 it does not
 provide network access,
 filesystem navigation, general CSS/nested/horizontal/stacking layout, logical

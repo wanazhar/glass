@@ -197,6 +197,12 @@ document coordinates before root-scroll translation. Visible overflow,
 axis-specific/nested scrolling, rounded descendant clips, and general CSS
 hit-testing remain outside the native capability claim.
 
+The completed unsupported-CSS-diagnostics slice is
+[native-engine-028](tasks/native-engine-028.md). It makes ignored selectors,
+properties, values, and malformed CSS observable through a bounded revisioned
+Rust API without changing stable backend evidence or echoing raw stylesheet
+content. Existing deterministic CSS omission/fallback behavior remains intact.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

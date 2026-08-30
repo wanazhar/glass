@@ -70,15 +70,18 @@ pub use native_backend::NativeEngineBackend;
 /// Glass-owned native browser engine kernel types.
 #[cfg(feature = "native-engine")]
 pub use native_engine::{
-    DeterministicClock, DeterministicScheduler, MAX_NATIVE_DISPLAY_COMMANDS, MAX_NATIVE_EFFECTS,
+    DeterministicClock, DeterministicScheduler, MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES,
+    MAX_NATIVE_DIAGNOSTICS, MAX_NATIVE_DISPLAY_COMMANDS, MAX_NATIVE_EFFECTS,
     MAX_NATIVE_SURFACE_PIXELS, NATIVE_CONTEXT_ID, NativeAction, NativeActionResult,
     NativeBorderPaint, NativeBorderPaintSide, NativeBorderRadius, NativeBorderStyle,
-    NativeBrowsingContext, NativeColor, NativeDisplayCommand, NativeDisplayList, NativeDocument,
-    NativeEffect, NativeEffectsSnapshot, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEngineSnapshot, NativeEventKind, NativeFixture, NativeHistory,
-    NativeHistoryEntry, NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState, NativeNode,
-    NativeNodeId, NativeNodeKind, NativeOrigin, NativePoint, NativeRect, NativeResource,
-    NativeResourceLoader, NativeSemanticNode, NativeSurface, NativeTask, ScheduledTask, Viewport,
+    NativeBrowsingContext, NativeColor, NativeDiagnostic, NativeDiagnosticCode,
+    NativeDiagnosticSource, NativeDiagnosticsSnapshot, NativeDisplayCommand, NativeDisplayList,
+    NativeDocument, NativeEffect, NativeEffectsSnapshot, NativeEngine, NativeEngineConfig,
+    NativeEngineError, NativeEngineLimits, NativeEngineSnapshot, NativeEventKind, NativeFixture,
+    NativeHistory, NativeHistoryEntry, NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState,
+    NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativePoint, NativeRect,
+    NativeResource, NativeResourceLoader, NativeSemanticNode, NativeSurface, NativeTask,
+    ScheduledTask, Viewport,
 };
 /// Browser-free deterministic backend used for semantic conformance tests.
 pub use proof_backend::ProofBackend;

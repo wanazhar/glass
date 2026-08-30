@@ -84,7 +84,9 @@ shared by paint, viewport projection, and point hit-testing, bounded
   across sibling text and supported inline items, a deterministic
   clear/fill/text/border display list, a
 logical RGBA software surface, and
-bounded PNG capture through the explicit backend operation;
+bounded PNG capture through the explicit backend operation. Rust callers can
+also inspect bounded revisioned diagnostics for unsupported CSS; the details
+are sanitized and this signal is not stable backend evidence;
 it accepts native
 `point=x,y` click targets
 through its Rust API/CLI path. These are experimental local-content artifacts,

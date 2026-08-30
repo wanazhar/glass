@@ -28,6 +28,12 @@ the same commit.
 The 027 bounded overflow hit-test/projection slice is complete locally; its
 complete gate evidence is recorded below and its issue #40 checkpoint is
 updated from the same commit.
+The 028 bounded unsupported-CSS-diagnostics slice is complete locally; its
+complete gate evidence is recorded below and its issue #40 checkpoint is
+updated from the same commit. It makes ignored selectors, properties, values,
+and malformed CSS observable through a bounded revisioned Rust surface without
+changing stable backend evidence or the existing deterministic fallback
+behavior.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -165,6 +171,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-025` | bounded one-to-four-value physical `padding`/`margin` expansion, physical longhands, independent side cascade, and side-aware content/flow geometry | `native-engine-024` | negative/percentage/auto values, logical sides/writing modes, margin collapsing, min/max constraints, positioning, flex/grid, browser parity |
 | `native-engine-026` | bounded source-whitespace boundaries across sibling direct text, `display:contents`, and supported inline flow items | `native-engine-025` | CSS `white-space` modes, preserved tabs/newlines, word spacing, Unicode line breaking, bidi, font metrics/shaping, anonymous inline boxes, and browser parity |
 | `native-engine-027` | bounded rectangular `overflow:hidden` ancestor clips shared by paint, viewport rectangle projection, and point hit-testing | `native-engine-026` | visible overflow, `overflow:clip`, axis-specific or nested scrolling, rounded descendant clips, stacking contexts, transforms, and browser parity |
+| `native-engine-028` | bounded revisioned diagnostics for unsupported selectors, properties, values, and malformed CSS in stylesheet and inline-style sources | `native-engine-027` | general CSS parsing/conformance, raw source echo, stable transport diagnostics, and browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -262,6 +269,10 @@ Phase 2 integration chains added by these slices are:
 32. Native layout derives one bounded rectangular `overflow:hidden` ancestor
     intersection per layout box, and viewport projection plus point hit-testing
     consume that same document-space clip before root-scroll translation.
+33. Native stylesheet and inline-style parsing records bounded sanitized
+    diagnostics for unsupported selectors, properties, values, and malformed
+    rules; document preparation carries the list atomically with navigation and
+    the explicit Rust API reports its revision and truncation state.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -301,12 +312,14 @@ stacking, or that clicking a link performs browser navigation.
 | bounded physical box edges | makes asymmetric local fixture geometry observable while preserving one layout owner and no new dependency | no logical writing-mode sides, negative/percentage/auto values, margin collapsing, or general CSS layout | expand bounded physical shorthand values, cascade four sides independently, use saturating integer arithmetic, and feed one document-space geometry to all consumers |
 | bounded whitespace boundaries | preserves intentional separators without inventing spaces between separate direct-text nodes | no CSS whitespace modes, preserved tabs/newlines, word spacing, Unicode line breaking, bidi, font metrics/shaping, or cross-owner inline parity | retain only source boundary bits, share one pending separator in the containing flow, paint it through existing fragments, and drop it at line starts |
 | bounded overflow hit-test/projection clips | keeps layout visibility and point interaction aligned with existing `overflow:hidden` paint clipping | no visible overflow, nested/axis-specific scrolling, rounded descendant clips, stacking contexts, or transforms | retain one bounded document-space ancestor intersection per layout box and apply it before viewport translation and rounded hit testing |
+| bounded unsupported-CSS diagnostics | makes the narrow CSS contract auditable without changing its deterministic fallback behavior | no general CSS parser, conformance location model, raw stylesheet echo, or stable transport capability | retain a fixed diagnostic bound, report sanitized source/category tokens, and replace diagnostics atomically with the prepared document |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-027.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-028.md` is the latest completed checkpoint and
+`docs/plan/tasks/native-engine-027.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-026.md` is the preceding completed checkpoint.
 A checkpoint is complete only when
 the native feature tests pass, strict lint

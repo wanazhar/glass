@@ -65,7 +65,9 @@ source-behavior reference.
   across supported inline flow, bounded `overflow:hidden` clips shared by
   paint, viewport projection, and point hit-testing, a display list, a logical RGBA software
   surface,
-  and bounded PNG capture; these are not screenshot-containing evidence.
+  bounded PNG capture, and bounded revisioned Rust diagnostics for unsupported
+  CSS; these are not screenshot-containing evidence or stable transport
+  diagnostics.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
   its profile, launch flags, or shutdown.
 - Incognito uses a disposable profile. Named profiles retain browser-managed

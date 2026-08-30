@@ -7,6 +7,7 @@
 mod browsing_context;
 mod config;
 mod css;
+mod diagnostics;
 mod dom;
 mod engine;
 mod error;
@@ -28,8 +29,15 @@ pub use config::{
 };
 pub use css::NativeColor;
 pub use css::{NativeBorderRadius, NativeBorderStyle};
+pub use diagnostics::{
+    MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeDiagnostic,
+    NativeDiagnosticCode, NativeDiagnosticSource,
+};
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
-pub use engine::{NativeActionResult, NativeEffectsSnapshot, NativeEngine, NativeEngineSnapshot};
+pub use engine::{
+    NativeActionResult, NativeDiagnosticsSnapshot, NativeEffectsSnapshot, NativeEngine,
+    NativeEngineSnapshot,
+};
 pub use error::NativeEngineError;
 pub use history::{NativeHistory, NativeHistoryEntry};
 pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};

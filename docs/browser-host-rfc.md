@@ -111,7 +111,8 @@ bounded source-whitespace boundaries across supported inline flow,
 bounded outer/content box geometry with physical four-side padding/margin
 shorthands and longhands plus explicit box sizing, bounded vertical viewport
 scrolling, and bounded PNG capture through the explicit backend operation,
-plus Rust-only display-list/software-surface artifacts. It does not yet provide
+plus Rust-only display-list/software-surface artifacts and bounded revisioned
+Rust diagnostics for unsupported CSS. It does not yet provide
 general CSS/nested/horizontal/stacking layout, logical writing-mode sides,
 negative/percentage/auto box-model values, positioned/flex/grid layout,
 screen-shot-containing evidence, JPEG/PDF capture, or physical-pixel capture,

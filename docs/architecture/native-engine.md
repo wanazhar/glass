@@ -5,7 +5,7 @@ presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
 bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
-bounded-overflow-hit-test-projection
+bounded-overflow-hit-test-projection/bounded-css-diagnostics
 slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
@@ -38,13 +38,16 @@ line-height flow, bounded direct-text fragments at actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
 four-side padding/margin edges, bounded source-whitespace boundaries, and
 bounded `overflow:hidden` clips shared by paint, viewport projection, and point
-hit testing.
+hit testing, and bounded read-only diagnostics for unsupported CSS input.
 The engine does not
 yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
 screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
-network access, storage, downloads, prompts, or platform windows.
+network access, storage, downloads, prompts, or platform windows. Unsupported
+CSS is not silently indistinguishable from supported CSS: the native Rust API
+exposes bounded revisioned diagnostics for ignored selectors, properties,
+values, and malformed rules without echoing raw stylesheet content.
 
 ```text
 BrowserBackendDispatcher
@@ -93,6 +96,25 @@ assert_eq!(backend.profile().identity.backend_id, "native-engine");
 # }
 ```
 
+The explicit Rust engine owner also exposes the CSS audit signal:
+
+```rust,no_run
+use glass_browser::browser::native_engine::{NativeEngine, NativeEngineConfig};
+
+# fn run() -> Result<(), Box<dyn std::error::Error>> {
+let mut engine = NativeEngine::new(NativeEngineConfig::default())?;
+engine.initialize()?;
+let diagnostics = engine.diagnostics()?;
+assert!(diagnostics.revision >= 1);
+# Ok(())
+# }
+```
+
+Diagnostics are bounded and read-only. They identify unsupported selector
+syntax, properties, values, or malformed CSS with a source kind, bounded
+offset, and sanitized detail token. They do not echo raw CSS and are not part
+of stable `BrowserBackend` evidence, CLI, or MCP capabilities.
+
 `NativeEngineBackend` implements the existing `BrowserBackend` contract. Its
 internal DOM, node IDs, scheduler tasks, resource records, and future layout
 types never cross the transport-neutral backend boundary.
@@ -130,6 +152,7 @@ The default limits are intentionally bounded:
 | history entries | 64 | oldest entry is evicted deterministically |
 | queued scheduler tasks | 256 | scheduling fails explicitly |
 | registered fixtures | 32 | configuration fails explicitly |
+| retained CSS diagnostics | 256 | later diagnostics are dropped and `truncated` is set |
 
 All configured URLs and fixture bodies are validated before engine startup.
 Limits are configuration errors, not silent truncation, except for the

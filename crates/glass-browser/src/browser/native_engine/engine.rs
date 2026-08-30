@@ -1,5 +1,6 @@
 use super::browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
 use super::config::NativeEngineConfig;
+use super::diagnostics::NativeDiagnostic;
 use super::dom::NativeDocument;
 use super::error::NativeEngineError;
 use super::history::NativeHistory;
@@ -40,6 +41,14 @@ pub struct NativeEffectsSnapshot {
     pub revision: u64,
     pub changed: bool,
     pub effects: Vec<NativeEffect>,
+}
+
+/// Bounded diagnostics associated with the current native document revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeDiagnosticsSnapshot {
+    pub revision: u64,
+    pub diagnostics: Vec<NativeDiagnostic>,
+    pub truncated: bool,
 }
 
 /// Single-owner native browser kernel.
@@ -142,6 +151,17 @@ impl NativeEngine {
     pub fn snapshot(&self) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("evidence")?;
         Ok(self.snapshot_unchecked())
+    }
+
+    /// Return diagnostics for CSS that the bounded native presentation model
+    /// intentionally ignored or could not parse.
+    pub fn diagnostics(&self) -> Result<NativeDiagnosticsSnapshot, NativeEngineError> {
+        self.require_running("diagnostics")?;
+        Ok(NativeDiagnosticsSnapshot {
+            revision: self.revision,
+            diagnostics: self.document.diagnostics().to_vec(),
+            truncated: self.document.diagnostics_truncated(),
+        })
     }
 
     pub fn semantic_nodes(&self) -> Result<Vec<super::dom::NativeSemanticNode>, NativeEngineError> {

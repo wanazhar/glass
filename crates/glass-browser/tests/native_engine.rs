@@ -2,9 +2,11 @@
 
 use glass_browser::browser::native_backend::NATIVE_ENGINE_BACKEND_ID;
 use glass_browser::browser::native_engine::{
-    NativeAction, NativeBorderRadius, NativeBorderStyle, NativeColor, NativeDisplayCommand,
-    NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
-    NativeEventKind, NativeLifecycleState, NativePoint, NativeRect, NativeSurface, Viewport,
+    MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeAction, NativeBorderRadius,
+    NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
+    NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
+    NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativePoint, NativeRect,
+    NativeSurface, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -2062,4 +2064,127 @@ fn stylesheet_presentation_state_feeds_text_and_actionability() {
         })
         .unwrap();
     assert_eq!(click.revision, revision_before_rejections + 1);
+}
+
+#[test]
+fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
+    let document = NativeDocument::parse(
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: clip; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+
+    let diagnostics = document.diagnostics();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssSelector
+            && diagnostic.detail == "pseudo-selector"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssSelector
+            && diagnostic.detail == "selector-combinator"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+            && diagnostic.detail == "custom-property"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+            && diagnostic.detail == "background-image"
+            && matches!(
+                diagnostic.source,
+                NativeDiagnosticSource::InlineStyle { .. }
+            )
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "width"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "display"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "overflow"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "padding"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::MalformedCss
+            && diagnostic.detail == "missing-colon"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::MalformedCss
+            && diagnostic.detail == "unclosed-rule"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.source,
+            NativeDiagnosticSource::Stylesheet { index: 0 }
+        )
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.source,
+            NativeDiagnosticSource::InlineStyle { .. }
+        )
+    }));
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.detail.len() <= MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES)
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.detail.contains("secret"))
+    );
+}
+
+#[test]
+fn native_css_diagnostics_are_bounded() {
+    let mut source = String::from("<style>");
+    for index in 0..MAX_NATIVE_DIAGNOSTICS.saturating_add(8) {
+        source.push_str(&format!(".item{index} {{ unknown-{index}: value; }}"));
+    }
+    source.push_str("</style><div class='item0'>Item</div>");
+
+    let document = NativeDocument::parse(&source, &NativeEngineLimits::default()).unwrap();
+    assert_eq!(document.diagnostics().len(), MAX_NATIVE_DIAGNOSTICS);
+    assert!(document.diagnostics_truncated());
+}
+
+#[test]
+fn native_css_diagnostics_replace_atomically_with_navigation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://diagnostic-bad",
+            "<style>#card { width: 50%; }</style><div id='card'>Bad</div>",
+        )
+        .unwrap()
+        .with_fixture("fixture://diagnostic-good", "<div id='card'>Good</div>")
+        .unwrap()
+        .with_initial_url("fixture://diagnostic-bad");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let initial = engine.diagnostics().unwrap();
+    assert_eq!(initial.revision, 1);
+    assert_eq!(initial.diagnostics.len(), 1);
+    assert!(!initial.truncated);
+
+    let failed = engine.navigate("fixture://missing");
+    assert!(matches!(
+        failed,
+        Err(NativeEngineError::UnsupportedUrl { .. })
+    ));
+    let after_failure = engine.diagnostics().unwrap();
+    assert_eq!(after_failure, initial);
+
+    engine.navigate("fixture://diagnostic-good").unwrap();
+    let after_success = engine.diagnostics().unwrap();
+    assert_eq!(after_success.revision, 2);
+    assert!(after_success.diagnostics.is_empty());
+    assert!(!after_success.truncated);
 }

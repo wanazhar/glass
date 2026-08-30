@@ -1,7 +1,8 @@
-# Native engine Phase 1/Phase 2 analysis
+# Native engine Phase 1/Phase 2 and initial Phase 3 analysis
 
 Status: Active implementation analysis for issue #40; Phase 0/1 and the first
-Phase 2 semantic/action/form-control/parser slices are committed locally.
+Phase 2 semantic/action/form-control/parser slices and the initial Phase 3
+presentation slice are committed locally.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -56,6 +57,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history | committed URL/revision | bounded entries/current index | native limits |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
+| `native_engine::css` | bounded selector/rule parsing and display/visibility presentation state | style text, inline style, native element attributes | deterministic per-element presentation flags | native DOM element surface |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
 | `native_engine::interaction` | action/effect types and bounded effect records | semantic action and event kind | revisioned interaction metadata | native DOM IDs |
 | `native_engine::engine` | sole mutable page-state coordinator | lifecycle/navigation/action requests | snapshots/context/history/effects | all engine modules |
@@ -89,13 +91,13 @@ The first slice must prove these real call chains:
 ## Non-goals for this checkpoint
 
 - network, filesystem navigation, redirects, HTTP semantics, or cookies;
-- CSS parsing, cascade, layout, hit testing, painting, screenshots, or fonts;
+- general CSS parsing/cascade, layout, hit testing, painting, screenshots, or fonts;
 - JavaScript, event loops, timers, storage, workers, Web APIs, or downloads;
 - CLI runtime selection, TUI integration, MCP integration, or platform windows;
 - claiming standards compatibility, browser parity, or remote-content safety;
 - adding a third crate or a complete-engine dependency.
 
-## Phase 2 slice decomposition
+## Phase 2 and initial Phase 3 slice decomposition
 
 The Phase 2 work is deliberately split into dependency-ordered slices so that
 semantic identity is established before mutation and parser state consume it:
@@ -107,6 +109,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-004` | deterministic single-select/option state and semantic option clicks | `native-engine-003` | keyboard navigation, multi-select, submission, network, layout hit testing |
 | `native-engine-005` | bounded hidden-state projection, hidden-subtree text exclusion, and pre-mutation visibility gating | `native-engine-004` | CSS selectors/cascade, layout, hit testing, opacity, paint |
 | `native-engine-006` | raw-text/RCDATA tokenizer state for script, style, title, and textarea content | `native-engine-005` | HTML5 insertion modes, foreign content, CSS, JavaScript execution |
+| `native-engine-007` | bounded compound selectors and display/visibility cascade feeding text/actionability | `native-engine-006` | general CSS, inheritance, layout, hit testing, paint |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -132,6 +135,8 @@ Phase 2 integration chains added by these slices are:
    rejects hidden actions before mutation.
 8. Raw-text/RCDATA tokenizer state prevents markup-looking script, style,
    title, and textarea content from creating nested semantic elements.
+9. Bounded stylesheet and inline declarations produce deterministic
+   display/visibility state consumed by visible text and actionability.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving geometry ownership to Phase 3.
@@ -150,13 +155,14 @@ clicking a link performs browser navigation.
 | single-select only | useful basic form semantics with a small deterministic state model | no keyboard, multi-select, or submission behavior | reject unsupported variants explicitly and keep values private |
 | bounded visibility gate | keeps semantic text/actionability consistent without a CSS dependency | no cascade, layout, opacity, or paint semantics | recognize only explicit hidden signals and document the boundary |
 | bounded raw-text/RCDATA modes | prevents fake semantic nodes in embedded text while preserving the small parser | no full HTML5 insertion-mode or foreign-content recovery | keep the mode set explicit and cover unterminated content with fixtures |
+| bounded CSS presentation seed | makes stylesheet-driven hiding observable without adding a rendering stack | no general CSS, inheritance, layout, or paint semantics | keep selectors/properties explicit and reject unsupported syntax by omission |
 | profile exposes six capabilities | accurate discovery and fail-closed operations | no user-facing native CLI path yet; semantic actions are intentionally narrow | public Rust factory first; CLI/runtime integration is a later task |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-the current parser/interaction slice is `docs/plan/tasks/native-engine-006.md`. A
+the current parser/interaction/presentation slice is `docs/plan/tasks/native-engine-007.md`. A
 checkpoint is complete only when the default feature set remains green, the
 native feature tests pass, strict lint passes for the touched code, and the
 diff confirms no unrelated browser/TUI/release behavior changed.

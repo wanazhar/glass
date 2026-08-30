@@ -51,6 +51,9 @@ visibility/actionability gate; and
 [native-engine-006](tasks/native-engine-006.md), which hardens raw-text and
 RCDATA handling. They remain semantic-only: CSS/layout hit testing,
 JavaScript, network, and raw form-value evidence are not claimed.
+[native-engine-007](tasks/native-engine-007.md), which adds a narrow
+CSS-presentation model for selector-driven `display`/`visibility` state.
+General CSS, layout, and paint remain unimplemented.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

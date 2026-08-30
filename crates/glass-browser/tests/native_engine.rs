@@ -599,3 +599,51 @@ fn visibility_projection_and_actionability_are_consistent() {
             .any(|node| node.focused)
     );
 }
+
+#[test]
+fn stylesheet_presentation_state_feeds_text_and_actionability() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://styles",
+            "<style>/* bounded rules */ .gone, [data-mode=off] { display: none; } #covered { visibility: hidden; } button { display: none; }</style><button id='gone' class='gone'>Gone</button><button id='covered'>Covered</button><button id='attribute' data-mode='off'>Attribute</button><button id='override' style='display: block'>Override</button>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://styles");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.visible_text, "Override");
+
+    let nodes = engine.semantic_nodes().unwrap();
+    for name in ["Gone", "Covered", "Attribute"] {
+        assert!(
+            nodes
+                .iter()
+                .find(|node| node.name == name)
+                .is_some_and(|node| node.hidden),
+            "expected {name} to be hidden by stylesheet"
+        );
+    }
+    assert!(
+        nodes
+            .iter()
+            .find(|node| node.name == "Override")
+            .is_some_and(|node| !node.hidden)
+    );
+
+    let revision_before_rejections = engine.revision();
+    assert!(matches!(
+        engine.action(NativeAction::Click {
+            target: "id=gone".into(),
+        }),
+        Err(NativeEngineError::TargetNotActionable { .. })
+    ));
+    assert_eq!(engine.revision(), revision_before_rejections);
+    let click = engine
+        .action(NativeAction::Click {
+            target: "id=override".into(),
+        })
+        .unwrap();
+    assert_eq!(click.revision, revision_before_rejections + 1);
+}

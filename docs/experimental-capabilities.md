@@ -128,7 +128,7 @@ for `input`/`textarea` controls. Its bounded visibility gate excludes
 subtrees from visible text and rejects those action targets before mutation.
 Explicit references are revision-bound; ambiguous, stale, disabled, read-only,
 and unsupported targets fail before mutation. It does not provide network access,
-filesystem navigation, CSS/layout/paint, JavaScript, storage, screenshots,
+filesystem navigation, general CSS/layout/paint, JavaScript, storage, screenshots,
 prompts, downloads, coordinate hit testing, default link navigation, or raw
 form-value evidence. The backend is explicit-only and never silently falls
 back to Chromium or the semantic proof backend. Because it is in-process and

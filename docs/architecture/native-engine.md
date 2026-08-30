@@ -1,7 +1,8 @@
 # Native browser engine
 
-Status: Experimental Phase 2 semantic DOM and interaction slices; feature-gated
-and not a stable browser compatibility or security boundary.
+Status: Experimental Phase 2 semantic DOM/interaction slices and an initial
+Phase 3 presentation slice; feature-gated and not a stable browser
+compatibility or security boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -15,8 +16,9 @@ current slices own lifecycle, one browsing context, local document resources,
 HTML-to-DOM parsing, history, revisions, bounded semantic evidence, and a small
 revisioned semantic interaction/effects model for text, checkbox, radio, and
 single-select controls, plus bounded visibility/actionability and raw-text/RCDATA
-parser gates. The engine does not yet own CSS, layout, painting, hit testing,
-JavaScript, network access, storage, downloads, prompts, or platform windows.
+parser gates and a narrow CSS presentation subset. The engine does not yet own
+general CSS, layout, painting, hit testing, JavaScript, network access,
+storage, downloads, prompts, or platform windows.
 
 ```text
 BrowserBackendDispatcher
@@ -137,7 +139,7 @@ queue. It commits navigation in a reproducible order. Interaction mutation is
 synchronous and single-owner; the scheduler does not spawn threads, sleep, or
 execute arbitrary callbacks.
 
-## Phase 2 semantic DOM and interaction slice
+## Phase 2 semantic DOM/interaction and initial Phase 3 presentation slice
 
 The current Phase 2 slice intentionally exposes a narrow semantic surface
 without pretending to implement CSS selectors, layout, or a browser event loop.
@@ -152,6 +154,14 @@ The tokenizer treats `script` and `style` content as raw text and `title` and
 content inside those elements cannot create semantic descendants. Unterminated
 content is consumed to the bounded document end; this is parser containment,
 not an HTML5 conformance claim.
+
+The initial presentation subset reads bounded `style` elements and inline
+`style` attributes. It matches only one-compound universal/type, ID, class, or
+attribute-presence/exact-value selectors and cascades `display` and
+`visibility` by specificity, source order, and inline precedence. Unsupported
+selectors and declarations are ignored. This state feeds text exclusion and
+semantic actionability; it does not imply general CSS, inheritance, layout,
+geometry, hit testing, or paint.
 
 The native locator grammar is explicit and bounded:
 
@@ -253,6 +263,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   rejection of hidden controls.
 - raw-text/RCDATA containment for script, style, title, and textarea content,
   including unterminated-element behavior.
+- bounded stylesheet/inline selector matching and display/visibility cascade
+  feeding visible text and semantic actionability.
 
 This slice is not browser parity. It cannot be promoted or advertised as safe
 for arbitrary remote content until CSS/layout, security policy, process

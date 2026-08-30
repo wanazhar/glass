@@ -7,7 +7,7 @@ use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 /// Maximum number of immutable commands retained in one native display list.
 pub const MAX_NATIVE_DISPLAY_COMMANDS: usize = MAX_NATIVE_NODES.saturating_mul(2).saturating_add(1);
 
-/// One bounded command consumed by a future software rasterizer.
+/// One bounded command consumed by the native software rasterizer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeDisplayCommand {
     Clear {
@@ -16,6 +16,13 @@ pub enum NativeDisplayCommand {
     FillRect {
         node_id: NativeNodeId,
         rect: NativeRect,
+        color: NativeColor,
+        clip: Option<NativeRect>,
+    },
+    BorderRect {
+        node_id: NativeNodeId,
+        rect: NativeRect,
+        width: u32,
         color: NativeColor,
         clip: Option<NativeRect>,
     },
@@ -65,6 +72,20 @@ impl NativeDisplayList {
                         node_id: layout_box.node_id,
                         rect: layout_box.rect,
                         color,
+                        clip,
+                    },
+                )?;
+            }
+            if let Some(border) = style.border()
+                && border.width() > 0
+            {
+                push_command(
+                    &mut commands,
+                    NativeDisplayCommand::BorderRect {
+                        node_id: layout_box.node_id,
+                        rect: layout_box.rect,
+                        width: border.width(),
+                        color: border.color(),
                         clip,
                     },
                 )?;

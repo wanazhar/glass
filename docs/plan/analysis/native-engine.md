@@ -4,13 +4,13 @@ Status: Active implementation analysis for issue #40; Phase 0/1 and the first
 Phase 2 semantic/action/form-control/parser slices, the initial Phase 3
 presentation/layout slices, and the 008/009 runtime and input checkpoints are
 committed locally, including the bounded 010 display-list seed and the bounded
-011 software-surface seed, 012 style-inheritance seed, and 013 paint-clipping
-seed.
+011 software-surface seed, 012 style-inheritance seed, 013 paint-clipping
+seed, and 014 uniform solid-border paint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
-DOM/interaction slices, not an attempt to implement a complete browser in one
-change.
+DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
+to implement a complete browser in one change.
 
 ## Baseline and constraints
 
@@ -60,10 +60,10 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history | committed URL/revision | bounded entries/current index | native limits |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, and pixel dimensions | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, pixel dimensions, and uniform solid borders | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
 | `native_engine::layout` | viewport-bounded normal-flow geometry and point hit testing | DOM, computed display/visibility, viewport | layout boxes and deterministic hit target | native DOM + CSS presentation |
-| `native_engine::paint` | revisioned clear/fill/text display-list derivation and bounded ancestor clips | current layout, bounded computed colors/text, and overflow presentation | immutable display-list commands | native DOM + layout |
-| `native_engine::raster` | bounded logical RGBA surface replay | immutable display-list commands | immutable software surface | native display list |
+| `native_engine::paint` | revisioned clear/fill/text/border display-list derivation and bounded ancestor clips | current layout, bounded computed colors/text/borders, and overflow presentation | immutable display-list commands | native DOM + layout |
+| `native_engine::raster` | bounded logical RGBA surface replay for fills, text, and uniform borders | immutable display-list commands | immutable software surface | native display list |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
 | `native_engine::interaction` | action/effect types and bounded effect records | semantic action and event kind | revisioned interaction metadata | native DOM IDs |
 | `native_engine::engine` | sole mutable page-state coordinator | lifecycle/navigation/action requests | snapshots/context/history/effects | all engine modules |
@@ -99,9 +99,9 @@ The first slice must prove these real call chains:
 ## Non-goals for this checkpoint
 
 - network, filesystem navigation, redirects, HTTP semantics, or cookies;
-- general CSS parsing/cascade, raster painting, screenshots, or fonts; the
-  bounded 009 layout, 010 display-list, and 011 software-surface seeds do not
-  imply general layout or rendering;
+- general CSS parsing/cascade, general raster painting, screenshots, or fonts;
+  the bounded 009 layout, 010 display-list, 011 software-surface, 013
+  clipping, and 014 border seeds do not imply general layout or rendering;
 - JavaScript, event loops, timers, storage, workers, Web APIs, or downloads;
 - MCP/TUI integration, external browser lifecycle, or platform windows;
 - claiming standards compatibility, browser parity, or remote-content safety;
@@ -126,6 +126,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-011` | bounded logical RGBA software-surface replay with fixed ASCII glyphs and alpha compositing | `native-engine-010` | PNG/screenshots, font shaping, images, borders, clipping, scrolling, stacking contexts, browser parity |
 | `native-engine-012` | bounded inherited `color` resolution through DOM ancestors feeding text runs | `native-engine-011` | general CSS inheritance/cascade, inherited layout, fonts, images, screenshots, browser parity |
 | `native-engine-013` | bounded `overflow:hidden` ancestor clips on fill/text commands and software replay | `native-engine-012` | scrolling, visible overflow, stacking contexts, borders, transforms, screenshots, browser parity |
+| `native-engine-014` | bounded uniform `border:Npx solid <color>` parsing, `BorderRect` display commands, and inside-the-box software replay | `native-engine-013` | padding, box sizing, individual sides, non-solid styles, scrolling, transforms, screenshots, browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -174,6 +175,9 @@ Phase 2 integration chains added by these slices are:
     links, and display-list text consumes that resolved value.
 18. Native fill/text commands carry bounded logical clips derived from matching
     `overflow:hidden` ancestors, and software replay enforces them.
+19. Native uniform border declarations produce matching revisioned `BorderRect`
+    commands, preserve deterministic fill/border/text order, and replay only
+    inside the layout box and its ancestor clips.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -198,13 +202,14 @@ stacking, or that clicking a link performs browser navigation.
 | derived display-list seed | establishes a renderer-owned immutable artifact without pixel dependencies | no rasterization, fonts, image decode, clipping, or visual evidence | require a matching layout revision, bound commands, and keep the list Rust-only |
 | bounded software surface | makes the display-list contract executable with no graphics dependency | no font fidelity, Unicode shaping, images, screenshots, or physical-pixel guarantees | cap logical pixels, use fixed glyphs, clip writes, and keep the surface Rust-only |
 | inherited text color | makes nested text styling observable without broadening the CSS grammar | no general inheritance, user-agent styles, font/color management, or style cache | resolve one property through bounded parent links and keep explicit child declarations authoritative |
-| bounded paint clipping | makes descendant overflow behavior explicit without inventing scrolling | no scroll offsets, visible overflow model, borders, transforms, or clip stack cache | carry half-open ancestor intersections on immutable commands and intersect again at replay |
+| bounded paint clipping | makes descendant overflow behavior explicit without inventing scrolling | no scroll offsets, visible overflow model, border box-model, transforms, or clip stack cache | carry half-open ancestor intersections on immutable commands and intersect again at replay |
+| bounded uniform border paint | adds a useful edge primitive without changing layout ownership | no padding/box sizing, individual sides, non-solid styles, or border geometry | paint an inside-the-box ring as one immutable command and reuse existing clip/source-over bounds |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-013.md` is the latest completed checkpoint; 012
+`docs/plan/tasks/native-engine-014.md` is the latest completed checkpoint; 013
 is the preceding completed checkpoint. A checkpoint is complete only when the
 native feature tests pass, strict lint
 passes for the touched code, and the diff confirms no unrelated browser/TUI/

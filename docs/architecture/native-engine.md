@@ -2,8 +2,9 @@
 
 Status: Experimental Phase 2 semantic DOM/interaction slices, initial Phase 3
 presentation/layout/display-list/software-surface slices, including bounded
-style inheritance and paint clipping, plus feature-gated runtime/CLI
-integration; not a stable browser compatibility or security boundary.
+style inheritance, paint clipping, and uniform solid-border painting, plus
+feature-gated runtime/CLI integration; not a stable browser compatibility or
+security boundary.
 
 This document is the repository contract for the Glass-owned native browser
 engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
@@ -18,10 +19,10 @@ HTML-to-DOM parsing, history, revisions, bounded semantic evidence, and a small
 revisioned semantic interaction/effects model for text, checkbox, radio, and
 single-select controls, plus bounded visibility/actionability and raw-text/RCDATA
 parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
-normal-flow geometry with point hit testing, a Rust-only clear/fill/text display
-list, a bounded logical RGBA software surface, inherited text color through DOM
-parent links, and bounded `overflow:hidden` paint clipping. The engine does not
-yet own
+normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
+display list, a bounded logical RGBA software surface, inherited text color
+through DOM parent links, bounded `overflow:hidden` paint clipping, and a
+uniform solid-border paint primitive. The engine does not yet own
 general CSS, scrolling/stacking layout, screenshot capture, font/image
 fidelity, hit-test visuals, JavaScript,
 network access, storage, downloads, prompts, or platform windows.
@@ -180,15 +181,16 @@ The initial presentation subset reads bounded `style` elements and inline
 `style` attributes. It matches only one-compound universal/type, ID, class, or
 attribute-presence/exact-value selectors and cascades `display` and
 `visibility` by specificity, source order, and inline precedence. Unsupported
-selectors and declarations are ignored. This state feeds text exclusion and
-semantic actionability; it does not imply general CSS, inheritance, or paint.
+selectors and declarations are ignored. This state feeds text exclusion,
+semantic actionability, and the bounded paint artifacts; it does not imply
+general CSS, inheritance, or general paint.
 
 The 009 layout seed derives integer-pixel rectangles from the current
 presentation state and configured viewport using normal block/inline flow.
 Only bounded `width:Npx` and `height:Npx` declarations affect geometry;
-percentages, margins, padding, borders, positioning, flex, grid, transforms,
-and font metrics remain unsupported. Layout is recomputed as a Rust-only
-derived view. `display:none`, explicit hidden signals, and
+percentages, margins, padding, border box-model inputs, positioning, flex,
+grid, transforms, and font metrics remain unsupported. Layout is recomputed as
+a Rust-only derived view. `display:none`, explicit hidden signals, and
 `visibility:hidden` remove boxes; `display:contents` preserves eligible
 descendants without creating its own box.
 
@@ -208,6 +210,13 @@ unsupported.
 The 013 paint boundary carries the intersection of bounded `overflow:hidden`
 ancestor rectangles on fill/text commands and rechecks that intersection at
 software replay. It does not create scroll offsets or a general clip stack.
+
+The 014 paint boundary accepts only a uniform `border:Npx solid <color>`
+declaration from the existing bounded CSS grammar. It adds one immutable
+`BorderRect` command per eligible layout box and replays the border as an
+inside-the-box ring with the existing source-over and clip rules. Border paint
+does not change layout dimensions and does not imply padding, box sizing,
+individual sides, non-solid styles, transforms, or general CSS borders.
 
 The native locator grammar is explicit and bounded:
 
@@ -320,7 +329,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - point hit testing with viewport bounds, deepest-hit ordering, actionable
   ancestor resolution, and pre-mutation rejection for empty/out-of-viewport
   points.
-- matching-revision display-list generation with bounded clear/fill/text
+- matching-revision display-list generation with bounded clear/fill/text/border
   commands and explicit unsupported-paint boundaries.
 - deterministic bounded RGBA surface replay, source-over blending, fixed-glyph
   text drawing, viewport clipping, and explicit surface-allocation limits.
@@ -328,6 +337,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden` ancestor intersections on fill/text commands and
   software-surface clipping with no scrolling or capture capability.
+- bounded uniform solid-border parsing, deterministic `BorderRect` command
+  ordering, inside-the-box border replay, and clip/source-over enforcement.
 - explicit Rust native-session construction and feature-gated CLI dispatch for
   local URL shapes, including rejection of remote endpoints and unsupported
   browser-only flags.

@@ -142,8 +142,13 @@ gate evidence is recorded in `docs/plan/tasks/native-engine-047.md` and issue
 measures text contribution through the existing paint/projection clip owner so
 fully clipped text cannot create a false root horizontal scroll range. Its
 complete gate evidence is recorded in `docs/plan/tasks/native-engine-048.md`
-and issue #40. The next active dependency-ordered task is `native-engine-049`:
-bounded independent `overflow-x`/`overflow-y` clipping through the same owner.
+and issue #40. The 049 bounded-axis-specific-overflow slice is complete
+locally: it cascades bounded `overflow-x`/`overflow-y` clips independently
+through the same owner. Its complete gate evidence is recorded in
+`docs/plan/tasks/native-engine-049.md` and issue #40. The next active
+dependency-ordered task is `native-engine-050`: bounded physical min/max
+width/height constraints through the existing box-model owner. No later
+native-engine slice is active at this checkpoint.
 No later native-engine slice is active at this checkpoint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
@@ -304,6 +309,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-047` | bounded inherited positive-pixel `line-height` through the DOM style walk and existing flow minimum/inline auto-height owners | `native-engine-046` | font-relative, unitless, percentage, CSS-wide keyword, baseline, `vertical-align`, general inheritance, and browser line metrics |
 | `native-engine-048` | bounded clip-aware root overflow measurement from the existing document-space overflow intersection | `native-engine-047` | browser overflow propagation, nested scrolling, scrollbars, axis-specific overflow, visible overflow parity, and font metrics |
 | `native-engine-049` | bounded independent `overflow-x`/`overflow-y` `hidden`/`clip` rectangles with shorthand/longhand cascade and shared consumers | `native-engine-048` | nested scrolling, scrollbars, mixed visible/auto/scroll used values, rounded descendant clips, and browser overflow parity |
+| `native-engine-050` | bounded physical `min-width`/`max-width`/`min-height`/`max-height` constraints through the existing content-box or border-box owner | `native-engine-049` | negative/percentage/auto values, intrinsic sizing, aspect ratio, margin collapsing, positioning, flex/grid, and browser sizing parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -486,6 +492,10 @@ Phase 2 integration chains added by these slices are:
     values, cascade independently from the shorthand, and constrain only the
     selected axis through the same paint, viewport, point-hit, and root-overflow
     clip owner.
+55. Native bounded min/max width and height constraints apply after the
+    existing content-box or border-box inset conversion, preserve minimum-size
+    overflow, and feed the same normal-flow, projection, hit-test, paint,
+    raster, and root-scroll owners.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -547,13 +557,15 @@ visual stacking.
 | bounded inherited fixed `line-height` | keeps nested fixture line boxes consistent with the nearest positive pixel floor without importing font metrics | no relative/unitless/percentage values, CSS-wide keywords, baselines, vertical-align, general inheritance, or browser line metrics | carry only the already-supported positive pixel value through the existing parent walk, preserve explicit child/height precedence, and reuse the current flow minimum |
 | bounded clip-aware root overflow | keeps root scrolling consistent with the already shared overflow clip and avoids false scroll ranges from invisible text | no browser overflow propagation, nested scroll state, scrollbars, axis-specific overflow, visible overflow parity, or font metrics | intersect each non-empty non-truncated text run with the existing document-space clip before deriving its right edge; retain box extents and all current projection owners |
 | bounded axis-specific overflow | keeps one axis visible while clipping the other through the existing rectangle and independently cascaded CSS declarations | no nested scrolling, scrollbars, mixed visible/auto/scroll used values, rounded descendant clips, or browser overflow parity | carry two bounded clip bits, map the selected axis to a finite document-space range, and reuse paint/projection/hit-test/root-overflow consumers |
+| bounded min/max dimensions | makes common minimum and maximum box constraints observable without replacing the integer box-model owner | no negative/percentage/auto values, intrinsic sizing, aspect ratio, margin collapsing, positioning, flex/grid, or browser sizing parity | convert bounds through existing insets, apply lower/upper constraints before available-width clamping, and preserve deterministic outer/content rectangles |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-049.md` is the current in-progress checkpoint;
-`docs/plan/tasks/native-engine-048.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-050.md` is the current in-progress checkpoint;
+`docs/plan/tasks/native-engine-049.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-048.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-047.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-046.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-045.md` is the preceding completed checkpoint;

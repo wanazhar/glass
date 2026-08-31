@@ -329,8 +329,9 @@ inside `glass-browser`. Its current Phase 2 and initial Phase 3 slices are
 deterministic and limited to `about:blank`, `data:text/html`, and registered
 local fixtures, with bounded presentation, normal-flow geometry, point
 hit-testing, bounded physical four-side padding/margin shorthands and
-longhands, explicit content-box or border-box sizing, outer/content layout
-rectangles, bounded root horizontal and vertical viewport scrolling, semantic click/type actions,
+longhands, explicit content-box or border-box sizing, bounded physical
+min/max width/height constraints, outer/content layout rectangles, bounded
+root horizontal and vertical viewport scrolling, semantic click/type actions,
 revisioned effects for supported local controls, inherited text color
 for nested content, bounded `overflow:hidden` clips shared by paint, viewport
 projection, and point hit-testing, bounded axis-specific `overflow-x`/`overflow-y`
@@ -670,7 +671,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts, including root horizontal and vertical viewport scrolling; explicit Rust or feature-gated local CLI path |
+| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts, including root horizontal and vertical viewport scrolling and bounded physical min/max dimensions; explicit Rust or feature-gated local CLI path |
 | WebKit / iPhone Safari | No direct Glass browser backend; iPhone Safari is a forwarded viewing client |
 | `glass-browser 0.3.14`, `glass-dev 0.3.14` | Current release source; public registry state is recorded in release evidence |
 | `0.3.13` | Previous published stable release |

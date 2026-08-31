@@ -73,8 +73,8 @@ fail before browser input.
 
 The feature-gated native engine additionally derives bounded integer-pixel
 normal-flow rectangles, bounded physical four-side padding/margin shorthands
-and longhands, explicit content-box or border-box sizing, outer/content
-rectangles, bounded vertical
+and longhands, explicit content-box or border-box sizing, bounded physical
+min/max width/height constraints, outer/content rectangles, bounded vertical
 viewport scrolling, inherited text color, bounded `overflow:hidden` clips
 shared by paint, viewport projection, and point hit-testing, bounded
 axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips through the same
@@ -204,7 +204,7 @@ agreement reports exact schema and capability status.
   CLI runtime. Its current semantic slice supports bounded box-model layout,
   root horizontal and vertical viewport scrolling, bounded inherited
   `white-space: nowrap` collapsed one-line flow, point input, click/type
-  actions, and revision effects for local controls. The CLI default configuration
+  actions, bounded physical min/max width/height constraints, and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary
   for hostile remote content.

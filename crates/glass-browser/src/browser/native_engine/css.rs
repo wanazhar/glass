@@ -205,6 +205,10 @@ pub(crate) struct NativeComputedStyle {
     white_space: WhiteSpaceValue,
     width: Option<u32>,
     height: Option<u32>,
+    min_width: Option<u32>,
+    max_width: Option<u32>,
+    min_height: Option<u32>,
+    max_height: Option<u32>,
     line_height: Option<u32>,
     background_color: Option<NativeColor>,
     border: Option<NativeBorder>,
@@ -236,6 +240,22 @@ impl NativeComputedStyle {
 
     pub(crate) const fn height(self) -> Option<u32> {
         self.height
+    }
+
+    pub(crate) const fn min_width(self) -> Option<u32> {
+        self.min_width
+    }
+
+    pub(crate) const fn max_width(self) -> Option<u32> {
+        self.max_width
+    }
+
+    pub(crate) const fn min_height(self) -> Option<u32> {
+        self.min_height
+    }
+
+    pub(crate) const fn max_height(self) -> Option<u32> {
+        self.max_height
     }
 
     pub(crate) const fn line_height(self) -> Option<u32> {
@@ -366,6 +386,10 @@ impl NativeStylesheet {
         let mut white_space = None;
         let mut width = None;
         let mut height = None;
+        let mut min_width = None;
+        let mut max_width = None;
+        let mut min_height = None;
+        let mut max_height = None;
         let mut line_height = None;
         let mut background_color = None;
         let mut border: [Option<CascadeValue<NativeBorderSide>>; 4] = [None; 4];
@@ -424,6 +448,46 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, height)
             {
                 height = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.min_width
+                && wins(rule.selector.specificity, rule.order, false, min_width)
+            {
+                min_width = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.max_width
+                && wins(rule.selector.specificity, rule.order, false, max_width)
+            {
+                max_width = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.min_height
+                && wins(rule.selector.specificity, rule.order, false, min_height)
+            {
+                min_height = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.max_height
+                && wins(rule.selector.specificity, rule.order, false, max_height)
+            {
+                max_height = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -580,6 +644,46 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.min_width
+                && wins(u16::MAX, usize::MAX, true, min_width)
+            {
+                min_width = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
+            if let Some(value) = declarations.max_width
+                && wins(u16::MAX, usize::MAX, true, max_width)
+            {
+                max_width = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
+            if let Some(value) = declarations.min_height
+                && wins(u16::MAX, usize::MAX, true, min_height)
+            {
+                min_height = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
+            if let Some(value) = declarations.max_height
+                && wins(u16::MAX, usize::MAX, true, max_height)
+            {
+                max_height = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.line_height
                 && wins(u16::MAX, usize::MAX, true, line_height)
             {
@@ -680,6 +784,10 @@ impl NativeStylesheet {
             white_space: white_space.map_or(inherited_white_space, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
+            min_width: min_width.map(|value| value.value),
+            max_width: max_width.map(|value| value.value),
+            min_height: min_height.map(|value| value.value),
+            max_height: max_height.map(|value| value.value),
             line_height: line_height
                 .map(|value| value.value)
                 .or(inherited_line_height),
@@ -776,6 +884,10 @@ struct NativeDeclarations {
     white_space: Option<WhiteSpaceValue>,
     width: Option<u32>,
     height: Option<u32>,
+    min_width: Option<u32>,
+    max_width: Option<u32>,
+    min_height: Option<u32>,
+    max_height: Option<u32>,
     line_height: Option<u32>,
     background_color: Option<NativeColor>,
     border: [Option<NativeBorderSide>; 4],
@@ -931,6 +1043,10 @@ fn parse_source(
             || declarations.white_space.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
+            || declarations.min_width.is_some()
+            || declarations.max_width.is_some()
+            || declarations.min_height.is_some()
+            || declarations.max_height.is_some()
             || declarations.line_height.is_some()
             || declarations.background_color.is_some()
             || declarations.border.iter().any(Option::is_some)
@@ -1044,7 +1160,9 @@ fn parse_declarations_with_diagnostics(
             }
             "visibility" => parse_visibility(value).is_some(),
             "white-space" => parse_white_space(value).is_some(),
-            "width" | "height" => parse_dimension(value).is_some(),
+            "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
+                parse_dimension(value).is_some()
+            }
             "line-height" => parse_line_height(value).is_some(),
             "background-color" | "color" => parse_color(value).is_some(),
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
@@ -1097,6 +1215,10 @@ fn is_known_css_property(property: &str) -> bool {
             | "white-space"
             | "width"
             | "height"
+            | "min-width"
+            | "max-width"
+            | "min-height"
+            | "max-height"
             | "line-height"
             | "background-color"
             | "color"
@@ -1169,6 +1291,18 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "height" => {
                 declarations.height = parse_dimension(value);
+            }
+            "min-width" => {
+                declarations.min_width = parse_dimension(value);
+            }
+            "max-width" => {
+                declarations.max_width = parse_dimension(value);
+            }
+            "min-height" => {
+                declarations.min_height = parse_dimension(value);
+            }
+            "max-height" => {
+                declarations.max_height = parse_dimension(value);
             }
             "line-height" => {
                 declarations.line_height = parse_line_height(value);
@@ -1758,13 +1892,17 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; white-space: pre-line; width: 240px; height: 30px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; white-space: pre-line; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.white_space, Some(WhiteSpaceValue::PreLine));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
+        assert_eq!(declarations.min_width, Some(12));
+        assert_eq!(declarations.max_width, Some(400));
+        assert_eq!(declarations.min_height, Some(14));
+        assert_eq!(declarations.max_height, Some(500));
         assert_eq!(declarations.line_height, Some(28));
         assert_eq!(declarations.color, Some(NativeColor::RED));
         let parsed_color = NativeColor {
@@ -2007,6 +2145,22 @@ mod tests {
             parse_declarations("overflow-x: hidden; overflow: clip; overflow-y: visible;");
         assert_eq!(declarations.overflow_x, Some(OverflowValue::Clip));
         assert_eq!(declarations.overflow_y, Some(OverflowValue::Other));
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_min_max_dimensions_with_inline_precedence() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { min-width: 8px; max-width: 64px; min-height: 10px; max-height: 80px; } #card { min-width: 16px; max-height: 40px; }"
+                .into(),
+        ])
+        .unwrap();
+        let node = node("<div id='card' style='max-width: 32px; min-height: 20px'>Card</div>");
+        let style = stylesheet.computed_for(&node);
+
+        assert_eq!(style.min_width(), Some(16));
+        assert_eq!(style.max_width(), Some(32));
+        assert_eq!(style.min_height(), Some(20));
+        assert_eq!(style.max_height(), Some(40));
     }
 
     #[test]

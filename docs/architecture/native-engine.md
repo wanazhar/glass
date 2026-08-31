@@ -12,7 +12,7 @@ bounded-pre-wrap-whitespace slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
-bounded-legacy-name-fragment-targets,
+bounded-legacy-name-fragment-targets/bounded-text-fragment-targets,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -473,17 +473,18 @@ behavior remained unsupported; 040 adds only bounded fixture-relative
 resolution. Its implementation and validation evidence are recorded in the
 task file and issue #40.
 
-The 039 bounded-fragment-target-scroll boundary resolves one exact raw local
-`id` through the existing document/layout owner and positions the root viewport
-at its clamped document-space top. The 041 bounded-percent-decoded-fragment-
-target boundary applies bounded UTF-8 percent decoding before that exact lookup,
-while retaining the same duplicate-safe scroll and history rules. Every history
-entry stores one bounded root scroll point; scroll actions update the active
-entry and traversal restores it, including reparsed different-resource entries.
-`name`/text fragments, duplicate-id recovery beyond decoded equality, malformed
-URL policy, smooth/nested/horizontal/keyboard/snap scrolling, sticky layout,
-and browser alignment parity remain unsupported. Its implementation and
-validation evidence are recorded in the task file and issue #40.
+The 039 bounded-fragment-target-scroll boundary resolved one exact raw local
+`id` through the existing document/layout owner and positioned the root viewport
+at its clamped document-space top. The later 041 bounded-percent-decoded-
+fragment-target boundary applied bounded UTF-8 percent decoding before that
+exact lookup, 042 added the legacy `<a name>` fallback, and 043 added simple
+text-fragment matching. Every history entry stores one bounded root scroll
+point; scroll actions update the active entry and traversal restores it,
+including reparsed different-resource entries. Prefix/suffix text-fragment
+syntax, duplicate-id recovery beyond decoded equality, malformed URL policy,
+smooth/nested/horizontal/keyboard/snap scrolling, sticky layout, and browser
+alignment parity remain unsupported. Each implementation and validation
+boundary is recorded in its task file and issue #40.
 
 The 040 bounded-relative-local-links boundary resolves non-absolute link
 references only from registered `fixture://` documents, retaining the current
@@ -495,20 +496,30 @@ and per-entry history restoration continue through the existing owners. Its
 implementation and validation evidence are recorded in the task file and issue
 #40.
 
-The 041 bounded-percent-decoded-fragment-target boundary decodes bounded
-percent-encoded UTF-8 fragment bytes before the existing exact visible `id`
-lookup. Literal `+` remains a plus, and malformed or invalid-UTF-8 fragments
-remain successful unresolved-target navigations that preserve scroll. `name`
-anchors, text fragments, and general URL-decoding parity remain unsupported.
-Its implementation and validation evidence are recorded in the task file and
-issue #40.
+At the 041 bounded-percent-decoded-fragment-target checkpoint, local fragment
+navigation decoded bounded percent-encoded UTF-8 bytes before the existing
+exact visible `id` lookup. Literal `+` remained a plus, and malformed or
+invalid-UTF-8 fragments remained successful unresolved-target navigations that
+preserved scroll. The later 042 and 043 checkpoints add legacy name anchors and
+simple text fragments; general URL-decoding parity remains unsupported. Its
+implementation and validation evidence are recorded in the task file and issue
+#40.
 
 The 042 bounded-legacy-name-fragment-target boundary is complete locally:
 after 041 decoding, a unique exact `<a name>` anchor is used only when no
 matching `id` exists. IDs retain precedence, duplicate IDs or names fail
 closed, and the existing visible-layout-box, root-scroll, history, and
-failure-atomicity rules remain unchanged. Text fragments, arbitrary `name`
-attributes, and browser URL/scrolling parity remain unsupported.
+failure-atomicity rules remain unchanged. Arbitrary `name` attributes and
+browser URL/scrolling parity remain unsupported; the subsequent 043 checkpoint
+adds only the bounded text-fragment form. Its implementation and validation
+evidence are recorded in the task file and issue #40.
+
+The 043 bounded-text-fragment-target boundary is complete locally: a simple
+`#:~:text=start` or `#:~:text=start,end` request matches the first visible,
+non-truncated text run after per-term bounded UTF-8 decoding. Prefix/suffix
+syntax, cross-run ranges, highlights, and browser text-fragment parity remain
+unsupported. Its implementation and validation evidence are recorded in the
+task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -659,6 +670,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - exact visible fragment-target scroll and saved history offsets;
 - bounded percent-decoded fragment identifiers for exact visible local IDs;
 - bounded legacy `<a name>` fragment identifiers as an exact-ID fallback;
+- bounded `#:~:text=start[,end]` visible text-fragment targets;
 - semantic local anchor activation through dispatcher click;
 - fixture-relative local link resolution with same-host enforcement;
 - title and visible-text projection with hidden `head`, `script`, and `style`;

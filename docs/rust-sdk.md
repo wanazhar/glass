@@ -74,8 +74,10 @@ The native engine is an explicit, default-off backend inside `glass-browser`.
 It currently supports only local `about:blank`, bounded percent-decoded or
 standard padded-base64 `data:text/html`, registered `fixture://` documents, and
 bounded fragment navigation with UTF-8 percent-decoded exact-id or legacy
-`<a name>` root scrolling, per-entry scroll restoration, and explicit Rust
-history traversal. IDs take precedence and duplicate legacy names fail closed.
+`<a name>` root scrolling, simple `#:~:text=start[,end]` matching against the
+first visible non-truncated text run, per-entry scroll restoration, and explicit
+Rust history traversal. IDs take precedence and duplicate legacy names fail
+closed; prefix/suffix and cross-run text ranges remain unsupported.
 Rust callers can also activate fragment-only, fixture-relative, and absolute local links through the
 existing semantic click path; empty hrefs remain click-only. Rust callers can
 construct it through the
@@ -127,9 +129,12 @@ and physical-pixel capture remain unavailable. Scripts,
 storage, prompts, and downloads are omitted and fail through the dispatcher.
 The feature adds no dependency and is never included in automatic backend
 selection. Native action targets are semantic and local-only, with the bounded
-`point=x,y` click extension; fragment matching is exact and case-sensitive after
-bounded UTF-8 percent decoding for visible non-empty `id` attributes, while
-missing/hidden/duplicate/malformed targets preserve the current offset. Link activation is limited to fragment-only and
+`point=x,y` click extension; non-text fragment matching is exact and
+case-sensitive after bounded UTF-8 percent decoding for visible non-empty `id`
+attributes or the unique legacy `<a name>` fallback, while simple text
+fragments match only within the first visible non-truncated layout run.
+Unresolved ID/name targets preserve the current offset, as do missing, hidden,
+malformed, and unsupported text-fragment requests. Link activation is limited to fragment-only and
 absolute local hrefs plus fixture-relative hrefs from the current registered
 fixture host. Raw form values are not part of this API.
 

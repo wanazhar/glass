@@ -300,6 +300,13 @@ legacy `<a name>` fallback after decoded `id` lookup while retaining ID
 precedence, duplicate-safe scrolling, and the existing local navigation and
 history boundaries.
 
+The completed bounded-text-fragment-target slice is
+[native-engine-043](tasks/native-engine-043.md). It adds a bounded
+`#:~:text=start[,end]` match against the first visible non-truncated text run
+with per-term UTF-8 decoding while retaining the existing fragment, scroll,
+history, and local-resource limits. No later native-engine slice is active in
+this checkout.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

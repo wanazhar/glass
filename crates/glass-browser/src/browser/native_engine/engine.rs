@@ -1,7 +1,7 @@
 use super::browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
 use super::config::{
-    NativeEngineConfig, decode_percent_encoded_fragment, resolve_fixture_relative_url,
-    validate_url_text, without_fragment,
+    NativeEngineConfig, decode_percent_encoded_fragment, decode_text_fragment_terms,
+    resolve_fixture_relative_url, validate_url_text, without_fragment,
 };
 use super::diagnostics::NativeDiagnostic;
 use super::dom::NativeDocument;
@@ -564,13 +564,21 @@ impl NativeEngine {
         if fragment.is_empty() {
             return Ok(fallback);
         }
-        let Some(decoded_fragment) = decode_percent_encoded_fragment(fragment) else {
-            return Ok(fallback);
-        };
-        let Some(target_id) = document.fragment_target(&decoded_fragment) else {
-            return Ok(fallback);
-        };
         let layout = document.layout(self.config.viewport)?;
+        let target_id = if fragment.starts_with(":~:text=") {
+            let Some((start, end)) = decode_text_fragment_terms(fragment) else {
+                return Ok(fallback);
+            };
+            document.text_fragment_target(&layout, &start, end.as_deref())
+        } else {
+            let Some(decoded_fragment) = decode_percent_encoded_fragment(fragment) else {
+                return Ok(fallback);
+            };
+            document.fragment_target(&decoded_fragment)
+        };
+        let Some(target_id) = target_id else {
+            return Ok(fallback);
+        };
         let Some(target_box) = layout.box_for(target_id) else {
             return Ok(fallback);
         };

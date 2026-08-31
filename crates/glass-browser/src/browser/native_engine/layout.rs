@@ -280,7 +280,7 @@ fn overflow_clip_for(
             break;
         };
         let style = document.computed_style_for_layout(current_id);
-        if style.overflow_hidden()
+        if style.overflow_clip()
             && let Some(rect) = boxes
                 .iter()
                 .find(|layout_box| layout_box.node_id == current_id)

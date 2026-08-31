@@ -460,6 +460,8 @@ struct FlowItem {
 }
 
 struct FlowCursor {
+    base_start_x: u32,
+    base_available_width: u32,
     start_x: u32,
     start_y: u32,
     available_width: u32,
@@ -484,12 +486,16 @@ impl FlowCursor {
         minimum_line_height: u32,
         text_align: TextAlignValue,
         allow_soft_wrap: bool,
+        text_indent: u32,
     ) -> Self {
+        let effective_indent = text_indent.min(available_width.saturating_sub(CHARACTER_WIDTH));
         Self {
-            start_x: x,
+            base_start_x: x,
+            base_available_width: available_width,
+            start_x: x.saturating_add(effective_indent),
             start_y: y,
-            available_width,
-            x,
+            available_width: available_width.saturating_sub(effective_indent),
+            x: x.saturating_add(effective_indent),
             y,
             minimum_line_height,
             text_align,
@@ -515,6 +521,7 @@ impl FlowCursor {
             self.line_has_content = false;
             self.line_items.clear();
         }
+        self.reset_line_position();
     }
 
     fn force_line_break(&mut self) {
@@ -525,10 +532,16 @@ impl FlowCursor {
         self.max_bottom = self
             .max_bottom
             .max(self.y.saturating_add(self.minimum_line_height));
-        self.x = self.start_x;
         self.line_height = 0;
         self.line_has_content = false;
         self.line_items.clear();
+        self.reset_line_position();
+    }
+
+    fn reset_line_position(&mut self) {
+        self.start_x = self.base_start_x;
+        self.available_width = self.base_available_width;
+        self.x = self.start_x;
     }
 
     fn take_pending_whitespace(&mut self) -> bool {
@@ -646,7 +659,13 @@ impl<'a> LayoutBuilder<'a> {
             .document
             .computed_style_for_layout(parent)
             .white_space();
-        let text_align = self.document.computed_style_for_layout(parent).text_align();
+        let style = self.document.computed_style_for_layout(parent);
+        let text_align = style.text_align();
+        let text_indent = if self.effective_display(parent) == DisplayValue::Block {
+            style.text_indent()
+        } else {
+            0
+        };
         let allow_soft_wrap =
             !matches!(white_space, WhiteSpaceValue::Pre | WhiteSpaceValue::NoWrap);
         let mut flow = FlowCursor::new(
@@ -656,6 +675,7 @@ impl<'a> LayoutBuilder<'a> {
             minimum_line_height,
             text_align,
             allow_soft_wrap,
+            text_indent,
         );
         self.process_children(parent, &mut flow, depth);
         self.flush_line(&mut flow);

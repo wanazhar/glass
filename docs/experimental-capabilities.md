@@ -149,6 +149,7 @@ inside-out transparent-layer compositing, bounded inherited physical
 inherited fixed-cell `text-decoration:none|underline` paint, bounded PNG
 capture, and bounded inherited ASCII
 `text-transform:none|uppercase|lowercase` layout,
+bounded non-negative fixed-pixel first-line `text-indent` for block flow,
 and
 Rust-only
 display-list/software-surface artifacts;

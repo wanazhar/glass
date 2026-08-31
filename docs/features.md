@@ -76,6 +76,7 @@ source-behavior reference.
   colors for background, border, and text paint, bounded inherited fixed-cell
   `text-decoration:none|underline` paint,
   bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
+  bounded non-negative fixed-pixel first-line `text-indent` for block flow,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
@@ -274,6 +275,7 @@ projection, and point hit-testing,
   shorthands and longhands, bounded physical min/max width/height constraints,
   explicit box sizing, and bounded root horizontal and vertical viewport scrolling,
   bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
+  bounded non-negative fixed-pixel first-line `text-indent` for block flow,
   native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible

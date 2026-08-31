@@ -169,11 +169,13 @@ wrapping, text-fragment matching, display-list projection, and root-overflow
 measurement consume the same presentation text. Semantic source text remains
 unchanged; Unicode case mapping, locale behavior, and font-specific glyph
 metrics remain outside the boundary. Its implementation and validation
-evidence are recorded in the task file and issue #40. The active
+evidence are recorded in the task file and issue #40. The completed
 dependency-ordered `native-engine-056` task adds bounded non-negative
 fixed-pixel `text-indent` to the first line of block containers, clamps the
 effective value to retain one fixed cell, and keeps inline/`display:contents`
-text on the containing block's flow.
+text on the containing block's flow. Its implementation and local validation
+evidence are recorded in the task file and issue #40; remote CI remains
+pending until this branch is pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -619,9 +621,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-056.md` is the active checkpoint;
-`docs/plan/tasks/native-engine-055.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-054.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-056.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-055.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-054.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-053.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-052.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-051.md` is the preceding completed checkpoint;

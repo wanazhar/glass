@@ -622,13 +622,14 @@ and root-overflow measurement. Semantic source text remains unchanged; Unicode
 case mapping, locale behavior, and font-specific glyph metrics remain outside
 the boundary. Implementation and validation evidence are recorded in the 055
 task file and issue #40.
-The active 056 boundary adds non-negative fixed-pixel `text-indent` for the
+The completed 056 boundary adds non-negative fixed-pixel `text-indent` for the
 first line of block containers. It reduces only that line's fixed-cell
 capacity, resets later lines to the full content width, and leaves inline and
 `display:contents` elements on their containing block's flow. The effective
 indent is clamped to retain one fixed cell; negative, percentage, and
-font-relative forms remain outside the boundary. Implementation is tracked in
-the 056 task file and issue #40.
+font-relative forms remain outside the boundary. Implementation and local
+validation evidence are recorded in the 056 task file and issue #40; remote
+CI remains pending until this branch is pushed.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

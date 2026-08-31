@@ -9,7 +9,8 @@ bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golde
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace slices,
-bounded-base64-data-url/bounded-fragment-navigation-history,
+bounded-base64-data-url/bounded-fragment-navigation-history/
+bounded-local-link-activation,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -47,6 +48,8 @@ bounded inherited `white-space: pre-line`, `white-space: pre`, and
 viewport projection, and point hit testing, and bounded read-only diagnostics
 for unsupported CSS input, plus bounded local same-document fragment
 navigation and Rust history traversal.
+Semantic local anchor activation reaches that same bounded navigation owner for
+fragment-only and absolute local hrefs; unsupported href forms fail closed.
 The engine does not
 yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
@@ -215,6 +218,14 @@ control state, and root scroll offset. It does not automatically scroll to an
 element identified by the fragment. Explicit Rust back/forward traversal moves
 the bounded history cursor; different-resource entries are parsed before
 commit, while same-resource fragment entries reuse the current document.
+
+Semantic anchor clicks use the existing action path as one bounded default
+action. Fragment-only hrefs resolve against the current local resource, and
+absolute about:blank, data:text/html, and registered fixture:// hrefs use the
+existing loader. Empty hrefs remain click-only; relative paths, remote schemes,
+and other unsupported destinations fail before mutation. Successful link
+activation commits the existing same-document or parse-before-commit
+different-resource navigation path without adding a transport-level operation.
 
 The scheduler owns a deterministic logical clock and bounded ordered task
 queue. It commits navigation in a reproducible order. Interaction mutation is
@@ -438,6 +449,15 @@ network navigation, redirects, HTTP state, credentials, cookies, and shared
 transport history operations remain unsupported. Its implementation and
 validation evidence are recorded in the task file and issue #40.
 
+The 038 bounded-local-link-activation boundary routes semantic `<a href>`
+clicks through the existing navigation owner. It accepts only fragment-only
+and absolute local hrefs, prevalidates unsupported destinations, keeps empty
+hrefs click-only, and preserves the 037 same-document, history, and
+parse-before-commit invariants. Relative paths, remote/network navigation,
+downloads, target contexts, and event-loop/default-action behavior remain
+unsupported. Its implementation and validation evidence are recorded in the
+task file and issue #40.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -583,6 +603,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - lifecycle transitions and repeated/invalid close behavior;
 - `about:blank`, percent-decoded `data:` HTML, and registered fixtures;
 - raw-fragment URL retention and bounded same-document local navigation;
+- semantic local anchor activation through dispatcher click;
 - title and visible-text projection with hidden `head`, `script`, and `style`;
 - bounded history entries, monotonic revisions, and explicit Rust traversal;
 - deterministic scheduler ordering and queue bounds;

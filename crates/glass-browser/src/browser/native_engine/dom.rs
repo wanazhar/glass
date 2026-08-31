@@ -894,6 +894,13 @@ impl NativeDocument {
         None
     }
 
+    pub(crate) fn link_href(&self, id: NativeNodeId) -> Option<&str> {
+        let node = self.node(id)?;
+        (node.element_name() == Some("a") && self.semantic_role(id) == Some("link"))
+            .then(|| node.attribute("href"))
+            .flatten()
+    }
+
     fn semantic_role(&self, id: NativeNodeId) -> Option<&'static str> {
         let node = self.node(id)?;
         if let Some(role) = node

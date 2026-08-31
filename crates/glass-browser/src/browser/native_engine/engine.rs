@@ -1,5 +1,5 @@
 use super::browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
-use super::config::{NativeEngineConfig, without_fragment};
+use super::config::{NativeEngineConfig, validate_url_text, without_fragment};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::NativeDocument;
 use super::error::NativeEngineError;
@@ -239,6 +239,11 @@ impl NativeEngine {
                 if !self.document.is_hidden_for_layout(id) {
                     self.require_layout_actionable(id)?;
                 }
+                if let Some(href) = self.document.link_href(id).map(str::to_owned)
+                    && !href.is_empty()
+                {
+                    return self.activate_link(id, &href);
+                }
                 (self.document.apply_click(id)?, true)
             }
             NativeAction::Type { target, text } => {
@@ -271,6 +276,56 @@ impl NativeEngine {
             revision: next_revision,
             accepted: true,
         })
+    }
+
+    fn activate_link(
+        &mut self,
+        id: super::dom::NativeNodeId,
+        href: &str,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let target_url = self.resolve_link_href(href)?;
+        let resource = self.loader.load(&target_url)?;
+        let revision = self.next_revision()?;
+        if self.is_same_document_navigation(&resource.url) {
+            self.run_commit_task(
+                NativeTask::CommitSameDocumentNavigation,
+                "link same-document navigation",
+            )?;
+            let events = self.document.apply_click(id)?;
+            self.document.set_revision(revision);
+            self.url = resource.url.clone();
+            self.revision = revision;
+            self.history.push(resource.url, revision);
+            self.record_effects(events);
+            return Ok(NativeActionResult {
+                revision,
+                accepted: true,
+            });
+        }
+
+        let prepared = self.prepare_navigation_resource(resource)?;
+        self.run_commit_task(NativeTask::CommitNavigation, "link navigation")?;
+        let _events = self.document.apply_click(id)?;
+        self.document = prepared.document;
+        self.url = prepared.resource.url;
+        self.origin = prepared.resource.origin;
+        self.scroll_offset = NativePoint { x: 0, y: 0 };
+        self.revision = revision;
+        self.history.push(self.url.clone(), revision);
+        Ok(NativeActionResult {
+            revision,
+            accepted: true,
+        })
+    }
+
+    fn resolve_link_href(&self, href: &str) -> Result<String, NativeEngineError> {
+        validate_url_text("link href", href)?;
+        if let Some(fragment) = href.strip_prefix('#') {
+            let target = format!("{}#{fragment}", without_fragment(&self.url));
+            validate_url_text("link target URL", &target)?;
+            return Ok(target);
+        }
+        Ok(href.to_owned())
     }
 
     pub fn effects_since(

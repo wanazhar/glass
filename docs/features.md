@@ -67,7 +67,8 @@ source-behavior reference.
   paint, viewport projection, and point hit-testing, a display list, a logical RGBA software
   surface,
   bounded PNG capture, bounded local fragment navigation and Rust history
-  traversal, and bounded revisioned Rust diagnostics for unsupported
+  traversal, bounded local anchor activation for fragment-only and absolute
+  local hrefs, and bounded revisioned Rust diagnostics for unsupported
   CSS; these are not screenshot-containing evidence or stable transport
   diagnostics.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,

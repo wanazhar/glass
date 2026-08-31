@@ -67,8 +67,10 @@ pub struct NativeTextLayout {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeLayoutPaintOrder {
+    BeginOpacityGroup { node_id: NativeNodeId, opacity: u8 },
     Box(usize),
     Text(usize),
+    EndOpacityGroup { node_id: NativeNodeId },
 }
 
 /// Deterministic layout derived from one current native document revision.
@@ -658,7 +660,24 @@ impl<'a> LayoutBuilder<'a> {
                     }
                     match display {
                         DisplayValue::None => {}
-                        DisplayValue::Contents => self.process_children(child, flow, depth + 1),
+                        DisplayValue::Contents => {
+                            let opacity = self.document.computed_style_for_layout(child).opacity();
+                            let grouped = opacity < u8::MAX;
+                            if grouped {
+                                self.paint_order
+                                    .push(NativeLayoutPaintOrder::BeginOpacityGroup {
+                                        node_id: child,
+                                        opacity,
+                                    });
+                            }
+                            self.process_children(child, flow, depth + 1);
+                            if grouped {
+                                self.paint_order
+                                    .push(NativeLayoutPaintOrder::EndOpacityGroup {
+                                        node_id: child,
+                                    });
+                            }
+                        }
                         DisplayValue::Block => {
                             flow.flush_line();
                             let margin = self.document.computed_style_for_layout(child).margin();
@@ -732,10 +751,33 @@ impl<'a> LayoutBuilder<'a> {
             return FlowSize::default();
         }
         if display == DisplayValue::Contents {
-            return self.layout_children(id, x, y, available_width, depth);
+            let opacity = style.opacity();
+            let grouped = opacity < u8::MAX;
+            if grouped {
+                self.paint_order
+                    .push(NativeLayoutPaintOrder::BeginOpacityGroup {
+                        node_id: id,
+                        opacity,
+                    });
+            }
+            let result = self.layout_children(id, x, y, available_width, depth);
+            if grouped {
+                self.paint_order
+                    .push(NativeLayoutPaintOrder::EndOpacityGroup { node_id: id });
+            }
+            return result;
         }
 
         let is_block = display == DisplayValue::Block;
+        let opacity = style.opacity();
+        let grouped = opacity < u8::MAX;
+        if grouped {
+            self.paint_order
+                .push(NativeLayoutPaintOrder::BeginOpacityGroup {
+                    node_id: id,
+                    opacity,
+                });
+        }
         let padding = style.padding();
         let (border_top, border_right, border_bottom, border_left) =
             style.border().map_or((0, 0, 0, 0), |border| {
@@ -822,6 +864,10 @@ impl<'a> LayoutBuilder<'a> {
             width: content_width,
             height: content_height,
         };
+        if grouped {
+            self.paint_order
+                .push(NativeLayoutPaintOrder::EndOpacityGroup { node_id: id });
+        }
         FlowSize { width, height }
     }
 

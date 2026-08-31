@@ -420,9 +420,110 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
         NativeDisplayCommand::FillRect { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. } => *node_id == hidden,
-        NativeDisplayCommand::Clear { .. } => false,
+        NativeDisplayCommand::BeginOpacityGroup { .. }
+        | NativeDisplayCommand::Clear { .. }
+        | NativeDisplayCommand::EndOpacityGroup { .. } => false,
     }));
     assert_eq!(list, document.display_list(viewport).unwrap());
+}
+
+#[test]
+fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
+    let document = NativeDocument::parse(
+        "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(parent),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout.box_for(child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 10,
+        })
+    );
+    assert_eq!(layout.hit_test(4, 4).unwrap(), Some(child));
+
+    let list = document.display_list(viewport).unwrap();
+    let groups = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::BeginOpacityGroup { node_id, opacity } => {
+                Some((*node_id, *opacity))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(groups, vec![(parent, 128)]);
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::EndOpacityGroup { node_id } if *node_id == parent
+        )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(30, 5), Some([255, 127, 127, 255]));
+    assert_eq!(surface.pixel(5, 5), Some([127, 127, 255, 255]));
+}
+
+#[test]
+fn native_nested_opacity_and_zero_opacity_keep_geometry_but_change_pixels() {
+    let document = NativeDocument::parse(
+        "<div id='zero' style='display:block;width:12px;height:12px;background-color:red;opacity:0'></div><div id='contents' style='display:contents;opacity:50%'><div id='child' style='display:block;width:12px;height:12px;background-color:blue;opacity:50%'></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let zero = document.resolve_target("id=zero").unwrap();
+    let contents = document.resolve_target("id=contents").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(zero).unwrap().y, 0);
+    assert_eq!(layout.box_for(child).unwrap().y, 12);
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(zero));
+    assert_eq!(layout.hit_test(1, 13).unwrap(), Some(child));
+
+    let list = document.display_list(viewport).unwrap();
+    let groups = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::BeginOpacityGroup { node_id, opacity } => {
+                Some((*node_id, *opacity))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(groups, vec![(zero, 0), (contents, 128), (child, 128)]);
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(20, 20), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(5, 13), Some([191, 191, 255, 255]));
 }
 
 #[test]
@@ -1143,7 +1244,9 @@ fn native_br_elements_create_bounded_hard_breaks_without_layout_nodes() {
                 && *node_id != middle_b
                 && *node_id != trailing
         }
-        NativeDisplayCommand::Clear { .. } => true,
+        NativeDisplayCommand::BeginOpacityGroup { .. }
+        | NativeDisplayCommand::Clear { .. }
+        | NativeDisplayCommand::EndOpacityGroup { .. } => true,
     }));
     let surface = list.rasterize().unwrap();
     assert_eq!(surface.pixel(1, 20), Some([0, 0, 0, 255]));
@@ -3968,7 +4071,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -3996,6 +4099,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "width"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "opacity"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

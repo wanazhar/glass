@@ -145,11 +145,13 @@ complete gate evidence is recorded in `docs/plan/tasks/native-engine-048.md`
 and issue #40. The 049 bounded-axis-specific-overflow slice is complete
 locally: it cascades bounded `overflow-x`/`overflow-y` clips independently
 through the same owner. Its complete gate evidence is recorded in
-`docs/plan/tasks/native-engine-049.md` and issue #40. The next active
+`docs/plan/tasks/native-engine-049.md` and issue #40. The completed
 dependency-ordered task is `native-engine-050`: bounded physical min/max
-width/height constraints through the existing box-model owner. No later
-native-engine slice is active at this checkpoint.
-No later native-engine slice is active at this checkpoint.
+width/height constraints through the existing box-model owner. The completed
+`native-engine-051` task adds bounded CSS opacity groups through transparent
+display-list layers and software compositing. No general stacking, transform,
+filter, animation, or browser compositor parity is implied, and no later
+native-engine slice is active in this checkpoint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -204,10 +206,10 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color and positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, and physical padding/margin edges | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
-| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, root scroll projection, and rounded point hit testing | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
-| `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
-| `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color and positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, and local opacity alpha | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, opacity group boundaries, root scroll projection, and rounded point hit testing | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
+| `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, nested opacity layers, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
 | `native_engine::interaction` | action/effect types and bounded effect records | semantic action and event kind | revisioned interaction metadata | native DOM IDs |
 | `native_engine::engine` | sole mutable page-state coordinator | lifecycle/navigation/action requests | snapshots/context/history/effects | all engine modules |
@@ -310,6 +312,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-048` | bounded clip-aware root overflow measurement from the existing document-space overflow intersection | `native-engine-047` | browser overflow propagation, nested scrolling, scrollbars, axis-specific overflow, visible overflow parity, and font metrics |
 | `native-engine-049` | bounded independent `overflow-x`/`overflow-y` `hidden`/`clip` rectangles with shorthand/longhand cascade and shared consumers | `native-engine-048` | nested scrolling, scrollbars, mixed visible/auto/scroll used values, rounded descendant clips, and browser overflow parity |
 | `native-engine-050` | bounded physical `min-width`/`max-width`/`min-height`/`max-height` constraints through the existing content-box or border-box owner | `native-engine-049` | negative/percentage/auto values, intrinsic sizing, aspect ratio, margin collapsing, positioning, flex/grid, and browser sizing parity |
+| `native-engine-051` | bounded local CSS opacity alpha with display-list subtree markers and inside-out transparent-layer software compositing | `native-engine-050` | stacking contexts, transforms, filters, blend modes, animation, compositor parity, and unbounded layer allocation |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -496,6 +499,11 @@ Phase 2 integration chains added by these slices are:
     existing content-box or border-box inset conversion, preserve minimum-size
     overflow, and feed the same normal-flow, projection, hit-test, paint,
     raster, and root-scroll owners.
+56. Native local opacity values quantize to bounded 8-bit alpha and bracket
+    reduced-opacity rendered subtrees with display-list markers; software
+    replay composites nested groups inside-out under explicit depth and
+    aggregate-layer-pixel limits, while layout and point hit testing remain
+    unchanged.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -558,13 +566,15 @@ visual stacking.
 | bounded clip-aware root overflow | keeps root scrolling consistent with the already shared overflow clip and avoids false scroll ranges from invisible text | no browser overflow propagation, nested scroll state, scrollbars, axis-specific overflow, visible overflow parity, or font metrics | intersect each non-empty non-truncated text run with the existing document-space clip before deriving its right edge; retain box extents and all current projection owners |
 | bounded axis-specific overflow | keeps one axis visible while clipping the other through the existing rectangle and independently cascaded CSS declarations | no nested scrolling, scrollbars, mixed visible/auto/scroll used values, rounded descendant clips, or browser overflow parity | carry two bounded clip bits, map the selected axis to a finite document-space range, and reuse paint/projection/hit-test/root-overflow consumers |
 | bounded min/max dimensions | makes common minimum and maximum box constraints observable without replacing the integer box-model owner | no negative/percentage/auto values, intrinsic sizing, aspect ratio, margin collapsing, positioning, flex/grid, or browser sizing parity | convert bounds through existing insets, apply lower/upper constraints before available-width clamping, and preserve deterministic outer/content rectangles |
+| bounded opacity groups | makes local translucent subtrees compose as one paint group without changing the layout owner | off-screen layers add memory and a second pixel pass; no stacking contexts, transforms, filters, animation, or browser compositor parity | parse bounded fixed-point alpha, bracket only reduced-opacity rendered subtrees, cap group depth and aggregate layer pixels, and keep opacity out of layout/hit visibility |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-050.md` is the current in-progress checkpoint;
-`docs/plan/tasks/native-engine-049.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-051.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-050.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-049.md` is the earlier completed checkpoint;
 `docs/plan/tasks/native-engine-048.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-047.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-046.md` is the preceding completed checkpoint;

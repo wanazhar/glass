@@ -5,6 +5,10 @@ use super::paint::{MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisp
 
 /// Maximum number of logical pixels retained by one native software surface.
 pub const MAX_NATIVE_SURFACE_PIXELS: usize = 4 * 1024 * 1024;
+/// Maximum nesting depth for bounded opacity groups.
+pub const MAX_NATIVE_OPACITY_GROUP_DEPTH: usize = 8;
+/// Maximum logical pixels retained across the root surface and opacity layers.
+pub const MAX_NATIVE_OPACITY_LAYER_PIXELS: usize = MAX_NATIVE_SURFACE_PIXELS * 4;
 const GLYPH_WIDTH: u32 = 5;
 const GLYPH_ADVANCE: u32 = 6;
 
@@ -49,15 +53,52 @@ impl NativeSurface {
         let byte_len = pixels.checked_mul(4).ok_or_else(|| {
             NativeEngineError::invalid("surface bytes", "RGBA byte count exceeds host bounds")
         })?;
-        let mut surface = Self {
+        let mut surfaces = vec![Self {
             width,
             height,
             rgba: vec![0; byte_len],
-        };
+        }];
+        let mut opacity_groups = Vec::new();
         let scroll_offset = display_list.scroll_offset;
         for command in &display_list.commands {
             match command {
-                NativeDisplayCommand::Clear { color } => surface.clear(*color),
+                NativeDisplayCommand::BeginOpacityGroup { node_id, opacity } => {
+                    if opacity_groups.len() >= MAX_NATIVE_OPACITY_GROUP_DEPTH {
+                        return Err(NativeEngineError::limit(
+                            "native opacity group depth",
+                            MAX_NATIVE_OPACITY_GROUP_DEPTH,
+                            opacity_groups.len().saturating_add(1),
+                        ));
+                    }
+                    let layer_count = surfaces.len().checked_add(1).ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "native opacity layers",
+                            "layer count exceeds host bounds",
+                        )
+                    })?;
+                    let total_pixels = layer_count.checked_mul(pixels).ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "native opacity layer pixels",
+                            "aggregate pixel count exceeds host bounds",
+                        )
+                    })?;
+                    if total_pixels > MAX_NATIVE_OPACITY_LAYER_PIXELS {
+                        return Err(NativeEngineError::limit(
+                            "native opacity layer pixels",
+                            MAX_NATIVE_OPACITY_LAYER_PIXELS,
+                            total_pixels,
+                        ));
+                    }
+                    surfaces.push(Self {
+                        width,
+                        height,
+                        rgba: vec![0; byte_len],
+                    });
+                    opacity_groups.push((*node_id, *opacity));
+                }
+                NativeDisplayCommand::Clear { color } => {
+                    Self::current_surface_mut(&mut surfaces)?.clear(*color);
+                }
                 NativeDisplayCommand::FillRect {
                     rect,
                     radius,
@@ -71,7 +112,14 @@ impl NativeSurface {
                     let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
                         continue;
                     };
-                    surface.fill_rect(viewport_rect, *rect, *radius, *color, clip, scroll_offset);
+                    Self::current_surface_mut(&mut surfaces)?.fill_rect(
+                        viewport_rect,
+                        *rect,
+                        *radius,
+                        *color,
+                        clip,
+                        scroll_offset,
+                    );
                 }
                 NativeDisplayCommand::BorderRect {
                     rect,
@@ -83,7 +131,13 @@ impl NativeSurface {
                     let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
                         continue;
                     };
-                    surface.border_rect(*rect, *radius, *borders, clip, scroll_offset);
+                    Self::current_surface_mut(&mut surfaces)?.border_rect(
+                        *rect,
+                        *radius,
+                        *borders,
+                        clip,
+                        scroll_offset,
+                    );
                 }
                 NativeDisplayCommand::TextRun {
                     origin,
@@ -102,11 +156,49 @@ impl NativeSurface {
                     let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
                         continue;
                     };
-                    surface.draw_text(*origin, text, *color, clip, scroll_offset);
+                    Self::current_surface_mut(&mut surfaces)?.draw_text(
+                        *origin,
+                        text,
+                        *color,
+                        clip,
+                        scroll_offset,
+                    );
+                }
+                NativeDisplayCommand::EndOpacityGroup { node_id } => {
+                    let Some((open_node_id, opacity)) = opacity_groups.pop() else {
+                        return Err(NativeEngineError::invalid(
+                            "native opacity group",
+                            "end marker has no matching begin marker",
+                        ));
+                    };
+                    if open_node_id != *node_id {
+                        return Err(NativeEngineError::invalid(
+                            "native opacity group",
+                            "end marker does not match the open group",
+                        ));
+                    }
+                    let layer = surfaces.pop().ok_or_else(|| {
+                        NativeEngineError::invalid("native opacity group", "group layer is missing")
+                    })?;
+                    Self::current_surface_mut(&mut surfaces)?.composite_layer(&layer, opacity);
                 }
             }
         }
-        Ok(surface)
+        if !opacity_groups.is_empty() || surfaces.len() != 1 {
+            return Err(NativeEngineError::invalid(
+                "native opacity group",
+                "display list has an unclosed group",
+            ));
+        }
+        surfaces
+            .pop()
+            .ok_or_else(|| NativeEngineError::invalid("native surface", "root surface is missing"))
+    }
+
+    fn current_surface_mut(surfaces: &mut [Self]) -> Result<&mut Self, NativeEngineError> {
+        surfaces.last_mut().ok_or_else(|| {
+            NativeEngineError::invalid("native surface", "current surface is missing")
+        })
     }
 
     pub const fn width(&self) -> u32 {
@@ -412,6 +504,21 @@ impl NativeSurface {
         }
     }
 
+    fn composite_layer(&mut self, layer: &Self, opacity: u8) {
+        let width = usize::try_from(self.width).unwrap_or(1);
+        for (pixel_index, pixel) in layer.rgba.chunks_exact(4).enumerate() {
+            let color = super::css::NativeColor {
+                red: pixel[0],
+                green: pixel[1],
+                blue: pixel[2],
+                alpha: multiply_alpha(pixel[3], opacity),
+            };
+            let x = u32::try_from(pixel_index % width).unwrap_or(u32::MAX);
+            let y = u32::try_from(pixel_index / width).unwrap_or(u32::MAX);
+            self.blend_pixel(x, y, color);
+        }
+    }
+
     fn blend_pixel(&mut self, x: u32, y: u32, color: super::css::NativeColor) {
         let Some(index) = self.pixel_index(x, y) else {
             return;
@@ -461,6 +568,10 @@ impl NativeSurface {
             .checked_add(usize::try_from(x).ok()?)?;
         pixel.checked_mul(4)
     }
+}
+
+const fn multiply_alpha(source: u8, multiplier: u8) -> u8 {
+    (((source as u16) * (multiplier as u16) + (u8::MAX as u16) / 2) / (u8::MAX as u16)) as u8
 }
 
 impl NativeDisplayList {
@@ -711,6 +822,97 @@ mod tests {
         assert_eq!(surface.pixel(1, 1), Some([127, 127, 255, 255]));
         assert_eq!(surface.pixel(3, 2), Some([255, 255, 255, 255]));
         assert_eq!(surface.pixel(4, 0), None);
+    }
+
+    #[test]
+    fn surface_composites_nested_opacity_groups_inside_out() {
+        let node = NativeDocument::empty().root();
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::BeginOpacityGroup {
+                    node_id: node,
+                    opacity: 128,
+                },
+                NativeDisplayCommand::FillRect {
+                    node_id: node,
+                    rect: NativeRect {
+                        x: 0,
+                        y: 0,
+                        width: 2,
+                        height: 1,
+                    },
+                    radius: NativeBorderRadius::default(),
+                    color: NativeColor::RED,
+                    clip: None,
+                },
+                NativeDisplayCommand::BeginOpacityGroup {
+                    node_id: node,
+                    opacity: 128,
+                },
+                NativeDisplayCommand::FillRect {
+                    node_id: node,
+                    rect: NativeRect {
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 1,
+                    },
+                    radius: NativeBorderRadius::default(),
+                    color: NativeColor {
+                        red: 0,
+                        green: 0,
+                        blue: 255,
+                        alpha: 255,
+                    },
+                    clip: None,
+                },
+                NativeDisplayCommand::EndOpacityGroup { node_id: node },
+                NativeDisplayCommand::EndOpacityGroup { node_id: node },
+            ],
+            2,
+            1,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(1, 0), Some([255, 127, 127, 255]));
+        assert_eq!(surface.pixel(0, 0), Some([191, 127, 191, 255]));
+    }
+
+    #[test]
+    fn surface_rejects_unbalanced_and_over_budget_opacity_groups() {
+        let node = NativeDocument::empty().root();
+        let unclosed = display_list(
+            vec![NativeDisplayCommand::BeginOpacityGroup {
+                node_id: node,
+                opacity: 128,
+            }],
+            2,
+            2,
+        );
+        assert!(matches!(
+            unclosed.rasterize(),
+            Err(NativeEngineError::InvalidConfiguration { field, .. })
+                if field == "native opacity group"
+        ));
+
+        let mut commands = vec![NativeDisplayCommand::Clear {
+            color: NativeColor::WHITE,
+        }];
+        for _ in 0..4 {
+            commands.push(NativeDisplayCommand::BeginOpacityGroup {
+                node_id: node,
+                opacity: 128,
+            });
+        }
+        let over_budget = display_list(commands, 2_000, 2_000);
+        assert!(matches!(
+            over_budget.rasterize(),
+            Err(NativeEngineError::LimitExceeded { resource, .. })
+                if resource == "native opacity layer pixels"
+        ));
     }
 
     #[test]

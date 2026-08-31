@@ -10,7 +10,7 @@ bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
-bounded-min-max-dimensions slices,
+bounded-min-max-dimensions/bounded-opacity-groups slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -55,13 +55,20 @@ bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
 for unsupported CSS input, plus bounded local same-document fragment
-navigation and Rust history traversal.
+navigation and Rust history traversal, and bounded local opacity groups that
+composite reduced-opacity rendered subtrees through transparent software layers.
 The 049 boundary adds independent bounded `overflow-x:hidden`/`clip` and
 `overflow-y:hidden`/`clip` clips through that same rectangular owner; it does
 not add nested scrolling, scrollbars, or visible-overflow propagation.
 The 050 boundary adds bounded physical `min-width`/`max-width` and
 `min-height`/`max-height` constraints through the same box-model owner;
 intrinsic, percentage, and flex/grid sizing remain outside the boundary.
+The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
+and brackets reduced-opacity rendered subtrees with immutable display-list
+markers. The rasterizer composites each group inside-out through bounded
+transparent layers, while layout, semantic visibility, hit testing, and root
+scrolling remain unchanged; general stacking contexts and compositor parity
+remain outside the boundary.
 Semantic local anchor activation reaches that same bounded navigation owner for
 fragment-only, fixture-relative, and absolute local hrefs; unsupported href
 forms fail closed.
@@ -578,10 +585,20 @@ The completed 049 bounded-axis-specific-overflow boundary accepts only bounded
 independently, and preserves the existing rectangular clip owner across paint,
 viewport projection, hit testing, and root-overflow measurement.
 
-The 050 bounded-min-max-dimensions boundary is the next active slice. It will
-apply bounded physical minimum and maximum pixel constraints to the existing
-content-box or border-box width/height calculations while preserving normal
-flow and all downstream geometry owners.
+The completed 050 bounded-min-max-dimensions boundary applies bounded physical
+minimum and maximum pixel constraints to the existing content-box or border-box
+width/height calculations while preserving normal flow and all downstream
+geometry owners.
+
+The completed 051 bounded-opacity-groups boundary adds local CSS opacity as
+real subtree compositing. Reduced-opacity elements bracket their own box and
+rendered descendants with display-list markers; the software rasterizer
+replays each group in a transparent layer before source-over compositing it
+onto its parent. Fixed-point alpha parsing, nested groups, `display:contents`,
+zero-opacity layout/hit behavior, and explicit layer budgets are in scope;
+general stacking, transforms, filters, animation, and browser compositor parity
+remain outside the boundary. No later native-engine slice is active in this
+checkpoint.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -771,6 +788,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   commands and explicit unsupported-paint boundaries.
 - deterministic bounded RGBA surface replay, source-over blending, fixed-glyph
   text drawing, viewport clipping, and explicit surface-allocation limits.
+- bounded local opacity parsing and subtree display-list markers, nested
+  transparent-layer replay, inside-out source-over group compositing, and
+  explicit aggregate layer depth/pixel limits without changing layout or hit
+  testing.
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden`/`overflow:clip` ancestor intersections on

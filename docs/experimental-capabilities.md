@@ -142,7 +142,8 @@ flow with bounded inherited line-height, bounded direct-text flow fragments and
 source-order text paint, bounded
 word-aware wrapping, bounded source-whitespace boundaries across supported
 inline flow, bounded inherited `white-space: nowrap` collapsed one-line flow,
-bounded root horizontal scrolling, bounded PNG capture, and
+bounded root horizontal scrolling, bounded local opacity subtree groups with
+inside-out transparent-layer compositing, bounded PNG capture, and
 Rust-only
 display-list/software-surface artifacts;
 Rust callers can inspect bounded revisioned diagnostics for unsupported CSS

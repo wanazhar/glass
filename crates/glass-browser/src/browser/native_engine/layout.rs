@@ -400,6 +400,7 @@ struct FlowCursor {
     x: u32,
     y: u32,
     minimum_line_height: u32,
+    allow_soft_wrap: bool,
     line_height: u32,
     line_has_content: bool,
     pending_whitespace: bool,
@@ -408,7 +409,13 @@ struct FlowCursor {
 }
 
 impl FlowCursor {
-    fn new(x: u32, y: u32, available_width: u32, minimum_line_height: u32) -> Self {
+    fn new(
+        x: u32,
+        y: u32,
+        available_width: u32,
+        minimum_line_height: u32,
+        allow_soft_wrap: bool,
+    ) -> Self {
         Self {
             start_x: x,
             start_y: y,
@@ -416,6 +423,7 @@ impl FlowCursor {
             x,
             y,
             minimum_line_height,
+            allow_soft_wrap,
             line_height: 0,
             line_has_content: false,
             pending_whitespace: false,
@@ -463,7 +471,8 @@ impl FlowCursor {
     }
 
     fn would_wrap(&self, width: u32) -> bool {
-        self.line_has_content
+        self.allow_soft_wrap
+            && self.line_has_content
             && self.x.saturating_sub(self.start_x).saturating_add(width) > self.available_width
     }
 
@@ -475,9 +484,27 @@ impl FlowCursor {
         if self.available_width == 0 {
             return None;
         }
-        width = width.min(self.available_width);
+        if self.allow_soft_wrap {
+            width = width.min(self.available_width);
+        }
         if self.would_wrap(width) {
             self.flush_line();
+        }
+        let origin = NativePoint {
+            x: self.x,
+            y: self.y,
+        };
+        self.x = self.x.saturating_add(width);
+        self.line_height = self.line_height.max(height.max(self.minimum_line_height));
+        self.line_has_content = true;
+        self.max_right = self.max_right.max(self.x);
+        self.max_bottom = self.max_bottom.max(self.y.saturating_add(self.line_height));
+        Some(origin)
+    }
+
+    fn place_unwrapped_with_origin(&mut self, width: u32, height: u32) -> Option<NativePoint> {
+        if self.available_width == 0 {
+            return None;
         }
         let origin = NativePoint {
             x: self.x,
@@ -520,7 +547,12 @@ impl<'a> LayoutBuilder<'a> {
             .computed_style_for_layout(parent)
             .line_height()
             .unwrap_or(DEFAULT_LINE_HEIGHT);
-        let mut flow = FlowCursor::new(x, y, available_width, minimum_line_height);
+        let allow_soft_wrap = self
+            .document
+            .computed_style_for_layout(parent)
+            .white_space()
+            != WhiteSpaceValue::Pre;
+        let mut flow = FlowCursor::new(x, y, available_width, minimum_line_height, allow_soft_wrap);
         self.process_children(parent, &mut flow, depth);
         let bottom = flow.max_bottom;
         let start_y = y;
@@ -749,15 +781,14 @@ impl<'a> LayoutBuilder<'a> {
     }
 
     fn place_text(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {
-        if self
+        match self
             .document
             .computed_style_for_layout(parent)
             .white_space()
-            == WhiteSpaceValue::PreLine
         {
-            self.place_pre_line_text(parent, flow, value);
-        } else {
-            self.place_text_segment(parent, flow, value);
+            WhiteSpaceValue::Normal => self.place_text_segment(parent, flow, value),
+            WhiteSpaceValue::PreLine => self.place_pre_line_text(parent, flow, value),
+            WhiteSpaceValue::Pre => self.place_preformatted_text(parent, flow, value),
         }
     }
 
@@ -783,6 +814,59 @@ impl<'a> LayoutBuilder<'a> {
             }
         }
         self.place_text_segment(parent, flow, &value[segment_start..]);
+    }
+
+    fn place_preformatted_text(
+        &mut self,
+        parent: NativeNodeId,
+        flow: &mut FlowCursor,
+        value: &str,
+    ) {
+        let mut segment_start = 0;
+        let mut offset = 0;
+        while offset < value.len() {
+            let byte = value.as_bytes()[offset];
+            if byte == b'\n' || byte == b'\r' {
+                self.place_preformatted_segment(parent, flow, &value[segment_start..offset]);
+                let break_end = if byte == b'\r' && value.as_bytes().get(offset + 1) == Some(&b'\n')
+                {
+                    offset + 2
+                } else {
+                    offset + 1
+                };
+                flow.force_line_break();
+                offset = break_end;
+                segment_start = break_end;
+            } else {
+                let character = value[offset..].chars().next().unwrap_or_default();
+                offset = offset.saturating_add(character.len_utf8());
+            }
+        }
+        self.place_preformatted_segment(parent, flow, &value[segment_start..]);
+    }
+
+    fn place_preformatted_segment(
+        &mut self,
+        parent: NativeNodeId,
+        flow: &mut FlowCursor,
+        value: &str,
+    ) {
+        if value.is_empty() {
+            return;
+        }
+        let width = Self::text_width(value);
+        let Some(origin) = flow.place_unwrapped_with_origin(width, DEFAULT_LINE_HEIGHT) else {
+            return;
+        };
+        let text_index = self.text_runs.len();
+        self.text_runs.push(NativeTextLayout {
+            node_id: parent,
+            origin,
+            text: value.to_owned(),
+            truncated: false,
+        });
+        self.paint_order
+            .push(NativeLayoutPaintOrder::Text(text_index));
     }
 
     fn place_text_segment(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {

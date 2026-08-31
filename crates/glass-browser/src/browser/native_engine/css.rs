@@ -149,6 +149,7 @@ pub(crate) enum WhiteSpaceValue {
     #[default]
     Normal,
     PreLine,
+    Pre,
 }
 
 /// Bounded physical top, right, bottom, and left box values.
@@ -1401,6 +1402,7 @@ fn parse_white_space(value: &str) -> Option<WhiteSpaceValue> {
     match value.to_ascii_lowercase().as_str() {
         "normal" => Some(WhiteSpaceValue::Normal),
         "pre-line" => Some(WhiteSpaceValue::PreLine),
+        "pre" => Some(WhiteSpaceValue::Pre),
         _ => None,
     }
 }
@@ -1733,7 +1735,7 @@ mod tests {
             parse_white_space("pre-line"),
             Some(WhiteSpaceValue::PreLine)
         );
-        assert_eq!(parse_white_space("pre"), None);
+        assert_eq!(parse_white_space("pre"), Some(WhiteSpaceValue::Pre));
         assert_eq!(parse_white_space("pre-wrap"), None);
         assert_eq!(parse_white_space("nowrap"), None);
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));

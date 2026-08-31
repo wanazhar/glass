@@ -211,6 +211,13 @@ focused golden, native integration, native unit, strict lint, full locked
 all-target/all-feature, doctest, formatting, and documentation gates are
 recorded in the task file and issue #40.
 
+The completed descendant-selector slice is
+[native-engine-030](tasks/native-engine-030.md). It extends the bounded CSS
+grammar with ancestor-scoped compound selectors while preserving explicit
+limits, diagnostics, cascade precedence, and the no-general-CSS boundary. Its
+implementation and full validation evidence are recorded in the task file and
+issue #40.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

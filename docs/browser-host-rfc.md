@@ -117,7 +117,8 @@ capture through the explicit backend operation,
 bounded local opacity subtree groups through transparent software layers,
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
-text paint,
+text paint, bounded inherited fixed-cell `text-decoration:none|underline`
+paint,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
 Rust diagnostics for unsupported CSS. It does not yet provide
 general CSS/nested/horizontal/stacking layout, logical writing-mode sides,

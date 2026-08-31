@@ -144,7 +144,9 @@ word-aware wrapping, bounded source-whitespace boundaries across supported
 inline flow, bounded inherited `white-space: nowrap` collapsed one-line flow,
 bounded root horizontal scrolling, bounded local opacity subtree groups with
 inside-out transparent-layer compositing, bounded inherited physical
-`text-align:left|center|right` fixed-cell line placement, bounded PNG capture,
+`text-align:left|center|right` fixed-cell line placement, bounded functional
+`rgba(R, G, B, A)` alpha colors for background, border, and text paint, bounded
+PNG capture,
 and
 Rust-only
 display-list/software-surface artifacts;

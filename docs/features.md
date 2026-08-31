@@ -72,7 +72,8 @@ source-behavior reference.
   paint, viewport projection, and point hit-testing, a display list, a logical RGBA software
   surface, bounded local opacity subtree groups composited through transparent
   software layers, and inherited physical `text-align:left|center|right`
-  fixed-cell line placement,
+  fixed-cell line placement, bounded functional `rgba(R, G, B, A)` alpha
+  colors for background, border, and text paint,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,

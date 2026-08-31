@@ -341,8 +341,12 @@ through the existing display-list and software-rasterizer owners. Subtree
 compositing is explicit and bounded; layout and hit-testing do not treat
 opacity as visibility. The completed follow-on dependency-ordered slice
 [native-engine-052](tasks/native-engine-052.md) adds bounded inherited
-`text-align` for fixed-cell direct text and supported inline flow. No later
-native-engine slice is active in this checkpoint.
+`text-align` for fixed-cell direct text and supported inline flow. The active
+follow-on dependency-ordered slice
+[native-engine-053](tasks/native-engine-053.md) extends the existing bounded
+color grammar with fixed-point `rgba(R, G, B, A)` alpha for background, border,
+and text paint while preserving the current display-list and raster owners.
+No general CSS Color 4 or color-management parity is implied.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

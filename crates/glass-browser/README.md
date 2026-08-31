@@ -173,7 +173,7 @@ does not own or close the external browser.
 |---|---:|---|
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
-| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded physical box-edge layout/point input, root horizontal and vertical viewport scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips, bounded local opacity subtree groups, inherited physical `text-align:left|center|right` fixed-cell line placement, bounded percent-decoded exact visible-id or legacy `<a name>` fragment scrolling/history restoration, simple `#:~:text=start[,end]` matching plus exact adjacent prefix/suffix affixes within the first visible non-truncated text run, fragment-only, fixture-relative, and absolute local link activation, and Rust-only display/raster artifacts |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded physical box-edge layout/point input, root horizontal and vertical viewport scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips, bounded local opacity subtree groups, inherited physical `text-align:left|center|right` fixed-cell line placement, bounded functional `rgba(R, G, B, A)` alpha colors for background/border/text paint, bounded percent-decoded exact visible-id or legacy `<a name>` fragment scrolling/history restoration, simple `#:~:text=start[,end]` matching plus exact adjacent prefix/suffix affixes within the first visible non-truncated text run, fragment-only, fixture-relative, and absolute local link activation, and Rust-only display/raster artifacts |
 
 ## MCP
 

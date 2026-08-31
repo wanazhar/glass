@@ -10,8 +10,8 @@ bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
-bounded-min-max-dimensions/bounded-opacity-groups slices,
-bounded-text-alignment,
+bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
+bounded-functional-alpha-colors slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -53,6 +53,8 @@ bounded hard line breaks in supported inline flow, and
 bounded inherited `white-space: pre-line`, `white-space: pre`,
 `white-space: pre-wrap`, and `white-space: nowrap` source whitespace flow, and
 bounded inherited physical `text-align:left|center|right` line placement, and
+bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
+text paint, and
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -602,8 +604,11 @@ general stacking, transforms, filters, animation, and browser compositor parity
 remain outside the boundary. The completed 052 boundary adds bounded inherited
 physical text alignment for fixed-cell direct text and supported inline boxes;
 logical directions, justification, and browser inline-formatting parity remain
-outside the boundary. No later native-engine slice is active in this
-checkpoint.
+outside the boundary. The active 053 boundary extends the existing bounded
+color grammar with decimal-channel `rgba(R, G, B, A)` values using fixed-point
+alpha quantization and the existing source-over raster path; CSS Color 4,
+wide-gamut, interpolation, and color-management behavior remain outside the
+boundary.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -800,6 +805,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited physical `text-align:left|center|right` parsing and
   cascade, deterministic fixed-cell line offsets across direct text and
   supported inline boxes, and shared layout/paint/raster/hit-test coordinates.
+- bounded `rgba(R, G, B, A)` functional alpha parsing for background, border,
+  and text colors, with shared fixed-point quantization, display-list color
+  ownership, and integer source-over replay.
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden`/`overflow:clip` ancestor intersections on

@@ -10,7 +10,8 @@ bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
-bounded-local-link-activation/bounded-fragment-target-scroll,
+bounded-local-link-activation/bounded-fragment-target-scroll/
+bounded-relative-local-links,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -49,7 +50,8 @@ viewport projection, and point hit testing, and bounded read-only diagnostics
 for unsupported CSS input, plus bounded local same-document fragment
 navigation and Rust history traversal.
 Semantic local anchor activation reaches that same bounded navigation owner for
-fragment-only and absolute local hrefs; unsupported href forms fail closed.
+fragment-only, fixture-relative, and absolute local hrefs; unsupported href
+forms fail closed.
 Visible local fragment targets may position the root viewport at their exact
 raw `id`; the active history entry retains the bounded scroll offset for
 restoration.
@@ -228,8 +230,11 @@ restore the target history entry's saved root offset.
 Semantic anchor clicks use the existing action path as one bounded default
 action. Fragment-only hrefs resolve against the current local resource, and
 absolute about:blank, data:text/html, and registered fixture:// hrefs use the
-existing loader. Empty hrefs remain click-only; relative paths, remote schemes,
-and other unsupported destinations fail before mutation. Successful link
+existing loader. Non-fragment relative references resolve only against the
+current registered fixture:// host; non-fragment relative links from
+about:blank or data: URLs, host-changing references, remote schemes, and other
+unsupported destinations fail before mutation. Empty hrefs remain click-only.
+Successful link
 activation commits the existing same-document or parse-before-commit
 different-resource navigation path without adding a transport-level operation.
 
@@ -460,9 +465,10 @@ The 038 bounded-local-link-activation boundary routes semantic `<a href>`
 clicks through the existing navigation owner. It accepts only fragment-only
 and absolute local hrefs, prevalidates unsupported destinations, keeps empty
 hrefs click-only, and preserves the 037 same-document, history, and
-parse-before-commit invariants. Relative paths, remote/network navigation,
-downloads, target contexts, and event-loop/default-action behavior remain
-unsupported. Its implementation and validation evidence are recorded in the
+parse-before-commit invariants. At the 038 checkpoint, relative paths, remote/
+network navigation, downloads, target contexts, and event-loop/default-action
+behavior remained unsupported; 040 adds only bounded fixture-relative
+resolution. Its implementation and validation evidence are recorded in the
 task file and issue #40.
 
 The 039 bounded-fragment-target-scroll boundary resolves one exact raw local
@@ -474,6 +480,16 @@ including reparsed different-resource entries. Percent-decoded fragments,
 snap scrolling, sticky layout, and browser alignment parity remain unsupported.
 Its implementation and validation evidence are recorded in the task file and
 issue #40.
+
+The 040 bounded-relative-local-links boundary resolves non-absolute link
+references only from registered `fixture://` documents, retaining the current
+fixture host and using the bounded URL parser for deterministic path/query/
+fragment normalization. Relative links from opaque `about:blank` or `data:`
+documents, host-changing or malformed references, remote schemes, and missing
+fixtures fail before mutation; same-/different-resource commit, anchor scroll,
+and per-entry history restoration continue through the existing owners. Its
+implementation and validation evidence are recorded in the task file and issue
+#40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -623,6 +639,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - raw-fragment URL retention and bounded same-document local navigation;
 - exact visible fragment-target scroll and saved history offsets;
 - semantic local anchor activation through dispatcher click;
+- fixture-relative local link resolution with same-host enforcement;
 - title and visible-text projection with hidden `head`, `script`, and `style`;
 - bounded history entries, monotonic revisions, and explicit Rust traversal;
 - deterministic scheduler ordering and queue bounds;

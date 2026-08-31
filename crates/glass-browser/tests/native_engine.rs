@@ -2204,10 +2204,15 @@ async fn local_link_activation_uses_bounded_navigation_default_action() {
         })
         .with_fixture(
             "fixture://links",
-            "<a id='fragment' href='#part'>Part</a><a id='other' href='fixture://other'>Other</a><a id='remote' href='https://example.com'>Remote</a><a id='relative' href='next'>Next</a><a id='empty' href=''>Empty</a><p>one two three four five six seven eight nine ten</p><p>eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one</p>",
+            "<a id='fragment' href='#part'>Part</a><a id='other' href='fixture://other'>Other</a><a id='remote' href='https://example.com'>Remote</a><a id='relative' href='next#target'>Next</a><a id='missing' href='missing'>Missing</a><a id='host-change' href='//other.test/path'>Host change</a><p>one two three four five six seven eight nine ten</p><p>eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one</p>",
         )
         .unwrap()
         .with_fixture("fixture://other", "<p>Other document</p>")
+        .unwrap()
+        .with_fixture(
+            "fixture://links/next",
+            "<p id='target'>Relative document</p>",
+        )
         .unwrap()
         .with_initial_url("fixture://links#top");
 
@@ -2285,6 +2290,31 @@ async fn local_link_activation_uses_bounded_navigation_default_action() {
     assert_eq!(other_evidence.visible_text, "Other document");
     dispatcher.close().await.unwrap();
 
+    let relative_backend = NativeEngineBackend::new(config.clone()).unwrap();
+    let relative_dispatcher = BrowserBackendDispatcher::new(&relative_backend);
+    relative_dispatcher.initialize().await.unwrap();
+    let relative_dispatch = relative_dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Click {
+                target: "id=relative".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(relative_dispatch.revision, 2);
+    assert!(relative_dispatch.accepted);
+    let relative_evidence = relative_dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(relative_evidence.url, "fixture://links/next#target");
+    assert_eq!(relative_evidence.visible_text, "Relative document");
+    relative_dispatcher.close().await.unwrap();
+
     let mut engine = NativeEngine::new(config.clone()).unwrap();
     engine.initialize().unwrap();
     engine
@@ -2337,33 +2367,153 @@ async fn local_link_activation_uses_bounded_navigation_default_action() {
 
     let mut relative_engine = NativeEngine::new(config.clone()).unwrap();
     relative_engine.initialize().unwrap();
-    let before_relative = relative_engine.snapshot().unwrap();
-    let before_relative_history = relative_engine.history().clone();
-    let relative_error = relative_engine
+    let relative = relative_engine
         .action(NativeAction::Click {
             target: "id=relative".into(),
         })
-        .unwrap_err();
-    assert!(matches!(
-        relative_error,
-        NativeEngineError::UnsupportedUrl { .. }
-    ));
-    assert!(!relative_error.to_string().contains("next"));
-    assert_eq!(relative_engine.snapshot().unwrap(), before_relative);
-    assert_eq!(relative_engine.history(), &before_relative_history);
+        .unwrap();
+    assert!(relative.accepted);
+    assert_eq!(relative.revision, 2);
+    assert_eq!(
+        relative_engine.snapshot().unwrap().url,
+        "fixture://links/next#target"
+    );
+    assert_eq!(
+        relative_engine.snapshot().unwrap().visible_text,
+        "Relative document"
+    );
+    assert_eq!(relative_engine.history().len(), 2);
 
-    let empty = relative_engine
+    for (target, forbidden_text) in [("id=missing", "missing"), ("id=host-change", "other.test")] {
+        let mut failed_engine = NativeEngine::new(config.clone()).unwrap();
+        failed_engine.initialize().unwrap();
+        let before_failed = failed_engine.snapshot().unwrap();
+        let before_failed_history = failed_engine.history().clone();
+        let error = failed_engine
+            .action(NativeAction::Click {
+                target: target.into(),
+            })
+            .unwrap_err();
+        assert!(
+            matches!(error, NativeEngineError::UnsupportedUrl { .. }),
+            "{target}: {error}"
+        );
+        assert!(!error.to_string().contains(forbidden_text));
+        assert_eq!(failed_engine.snapshot().unwrap(), before_failed);
+        assert_eq!(failed_engine.history(), &before_failed_history);
+    }
+
+    let malformed_config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://malformed",
+            "<a id='malformed' href='//['>Malformed</a>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://malformed");
+    let mut malformed_engine = NativeEngine::new(malformed_config).unwrap();
+    malformed_engine.initialize().unwrap();
+    let before_malformed = malformed_engine.snapshot().unwrap();
+    let before_malformed_history = malformed_engine.history().clone();
+    let malformed_error = malformed_engine
+        .action(NativeAction::Click {
+            target: "id=malformed".into(),
+        })
+        .unwrap_err();
+    assert!(
+        matches!(malformed_error, NativeEngineError::UnsupportedUrl { .. }),
+        "{malformed_error}"
+    );
+    assert!(!malformed_error.to_string().contains("//["));
+    assert_eq!(malformed_engine.snapshot().unwrap(), before_malformed);
+    assert_eq!(malformed_engine.history(), &before_malformed_history);
+
+    let empty_config = NativeEngineConfig::default()
+        .with_fixture("fixture://empty", "<a id='empty' href=''>Empty</a>")
+        .unwrap()
+        .with_initial_url("fixture://empty");
+    let mut empty_engine = NativeEngine::new(empty_config).unwrap();
+    empty_engine.initialize().unwrap();
+    let empty = empty_engine
         .action(NativeAction::Click {
             target: "id=empty".into(),
         })
         .unwrap();
     assert!(empty.accepted);
     assert_eq!(empty.revision, 2);
-    assert_eq!(
-        relative_engine.snapshot().unwrap().url,
-        "fixture://links#top"
+    assert_eq!(empty_engine.snapshot().unwrap().url, "fixture://empty");
+    assert_eq!(empty_engine.history().len(), 1);
+}
+
+#[tokio::test]
+async fn fixture_relative_links_normalize_paths_queries_and_reject_opaque_bases() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://relative.test/docs/index",
+            "<a id='parent' href='../next#target'>Parent</a><a id='dot' href='./child/../next?mode=fast#target'>Dot</a><a id='query' href='?view=full#target'>Query</a>",
+        )
+        .unwrap()
+        .with_fixture("fixture://relative.test/next", "<p id='target'>Parent target</p>")
+        .unwrap()
+        .with_fixture(
+            "fixture://relative.test/docs/next?mode=fast",
+            "<p id='target'>Dot target</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://relative.test/docs/index?view=full",
+            "<p id='target'>Query target</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://relative.test/docs/index");
+
+    for (target, expected_url, expected_text) in [
+        (
+            "id=parent",
+            "fixture://relative.test/next#target",
+            "Parent target",
+        ),
+        (
+            "id=dot",
+            "fixture://relative.test/docs/next?mode=fast#target",
+            "Dot target",
+        ),
+        (
+            "id=query",
+            "fixture://relative.test/docs/index?view=full#target",
+            "Query target",
+        ),
+    ] {
+        let mut engine = NativeEngine::new(config.clone()).unwrap();
+        engine.initialize().unwrap();
+        let result = engine
+            .action(NativeAction::Click {
+                target: target.into(),
+            })
+            .unwrap();
+        assert!(result.accepted);
+        assert_eq!(engine.snapshot().unwrap().url, expected_url);
+        assert_eq!(engine.snapshot().unwrap().visible_text, expected_text);
+    }
+
+    let data_config = NativeEngineConfig::default().with_initial_url(
+        "data:text/html,%3Ca%20id%3D%27relative%27%20href%3D%27next%27%3ERelative%3C%2Fa%3E",
     );
-    assert_eq!(relative_engine.history().len(), 1);
+    let mut data_engine = NativeEngine::new(data_config).unwrap();
+    data_engine.initialize().unwrap();
+    let before_data = data_engine.snapshot().unwrap();
+    let before_data_history = data_engine.history().clone();
+    let data_error = data_engine
+        .action(NativeAction::Click {
+            target: "id=relative".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(
+        data_error,
+        NativeEngineError::UnsupportedUrl { .. }
+    ));
+    assert!(!data_error.to_string().contains("next"));
+    assert_eq!(data_engine.snapshot().unwrap(), before_data);
+    assert_eq!(data_engine.history(), &before_data_history);
 }
 
 #[tokio::test]

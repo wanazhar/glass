@@ -150,13 +150,15 @@ writing-mode sides, negative, percentage, or auto box-model values,
 positioned/flex/grid layout,
 screen-shot-containing evidence, JPEG/PDF capture, physical pixels,
 font/image fidelity, JavaScript, storage,
-prompts, downloads, remote/relative link navigation, or raw form-value
+prompts, downloads, remote navigation or relative navigation from unsupported
+opaque bases, or raw form-value
 evidence. Fragment navigation uses one exact raw, case-sensitive visible
 non-empty `id` target, positions the root viewport at its clamped document-space
 top, and stores one bounded root-scroll point per history entry for traversal
 restoration. Missing, hidden, and duplicate targets preserve the current offset.
-Fragment-only and absolute local link activation uses the existing bounded
-navigation path. The
+Fragment-only, fixture-relative, and absolute local link activation uses the
+existing bounded navigation path; fixture-relative links retain the current
+registered fixture host. The
 backend is explicit-only and never silently falls
 back to Chromium or the semantic proof backend. A `native-engine` feature
 build also exposes the local one-shot `--browser-runtime native` path and the

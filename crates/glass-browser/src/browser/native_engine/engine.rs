@@ -1,5 +1,7 @@
 use super::browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
-use super::config::{NativeEngineConfig, validate_url_text, without_fragment};
+use super::config::{
+    NativeEngineConfig, resolve_fixture_relative_url, validate_url_text, without_fragment,
+};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::NativeDocument;
 use super::error::NativeEngineError;
@@ -333,7 +335,10 @@ impl NativeEngine {
             validate_url_text("link target URL", &target)?;
             return Ok(target);
         }
-        Ok(href.to_owned())
+        if url::Url::parse(href).is_ok() {
+            return Ok(href.to_owned());
+        }
+        resolve_fixture_relative_url(&self.url, href)
     }
 
     pub fn effects_since(

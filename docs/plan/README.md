@@ -203,6 +203,14 @@ properties, values, and malformed CSS observable through a bounded revisioned
 Rust API without changing stable backend evidence or echoing raw stylesheet
 content. Existing deterministic CSS omission/fallback behavior remains intact.
 
+The completed pixel-golden-capture slice is
+[native-engine-029](tasks/native-engine-029.md). It certifies the existing
+bounded logical surface and decoded PNG bytes against one complete fixed
+fixture golden without changing screenshot evidence or renderer scope. Its
+focused golden, native integration, native unit, strict lint, full locked
+all-target/all-feature, doctest, formatting, and documentation gates are
+recorded in the task file and issue #40.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

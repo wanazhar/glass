@@ -1195,6 +1195,49 @@ fn native_engine_raster_surface_is_bounded_and_does_not_mutate_revision() {
     assert_eq!(surface.pixel(1, 0), Some([0, 0, 255, 255]));
 }
 
+#[test]
+fn native_png_capture_matches_complete_logical_pixel_golden() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 8,
+            height: 6,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://pixel-golden",
+            "<div style='width:4px;height:3px;background-color:red'></div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://pixel-golden");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let white = [255, 255, 255, 255];
+    let red = [255, 0, 0, 255];
+    let expected = [
+        [red, red, red, red, white, white, white, white],
+        [red, red, red, red, white, white, white, white],
+        [red, red, red, red, white, white, white, white],
+        [white, white, white, white, white, white, white, white],
+        [white, white, white, white, white, white, white, white],
+        [white, white, white, white, white, white, white, white],
+    ];
+    let expected_rgba: Vec<u8> = expected.into_iter().flatten().flatten().collect();
+
+    let before = engine.revision();
+    let surface = engine.rasterize().unwrap();
+    assert_eq!(surface.rgba(), expected_rgba.as_slice());
+
+    let capture = engine.capture_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (8, 6));
+    assert_eq!(&decoded[..expected_rgba.len()], expected_rgba.as_slice());
+    assert_eq!(engine.revision(), before);
+}
+
 #[tokio::test]
 async fn native_backend_captures_png_without_mutating_revision_and_denies_other_formats() {
     let config = NativeEngineConfig::default()

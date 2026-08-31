@@ -770,6 +770,73 @@ fn native_text_transform_feeds_text_fragments_without_mutating_evidence() {
 }
 
 #[test]
+fn native_text_indent_shifts_only_block_first_lines_and_preserves_shared_consumers() {
+    let document = NativeDocument::parse(
+        "<style>#indented { display:block; width:48px; text-indent:16px; } #broken { display:block; width:48px; text-indent:16px; white-space:pre; } #inline-parent { display:block; width:48px; } #wide { display:block; width:48px; text-indent:16px; white-space:nowrap; }</style><div id='indented'>AB CD EF</div><div id='broken'>AB\nCD</div><div id='inline-parent'><span id='inline' style='text-indent:16px'>GH</span> IJ</div><div id='wide'>ABCDEFGH</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 100,
+        device_scale_factor_milli: 1000,
+    };
+    let indented = document.resolve_target("id=indented").unwrap();
+    let broken = document.resolve_target("id=broken").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let wide = document.resolve_target("id=wide").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    let runs_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        runs_for(indented),
+        vec![
+            (NativePoint { x: 16, y: 0 }, "AB"),
+            (NativePoint { x: 0, y: 20 }, "CD"),
+            (NativePoint { x: 16, y: 20 }, " EF"),
+        ]
+    );
+    assert_eq!(
+        runs_for(broken),
+        vec![
+            (NativePoint { x: 16, y: 40 }, "AB"),
+            (NativePoint { x: 0, y: 60 }, "CD"),
+        ]
+    );
+    assert!(
+        layout
+            .text_runs
+            .iter()
+            .any(|run| run.node_id == inline && run.origin == NativePoint { x: 0, y: 80 })
+    );
+    assert_eq!(
+        runs_for(wide),
+        vec![(NativePoint { x: 16, y: 100 }, "ABCDEFGH")]
+    );
+    assert!(layout.content_width >= 80);
+    assert!(layout.max_scroll_offset().x > 0);
+
+    let list = document.display_list(viewport).unwrap();
+    for run in &layout.text_runs {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::TextRun { node_id, origin, text, .. }
+                    if *node_id == run.node_id && *origin == run.origin && text == &run.text
+            )
+        }));
+    }
+    assert_eq!(layout.hit_test(17, 1).unwrap(), Some(indented));
+}
+
+#[test]
 fn native_functional_alpha_colors_reach_display_list_and_raster() {
     let document = NativeDocument::parse(
         "<div id='background' style='display:block;width:8px;height:8px;background-color:rgba(255, 0, 0, 0.5)'></div><div id='border' style='display:block;width:8px;height:8px;border:1px solid rgba(0, 0, 255, 50%)'></div><div id='text' style='display:block;width:8px;height:8px;color:rgba(0, 128, 0, 0.5)'>A</div>",

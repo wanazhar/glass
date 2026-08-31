@@ -240,6 +240,7 @@ pub(crate) struct NativeComputedStyle {
     text_align: TextAlignValue,
     text_decoration: TextDecorationValue,
     text_transform: TextTransformValue,
+    text_indent: u32,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -288,6 +289,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_transform(self) -> TextTransformValue {
         self.text_transform
+    }
+
+    pub(crate) const fn text_indent(self) -> u32 {
+        self.text_indent
     }
 
     pub(crate) const fn width(self) -> Option<u32> {
@@ -437,6 +442,7 @@ impl NativeStylesheet {
         let mut text_align = None;
         let mut text_decoration = None;
         let mut text_transform = None;
+        let mut text_indent = None;
         let mut width = None;
         let mut height = None;
         let mut min_width = None;
@@ -526,6 +532,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, text_transform)
             {
                 text_transform = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_indent
+                && wins(rule.selector.specificity, rule.order, false, text_indent)
+            {
+                text_indent = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -762,6 +778,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_indent
+                && wins(u16::MAX, usize::MAX, true, text_indent)
+            {
+                text_indent = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -924,6 +950,7 @@ impl NativeStylesheet {
             text_align: text_align.map_or(inherited.text_align, |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
+            text_indent: text_indent.map_or(0, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             min_width: min_width.map(|value| value.value),
@@ -1028,6 +1055,7 @@ struct NativeDeclarations {
     text_align: Option<TextAlignValue>,
     text_decoration: Option<TextDecorationValue>,
     text_transform: Option<TextTransformValue>,
+    text_indent: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -1191,6 +1219,7 @@ fn parse_source(
             || declarations.text_align.is_some()
             || declarations.text_decoration.is_some()
             || declarations.text_transform.is_some()
+            || declarations.text_indent.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.min_width.is_some()
@@ -1314,6 +1343,7 @@ fn parse_declarations_with_diagnostics(
             "text-align" => parse_text_align(value).is_some(),
             "text-decoration" => parse_text_decoration(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
+            "text-indent" => parse_dimension(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
             }
@@ -1371,6 +1401,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-align"
             | "text-decoration"
             | "text-transform"
+            | "text-indent"
             | "width"
             | "height"
             | "min-width"
@@ -1455,6 +1486,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-transform" => {
                 declarations.text_transform = parse_text_transform(value);
+            }
+            "text-indent" => {
+                declarations.text_indent = parse_dimension(value);
             }
             "width" => {
                 declarations.width = parse_dimension(value);
@@ -2158,7 +2192,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2169,6 +2203,7 @@ mod tests {
             declarations.text_decoration,
             Some(TextDecorationValue::Underline)
         );
+        assert_eq!(declarations.text_indent, Some(12));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.min_width, Some(12));
@@ -2556,6 +2591,17 @@ mod tests {
     }
 
     #[test]
+    fn text_indent_parser_accepts_only_bounded_non_negative_pixels() {
+        assert_eq!(parse_dimension("16px"), Some(16));
+        assert_eq!(parse_dimension("0px"), Some(0));
+        assert_eq!(parse_dimension("-1px"), None);
+        assert_eq!(parse_dimension("1.5px"), None);
+        assert_eq!(parse_dimension("2em"), None);
+        assert_eq!(parse_dimension("50%"), None);
+        assert_eq!(parse_dimension("20000px"), None);
+    }
+
+    #[test]
     fn opacity_parser_quantizes_bounded_numbers_and_percentages() {
         assert_eq!(parse_opacity("0"), Some(0));
         assert_eq!(parse_opacity("0.5"), Some(128));
@@ -2751,6 +2797,34 @@ mod tests {
             document.computed_style_for_layout(invalid).text_transform(),
             TextTransformValue::Uppercase
         );
+    }
+
+    #[test]
+    fn text_indent_is_local_and_does_not_inherit() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { text-indent: 16px; } #target { text-indent: 24px; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='target'>Target</div>");
+        assert_eq!(stylesheet.computed_for(&node).text_indent(), 24);
+
+        let document = NativeDocument::parse(
+            "<style>#parent { text-indent: 16px; } #explicit { text-indent: 24px; } #invalid { text-indent: -1px; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(document.computed_style_for_layout(parent).text_indent(), 16);
+        assert_eq!(document.computed_style_for_layout(child).text_indent(), 0);
+        assert_eq!(
+            document.computed_style_for_layout(explicit).text_indent(),
+            24
+        );
+        assert_eq!(document.computed_style_for_layout(invalid).text_indent(), 0);
     }
 
     #[test]

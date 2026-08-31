@@ -1,9 +1,9 @@
 use super::browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
-use super::config::NativeEngineConfig;
+use super::config::{NativeEngineConfig, without_fragment};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::NativeDocument;
 use super::error::NativeEngineError;
-use super::history::NativeHistory;
+use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::lifecycle::NativeLifecycleState;
@@ -143,9 +143,28 @@ impl NativeEngine {
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
         let url = url.into();
-        let prepared = self.prepare_navigation(&url)?;
-        self.commit_navigation(prepared)?;
+        let resource = self.loader.load(&url)?;
+        if self.is_same_document_navigation(&resource.url) {
+            self.commit_same_document_navigation(resource.url, HistoryCommit::Push)?;
+        } else {
+            let prepared = self.prepare_navigation_resource(resource)?;
+            self.commit_navigation(prepared)?;
+        }
         Ok(self.snapshot_unchecked())
+    }
+
+    /// Move to the previous bounded local history entry.
+    ///
+    /// `None` is an explicit boundary no-op and leaves the engine unchanged.
+    pub fn go_back(&mut self) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
+        self.traverse_history(NativeHistoryDirection::Back, "go back")
+    }
+
+    /// Move to the next bounded local history entry.
+    ///
+    /// `None` is an explicit boundary no-op and leaves the engine unchanged.
+    pub fn go_forward(&mut self) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
+        self.traverse_history(NativeHistoryDirection::Forward, "go forward")
     }
 
     pub fn snapshot(&self) -> Result<NativeEngineSnapshot, NativeEngineError> {
@@ -315,6 +334,13 @@ impl NativeEngine {
 
     fn prepare_navigation(&self, url: &str) -> Result<PreparedNavigation, NativeEngineError> {
         let resource = self.loader.load(url)?;
+        self.prepare_navigation_resource(resource)
+    }
+
+    fn prepare_navigation_resource(
+        &self,
+        resource: NativeResource,
+    ) -> Result<PreparedNavigation, NativeEngineError> {
         let next_revision = self.next_revision()?;
         let generation = u32::try_from(next_revision).map_err(|_| {
             NativeEngineError::limit("document generations", u32::MAX as usize, usize::MAX)
@@ -325,17 +351,7 @@ impl NativeEngine {
     }
 
     fn commit_navigation(&mut self, prepared: PreparedNavigation) -> Result<(), NativeEngineError> {
-        self.scheduler.schedule(NativeTask::CommitNavigation, 0)?;
-        let Some(task) = self.scheduler.pop_ready() else {
-            return Err(NativeEngineError::Scheduler {
-                reason: "navigation commit was not ready at the current logical time".into(),
-            });
-        };
-        if task.task != NativeTask::CommitNavigation {
-            return Err(NativeEngineError::Scheduler {
-                reason: "navigation produced an unexpected task kind".into(),
-            });
-        }
+        self.run_commit_task(NativeTask::CommitNavigation, "navigation")?;
         let revision = self.next_revision()?;
         self.document = prepared.document;
         self.url = prepared.resource.url;
@@ -343,6 +359,110 @@ impl NativeEngine {
         self.scroll_offset = NativePoint { x: 0, y: 0 };
         self.revision = revision;
         self.history.push(self.url.clone(), revision);
+        Ok(())
+    }
+
+    fn commit_same_document_navigation(
+        &mut self,
+        url: String,
+        history_commit: HistoryCommit,
+    ) -> Result<(), NativeEngineError> {
+        self.run_commit_task(
+            NativeTask::CommitSameDocumentNavigation,
+            "same-document navigation",
+        )?;
+        let revision = self.next_revision()?;
+        self.document.set_revision(revision);
+        self.url = url.clone();
+        self.revision = revision;
+        match history_commit {
+            HistoryCommit::Push => self.history.push(url, revision),
+            HistoryCommit::Activate(index) => {
+                self.history.activate(index, revision).ok_or_else(|| {
+                    NativeEngineError::Scheduler {
+                        reason: "history entry disappeared during same-document traversal".into(),
+                    }
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn commit_history_navigation(
+        &mut self,
+        prepared: PreparedNavigation,
+        history_index: usize,
+    ) -> Result<(), NativeEngineError> {
+        if self.history.entry(history_index).is_none() {
+            return Err(NativeEngineError::Scheduler {
+                reason: "history target is no longer available".into(),
+            });
+        }
+        self.run_commit_task(NativeTask::TraverseHistory, "history traversal")?;
+        let revision = self.next_revision()?;
+        self.document = prepared.document;
+        self.url = prepared.resource.url;
+        self.origin = prepared.resource.origin;
+        self.scroll_offset = NativePoint { x: 0, y: 0 };
+        self.revision = revision;
+        self.history
+            .activate(history_index, revision)
+            .ok_or_else(|| NativeEngineError::Scheduler {
+                reason: "history target disappeared during traversal".into(),
+            })?;
+        Ok(())
+    }
+
+    fn traverse_history(
+        &mut self,
+        direction: NativeHistoryDirection,
+        operation: &str,
+    ) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
+        self.require_running(operation)?;
+        let Some(history_index) = self.history.target_index(direction) else {
+            return Ok(None);
+        };
+        let target_url = self
+            .history
+            .entry(history_index)
+            .ok_or_else(|| NativeEngineError::Scheduler {
+                reason: "history target is no longer available".into(),
+            })?
+            .url
+            .clone();
+        let resource = self.loader.load(&target_url)?;
+        if self.is_same_document_navigation(&resource.url) {
+            self.commit_same_document_navigation(
+                resource.url,
+                HistoryCommit::Activate(history_index),
+            )?;
+        } else {
+            let prepared = self.prepare_navigation_resource(resource)?;
+            self.commit_history_navigation(prepared, history_index)?;
+        }
+        Ok(Some(self.snapshot_unchecked()))
+    }
+
+    fn is_same_document_navigation(&self, target_url: &str) -> bool {
+        self.url != target_url && without_fragment(&self.url) == without_fragment(target_url)
+    }
+
+    fn run_commit_task(
+        &mut self,
+        expected: NativeTask,
+        operation: &str,
+    ) -> Result<(), NativeEngineError> {
+        self.scheduler.schedule(expected, 0)?;
+        let Some(task) = self.scheduler.pop_ready() else {
+            return Err(NativeEngineError::Scheduler {
+                reason: format!("{operation} commit was not ready at the current logical time"),
+            });
+        };
+        if task.task != expected {
+            return Err(NativeEngineError::Scheduler {
+                reason: format!("{operation} produced an unexpected task kind"),
+            });
+        }
         Ok(())
     }
 
@@ -446,6 +566,11 @@ impl NativeEngine {
 struct PreparedNavigation {
     resource: NativeResource,
     document: NativeDocument,
+}
+
+enum HistoryCommit {
+    Push,
+    Activate(usize),
 }
 
 fn parse_point_target(target: &str) -> Result<Option<(i64, i64)>, NativeEngineError> {

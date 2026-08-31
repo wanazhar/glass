@@ -5,7 +5,14 @@ pub struct NativeHistoryEntry {
     pub revision: u64,
 }
 
-/// Bounded history for the single Phase 1 browsing context.
+/// Direction for explicit bounded history traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeHistoryDirection {
+    Back,
+    Forward,
+}
+
+/// Bounded history for the single native browsing context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeHistory {
     entries: Vec<NativeHistoryEntry>,
@@ -40,6 +47,36 @@ impl NativeHistory {
 
     pub fn current(&self) -> Option<&NativeHistoryEntry> {
         self.current.and_then(|index| self.entries.get(index))
+    }
+
+    pub fn can_go_back(&self) -> bool {
+        self.current.is_some_and(|index| index > 0)
+    }
+
+    pub fn can_go_forward(&self) -> bool {
+        self.current
+            .is_some_and(|index| index.saturating_add(1) < self.entries.len())
+    }
+
+    pub(crate) fn target_index(&self, direction: NativeHistoryDirection) -> Option<usize> {
+        let current = self.current?;
+        match direction {
+            NativeHistoryDirection::Back => current.checked_sub(1),
+            NativeHistoryDirection::Forward => current
+                .checked_add(1)
+                .filter(|index| *index < self.entries.len()),
+        }
+    }
+
+    pub(crate) fn entry(&self, index: usize) -> Option<&NativeHistoryEntry> {
+        self.entries.get(index)
+    }
+
+    pub(crate) fn activate(&mut self, index: usize, revision: u64) -> Option<NativeHistoryEntry> {
+        let entry = self.entries.get_mut(index)?;
+        entry.revision = revision;
+        self.current = Some(index);
+        Some(entry.clone())
     }
 
     pub const fn len(&self) -> usize {

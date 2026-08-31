@@ -9,7 +9,7 @@ bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golde
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace slices,
-bounded-base64-data-url,
+bounded-base64-data-url/bounded-fragment-navigation-history,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -45,7 +45,8 @@ bounded inherited `white-space: pre-line`, `white-space: pre`, and
 `white-space: pre-wrap` source whitespace flow, and bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
-for unsupported CSS input.
+for unsupported CSS input, plus bounded local same-document fragment
+navigation and Rust history traversal.
 The engine does not
 yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
@@ -178,7 +179,9 @@ The current resource boundary (the Phase 1 loader) supports only:
 
 HTTP, HTTPS, filesystem, custom network, redirects, cookies, and all other
 resource schemes fail closed. The resource loader has no filesystem or network
-capability. Every successful resource has an opaque origin placeholder until
+capability. A raw fragment is removed for resource lookup and decoding but is
+retained in the successful navigation URL; percent-encoded fragment markers
+remain payload data. Every successful resource has an opaque origin placeholder until
 the origin and security workstream defines a stronger model.
 
 ## Lifecycle and state ownership
@@ -205,6 +208,13 @@ new document generation, so a node identity from an earlier document cannot be
 mistaken for a current node. Public native semantic references additionally
 carry the current revision (`ref=r<revision>:n<node-index>`); a reference from
 before any navigation or mutation is rejected as detached.
+
+Same-document fragment navigation changes the URL, revision, and history
+cursor while retaining the current document generation and derived layout,
+control state, and root scroll offset. It does not automatically scroll to an
+element identified by the fragment. Explicit Rust back/forward traversal moves
+the bounded history cursor; different-resource entries are parsed before
+commit, while same-resource fragment entries reuse the current document.
 
 The scheduler owns a deterministic logical clock and bounded ordered task
 queue. It commits navigation in a reproducible order. Interaction mutation is
@@ -417,6 +427,17 @@ rejected; this adds no subresource, script, storage, or remote-content
 behavior. Its implementation and validation evidence are recorded in the task
 file and issue #40.
 
+The 037 bounded-fragment-navigation-history boundary treats a raw URL fragment
+as navigation metadata rather than document payload. Same-resource fragment
+navigation validates the local resource, preserves the current document and
+scroll state, and commits one revision/history entry through the existing
+navigation path. Explicit Rust back/forward traversal moves the bounded
+history cursor without creating entries, reparses different local resources
+before commit, and returns a no-op at either boundary. Anchor scrolling,
+network navigation, redirects, HTTP state, credentials, cookies, and shared
+transport history operations remain unsupported. Its implementation and
+validation evidence are recorded in the task file and issue #40.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -561,8 +582,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 
 - lifecycle transitions and repeated/invalid close behavior;
 - `about:blank`, percent-decoded `data:` HTML, and registered fixtures;
+- raw-fragment URL retention and bounded same-document local navigation;
 - title and visible-text projection with hidden `head`, `script`, and `style`;
-- history and monotonic revision behavior;
+- bounded history entries, monotonic revisions, and explicit Rust traversal;
 - deterministic scheduler ordering and queue bounds;
 - failed navigation preserving the previous state;
 - dispatcher capability denial and explicit-only backend selection;

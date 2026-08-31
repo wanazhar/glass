@@ -66,7 +66,8 @@ source-behavior reference.
   across supported inline flow, bounded `overflow:hidden` clips shared by
   paint, viewport projection, and point hit-testing, a display list, a logical RGBA software
   surface,
-  bounded PNG capture, and bounded revisioned Rust diagnostics for unsupported
+  bounded PNG capture, bounded local fragment navigation and Rust history
+  traversal, and bounded revisioned Rust diagnostics for unsupported
   CSS; these are not screenshot-containing evidence or stable transport
   diagnostics.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,

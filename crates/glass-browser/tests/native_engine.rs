@@ -2045,6 +2045,156 @@ async fn data_url_and_limits_are_bounded() {
 }
 
 #[tokio::test]
+async fn local_fragment_navigation_and_history_traversal_preserve_bounded_state() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://history",
+            "<button id='toggle'>Toggle</button><p>History body</p>",
+        )
+        .unwrap()
+        .with_fixture("fixture://other", "<p>Other document</p>")
+        .unwrap()
+        .with_fixture("fixture://replacement", "<p>Replacement</p>")
+        .unwrap()
+        .with_initial_url("fixture://history#top");
+
+    let backend = NativeEngineBackend::new(config.clone()).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+    let fragment = dispatcher
+        .navigate(NavigationRequest {
+            url: "fixture://history#middle".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(fragment.url, "fixture://history#middle");
+    assert_eq!(fragment.revision, 2);
+    let fragment_evidence = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(fragment_evidence.url, "fixture://history#middle");
+    assert_eq!(fragment_evidence.visible_text, "Toggle History body");
+    dispatcher.close().await.unwrap();
+
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let initial_nodes = engine.semantic_nodes().unwrap();
+    let initial_ids = initial_nodes
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    let initial_layout = engine.layout().unwrap();
+    let initial_scroll = engine.scroll_offset();
+    assert_eq!(engine.history().len(), 1);
+    assert!(!engine.history().can_go_back());
+    assert!(!engine.history().can_go_forward());
+
+    let middle = engine.navigate("fixture://history#middle").unwrap();
+    assert_eq!(middle.url, "fixture://history#middle");
+    assert_eq!(middle.revision, 2);
+    assert_eq!(engine.history().len(), 2);
+    assert!(engine.history().can_go_back());
+    assert!(!engine.history().can_go_forward());
+    assert_eq!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .iter()
+            .map(|node| node.node_id)
+            .collect::<Vec<_>>(),
+        initial_ids
+    );
+    let mut middle_layout = engine.layout().unwrap();
+    assert_eq!(middle_layout.revision, 2);
+    middle_layout.revision = initial_layout.revision;
+    assert_eq!(middle_layout, initial_layout);
+    assert_eq!(engine.scroll_offset(), initial_scroll);
+
+    let top = engine.go_back().unwrap().unwrap();
+    assert_eq!(top.url, "fixture://history#top");
+    assert_eq!(top.revision, 3);
+    assert_eq!(
+        engine.history().current().unwrap().url,
+        "fixture://history#top"
+    );
+    assert_eq!(engine.history().current().unwrap().revision, 3);
+    assert_eq!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .iter()
+            .map(|node| node.node_id)
+            .collect::<Vec<_>>(),
+        initial_ids
+    );
+    let boundary = engine.snapshot().unwrap();
+    assert!(engine.go_back().unwrap().is_none());
+    assert_eq!(engine.snapshot().unwrap(), boundary);
+
+    let middle_again = engine.go_forward().unwrap().unwrap();
+    assert_eq!(middle_again.url, "fixture://history#middle");
+    assert_eq!(middle_again.revision, 4);
+    assert_eq!(engine.history().current().unwrap().revision, 4);
+
+    let other = engine.navigate("fixture://other").unwrap();
+    assert_eq!(other.visible_text, "Other document");
+    assert_eq!(other.revision, 5);
+    assert_eq!(engine.history().len(), 3);
+    assert!(!engine.history().can_go_forward());
+    let restored_middle = engine.go_back().unwrap().unwrap();
+    assert_eq!(restored_middle.url, "fixture://history#middle");
+    assert_eq!(restored_middle.visible_text, "Toggle History body");
+    assert_eq!(restored_middle.revision, 6);
+    assert_ne!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .first()
+            .map(|node| node.node_id.generation()),
+        initial_nodes.first().map(|node| node.node_id.generation())
+    );
+
+    let restored_top = engine.go_back().unwrap().unwrap();
+    assert_eq!(restored_top.url, "fixture://history#top");
+    assert_eq!(restored_top.revision, 7);
+    assert_eq!(engine.history().current().unwrap().revision, 7);
+    let replacement = engine.navigate("fixture://replacement").unwrap();
+    assert_eq!(replacement.visible_text, "Replacement");
+    assert_eq!(engine.history().len(), 2);
+    assert!(engine.go_forward().unwrap().is_none());
+
+    let before_failed = engine.snapshot().unwrap();
+    let before_history = engine.history().clone();
+    assert!(matches!(
+        engine.navigate("fixture://missing#fragment"),
+        Err(NativeEngineError::UnsupportedUrl { .. })
+    ));
+    assert_eq!(engine.snapshot().unwrap(), before_failed);
+    assert_eq!(engine.history(), &before_history);
+
+    let mut about_engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url("about:blank#intro"))
+            .unwrap();
+    about_engine.initialize().unwrap();
+    assert_eq!(about_engine.snapshot().unwrap().url, "about:blank#intro");
+
+    let mut data_engine = NativeEngine::new(NativeEngineConfig::default()).unwrap();
+    data_engine.initialize().unwrap();
+    let data = data_engine
+        .navigate("data:text/html,%3Cp%3Ehash%23value%3C%2Fp%3E#part")
+        .unwrap();
+    assert_eq!(
+        data.url,
+        "data:text/html,%3Cp%3Ehash%23value%3C%2Fp%3E#part"
+    );
+    assert_eq!(data.visible_text, "hash#value");
+}
+
+#[tokio::test]
 async fn semantic_actions_and_effects_use_the_backend_contract() {
     let config = NativeEngineConfig::default()
         .with_fixture(

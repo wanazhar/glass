@@ -72,8 +72,9 @@ in `glass-dev`, not optional browser features.
 
 The native engine is an explicit, default-off backend inside `glass-browser`.
 It currently supports only local `about:blank`, bounded percent-decoded or
-standard padded-base64 `data:text/html`, and registered `fixture://` documents.
-Rust callers can construct it through the
+standard padded-base64 `data:text/html`, registered `fixture://` documents, and
+bounded fragment navigation with explicit Rust history traversal. Rust callers
+can construct it through the
 backend factory or `BrowserRuntimeSession::connect_native`; a feature-enabled
 binary also exposes the local one-shot `--browser-runtime native` path. Do not
 treat it as a replacement for `BrowserSession` or Chromium:

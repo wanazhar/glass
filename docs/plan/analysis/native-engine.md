@@ -105,6 +105,11 @@ resolve same-host fixture-relative URLs while preserving the existing
 parse-before-commit, anchor-scroll, and failure-atomicity boundaries. Its
 contract and validation evidence are recorded in
 `docs/plan/tasks/native-engine-040.md`.
+The 041 bounded-percent-decoded-fragment-target slice is complete locally:
+local fragment navigation decodes bounded UTF-8 percent escapes before exact
+visible `id` matching while preserving the existing duplicate-safe scroll,
+history, and failure behavior. Its contract and validation evidence are
+recorded in `docs/plan/tasks/native-engine-041.md` and issue #40.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -255,6 +260,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-038` | bounded semantic local anchor activation through the existing click and navigation path for fragment-only and absolute local hrefs, with empty-href click behavior and parse-before-commit failure atomicity | `native-engine-037` | relative URL resolution, remote/network navigation, downloads, target contexts, event propagation/default-action ordering, redirects, and browser navigation parity |
 | `native-engine-039` | exact visible local fragment `id` target scrolling plus bounded per-history-entry root-scroll save/restore across same- and different-resource traversal | `native-engine-038` | percent-decoded fragment matching, `name`/text fragments, duplicate-id recovery, smooth/nested/horizontal/keyboard/snap scrolling, sticky layout, mutable DOM snapshots, and browser scrolling parity |
 | `native-engine-040` | bounded same-host fixture-relative link resolution through the existing semantic navigation owner, with deterministic URL normalization and existing fragment/history behavior | `native-engine-039` | relative resolution from opaque data/about resources, host-changing references, remote/network navigation, credentials, redirects, downloads, and browser URL-parsing parity |
+| `native-engine-041` | bounded UTF-8 percent-decoding of local fragment identifiers before exact visible `id` lookup and existing root-scroll/history restoration | `native-engine-040` | `name`/text fragments, duplicate-id recovery beyond decoded equality, malformed-fragment error policy, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser URL-parsing parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -403,6 +409,11 @@ Phase 2 integration chains added by these slices are:
     and retain the existing same-/different-resource commit, fragment-scroll,
     and failure-atomicity paths; unsupported bases and host changes fail
     before mutation.
+46. Native local fragment navigation percent-decodes bounded `%HH` byte
+    sequences as UTF-8 before exact visible `id` lookup; malformed or invalid-
+    UTF-8 sequences are unresolved targets that preserve scroll while the
+    accepted URL/revision/history transition remains intact, and literal `+`
+    is not converted to a space.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -455,12 +466,14 @@ visual stacking.
 | bounded local link activation (038 baseline) | makes existing semantic link clicks reach the proven local navigation/history owner without adding a new transport operation | at the baseline: no relative URL base resolution, remote navigation, download/default-action event loop, target contexts, or network policy | resolve fragment-only and absolute local hrefs, preflight the resource, then commit the existing same-document or parsed navigation path; leave empty href as a click-only action |
 | bounded fragment-target scrolling | makes local fragment navigation useful without adding a general scroll engine or retaining full documents | no percent-decoding, name/text fragments, duplicate-id recovery, smooth/nested/horizontal/keyboard/snap scrolling, sticky layout, or browser alignment parity | match one exact raw `id`, use its visible document-space top clamped to the root viewport, and retain one bounded scroll point per history entry |
 | bounded fixture-relative link resolution | makes common local relative links usable without opening a network or general origin policy | no relative resolution from opaque data/about resources, host changes, remote schemes, credentials, redirects, downloads, or browser URL parity | resolve with the existing URL parser from a fixture base, enforce the fixture scheme/host, and route the normalized result through the existing loader before mutation |
+| bounded percent-decoded fragment targets | makes encoded spaces and UTF-8 local IDs reachable without changing resource lookup or history representation | no `name`/text fragments, general URL decoding, malformed-fragment error policy, or browser alignment parity | decode only bounded `%HH` bytes as UTF-8, preserve literal `+`, match after decoding, and treat malformed/invalid targets as unresolved while retaining the existing scroll fallback |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-040.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-041.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-040.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-039.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-038.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-037.md` is the preceding completed checkpoint;

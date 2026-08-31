@@ -288,6 +288,12 @@ relative resolution for registered fixtures while retaining explicit local
 resource loading, parse-before-commit, fragment scrolling, and failure-atomic
 navigation limits.
 
+The completed percent-decoded-fragment-target slice is
+[native-engine-041](tasks/native-engine-041.md). It decodes bounded UTF-8
+percent escapes before exact visible local `id` matching while retaining the
+existing duplicate-safe root scrolling, history restoration, local-only
+resource, and malformed-target failure behavior.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

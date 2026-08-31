@@ -73,8 +73,8 @@ in `glass-dev`, not optional browser features.
 The native engine is an explicit, default-off backend inside `glass-browser`.
 It currently supports only local `about:blank`, bounded percent-decoded or
 standard padded-base64 `data:text/html`, registered `fixture://` documents, and
-bounded fragment navigation with exact raw-id root scrolling, per-entry scroll
-restoration, and explicit Rust history traversal. Rust callers can also
+bounded fragment navigation with UTF-8 percent-decoded exact-id root scrolling,
+per-entry scroll restoration, and explicit Rust history traversal. Rust callers can also
 activate fragment-only, fixture-relative, and absolute local links through the
 existing semantic click path; empty hrefs remain click-only. Rust callers can
 construct it through the
@@ -126,9 +126,9 @@ and physical-pixel capture remain unavailable. Scripts,
 storage, prompts, and downloads are omitted and fail through the dispatcher.
 The feature adds no dependency and is never included in automatic backend
 selection. Native action targets are semantic and local-only, with the bounded
-`point=x,y` click extension; fragment matching is exact, raw, and case-sensitive
-for visible non-empty `id` attributes, while missing/hidden/duplicate targets
-preserve the current offset. Link activation is limited to fragment-only and
+`point=x,y` click extension; fragment matching is exact and case-sensitive after
+bounded UTF-8 percent decoding for visible non-empty `id` attributes, while
+missing/hidden/duplicate/malformed targets preserve the current offset. Link activation is limited to fragment-only and
 absolute local hrefs plus fixture-relative hrefs from the current registered
 fixture host. Raw form values are not part of this API.
 

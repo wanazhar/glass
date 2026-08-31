@@ -2639,6 +2639,83 @@ async fn fragment_targets_scroll_and_restore_bounded_history_offsets() {
 }
 
 #[tokio::test]
+async fn percent_decoded_fragments_match_utf8_ids_and_fail_closed() {
+    let html = "<a id='jump' href='#pricing%20plan'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><button id='pricing plan'>Spaced target</button><button id='café'>UTF-8 target</button><button id='a+b'>Plus target</button><p id='duplicate name'>First duplicate</p><p id='duplicate name'>Second duplicate</p>";
+    let viewport = Viewport {
+        width: 160,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let expected_document = NativeDocument::parse(html, &NativeEngineLimits::default()).unwrap();
+    let expected_layout = expected_document.layout(viewport).unwrap();
+    let spaced_id = expected_document.resolve_target("id=pricing plan").unwrap();
+    let spaced_scroll = NativePoint {
+        x: 0,
+        y: expected_layout
+            .box_for(spaced_id)
+            .unwrap()
+            .y
+            .min(expected_layout.max_scroll_offset().y),
+    };
+    assert!(spaced_scroll.y > 0);
+
+    let config = NativeEngineConfig::default()
+        .with_viewport(viewport)
+        .with_fixture("fixture://encoded-fragments", html)
+        .unwrap()
+        .with_initial_url("fixture://encoded-fragments");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let jumped = engine
+        .action(NativeAction::Click {
+            target: "id=jump".into(),
+        })
+        .unwrap();
+    assert!(jumped.accepted);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://encoded-fragments#pricing%20plan"
+    );
+    assert_eq!(engine.scroll_offset(), spaced_scroll);
+
+    let utf8_id = NativeDocument::parse(html, &NativeEngineLimits::default())
+        .unwrap()
+        .resolve_target("id=café")
+        .unwrap();
+    let utf8_scroll = NativeDocument::parse(html, &NativeEngineLimits::default())
+        .unwrap()
+        .layout(viewport)
+        .unwrap()
+        .box_for(utf8_id)
+        .unwrap()
+        .y;
+    engine
+        .navigate("fixture://encoded-fragments#caf%C3%A9")
+        .unwrap();
+    assert_eq!(
+        engine.scroll_offset().y,
+        utf8_scroll.min(expected_layout.max_scroll_offset().y)
+    );
+
+    engine.navigate("fixture://encoded-fragments#a+b").unwrap();
+    let plus_scroll = engine.scroll_offset();
+    assert!(plus_scroll.y > 0);
+    engine
+        .navigate("fixture://encoded-fragments#a%20b")
+        .unwrap();
+    assert_eq!(engine.scroll_offset(), plus_scroll);
+
+    for fragment in ["duplicate%20name", "bad%ZZ", "bad%C3%28"] {
+        let before = engine.scroll_offset();
+        engine
+            .navigate(format!("fixture://encoded-fragments#{fragment}"))
+            .unwrap();
+        assert_eq!(engine.scroll_offset(), before, "fragment={fragment}");
+    }
+}
+
+#[tokio::test]
 async fn semantic_actions_and_effects_use_the_backend_contract() {
     let config = NativeEngineConfig::default()
         .with_fixture(

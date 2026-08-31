@@ -246,6 +246,12 @@ breaks, and no soft wrapping, while retaining explicit limits for wide-line
 overflow, tab stops, font metrics, text alignment, and general CSS whitespace
 conformance.
 
+The completed pre-wrap-whitespace slice is
+[native-engine-035](tasks/native-engine-035.md). It extends that inherited
+source-whitespace path with fixed-cell soft wrapping for `white-space: pre-wrap`,
+while retaining explicit limits for browser line breaking, tab
+stops, font metrics, shaping, bidi, and general CSS conformance.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

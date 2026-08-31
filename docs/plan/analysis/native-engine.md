@@ -67,6 +67,14 @@ reflow/scrolling, text alignment, font metrics, and general CSS whitespace
 conformance outside the native claim; its complete gate evidence is recorded
 in `docs/plan/tasks/native-engine-034.md` and its issue #40 checkpoint is
 updated from the same commit.
+The 035 bounded-pre-wrap-whitespace slice is complete locally: inherited
+`white-space: pre-wrap` retains literal fixed-cell source whitespace and hard
+LF/CR/CRLF breaks while splitting source runs at deterministic fixed-cell
+soft-wrap boundaries. Its contract leaves browser line breaking, tab stops,
+font metrics, shaping, baselines, bidi, justification, `break-spaces`,
+`nowrap`, and general CSS whitespace conformance outside the native claim; its
+complete gate evidence is recorded in `docs/plan/tasks/native-engine-035.md`
+and its issue #40 checkpoint is updated from the same commit.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -211,6 +219,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-032` | bounded visible `<br>` hard line breaks through the existing integer inline-flow cursor and fixed line-height floor | `native-engine-031` | `<wbr>`, preserved source newlines, CSS `white-space`, font metrics, Unicode line breaking, bidi, general inline formatting, and browser parity |
 | `native-engine-033` | bounded inherited `white-space: pre-line` source newline breaks through the existing hard-break cursor while collapsing other whitespace | `native-engine-032` | `pre`/`pre-wrap`/`break-spaces`/`nowrap`, preserved tabs or arbitrary whitespace, text alignment, font metrics, Unicode line breaking, bidi, and browser parity |
 | `native-engine-034` | bounded inherited `white-space: pre` with literal fixed-cell source whitespace, LF/CR/CRLF hard breaks, and no soft wrapping | `native-engine-033` | `pre-wrap`/`break-spaces`/`nowrap`, browser tab stops, wide-line reflow or horizontal scrolling, text alignment, word spacing, Unicode line breaking, bidi, font metrics, and browser parity |
+| `native-engine-035` | bounded inherited `white-space: pre-wrap` with literal fixed-cell source whitespace, LF/CR/CRLF hard breaks, and deterministic fixed-cell soft wrapping | `native-engine-034` | `break-spaces`/`nowrap`, browser line-breaking opportunities, tab stops, wide-line scrolling, text alignment/justification, word spacing, Unicode line breaking, bidi, font metrics/shaping, and browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -327,6 +336,13 @@ Phase 2 integration chains added by these slices are:
 38. Native inherited `white-space: pre-line` turns bounded LF/CR/CRLF source
     boundaries into the same hard-break cursor transition while retaining
     collapsed spaces and the default `white-space: normal` behavior.
+39. Native inherited `white-space: pre` retains literal fixed-cell source
+    whitespace, turns LF/CR/CRLF into the same hard-break transition, and does
+    not soft-wrap preformatted segments without changing semantic ownership.
+40. Native inherited `white-space: pre-wrap` retains literal fixed-cell source
+    whitespace, turns LF/CR/CRLF into the same hard-break transition, and
+    splits source runs only at deterministic fixed-cell soft-wrap capacity
+    without synthesizing semantic, layout, or paint nodes.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -373,13 +389,15 @@ stacking, or that clicking a link performs browser navigation.
 | bounded hard line breaks | makes author-visible `<br>` structure affect fixture flow without adding a renderer or font engine | no `<wbr>`, preserved source newline, CSS whitespace, font metric, Unicode line-breaking, bidi, or browser inline-formatting claim | move only the existing bounded cursor, emit no synthetic node, and keep hidden/display:none breaks inert |
 | bounded `white-space: pre-line` breaks | preserves common source newlines through the proven hard-break transition while retaining a collapsed-space model | no `pre`/`pre-wrap`/`break-spaces`/`nowrap`, tabs, arbitrary whitespace, text alignment, font metrics, Unicode line breaking, bidi, or browser parity | inherit one explicit mode through the existing bounded style walk, normalize CRLF, and reuse the `<br>` flow transition |
 | bounded `white-space: pre` | preserves bounded literal source whitespace and line boundaries without inventing soft-wrap or tab-stop policy | no `pre-wrap`/`break-spaces`/`nowrap`, browser tab stops, wide-line reflow or horizontal scrolling, text alignment, word spacing, Unicode line breaking, bidi, font metrics, or browser parity | inherit one explicit mode through the existing style walk, retain fixed-cell text runs, normalize CRLF, and reuse the proven hard-break transition |
+| bounded `white-space: pre-wrap` | retains authored whitespace while making bounded preformatted content usable in narrow fixed-cell lines | no `break-spaces`/`nowrap`, browser line-breaking opportunities, tab stops, wide-line scrolling, text alignment/justification, word spacing, Unicode line breaking, bidi, font metrics/shaping, or browser parity | inherit one explicit mode through the existing style walk, split source text at deterministic cell capacity, normalize CRLF, and reuse the proven hard-break transition |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-034.md` is the latest completed checkpoint,
-`docs/plan/tasks/native-engine-032.md` is the preceding completed checkpoint,
+`docs/plan/tasks/native-engine-035.md` is the latest completed checkpoint,
+`docs/plan/tasks/native-engine-034.md` is the preceding completed checkpoint,
+`docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 A checkpoint is complete only when

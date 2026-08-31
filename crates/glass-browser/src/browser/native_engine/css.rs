@@ -162,6 +162,22 @@ pub(crate) enum TextAlignValue {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TextDecorationValue {
+    #[default]
+    None,
+    Underline,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NativeInheritedStyle {
+    pub(crate) color: Option<NativeColor>,
+    pub(crate) white_space: WhiteSpaceValue,
+    pub(crate) line_height: Option<u32>,
+    pub(crate) text_align: TextAlignValue,
+    pub(crate) text_decoration: TextDecorationValue,
+}
+
 /// Bounded physical top, right, bottom, and left box values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeBoxEdges {
@@ -213,6 +229,7 @@ pub(crate) struct NativeComputedStyle {
     opacity: Option<u8>,
     white_space: WhiteSpaceValue,
     text_align: TextAlignValue,
+    text_decoration: TextDecorationValue,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -253,6 +270,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_align(self) -> TextAlignValue {
         self.text_align
+    }
+
+    pub(crate) const fn text_decoration(self) -> TextDecorationValue {
+        self.text_decoration
     }
 
     pub(crate) const fn width(self) -> Option<u32> {
@@ -354,14 +375,9 @@ impl NativeStylesheet {
 
     #[cfg(test)]
     pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
-        self.computed_for_with_matcher(
-            node,
-            None,
-            WhiteSpaceValue::Normal,
-            None,
-            TextAlignValue::Left,
-            |selector| selector.matches(node),
-        )
+        self.computed_for_with_matcher(node, NativeInheritedStyle::default(), |selector| {
+            selector.matches(node)
+        })
     }
 
     pub(crate) fn computed_for_in_document(
@@ -373,10 +389,10 @@ impl NativeStylesheet {
         self.computed_for_in_document_with_inheritance(
             document,
             node_id,
-            inherited_color,
-            WhiteSpaceValue::Normal,
-            None,
-            TextAlignValue::Left,
+            NativeInheritedStyle {
+                color: inherited_color,
+                ..NativeInheritedStyle::default()
+            },
         )
     }
 
@@ -384,31 +400,20 @@ impl NativeStylesheet {
         &self,
         document: &NativeDocument,
         node_id: NativeNodeId,
-        inherited_color: Option<NativeColor>,
-        inherited_white_space: WhiteSpaceValue,
-        inherited_line_height: Option<u32>,
-        inherited_text_align: TextAlignValue,
+        inherited: NativeInheritedStyle,
     ) -> NativeComputedStyle {
         let Some(node) = document.node(node_id) else {
             return NativeComputedStyle::default();
         };
-        self.computed_for_with_matcher(
-            node,
-            inherited_color,
-            inherited_white_space,
-            inherited_line_height,
-            inherited_text_align,
-            |selector| selector.matches_in_document(document, node_id),
-        )
+        self.computed_for_with_matcher(node, inherited, |selector| {
+            selector.matches_in_document(document, node_id)
+        })
     }
 
     fn computed_for_with_matcher(
         &self,
         node: &NativeNode,
-        inherited_color: Option<NativeColor>,
-        inherited_white_space: WhiteSpaceValue,
-        inherited_line_height: Option<u32>,
-        inherited_text_align: TextAlignValue,
+        inherited: NativeInheritedStyle,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
         let mut display = None;
@@ -416,6 +421,7 @@ impl NativeStylesheet {
         let mut opacity = None;
         let mut white_space = None;
         let mut text_align = None;
+        let mut text_decoration = None;
         let mut width = None;
         let mut height = None;
         let mut min_width = None;
@@ -480,6 +486,21 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, text_align)
             {
                 text_align = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_decoration
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    text_decoration,
+                )
+            {
+                text_decoration = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -696,6 +717,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_decoration
+                && wins(u16::MAX, usize::MAX, true, text_decoration)
+            {
+                text_decoration = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -854,8 +885,9 @@ impl NativeStylesheet {
             visibility_hidden: visibility
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
             opacity: opacity.map(|value| value.value),
-            white_space: white_space.map_or(inherited_white_space, |value| value.value),
-            text_align: text_align.map_or(inherited_text_align, |value| value.value),
+            white_space: white_space.map_or(inherited.white_space, |value| value.value),
+            text_align: text_align.map_or(inherited.text_align, |value| value.value),
+            text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             min_width: min_width.map(|value| value.value),
@@ -864,14 +896,14 @@ impl NativeStylesheet {
             max_height: max_height.map(|value| value.value),
             line_height: line_height
                 .map(|value| value.value)
-                .or(inherited_line_height),
+                .or(inherited.line_height),
             background_color: background_color.map(|value| value.value),
             border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
             border_radius: border_radius.map_or(NativeBorderRadius::default(), |value| value.value),
             padding: NativeBoxEdges::from_cascade(padding),
             margin: NativeBoxEdges::from_cascade(margin),
             box_sizing: box_sizing.map_or(NativeBoxSizing::ContentBox, |value| value.value),
-            color: color.map(|value| value.value).or(inherited_color),
+            color: color.map(|value| value.value).or(inherited.color),
             overflow_clip_x: overflow_x.is_some_and(|value| {
                 matches!(value.value, OverflowValue::Hidden | OverflowValue::Clip)
             }),
@@ -958,6 +990,7 @@ struct NativeDeclarations {
     opacity: Option<u8>,
     white_space: Option<WhiteSpaceValue>,
     text_align: Option<TextAlignValue>,
+    text_decoration: Option<TextDecorationValue>,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -1119,6 +1152,7 @@ fn parse_source(
             || declarations.opacity.is_some()
             || declarations.white_space.is_some()
             || declarations.text_align.is_some()
+            || declarations.text_decoration.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.min_width.is_some()
@@ -1240,6 +1274,7 @@ fn parse_declarations_with_diagnostics(
             "opacity" => parse_opacity(value).is_some(),
             "white-space" => parse_white_space(value).is_some(),
             "text-align" => parse_text_align(value).is_some(),
+            "text-decoration" => parse_text_decoration(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
             }
@@ -1295,6 +1330,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "opacity"
             | "white-space"
             | "text-align"
+            | "text-decoration"
             | "width"
             | "height"
             | "min-width"
@@ -1373,6 +1409,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-align" => {
                 declarations.text_align = parse_text_align(value);
+            }
+            "text-decoration" => {
+                declarations.text_decoration = parse_text_decoration(value);
             }
             "width" => {
                 declarations.width = parse_dimension(value);
@@ -1765,6 +1804,14 @@ fn parse_text_align(value: &str) -> Option<TextAlignValue> {
     }
 }
 
+fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "none" => Some(TextDecorationValue::None),
+        "underline" => Some(TextDecorationValue::Underline),
+        _ => None,
+    }
+}
+
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(VisibilityValue::Hidden),
@@ -2059,13 +2106,17 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.opacity, Some(128));
         assert_eq!(declarations.white_space, Some(WhiteSpaceValue::PreLine));
         assert_eq!(declarations.text_align, Some(TextAlignValue::Center));
+        assert_eq!(
+            declarations.text_decoration,
+            Some(TextDecorationValue::Underline)
+        );
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.min_width, Some(12));
@@ -2478,6 +2529,21 @@ mod tests {
     }
 
     #[test]
+    fn text_decoration_parser_accepts_only_bounded_lines() {
+        assert_eq!(
+            parse_text_decoration("UNDERLINE"),
+            Some(TextDecorationValue::Underline)
+        );
+        assert_eq!(
+            parse_text_decoration("none"),
+            Some(TextDecorationValue::None)
+        );
+        assert_eq!(parse_text_decoration("overline"), None);
+        assert_eq!(parse_text_decoration("underline line-through"), None);
+        assert_eq!(parse_text_decoration("underline red"), None);
+    }
+
+    #[test]
     fn opacity_is_cascaded_locally_without_inheriting_to_children() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { opacity: 25%; } #target { opacity: 75%; }".into(),
@@ -2534,6 +2600,48 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).text_align(),
             TextAlignValue::Center
+        );
+    }
+
+    #[test]
+    fn text_decoration_is_inherited_and_child_none_clears_it() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { text-decoration: none; } #target { text-decoration: underline; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='target'>Target</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).text_decoration(),
+            TextDecorationValue::Underline
+        );
+
+        let document = NativeDocument::parse(
+            "<style>#parent { text-decoration: underline; } #clear { text-decoration: none; } #invalid { text-decoration: overline; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let clear = document.resolve_target("id=clear").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).text_decoration(),
+            TextDecorationValue::Underline
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).text_decoration(),
+            TextDecorationValue::Underline
+        );
+        assert_eq!(
+            document.computed_style_for_layout(clear).text_decoration(),
+            TextDecorationValue::None
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .text_decoration(),
+            TextDecorationValue::Underline
         );
     }
 

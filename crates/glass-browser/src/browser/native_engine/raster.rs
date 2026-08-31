@@ -11,6 +11,7 @@ pub const MAX_NATIVE_OPACITY_GROUP_DEPTH: usize = 8;
 pub const MAX_NATIVE_OPACITY_LAYER_PIXELS: usize = MAX_NATIVE_SURFACE_PIXELS * 4;
 const GLYPH_WIDTH: u32 = 5;
 const GLYPH_ADVANCE: u32 = 6;
+const GLYPH_HEIGHT: u32 = 7;
 
 /// Immutable logical RGBA output from the native display-list seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +144,7 @@ impl NativeSurface {
                     origin,
                     text,
                     color,
+                    underline,
                     clip,
                     ..
                 } => {
@@ -160,6 +162,7 @@ impl NativeSurface {
                         *origin,
                         text,
                         *color,
+                        *underline,
                         clip,
                         scroll_offset,
                     );
@@ -462,6 +465,7 @@ impl NativeSurface {
         origin: super::layout::NativePoint,
         text: &str,
         color: super::css::NativeColor,
+        underline: bool,
         clip: Option<NativeRect>,
         scroll_offset: NativePoint,
     ) {
@@ -498,6 +502,32 @@ impl NativeSurface {
                                 color,
                             );
                         }
+                    }
+                }
+            }
+        }
+        if underline {
+            let underline_y = origin_y.saturating_add(i64::from(GLYPH_HEIGHT));
+            if underline_y >= 0 && underline_y < i64::from(self.height) {
+                let run_width = u32::try_from(text.chars().count())
+                    .unwrap_or(u32::MAX)
+                    .saturating_mul(GLYPH_ADVANCE);
+                for offset in 0..run_width {
+                    let x = origin_x.saturating_add(i64::from(offset));
+                    if x >= 0
+                        && x < i64::from(self.width)
+                        && clip.is_none_or(|clip| {
+                            clip.contains(NativePoint {
+                                x: u32::try_from(x).unwrap_or(u32::MAX),
+                                y: u32::try_from(underline_y).unwrap_or(u32::MAX),
+                            })
+                        })
+                    {
+                        self.blend_pixel(
+                            u32::try_from(x).unwrap_or(u32::MAX),
+                            u32::try_from(underline_y).unwrap_or(u32::MAX),
+                            color,
+                        );
                     }
                 }
             }
@@ -928,6 +958,7 @@ mod tests {
                     text: "A?".into(),
                     truncated: false,
                     color: NativeColor::RED,
+                    underline: false,
                     clip: None,
                 },
             ],
@@ -940,6 +971,44 @@ mod tests {
         assert_eq!(surface.pixel(4, 2), Some([255, 0, 0, 255]));
         assert_eq!(surface.pixel(7, 2), Some([255, 255, 255, 255]));
         assert_eq!(surface.pixel(7, 7), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn surface_draws_alpha_underlines_across_fixed_cells_and_clips_them() {
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: NativeDocument::empty().root(),
+                    origin: NativePoint { x: 1, y: 0 },
+                    text: "A?".into(),
+                    truncated: false,
+                    color: NativeColor {
+                        red: 0,
+                        green: 128,
+                        blue: 0,
+                        alpha: 128,
+                    },
+                    underline: true,
+                    clip: Some(NativeRect {
+                        x: 2,
+                        y: 7,
+                        width: 4,
+                        height: 1,
+                    }),
+                },
+            ],
+            8,
+            8,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(1, 7), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(2, 7), Some([127, 191, 127, 255]));
+        assert_eq!(surface.pixel(5, 7), Some([127, 191, 127, 255]));
+        assert_eq!(surface.pixel(6, 7), Some([255, 255, 255, 255]));
     }
 
     #[test]
@@ -1254,6 +1323,7 @@ mod tests {
                     text: "A".into(),
                     truncated: false,
                     color: NativeColor::BLACK,
+                    underline: false,
                     clip: None,
                 },
             ],

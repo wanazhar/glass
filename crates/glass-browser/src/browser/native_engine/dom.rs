@@ -8,7 +8,10 @@ use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
-    css::{NativeColor, NativeComputedStyle, TextAlignValue, WhiteSpaceValue},
+    css::{
+        NativeColor, NativeComputedStyle, NativeInheritedStyle, TextAlignValue,
+        TextDecorationValue, WhiteSpaceValue,
+    },
 };
 use std::collections::BTreeMap;
 
@@ -847,6 +850,7 @@ impl NativeDocument {
         let mut inherited_white_space = WhiteSpaceValue::Normal;
         let mut inherited_line_height = None;
         let mut inherited_text_align = TextAlignValue::Left;
+        let mut inherited_text_decoration = TextDecorationValue::None;
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
@@ -854,15 +858,19 @@ impl NativeDocument {
             let style = self.stylesheet.computed_for_in_document_with_inheritance(
                 self,
                 current_id,
-                inherited_color,
-                inherited_white_space,
-                inherited_line_height,
-                inherited_text_align,
+                NativeInheritedStyle {
+                    color: inherited_color,
+                    white_space: inherited_white_space,
+                    line_height: inherited_line_height,
+                    text_align: inherited_text_align,
+                    text_decoration: inherited_text_decoration,
+                },
             );
             inherited_color = style.color().or(inherited_color);
             inherited_white_space = style.white_space();
             inherited_line_height = style.line_height().or(inherited_line_height);
             inherited_text_align = style.text_align();
+            inherited_text_decoration = style.text_decoration();
             if current_id == id {
                 return style;
             }

@@ -1,7 +1,7 @@
 ---
 id: native-engine-055
 scope: glass-browser/native-engine/inherited-text-transform
-status: active
+status: done
 depends-on: [native-engine-054]
 ---
 
@@ -80,6 +80,23 @@ values, font shaping, bidi, or browser text-rendering parity is introduced.
 
 ## Completion evidence
 
-To be filled after implementation and validation. Remote CI remains pending
-until this local branch is pushed; no push, tag, publication, or release is
-part of this epic checkpoint.
+Implemented in local commit `1413913` (`feat(native-engine): add bounded text
+transform`). The slice adds inherited `none`/`uppercase`/`lowercase` parsing and
+cascade, applies bounded ASCII presentation conversion in the shared layout
+text-flow owner, and keeps semantic source text and locators unchanged. The
+native integration suite covers direct, inherited, cleared, nested,
+`display:contents`, preformatted, nowrap, text-fragment, display-list, and
+source-evidence behavior.
+
+Local evidence completed before this task closure:
+
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine native_text_transform --locked -- --nocapture` — 2 passed;
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine --locked -- --nocapture` — 70 passed;
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --lib --locked --quiet` — 838 passed, 1 ignored;
+- `cargo fmt --all -- --check` and `git diff --check` — passed;
+- `cargo clippy -p glass-browser --all-targets --all-features --locked -- -D warnings` — passed.
+
+The remaining workspace, documentation, and remote-CI evidence is tracked by
+the issue-level release/epic gates. Remote CI remains pending until this local
+branch is pushed; no push, tag, publication, or release is part of this epic
+checkpoint.

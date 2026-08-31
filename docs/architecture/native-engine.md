@@ -11,7 +11,8 @@ bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
-bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration slices,
+bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
+bounded-inherited-text-transform slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -54,7 +55,8 @@ bounded inherited `white-space: pre-line`, `white-space: pre`,
 `white-space: pre-wrap`, and `white-space: nowrap` source whitespace flow, and
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
-text paint, bounded fixed-cell `text-decoration:none|underline` paint, and
+text paint, bounded fixed-cell `text-decoration:none|underline` paint, bounded
+inherited ASCII `text-transform:none|uppercase|lowercase` layout, and
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -613,7 +615,12 @@ boundary. The completed 054 boundary adds inherited fixed-cell
 alpha-aware one-pixel baseline-offset replay. Font metrics, decoration
 propagation, and browser text-paint parity remain outside the boundary. Its
 implementation and validation evidence are recorded in the 054 task file and
-issue #40. No later native-engine slice is active in this checkpoint.
+issue #40. The active 055 boundary adds inherited ASCII
+`text-transform:none|uppercase|lowercase` during fixed-cell layout before
+whitespace handling, wrapping, text-fragment matching, display-list projection,
+and root-overflow measurement. Semantic source text remains unchanged; Unicode
+case mapping, locale behavior, and font-specific glyph metrics remain outside
+the boundary. Implementation is tracked in the 055 task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -816,6 +823,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited `text-decoration:none|underline` parsing and cascade,
   immutable text-command decoration bits, and deterministic clipped
   alpha-aware fixed-cell underline replay.
+- bounded inherited ASCII `text-transform:none|uppercase|lowercase` parsing and
+  cascade, transformed fixed-cell layout fragments, and consistent wrapping,
+  text-fragment, display-list, and root-overflow consumers.
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden`/`overflow:clip` ancestor intersections on

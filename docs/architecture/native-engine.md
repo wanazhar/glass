@@ -615,12 +615,13 @@ boundary. The completed 054 boundary adds inherited fixed-cell
 alpha-aware one-pixel baseline-offset replay. Font metrics, decoration
 propagation, and browser text-paint parity remain outside the boundary. Its
 implementation and validation evidence are recorded in the 054 task file and
-issue #40. The active 055 boundary adds inherited ASCII
+issue #40. The completed 055 boundary adds inherited ASCII
 `text-transform:none|uppercase|lowercase` during fixed-cell layout before
 whitespace handling, wrapping, text-fragment matching, display-list projection,
 and root-overflow measurement. Semantic source text remains unchanged; Unicode
 case mapping, locale behavior, and font-specific glyph metrics remain outside
-the boundary. Implementation is tracked in the 055 task file and issue #40.
+the boundary. Implementation and validation evidence are recorded in the 055
+task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

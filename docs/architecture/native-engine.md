@@ -604,11 +604,11 @@ general stacking, transforms, filters, animation, and browser compositor parity
 remain outside the boundary. The completed 052 boundary adds bounded inherited
 physical text alignment for fixed-cell direct text and supported inline boxes;
 logical directions, justification, and browser inline-formatting parity remain
-outside the boundary. The active 053 boundary extends the existing bounded
+outside the boundary. The completed 053 boundary extends the existing bounded
 color grammar with decimal-channel `rgba(R, G, B, A)` values using fixed-point
 alpha quantization and the existing source-over raster path; CSS Color 4,
 wide-gamut, interpolation, and color-management behavior remain outside the
-boundary.
+boundary. No later native-engine slice is active in this checkpoint.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

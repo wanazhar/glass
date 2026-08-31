@@ -153,10 +153,12 @@ display-list layers and software compositing. No general stacking, transform,
 filter, animation, or browser compositor parity is implied. The completed
 `native-engine-052` task adds bounded inherited `text-align` for fixed-cell
 direct text and supported inline flow, with no logical-direction or
-justification parity. The active dependency-ordered `native-engine-053` task
-adds bounded functional `rgba(R, G, B, A)` alpha parsing for background, border,
-and text colors through the existing `NativeColor` and software source-over
-owners. It does not imply CSS Color 4, color-space, or color-management parity.
+justification parity. The completed dependency-ordered `native-engine-053`
+task adds bounded functional `rgba(R, G, B, A)` alpha parsing for background,
+border, and text colors through the existing `NativeColor` and software
+source-over owners. It does not imply CSS Color 4, color-space, or
+color-management parity. No later native-engine slice is active in this
+checkpoint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -584,8 +586,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-053.md` is the active contract;
-`docs/plan/tasks/native-engine-052.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-053.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-052.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-051.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-050.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-049.md` is the earlier completed checkpoint;

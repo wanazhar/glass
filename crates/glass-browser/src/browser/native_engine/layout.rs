@@ -116,11 +116,19 @@ impl NativeLayoutSnapshot {
         let max_text_right = builder
             .text_runs
             .iter()
-            .map(|text_run| {
-                text_run
-                    .origin
-                    .x
-                    .saturating_add(LayoutBuilder::text_width(&text_run.text))
+            .filter_map(|text_run| {
+                if text_run.truncated || text_run.text.is_empty() {
+                    return None;
+                }
+                let text_rect = NativeRect {
+                    x: text_run.origin.x,
+                    y: text_run.origin.y,
+                    width: LayoutBuilder::text_width(&text_run.text),
+                    height: DEFAULT_LINE_HEIGHT,
+                };
+                let visible_rect = overflow_clip_for(document, &builder.boxes, text_run.node_id)
+                    .map_or(text_rect, |clip| intersect_rect(text_rect, clip));
+                (visible_rect.width > 0 && visible_rect.height > 0).then_some(visible_rect.right())
             })
             .max()
             .unwrap_or(0);

@@ -8,7 +8,8 @@ bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
 bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture/
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
-bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height slices,
+bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
+bounded-clip-aware-root-overflow slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -553,12 +554,17 @@ supported subset, nested scrolling, scrollbars, and browser line-breaking
 parity remain outside the slice. Its implementation and validation evidence
 are recorded in the task file and issue #40.
 
-The 047 bounded-inherited-line-height boundary is the next active slice. It
-will propagate the existing positive pixel `line-height` floor through the
-DOM style walk so descendants without a valid local declaration use the
-nearest computed value. Font-relative metrics, CSS-wide keywords, baselines,
-`vertical-align`, and general computed-style inheritance remain outside the
-slice.
+The completed 047 bounded-inherited-line-height boundary propagates the
+existing positive pixel `line-height` floor through the DOM style walk so
+descendants without a valid local declaration use the nearest computed value.
+Font-relative metrics, CSS-wide keywords, baselines, `vertical-align`, and
+general computed-style inheritance remain outside the slice.
+
+The 048 bounded-clip-aware-root-overflow boundary is the next active slice. It
+will measure text contribution to root `content_width` through the same
+document-space overflow clip already shared by paint, viewport projection, and
+point hit testing, so fully clipped text cannot create a false horizontal
+scroll range.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

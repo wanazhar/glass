@@ -317,10 +317,14 @@ and history contracts. The completed follow-on
 horizontal scroll path. Its implementation and validation evidence are
 recorded in the task file and issue #40.
 
-The next active dependency-ordered slice is
-[native-engine-047](tasks/native-engine-047.md), which propagates the existing
+The completed dependency-ordered slice
+[native-engine-047](tasks/native-engine-047.md) propagated the existing
 positive pixel `line-height` floor through the DOM style walk while preserving
-explicit child declarations and height precedence.
+explicit child declarations and height precedence. The next active
+dependency-ordered slice is
+[native-engine-048](tasks/native-engine-048.md), which makes measured root
+horizontal overflow consume the existing `overflow:hidden`/`overflow:clip`
+intersection so fully clipped text cannot create a false scroll range.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

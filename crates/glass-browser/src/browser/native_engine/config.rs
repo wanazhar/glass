@@ -286,32 +286,69 @@ pub(crate) fn decode_percent_encoded_fragment(value: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-/// Decode the bounded one- or two-term text-fragment grammar without applying
-/// form semantics or treating encoded commas as separators.
-pub(crate) fn decode_text_fragment_terms(value: &str) -> Option<(String, Option<String>)> {
+/// The bounded decoded text-fragment terms used by the native matcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TextFragmentTerms {
+    pub(crate) prefix: Option<String>,
+    pub(crate) start: String,
+    pub(crate) end: Option<String>,
+    pub(crate) suffix: Option<String>,
+}
+
+/// Decode the bounded text-fragment grammar without applying form semantics or
+/// treating encoded commas as separators.
+pub(crate) fn decode_text_fragment_terms(value: &str) -> Option<TextFragmentTerms> {
     let payload = value.strip_prefix(":~:text=")?;
-    let mut terms = payload.split(',');
-    let start_raw = terms.next()?;
-    if start_raw.is_empty() || start_raw.ends_with('-') {
+    let raw_terms = payload.split(',').collect::<Vec<_>>();
+    if raw_terms.is_empty() || raw_terms.len() > 4 || raw_terms.iter().any(|term| term.is_empty()) {
         return None;
     }
-    let start = decode_percent_encoded_fragment(start_raw)?;
-    if start.is_empty() {
+    let prefix_raw = raw_terms
+        .first()
+        .filter(|term| term.ends_with('-'))
+        .map(|term| &term[..term.len().saturating_sub(1)]);
+    let suffix_raw = raw_terms
+        .last()
+        .filter(|term| term.starts_with('-'))
+        .map(|term| &term[1..]);
+    if prefix_raw.is_some_and(str::is_empty) || suffix_raw.is_some_and(str::is_empty) {
         return None;
     }
-    let end = terms.next().map(|end_raw| {
-        if end_raw.is_empty() || end_raw.starts_with('-') {
-            return None;
-        }
-        let decoded = decode_percent_encoded_fragment(end_raw)?;
+    let core_start = usize::from(prefix_raw.is_some());
+    let core_end = raw_terms
+        .len()
+        .saturating_sub(usize::from(suffix_raw.is_some()));
+    let core = raw_terms.get(core_start..core_end)?;
+    if !(1..=2).contains(&core.len())
+        || core
+            .iter()
+            .any(|term| term.starts_with('-') || term.ends_with('-'))
+    {
+        return None;
+    }
+    let decode_term = |term: &str| {
+        let decoded = decode_percent_encoded_fragment(term)?;
         (!decoded.is_empty()).then_some(decoded)
-    });
-    let end = match end {
-        Some(Some(end)) => Some(end),
-        Some(None) => return None,
-        None => None,
     };
-    terms.next().is_none().then_some((start, end))
+    let prefix = prefix_raw.and_then(decode_term);
+    if prefix_raw.is_some() && prefix.is_none() {
+        return None;
+    }
+    let suffix = suffix_raw.and_then(decode_term);
+    if suffix_raw.is_some() && suffix.is_none() {
+        return None;
+    }
+    let start = decode_term(core[0])?;
+    let end = core.get(1).copied().and_then(decode_term);
+    if core.len() == 2 && end.is_none() {
+        return None;
+    }
+    Some(TextFragmentTerms {
+        prefix,
+        start,
+        end,
+        suffix,
+    })
 }
 
 fn hex_value(value: u8) -> Option<u8> {
@@ -383,8 +420,8 @@ pub(crate) fn resolve_fixture_relative_url(
 #[cfg(test)]
 mod tests {
     use super::{
-        NativeEngineError, decode_percent_encoded_fragment, decode_text_fragment_terms,
-        resolve_fixture_relative_url,
+        NativeEngineError, TextFragmentTerms, decode_percent_encoded_fragment,
+        decode_text_fragment_terms, resolve_fixture_relative_url,
     };
 
     #[test]
@@ -406,22 +443,57 @@ mod tests {
     fn text_fragment_terms_decode_per_term_and_reject_extended_syntax() {
         assert_eq!(
             decode_text_fragment_terms(":~:text=target%20phrase"),
-            Some(("target phrase".into(), None))
+            Some(TextFragmentTerms {
+                prefix: None,
+                start: "target phrase".into(),
+                end: None,
+                suffix: None,
+            })
         );
         assert_eq!(
             decode_text_fragment_terms(":~:text=target%2C%20phrase,end"),
-            Some(("target, phrase".into(), Some("end".into())))
+            Some(TextFragmentTerms {
+                prefix: None,
+                start: "target, phrase".into(),
+                end: Some("end".into()),
+                suffix: None,
+            })
         );
         assert_eq!(
             decode_text_fragment_terms(":~:text=a%2Bb"),
-            Some(("a+b".into(), None))
+            Some(TextFragmentTerms {
+                prefix: None,
+                start: "a+b".into(),
+                end: None,
+                suffix: None,
+            })
+        );
+        assert_eq!(
+            decode_text_fragment_terms(":~:text=prefix%20-,target%20phrase,anchor,-%20suffix"),
+            Some(TextFragmentTerms {
+                prefix: Some("prefix ".into()),
+                start: "target phrase".into(),
+                end: Some("anchor".into()),
+                suffix: Some(" suffix".into()),
+            })
         );
         for value in [
-            ":~:text=",
             ":~:text=prefix-,target",
             ":~:text=target,-suffix",
+            ":~:text=prefix-,target,-suffix",
+            ":~:text=prefix-,target,end",
+            ":~:text=target,end,-suffix",
+        ] {
+            assert!(decode_text_fragment_terms(value).is_some(), "value={value}");
+        }
+        for value in [
+            ":~:text=",
             ":~:text=target,",
             ":~:text=target,end,extra",
+            ":~:text=prefix-,target,end,extra",
+            ":~:text=prefix-,target,-suffix,extra",
+            ":~:text=prefix-,target,end,-",
+            ":~:text=prefix-,target%ZZ",
             ":~:text=bad%ZZ",
         ] {
             assert_eq!(decode_text_fragment_terms(value), None, "value={value}");

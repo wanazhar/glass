@@ -69,7 +69,7 @@ source-behavior reference.
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
-  non-truncated text run, per-entry Rust history scroll restoration, bounded local
+  non-truncated text run plus exact same-run prefix/suffix affixes, per-entry Rust history scroll restoration, bounded local
   anchor activation for fragment-only, fixture-relative, and absolute local
   hrefs, and bounded revisioned Rust diagnostics for unsupported
   CSS; these are not screenshot-containing evidence or stable transport
@@ -261,8 +261,9 @@ projection, and point hit-testing,
   shorthands and longhands,
 explicit box sizing, and bounded vertical viewport scrolling,
 native point hit testing, local click/type actions, and a revision/changed
-  effects signal; bounded text-fragment targets are matched only within the
-  first visible non-truncated layout run; its Rust-only
+  effects signal; bounded text-fragment targets, including exact adjacent
+  prefix/suffix affixes, are matched only within the first visible
+  non-truncated layout run; its Rust-only
 presentation artifacts include a display list, logical RGBA software surface,
 and bounded PNG capture through the explicit backend operation. These are not
 screenshot-containing evidence, and the backend is not a

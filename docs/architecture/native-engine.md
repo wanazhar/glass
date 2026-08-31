@@ -12,7 +12,8 @@ bounded-pre-wrap-whitespace slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
-bounded-legacy-name-fragment-targets/bounded-text-fragment-targets,
+bounded-legacy-name-fragment-targets/bounded-text-fragment-targets/
+bounded-text-fragment-affixes,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -481,9 +482,10 @@ exact lookup, 042 added the legacy `<a name>` fallback, and 043 added simple
 text-fragment matching. Every history entry stores one bounded root scroll
 point; scroll actions update the active entry and traversal restores it,
 including reparsed different-resource entries. Prefix/suffix text-fragment
-syntax, duplicate-id recovery beyond decoded equality, malformed URL policy,
-smooth/nested/horizontal/keyboard/snap scrolling, sticky layout, and browser
-alignment parity remain unsupported. Each implementation and validation
+syntax was unsupported at this 039 checkpoint; the later 044 checkpoint adds
+bounded exact same-run affixes. Duplicate-id recovery beyond decoded equality,
+malformed URL policy, smooth/nested/horizontal/keyboard/snap scrolling, sticky
+layout, and browser alignment parity remain unsupported. Each implementation and validation
 boundary is recorded in its task file and issue #40.
 
 The 040 bounded-relative-local-links boundary resolves non-absolute link
@@ -520,6 +522,16 @@ non-truncated text run after per-term bounded UTF-8 decoding. Prefix/suffix
 syntax, cross-run ranges, highlights, and browser text-fragment parity remain
 unsupported. Its implementation and validation evidence are recorded in the
 task file and issue #40.
+
+The 044 bounded-text-fragment-affix boundary is complete locally. It adds the
+accepted exact same-run `prefix-,start`, `start,-suffix`, and combined affix
+forms around the existing `start[,end]` matcher, including the corresponding
+forms with an ordered end term. Raw-comma separation, per-term bounded UTF-8
+decoding, first-visible-run order, root-scroll/history behavior, and
+fail-closed handling for malformed or unsupported forms remain intact.
+Cross-run ranges, multiple directives, highlights, Unicode normalization, and
+browser text-fragment parity remain unsupported. Its implementation and
+validation evidence are recorded in the task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -671,6 +683,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded percent-decoded fragment identifiers for exact visible local IDs;
 - bounded legacy `<a name>` fragment identifiers as an exact-ID fallback;
 - bounded `#:~:text=start[,end]` visible text-fragment targets;
+- bounded text-fragment prefix/suffix affixes within one visible text run;
 - semantic local anchor activation through dispatcher click;
 - fixture-relative local link resolution with same-host enforcement;
 - title and visible-text projection with hidden `head`, `script`, and `style`;

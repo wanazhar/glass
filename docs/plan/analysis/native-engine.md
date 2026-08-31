@@ -120,6 +120,12 @@ simple one-run `#:~:text=start` or `#:~:text=start,end` request after per-term
 bounded UTF-8 decoding while preserving the existing ID/name precedence,
 layout, scroll, and history boundaries. Its complete gate evidence is recorded
 below, in `docs/plan/tasks/native-engine-043.md`, and on issue #40.
+The 044 bounded-text-fragment-affix slice is complete locally: it adds exact
+same-run prefix/suffix affixes around the existing matcher, with the same
+raw-comma parsing, per-term UTF-8 decoding, scroll, history, and fail-closed
+boundaries. Its complete gate evidence is recorded below, in
+`docs/plan/tasks/native-engine-044.md`, and on issue #40. No later
+native-engine slice is active in this checkout.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -273,6 +279,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-041` | bounded UTF-8 percent-decoding of local fragment identifiers before exact visible `id` lookup and existing root-scroll/history restoration | `native-engine-040` | `name`/text fragments, duplicate-id recovery beyond decoded equality, malformed-fragment error policy, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser URL-parsing parity |
 | `native-engine-042` | bounded exact legacy `<a name>` fragment-target fallback after decoded `id` lookup, with ID precedence and duplicate-safe root-scroll/history behavior | `native-engine-041` | arbitrary `name` attributes, text fragments, duplicate-id recovery, malformed-fragment error policy, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser URL/scrolling parity |
 | `native-engine-043` | bounded `#:~:text=start[,end]` matching against the first visible non-truncated text run after per-term UTF-8 decoding | `native-engine-042` | prefix/suffix syntax, multiple directives, cross-run ranges, highlights, duplicate-text disambiguation, Unicode normalization, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser text-fragment parity |
+| `native-engine-044` | bounded exact prefix/suffix text-fragment affixes around a same-run `start[,end]` match | `native-engine-043` | cross-run ranges, multiple directives, highlights, Unicode normalization, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser text-fragment parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -433,6 +440,9 @@ Phase 2 integration chains added by these slices are:
     matches the first complete visible layout run in document order, requires a
     same-run ordered end term when present, and preserves the existing
     history/resource transaction for unsupported forms.
+49. Native text-fragment prefix/suffix affixes are matched exactly adjacent to
+    the start/end terms inside the first complete visible layout run, while
+    malformed or cross-run forms preserve the existing scroll fallback.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -487,13 +497,15 @@ visual stacking.
 | bounded fixture-relative link resolution | makes common local relative links usable without opening a network or general origin policy | no relative resolution from opaque data/about resources, host changes, remote schemes, credentials, redirects, downloads, or browser URL parity | resolve with the existing URL parser from a fixture base, enforce the fixture scheme/host, and route the normalized result through the existing loader before mutation |
 | bounded percent-decoded fragment targets | makes encoded spaces and UTF-8 local IDs reachable without changing resource lookup or history representation | no arbitrary URL decoding, malformed-fragment error policy, or browser alignment parity | decode only bounded `%HH` bytes as UTF-8, preserve literal `+`, match after decoding, and treat malformed/invalid targets as unresolved while retaining the existing scroll fallback |
 | bounded legacy `name` fragment targets | makes common historical `<a name>` anchors reachable without broadening arbitrary attribute semantics | no arbitrary `name` targets, duplicate recovery, or browser URL/scrolling parity | use one exact visible `<a name>` only after no matching `id`, preserve ID precedence, and fail closed on duplicate names |
-| bounded text fragments | makes simple text-directed local links useful without a second semantic text tree or highlight renderer | no prefix/suffix matching, cross-run ranges, highlighting, Unicode normalization, or browser parity | parse raw term separators before decode, match one visible layout run in document order, and preserve the existing scroll fallback |
+| bounded text fragments | makes simple text-directed local links useful without a second semantic text tree or highlight renderer | no multiple directives, cross-run ranges, highlighting, Unicode normalization, or browser parity | parse raw term separators before decode, match one visible layout run in document order, and preserve the existing scroll fallback |
+| bounded text-fragment affixes | makes common prefix/suffix disambiguation useful without adding a range/highlight tree | no cross-run ranges, highlighting, Unicode normalization, or browser parity | strip only raw affix markers before bounded per-term decoding, require exact adjacency in one visible layout run, and preserve the existing scroll fallback |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-043.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-044.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-043.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-042.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-041.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-040.md` is the preceding completed checkpoint;

@@ -75,9 +75,11 @@ It currently supports only local `about:blank`, bounded percent-decoded or
 standard padded-base64 `data:text/html`, registered `fixture://` documents, and
 bounded fragment navigation with UTF-8 percent-decoded exact-id or legacy
 `<a name>` root scrolling, simple `#:~:text=start[,end]` matching against the
-first visible non-truncated text run, per-entry scroll restoration, and explicit
+first visible non-truncated text run with exact adjacent prefix/suffix affixes,
+per-entry scroll restoration, and explicit
 Rust history traversal. IDs take precedence and duplicate legacy names fail
-closed; prefix/suffix and cross-run text ranges remain unsupported.
+closed; cross-run text ranges, multiple directives, and browser text-fragment
+parity remain unsupported.
 Rust callers can also activate fragment-only, fixture-relative, and absolute local links through the
 existing semantic click path; empty hrefs remain click-only. Rust callers can
 construct it through the
@@ -132,7 +134,8 @@ selection. Native action targets are semantic and local-only, with the bounded
 `point=x,y` click extension; non-text fragment matching is exact and
 case-sensitive after bounded UTF-8 percent decoding for visible non-empty `id`
 attributes or the unique legacy `<a name>` fallback, while simple text
-fragments match only within the first visible non-truncated layout run.
+fragments and their exact adjacent prefix/suffix affixes match only within the
+first visible non-truncated layout run.
 Unresolved ID/name targets preserve the current offset, as do missing, hidden,
 malformed, and unsupported text-fragment requests. Link activation is limited to fragment-only and
 absolute local hrefs plus fixture-relative hrefs from the current registered

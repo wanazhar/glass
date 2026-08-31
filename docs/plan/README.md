@@ -304,8 +304,11 @@ The completed bounded-text-fragment-target slice is
 [native-engine-043](tasks/native-engine-043.md). It adds a bounded
 `#:~:text=start[,end]` match against the first visible non-truncated text run
 with per-term UTF-8 decoding while retaining the existing fragment, scroll,
-history, and local-resource limits. No later native-engine slice is active in
-this checkout.
+history, and local-resource limits. The completed follow-on
+[native-engine-044](tasks/native-engine-044.md) adds bounded exact prefix and
+suffix affixes around that one-run matcher while retaining the current raw
+comma grammar, per-term decoding, scroll, history, and fail-closed boundaries.
+No later native-engine slice is active in this checkout.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

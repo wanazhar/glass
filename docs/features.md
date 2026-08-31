@@ -75,6 +75,7 @@ source-behavior reference.
   fixed-cell line placement, bounded functional `rgba(R, G, B, A)` alpha
   colors for background, border, and text paint, bounded inherited fixed-cell
   `text-decoration:none|underline` paint,
+  bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
@@ -271,8 +272,9 @@ inline flow, bounded `overflow:hidden` clips shared by paint, viewport
 projection, and point hit-testing,
   normal-flow outer/content box geometry with physical four-side padding/margin
   shorthands and longhands, bounded physical min/max width/height constraints,
-explicit box sizing, and bounded root horizontal and vertical viewport scrolling,
-native point hit testing, local click/type actions, and a revision/changed
+  explicit box sizing, and bounded root horizontal and vertical viewport scrolling,
+  bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
+  native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible
   non-truncated layout run; its Rust-only

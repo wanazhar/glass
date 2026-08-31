@@ -352,8 +352,12 @@ completed follow-on dependency-ordered slice
 [native-engine-054](tasks/native-engine-054.md) adds inherited fixed-cell
 `text-decoration: none|underline` to text display commands and software
 replay without changing layout or hit-testing ownership. Its implementation
-and validation evidence are recorded in the task file and issue #40. No later
-native-engine slice is active in this checkpoint.
+and validation evidence are recorded in the task file and issue #40. The active
+follow-on [native-engine-055](tasks/native-engine-055.md) task adds inherited
+ASCII `text-transform: none|uppercase|lowercase` during fixed-cell layout so
+wrapping, text-fragment matching, display-list projection, and root-overflow
+measurement share one transformed output; semantic source text remains
+unchanged and Unicode/locale/font parity remains outside the boundary.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

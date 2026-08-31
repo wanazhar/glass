@@ -162,8 +162,13 @@ task adds
 bounded inherited `text-decoration: none|underline` through immutable text
 commands and fixed-cell software replay. It does not imply font metrics,
 decoration propagation, or browser text-paint parity. Its implementation and
-validation evidence are recorded in the task file and issue #40. No later
-native-engine slice is active in this checkpoint.
+validation evidence are recorded in the task file and issue #40. The active
+dependency-ordered `native-engine-055` task adds bounded inherited ASCII
+`text-transform: none|uppercase|lowercase` during fixed-cell layout so
+wrapping, text-fragment matching, display-list projection, and root-overflow
+measurement consume the same presentation text. Semantic source text remains
+unchanged; Unicode case mapping, locale behavior, and font-specific glyph
+metrics remain outside the boundary.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -326,6 +331,9 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-050` | bounded physical `min-width`/`max-width`/`min-height`/`max-height` constraints through the existing content-box or border-box owner | `native-engine-049` | negative/percentage/auto values, intrinsic sizing, aspect ratio, margin collapsing, positioning, flex/grid, and browser sizing parity |
 | `native-engine-051` | bounded local CSS opacity alpha with display-list subtree markers and inside-out transparent-layer software compositing | `native-engine-050` | stacking contexts, transforms, filters, blend modes, animation, compositor parity, and unbounded layer allocation |
 | `native-engine-052` | bounded inherited physical `text-align:left|center|right` with complete fixed-cell line-item offsets across text and supported inline boxes | `native-engine-051` | `justify`, logical `start`/`end`, direction/writing modes, vertical alignment, bidi, font metrics, and browser inline-formatting parity |
+| `native-engine-053` | bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and text through the existing fixed-point/source-over path | `native-engine-052` | CSS Color 4 syntax, color spaces, interpolation, wide gamut, and color-management parity |
+| `native-engine-054` | bounded inherited fixed-cell `text-decoration:none|underline` carried through immutable text commands and clipped software replay | `native-engine-053` | font metrics, decoration propagation, other decoration styles, and browser text-paint parity |
+| `native-engine-055` | bounded inherited ASCII `text-transform:none|uppercase|lowercase` applied during fixed-cell text layout and consumed by wrapping, text fragments, paint, and overflow measurement | `native-engine-054` | Unicode case mapping/expansion, locale behavior, `capitalize`/other transforms, font shaping/metrics, and browser text-rendering parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -521,6 +529,11 @@ Phase 2 integration chains added by these slices are:
     centered, or right offsets to complete fixed-cell line items, including
     supported inline boxes and direct text, while preserving line breaking,
     dimensions, scrolling, paint, raster, and hit-test ownership.
+58. Native inherited ASCII `text-transform:none|uppercase|lowercase` applies
+    before fixed-cell whitespace handling and fragmentation so layout,
+    wrapping, text-fragment matching, display-list projection, root-overflow
+    measurement, and capture share one transformed output, while semantic
+    source text remains unchanged.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -587,11 +600,13 @@ visual stacking.
 | bounded text alignment | keeps direct text and supported inline boxes visually and interactively together within a line | no justification, logical-direction, writing-mode, vertical-alignment, bidi, font-metric, or browser inline-formatting parity | track bounded line-item artifact ranges and apply deterministic fixed-cell left/center/right offsets at line flush without changing line breaks or dimensions |
 | bounded functional alpha colors | makes common translucent background, border, and text fixtures expressible through the existing paint path | no CSS Color 4 syntax, channel percentages, modern space-separated functions, wide-gamut colors, interpolation, or color-management parity | parse decimal integer channels plus the existing fixed-point alpha grammar, then reuse immutable `NativeColor` and integer source-over replay |
 | bounded fixed-cell text decoration | makes a deterministic one-pixel underline available across supported text fragments | no font metrics, descender-aware placement, decoration propagation parity, styles, colors, thickness, offsets, overline, line-through, blink, or browser parity | inherit one bounded `none`/`underline` value, carry it in immutable text commands, and draw a clipped alpha-aware line at the fixed glyph baseline offset |
+| bounded inherited text transform | makes common ASCII case presentation available across the existing fixed-cell text-flow path | no Unicode case mapping or expansion, locale-sensitive casing, `capitalize`/other transforms, font shaping/metrics, or browser text-rendering parity | inherit one bounded `none`/`uppercase`/`lowercase` value, transform ASCII letters during layout, preserve source semantic text, and keep fixed-cell width invariant |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-055.md` is the active checkpoint;
 `docs/plan/tasks/native-engine-054.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-053.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-052.md` is the preceding completed checkpoint;

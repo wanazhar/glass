@@ -147,7 +147,8 @@ inside-out transparent-layer compositing, bounded inherited physical
 `text-align:left|center|right` fixed-cell line placement, bounded functional
 `rgba(R, G, B, A)` alpha colors for background, border, and text paint, bounded
 inherited fixed-cell `text-decoration:none|underline` paint, bounded PNG
-capture,
+capture, and bounded inherited ASCII
+`text-transform:none|uppercase|lowercase` layout,
 and
 Rust-only
 display-list/software-surface artifacts;

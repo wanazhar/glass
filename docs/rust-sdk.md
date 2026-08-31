@@ -118,7 +118,8 @@ content rectangles, bounded physical four-side padding/margin shorthands and
 longhands plus explicit box sizing,
  bounded root horizontal and vertical viewport scrolling, inherited text color, bounded
 `overflow:hidden` clips shared by paint, viewport projection, and point
-hit-testing,
+hit-testing, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip`
+clips through the same owner,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

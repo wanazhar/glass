@@ -138,9 +138,13 @@ The 047 bounded-inherited-line-height slice is complete locally: it propagates
 the existing positive-pixel `line-height` through the DOM style walk while
 preserving explicit child declarations and height precedence. Its complete
 gate evidence is recorded in `docs/plan/tasks/native-engine-047.md` and issue
-#40. The next active dependency-ordered task is `native-engine-048`: bounded
-clip-aware root overflow measurement through the existing paint/projection
-clip owner. No later native-engine slice is active at this checkpoint.
+#40. The 048 bounded-clip-aware-root-overflow slice is complete locally: it
+measures text contribution through the existing paint/projection clip owner so
+fully clipped text cannot create a false root horizontal scroll range. Its
+complete gate evidence is recorded in `docs/plan/tasks/native-engine-048.md`
+and issue #40. The next active dependency-ordered task is `native-engine-049`:
+bounded independent `overflow-x`/`overflow-y` clipping through the same owner.
+No later native-engine slice is active at this checkpoint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -299,6 +303,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-046` | bounded inherited `white-space: nowrap` with collapsed fixed-cell one-line flow and measured root overflow | `native-engine-045` | preserved whitespace modes beyond the existing subset, nested scrolling, scrollbars, Unicode line breaking, font metrics, and browser parity |
 | `native-engine-047` | bounded inherited positive-pixel `line-height` through the DOM style walk and existing flow minimum/inline auto-height owners | `native-engine-046` | font-relative, unitless, percentage, CSS-wide keyword, baseline, `vertical-align`, general inheritance, and browser line metrics |
 | `native-engine-048` | bounded clip-aware root overflow measurement from the existing document-space overflow intersection | `native-engine-047` | browser overflow propagation, nested scrolling, scrollbars, axis-specific overflow, visible overflow parity, and font metrics |
+| `native-engine-049` | bounded independent `overflow-x`/`overflow-y` `hidden`/`clip` rectangles with shorthand/longhand cascade and shared consumers | `native-engine-048` | nested scrolling, scrollbars, mixed visible/auto/scroll used values, rounded descendant clips, and browser overflow parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -477,6 +482,10 @@ Phase 2 integration chains added by these slices are:
     overflow clip, preventing fully clipped text from creating a false root
     horizontal scroll range while preserving unclipped and partially visible
     output.
+54. Native `overflow-x` and `overflow-y` accept only bounded `hidden`/`clip`
+    values, cascade independently from the shorthand, and constrain only the
+    selected axis through the same paint, viewport, point-hit, and root-overflow
+    clip owner.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -537,13 +546,15 @@ visual stacking.
 | bounded `white-space: nowrap` | preserves collapsed text on one fixed-cell line so the root horizontal path can reach wide local content | no preserved whitespace, nested scrolling, scrollbars, Unicode line breaking, font metrics, or browser parity | inherit one explicit mode through the existing style walk, disable soft wrapping only for that mode, and measure the resulting text runs |
 | bounded inherited fixed `line-height` | keeps nested fixture line boxes consistent with the nearest positive pixel floor without importing font metrics | no relative/unitless/percentage values, CSS-wide keywords, baselines, vertical-align, general inheritance, or browser line metrics | carry only the already-supported positive pixel value through the existing parent walk, preserve explicit child/height precedence, and reuse the current flow minimum |
 | bounded clip-aware root overflow | keeps root scrolling consistent with the already shared overflow clip and avoids false scroll ranges from invisible text | no browser overflow propagation, nested scroll state, scrollbars, axis-specific overflow, visible overflow parity, or font metrics | intersect each non-empty non-truncated text run with the existing document-space clip before deriving its right edge; retain box extents and all current projection owners |
+| bounded axis-specific overflow | keeps one axis visible while clipping the other through the existing rectangle and independently cascaded CSS declarations | no nested scrolling, scrollbars, mixed visible/auto/scroll used values, rounded descendant clips, or browser overflow parity | carry two bounded clip bits, map the selected axis to a finite document-space range, and reuse paint/projection/hit-test/root-overflow consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-048.md` is the current in-progress checkpoint;
-`docs/plan/tasks/native-engine-047.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-049.md` is the current in-progress checkpoint;
+`docs/plan/tasks/native-engine-048.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-047.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-046.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-045.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-044.md` is an earlier completed checkpoint;

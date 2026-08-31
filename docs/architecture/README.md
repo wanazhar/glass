@@ -89,7 +89,8 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
   bounded direct-text flow fragments/source-order text paint, bounded word-aware
   wrapping, bounded source-whitespace boundaries across supported inline flow,
   and bounded `overflow:hidden` clips shared by paint, viewport projection, and
-  point hit-testing, a display list, a logical RGBA software surface, and
+  point hit-testing, bounded axis-specific `overflow-x`/`overflow-y`
+  `hidden`/`clip` clips through the same owner, a display list, a logical RGBA software surface, and
   bounded PNG capture; it never enters automatic backend selection.
 
 ## Module index

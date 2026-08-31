@@ -313,15 +313,29 @@ fn overflow_clip_for(
             break;
         };
         let style = document.computed_style_for_layout(current_id);
-        if style.overflow_clip()
+        if (style.overflow_clip_x() || style.overflow_clip_y())
             && let Some(rect) = boxes
                 .iter()
                 .find(|layout_box| layout_box.node_id == current_id)
                 .map(|layout_box| layout_box.rect)
         {
+            let axis_clip = NativeRect {
+                x: if style.overflow_clip_x() { rect.x } else { 0 },
+                y: if style.overflow_clip_y() { rect.y } else { 0 },
+                width: if style.overflow_clip_x() {
+                    rect.width
+                } else {
+                    u32::MAX
+                },
+                height: if style.overflow_clip_y() {
+                    rect.height
+                } else {
+                    u32::MAX
+                },
+            };
             clip = Some(match clip {
-                Some(existing) => intersect_rect(existing, rect),
-                None => rect,
+                Some(existing) => intersect_rect(existing, axis_clip),
+                None => axis_clip,
             });
         }
         current = document.node(current_id).and_then(|node| node.parent());

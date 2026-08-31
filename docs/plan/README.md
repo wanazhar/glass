@@ -326,6 +326,11 @@ dependency-ordered slice is
 horizontal overflow consume the existing `overflow:hidden`/`overflow:clip`
 intersection so fully clipped text cannot create a false scroll range.
 
+The next active dependency-ordered slice is
+[native-engine-049](tasks/native-engine-049.md), which adds independently
+cascaded `overflow-x:hidden`/`clip` and `overflow-y:hidden`/`clip` rectangles
+through the existing paint, viewport, hit-test, and root-overflow owners.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

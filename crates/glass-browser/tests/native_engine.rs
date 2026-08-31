@@ -599,6 +599,81 @@ fn native_text_alignment_shifts_complete_fixed_cell_line_items() {
 }
 
 #[test]
+fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
+    let document = NativeDocument::parse(
+        "<style>#parent { display:block; width:32px; text-decoration:underline; color:rgba(0, 128, 0, 50%); } #clear { text-decoration:none; } #contents { display:contents; }</style><div id='parent'>A<span id='clear'>B</span><span id='contents'><span id='nested'>C</span></span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 20,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let clear = document.resolve_target("id=clear").unwrap();
+    let contents = document.resolve_target("id=contents").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let text_runs = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id,
+                origin,
+                text,
+                color,
+                underline,
+                ..
+            } => Some((*node_id, *origin, text.as_str(), *color, *underline)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let expected_color = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: 128,
+    };
+    assert!(
+        text_runs
+            .iter()
+            .any(|(node_id, origin, text, color, underline)| {
+                *node_id == parent
+                    && *origin == NativePoint { x: 0, y: 0 }
+                    && *text == "A"
+                    && *color == expected_color
+                    && *underline
+            })
+    );
+    assert!(
+        text_runs
+            .iter()
+            .any(|(node_id, _, text, color, underline)| {
+                *node_id == clear && *text == "B" && *color == expected_color && !*underline
+            })
+    );
+    assert!(
+        !text_runs
+            .iter()
+            .any(|(node_id, _, _, _, _)| *node_id == contents)
+    );
+    assert!(
+        text_runs
+            .iter()
+            .any(|(node_id, _, text, color, underline)| {
+                *node_id == nested && *text == "C" && *color == expected_color && *underline
+            })
+    );
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(0, 7), Some([127, 191, 127, 255]));
+    assert_eq!(surface.pixel(8, 7), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(16, 7), Some([127, 191, 127, 255]));
+}
+
+#[test]
 fn native_functional_alpha_colors_reach_display_list_and_raster() {
     let document = NativeDocument::parse(
         "<div id='background' style='display:block;width:8px;height:8px;background-color:rgba(255, 0, 0, 0.5)'></div><div id='border' style='display:block;width:8px;height:8px;border:1px solid rgba(0, 0, 255, 50%)'></div><div id='text' style='display:block;width:8px;height:8px;color:rgba(0, 128, 0, 0.5)'>A</div>",
@@ -4205,7 +4280,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -4241,6 +4316,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-align"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

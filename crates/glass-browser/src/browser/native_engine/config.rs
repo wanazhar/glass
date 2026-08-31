@@ -260,6 +260,41 @@ pub(crate) fn without_fragment(value: &str) -> &str {
         .map_or(value, |(resource, _)| resource)
 }
 
+/// Decode one bounded URL fragment into UTF-8 without applying form semantics.
+///
+/// Unescaped bytes, including `+`, remain unchanged. A malformed escape or a
+/// byte sequence that is not UTF-8 is an unresolved fragment target rather
+/// than a partially decoded identifier.
+pub(crate) fn decode_percent_encoded_fragment(value: &str) -> Option<String> {
+    let source = value.as_bytes();
+    let mut decoded = Vec::with_capacity(source.len());
+    let mut index = 0;
+    while index < source.len() {
+        if source[index] != b'%' {
+            decoded.push(source[index]);
+            index += 1;
+            continue;
+        }
+        if index.saturating_add(2) >= source.len() {
+            return None;
+        }
+        let high = hex_value(source[index + 1])?;
+        let low = hex_value(source[index + 2])?;
+        decoded.push((high << 4) | low);
+        index += 3;
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub(crate) fn canonical_fixture_url(value: &str) -> Result<String, NativeEngineError> {
     validate_url_text("fixture URL", value)?;
     let parsed = Url::parse(value).map_err(|_| NativeEngineError::UnsupportedUrl {
@@ -319,7 +354,22 @@ pub(crate) fn resolve_fixture_relative_url(
 
 #[cfg(test)]
 mod tests {
-    use super::{NativeEngineError, resolve_fixture_relative_url};
+    use super::{NativeEngineError, decode_percent_encoded_fragment, resolve_fixture_relative_url};
+
+    #[test]
+    fn fragment_percent_decoding_is_utf8_and_not_form_encoded() {
+        assert_eq!(
+            decode_percent_encoded_fragment("pricing%20plan"),
+            Some("pricing plan".into())
+        );
+        assert_eq!(
+            decode_percent_encoded_fragment("caf%C3%A9"),
+            Some("café".into())
+        );
+        assert_eq!(decode_percent_encoded_fragment("a+b"), Some("a+b".into()));
+        assert_eq!(decode_percent_encoded_fragment("bad%ZZ"), None);
+        assert_eq!(decode_percent_encoded_fragment("bad%C3"), None);
+    }
 
     #[test]
     fn fixture_relative_resolution_normalizes_and_keeps_the_current_host() {

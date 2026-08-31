@@ -66,8 +66,9 @@ source-behavior reference.
   across supported inline flow, bounded `overflow:hidden` clips shared by
   paint, viewport projection, and point hit-testing, a display list, a logical RGBA software
   surface,
-  bounded PNG capture, bounded local fragment navigation with exact visible-id
-  root scrolling and per-entry Rust history scroll restoration, bounded local
+  bounded PNG capture, bounded local fragment navigation with bounded
+  percent-decoded exact visible-id root scrolling and per-entry Rust history
+  scroll restoration, bounded local
   anchor activation for fragment-only, fixture-relative, and absolute local
   hrefs, and bounded revisioned Rust diagnostics for unsupported
   CSS; these are not screenshot-containing evidence or stable transport

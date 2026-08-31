@@ -1,6 +1,7 @@
 use super::browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
 use super::config::{
-    NativeEngineConfig, resolve_fixture_relative_url, validate_url_text, without_fragment,
+    NativeEngineConfig, decode_percent_encoded_fragment, resolve_fixture_relative_url,
+    validate_url_text, without_fragment,
 };
 use super::diagnostics::NativeDiagnostic;
 use super::dom::NativeDocument;
@@ -563,7 +564,10 @@ impl NativeEngine {
         if fragment.is_empty() {
             return Ok(fallback);
         }
-        let Some(target_id) = document.fragment_target(fragment) else {
+        let Some(decoded_fragment) = decode_percent_encoded_fragment(fragment) else {
+            return Ok(fallback);
+        };
+        let Some(target_id) = document.fragment_target(&decoded_fragment) else {
             return Ok(fallback);
         };
         let layout = document.layout(self.config.viewport)?;

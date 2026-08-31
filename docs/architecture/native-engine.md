@@ -11,7 +11,7 @@ bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
-bounded-relative-local-links,
+bounded-relative-local-links/bounded-percent-decoded-fragment-targets,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -52,9 +52,9 @@ navigation and Rust history traversal.
 Semantic local anchor activation reaches that same bounded navigation owner for
 fragment-only, fixture-relative, and absolute local hrefs; unsupported href
 forms fail closed.
-Visible local fragment targets may position the root viewport at their exact
-raw `id`; the active history entry retains the bounded scroll offset for
-restoration.
+Visible local fragment targets may position the root viewport at the exact
+case-sensitive `id` obtained after bounded percent-decoding; the active history
+entry retains the bounded scroll offset for restoration.
 The engine does not
 yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
@@ -219,10 +219,11 @@ before any navigation or mutation is rejected as detached.
 
 Same-document fragment navigation changes the URL, revision, and history
 cursor while retaining the current document generation and derived layout,
-control state, and bounded root-scroll state. If the raw fragment identifies a
-visible exact `id`, the root viewport is positioned at that element's clamped
-document-space top; missing, empty, hidden, and non-layout targets preserve the
-current offset. Explicit Rust back/forward traversal moves
+control state, and bounded root-scroll state. If the fragment's bounded
+percent-decoded UTF-8 value identifies one visible exact `id`, the root
+viewport is positioned at that element's clamped document-space top; missing,
+empty, malformed, invalid-UTF-8, hidden, duplicate, and non-layout targets
+preserve the current offset. Explicit Rust back/forward traversal moves
 the bounded history cursor; different-resource entries are parsed before
 commit, while same-resource fragment entries reuse the current document and
 restore the target history entry's saved root offset.
@@ -473,13 +474,15 @@ task file and issue #40.
 
 The 039 bounded-fragment-target-scroll boundary resolves one exact raw local
 `id` through the existing document/layout owner and positions the root viewport
-at its clamped document-space top. Every history entry stores one bounded root
-scroll point; scroll actions update the active entry and traversal restores it,
-including reparsed different-resource entries. Percent-decoded fragments,
-`name`/text fragments, duplicate-id recovery, smooth/nested/horizontal/keyboard/
-snap scrolling, sticky layout, and browser alignment parity remain unsupported.
-Its implementation and validation evidence are recorded in the task file and
-issue #40.
+at its clamped document-space top. The 041 bounded-percent-decoded-fragment-
+target boundary applies bounded UTF-8 percent decoding before that exact lookup,
+while retaining the same duplicate-safe scroll and history rules. Every history
+entry stores one bounded root scroll point; scroll actions update the active
+entry and traversal restores it, including reparsed different-resource entries.
+`name`/text fragments, duplicate-id recovery beyond decoded equality, malformed
+URL policy, smooth/nested/horizontal/keyboard/snap scrolling, sticky layout,
+and browser alignment parity remain unsupported. Its implementation and
+validation evidence are recorded in the task file and issue #40.
 
 The 040 bounded-relative-local-links boundary resolves non-absolute link
 references only from registered `fixture://` documents, retaining the current
@@ -490,6 +493,14 @@ fixtures fail before mutation; same-/different-resource commit, anchor scroll,
 and per-entry history restoration continue through the existing owners. Its
 implementation and validation evidence are recorded in the task file and issue
 #40.
+
+The 041 bounded-percent-decoded-fragment-target boundary decodes bounded
+percent-encoded UTF-8 fragment bytes before the existing exact visible `id`
+lookup. Literal `+` remains a plus, and malformed or invalid-UTF-8 fragments
+remain successful unresolved-target navigations that preserve scroll. `name`
+anchors, text fragments, and general URL-decoding parity remain unsupported.
+Its implementation and validation evidence are recorded in the task file and
+issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -638,6 +649,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - `about:blank`, percent-decoded `data:` HTML, and registered fixtures;
 - raw-fragment URL retention and bounded same-document local navigation;
 - exact visible fragment-target scroll and saved history offsets;
+- bounded percent-decoded fragment identifiers for exact visible local IDs;
 - semantic local anchor activation through dispatcher click;
 - fixture-relative local link resolution with same-host enforcement;
 - title and visible-text projection with hidden `head`, `script`, and `style`;

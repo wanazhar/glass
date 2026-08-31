@@ -326,6 +326,51 @@ fn native_horizontal_scroll_projects_wide_preformatted_content_and_history() {
 }
 
 #[test]
+fn native_root_overflow_ignores_fully_clipped_text_but_keeps_visible_text_extent() {
+    let document = NativeDocument::parse(
+        "<div id='clipped' style='display:block;width:16px;overflow:hidden;white-space:nowrap'>ABCDEFG</div><div id='visible' style='display:block;white-space:nowrap'>ABCD</div><div id='clip' style='display:block;width:16px;overflow:clip;white-space:nowrap'>HIJKLMN</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 80,
+        device_scale_factor_milli: 1000,
+    };
+    let clipped = document.resolve_target("id=clipped").unwrap();
+    let visible = document.resolve_target("id=visible").unwrap();
+    let clip = document.resolve_target("id=clip").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(clipped).unwrap().width, 16);
+    assert_eq!(layout.box_for(clip).unwrap().width, 16);
+    assert_eq!(layout.box_for(visible).unwrap().width, 24);
+    assert_eq!(layout.content_width, 32);
+    assert_eq!(layout.max_scroll_offset().x, 8);
+    assert!(
+        layout
+            .text_runs
+            .iter()
+            .any(|run| run.node_id == clipped && run.text == "ABCDEFG")
+    );
+    assert!(
+        layout
+            .text_runs
+            .iter()
+            .any(|run| run.node_id == clip && run.text == "HIJKLMN")
+    );
+
+    let clipped_only = NativeDocument::parse(
+        "<div id='clipped' style='display:block;width:16px;overflow:hidden;white-space:nowrap'>ABCDEFG</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let clipped_only_layout = clipped_only.layout(viewport).unwrap();
+    assert_eq!(clipped_only_layout.content_width, viewport.width);
+    assert_eq!(clipped_only_layout.max_scroll_offset().x, 0);
+}
+
+#[test]
 fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
     let document = NativeDocument::parse(
         "<style>#card { background-color: #102030; color: rgb(1, 2, 3); }</style><main><div id='card'>Hello <span>child</span></div><div id='hidden' style='display:none;background-color:red'>Hidden</div></main>",

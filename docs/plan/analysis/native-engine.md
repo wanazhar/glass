@@ -134,9 +134,13 @@ inherited and inline `white-space: nowrap`, collapses supported whitespace
 through the existing fixed-cell policy, disables soft wrapping, and reuses the
 measured root horizontal scroll/projection path. Its complete gate evidence is
 recorded below, in `docs/plan/tasks/native-engine-046.md`, and on issue #40.
-The next active dependency-ordered task is `native-engine-047`: bounded
-inherited positive-pixel `line-height` through the existing DOM style walk and
-flow minimum owner. No later native-engine slice is active at this checkpoint.
+The 047 bounded-inherited-line-height slice is complete locally: it propagates
+the existing positive-pixel `line-height` through the DOM style walk while
+preserving explicit child declarations and height precedence. Its complete
+gate evidence is recorded in `docs/plan/tasks/native-engine-047.md` and issue
+#40. The next active dependency-ordered task is `native-engine-048`: bounded
+clip-aware root overflow measurement through the existing paint/projection
+clip owner. No later native-engine slice is active at this checkpoint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -294,6 +298,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-045` | bounded root horizontal scrolling from measured document overflow width with independent x/y clamping and shared projection | `native-engine-044` | nested scrolling, scrollbars, smooth/keyboard/snap scrolling, axis-specific CSS overflow, scroll anchoring, and browser parity |
 | `native-engine-046` | bounded inherited `white-space: nowrap` with collapsed fixed-cell one-line flow and measured root overflow | `native-engine-045` | preserved whitespace modes beyond the existing subset, nested scrolling, scrollbars, Unicode line breaking, font metrics, and browser parity |
 | `native-engine-047` | bounded inherited positive-pixel `line-height` through the DOM style walk and existing flow minimum/inline auto-height owners | `native-engine-046` | font-relative, unitless, percentage, CSS-wide keyword, baseline, `vertical-align`, general inheritance, and browser line metrics |
+| `native-engine-048` | bounded clip-aware root overflow measurement from the existing document-space overflow intersection | `native-engine-047` | browser overflow propagation, nested scrolling, scrollbars, axis-specific overflow, visible overflow parity, and font metrics |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -468,6 +473,10 @@ Phase 2 integration chains added by these slices are:
     walk when a descendant has no valid local declaration, while explicit child
     values and explicit heights retain precedence through the existing flow,
     display, hit-test, and raster owners.
+53. Native root `content_width` measures text through the existing bounded
+    overflow clip, preventing fully clipped text from creating a false root
+    horizontal scroll range while preserving unclipped and partially visible
+    output.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -527,13 +536,15 @@ visual stacking.
 | bounded root horizontal scrolling | makes wide deterministic local content reachable through the existing root scroll owner without nested scroll state | no nested scrolling, scrollbars, smooth/keyboard/snap scrolling, axis-specific overflow, or browser parity | derive bounded document width from visible layout output, clamp x/y independently, and reuse the existing projection/history path |
 | bounded `white-space: nowrap` | preserves collapsed text on one fixed-cell line so the root horizontal path can reach wide local content | no preserved whitespace, nested scrolling, scrollbars, Unicode line breaking, font metrics, or browser parity | inherit one explicit mode through the existing style walk, disable soft wrapping only for that mode, and measure the resulting text runs |
 | bounded inherited fixed `line-height` | keeps nested fixture line boxes consistent with the nearest positive pixel floor without importing font metrics | no relative/unitless/percentage values, CSS-wide keywords, baselines, vertical-align, general inheritance, or browser line metrics | carry only the already-supported positive pixel value through the existing parent walk, preserve explicit child/height precedence, and reuse the current flow minimum |
+| bounded clip-aware root overflow | keeps root scrolling consistent with the already shared overflow clip and avoids false scroll ranges from invisible text | no browser overflow propagation, nested scroll state, scrollbars, axis-specific overflow, visible overflow parity, or font metrics | intersect each non-empty non-truncated text run with the existing document-space clip before deriving its right edge; retain box extents and all current projection owners |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-047.md` is the current in-progress checkpoint;
-`docs/plan/tasks/native-engine-046.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-048.md` is the current in-progress checkpoint;
+`docs/plan/tasks/native-engine-047.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-046.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-045.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-044.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-043.md` is the preceding completed checkpoint;

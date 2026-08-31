@@ -116,8 +116,9 @@ cargo test -p glass-browser --features native-engine --test native_engine --lock
 
 Phase 2 and the initial Phase 3 layout/display-list/software-surface seeds are
 headless and deterministic. It accepts `about:blank`, bounded percent-decoded
-`data:text/html` URLs, and registered `fixture://` documents through the Rust
-API. It exposes lifecycle, navigation, one context, bounded URL/title/visible-
+or standard padded-base64 `data:text/html` URLs, and registered `fixture://`
+documents through the Rust API. It exposes lifecycle, navigation, one context,
+bounded URL/title/visible-
 text evidence, semantic click/type actions for local controls, and a
 revision/changed effects signal through the existing backend dispatcher.
 
@@ -149,7 +150,9 @@ writing-mode sides, negative, percentage, or auto box-model values,
 positioned/flex/grid layout,
 screen-shot-containing evidence, JPEG/PDF capture, physical pixels,
 font/image fidelity, JavaScript, storage,
-prompts, downloads, default link navigation, or raw form-value evidence. The
+prompts, downloads, remote/relative link navigation, or raw form-value
+evidence. Fragment-only and absolute local link activation uses the existing
+bounded navigation path. The
 backend is explicit-only and never silently falls
 back to Chromium or the semantic proof backend. A `native-engine` feature
 build also exposes the local one-shot `--browser-runtime native` path and the

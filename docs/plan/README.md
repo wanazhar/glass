@@ -268,6 +268,13 @@ resources, while retaining parse-before-commit, revision, history, scroll, and
 non-network limits. Its implementation and validation evidence are recorded in
 the task file and issue #40.
 
+The completed local-link-activation slice is
+[native-engine-038](tasks/native-engine-038.md). It wires semantic local anchor
+clicks through the existing action and navigation owner, while retaining
+fragment, parse-before-commit, revision, history, scroll, and non-network
+limits. Its implementation and validation evidence are recorded in the task
+file and issue #40.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

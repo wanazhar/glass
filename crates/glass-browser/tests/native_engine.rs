@@ -2195,6 +2195,178 @@ async fn local_fragment_navigation_and_history_traversal_preserve_bounded_state(
 }
 
 #[tokio::test]
+async fn local_link_activation_uses_bounded_navigation_default_action() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 160,
+            height: 40,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://links",
+            "<a id='fragment' href='#part'>Part</a><a id='other' href='fixture://other'>Other</a><a id='remote' href='https://example.com'>Remote</a><a id='relative' href='next'>Next</a><a id='empty' href=''>Empty</a><p>one two three four five six seven eight nine ten</p><p>eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one</p>",
+        )
+        .unwrap()
+        .with_fixture("fixture://other", "<p>Other document</p>")
+        .unwrap()
+        .with_initial_url("fixture://links#top");
+
+    let backend = NativeEngineBackend::new(config.clone()).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+    let before_remote = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+    let remote_error = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Click {
+                target: "id=remote".into(),
+            },
+        })
+        .await
+        .unwrap_err();
+    assert!(remote_error.to_string().contains("invalid navigation URL"));
+    assert!(!remote_error.to_string().contains("example.com"));
+    assert_eq!(
+        dispatcher
+            .evidence(EvidenceRequest {
+                context_id: "native-context".into(),
+                level: EvidenceLevel::Compact,
+            })
+            .await
+            .unwrap(),
+        before_remote
+    );
+
+    let fragment = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Click {
+                target: "id=fragment".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(fragment.revision, 2);
+    assert!(fragment.accepted);
+    let fragment_evidence = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(fragment_evidence.url, "fixture://links#part");
+    assert!(fragment_evidence.visible_text.contains("Part"));
+
+    let other = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Click {
+                target: "id=other".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(other.revision, 3);
+    let other_evidence = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(other_evidence.url, "fixture://other");
+    assert_eq!(other_evidence.visible_text, "Other document");
+    dispatcher.close().await.unwrap();
+
+    let mut engine = NativeEngine::new(config.clone()).unwrap();
+    engine.initialize().unwrap();
+    engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: 1,
+        })
+        .unwrap();
+    let scroll_before = engine.scroll_offset();
+    assert!(scroll_before.y > 0);
+    let ids_before = engine
+        .semantic_nodes()
+        .unwrap()
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    let fragment_id = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Part")
+        .map(|node| node.node_id)
+        .unwrap();
+    let fragment = engine
+        .action(NativeAction::Click {
+            target: "id=fragment".into(),
+        })
+        .unwrap();
+    assert!(fragment.accepted);
+    assert_eq!(fragment.revision, 3);
+    assert_eq!(engine.snapshot().unwrap().url, "fixture://links#part");
+    assert_eq!(engine.history().len(), 2);
+    assert_eq!(engine.scroll_offset(), scroll_before);
+    assert_eq!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .iter()
+            .map(|node| node.node_id)
+            .collect::<Vec<_>>(),
+        ids_before
+    );
+    assert!(
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .iter()
+            .any(|node| node.node_id == fragment_id && node.focused)
+    );
+
+    let mut relative_engine = NativeEngine::new(config.clone()).unwrap();
+    relative_engine.initialize().unwrap();
+    let before_relative = relative_engine.snapshot().unwrap();
+    let before_relative_history = relative_engine.history().clone();
+    let relative_error = relative_engine
+        .action(NativeAction::Click {
+            target: "id=relative".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(
+        relative_error,
+        NativeEngineError::UnsupportedUrl { .. }
+    ));
+    assert!(!relative_error.to_string().contains("next"));
+    assert_eq!(relative_engine.snapshot().unwrap(), before_relative);
+    assert_eq!(relative_engine.history(), &before_relative_history);
+
+    let empty = relative_engine
+        .action(NativeAction::Click {
+            target: "id=empty".into(),
+        })
+        .unwrap();
+    assert!(empty.accepted);
+    assert_eq!(empty.revision, 2);
+    assert_eq!(
+        relative_engine.snapshot().unwrap().url,
+        "fixture://links#top"
+    );
+    assert_eq!(relative_engine.history().len(), 1);
+}
+
+#[tokio::test]
 async fn semantic_actions_and_effects_use_the_backend_contract() {
     let config = NativeEngineConfig::default()
         .with_fixture(

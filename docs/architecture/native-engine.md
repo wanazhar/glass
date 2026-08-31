@@ -12,7 +12,8 @@ bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-hei
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
-bounded-inherited-text-transform/bounded-first-line-text-indent slices,
+bounded-inherited-text-transform/bounded-first-line-text-indent/
+bounded-inherited-word-spacing slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -57,6 +58,8 @@ bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
 text paint, bounded fixed-cell `text-decoration:none|underline` paint, bounded
 inherited ASCII `text-transform:none|uppercase|lowercase` layout, and
+bounded inherited non-negative fixed-pixel `word-spacing` across the supported
+fixed-cell whitespace modes, and
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -630,6 +633,15 @@ indent is clamped to retain one fixed cell; negative, percentage, and
 font-relative forms remain outside the boundary. Implementation and local
 validation evidence are recorded in the 056 task file and issue #40; remote
 CI remains pending until this branch is pushed.
+The active 057 boundary adds bounded inherited non-negative fixed-pixel
+`word-spacing` to the existing fixed-cell text-flow owner. Collapsed ASCII
+separator spaces receive the extra advance in `normal`, `nowrap`, and
+`pre-line`; literal ASCII spaces receive it in `pre` and `pre-wrap`. The
+measured advance is shared by wrapping, preformatted chunking, text fragments,
+alignment, display commands, raster replay, hit testing, and root overflow;
+negative, relative, percentage, keyword, Unicode-whitespace, and browser
+word-boundary behavior remain outside the boundary. Implementation and local
+validation evidence will be recorded in the 057 task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -838,6 +850,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.
+- bounded inherited non-negative fixed-pixel `word-spacing` across collapsed
+  and preformatted ASCII spaces, with shared wrapping, fragment, alignment,
+  display-list, raster, hit-test, and root-overflow coordinates.
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden`/`overflow:clip` ancestor intersections on

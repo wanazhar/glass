@@ -115,7 +115,9 @@ scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip`
 clips through the existing projection and point-hit owner, and bounded PNG
 capture through the explicit backend operation,
 bounded local opacity subtree groups through transparent software layers,
-bounded inherited physical `text-align:left|center|right` line placement,
+bounded inherited physical `text-align:left|center|right` line placement, and
+bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
+text paint,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
 Rust diagnostics for unsupported CSS. It does not yet provide
 general CSS/nested/horizontal/stacking layout, logical writing-mode sides,

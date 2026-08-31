@@ -308,7 +308,7 @@ impl NativeStylesheet {
 
     #[cfg(test)]
     pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
-        self.computed_for_with_matcher(node, None, WhiteSpaceValue::Normal, |selector| {
+        self.computed_for_with_matcher(node, None, WhiteSpaceValue::Normal, None, |selector| {
             selector.matches(node)
         })
     }
@@ -324,6 +324,7 @@ impl NativeStylesheet {
             node_id,
             inherited_color,
             WhiteSpaceValue::Normal,
+            None,
         )
     }
 
@@ -333,13 +334,18 @@ impl NativeStylesheet {
         node_id: NativeNodeId,
         inherited_color: Option<NativeColor>,
         inherited_white_space: WhiteSpaceValue,
+        inherited_line_height: Option<u32>,
     ) -> NativeComputedStyle {
         let Some(node) = document.node(node_id) else {
             return NativeComputedStyle::default();
         };
-        self.computed_for_with_matcher(node, inherited_color, inherited_white_space, |selector| {
-            selector.matches_in_document(document, node_id)
-        })
+        self.computed_for_with_matcher(
+            node,
+            inherited_color,
+            inherited_white_space,
+            inherited_line_height,
+            |selector| selector.matches_in_document(document, node_id),
+        )
     }
 
     fn computed_for_with_matcher(
@@ -347,6 +353,7 @@ impl NativeStylesheet {
         node: &NativeNode,
         inherited_color: Option<NativeColor>,
         inherited_white_space: WhiteSpaceValue,
+        inherited_line_height: Option<u32>,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
         let mut display = None;
@@ -647,7 +654,9 @@ impl NativeStylesheet {
             white_space: white_space.map_or(inherited_white_space, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
-            line_height: line_height.map(|value| value.value),
+            line_height: line_height
+                .map(|value| value.value)
+                .or(inherited_line_height),
             background_color: background_color.map(|value| value.value),
             border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
             border_radius: border_radius.map_or(NativeBorderRadius::default(), |value| value.value),
@@ -1934,6 +1943,36 @@ mod tests {
         .unwrap();
         let node = node("<div id='card' class='card' style='line-height: 28px'>Card</div>");
         assert_eq!(stylesheet.computed_for(&node).line_height(), Some(28));
+    }
+
+    #[test]
+    fn computed_style_inherits_fixed_line_height_and_preserves_child_precedence() {
+        let document = NativeDocument::parse(
+            "<style>#parent { line-height: 28px; } #explicit { line-height: 32px; }</style><div id='parent'><section id='child'>Child</section><section id='explicit'>Explicit</section><section id='invalid' style='line-height:0px'>Invalid</section></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).line_height(),
+            Some(28)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).line_height(),
+            Some(28)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(explicit).line_height(),
+            Some(32)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).line_height(),
+            Some(28)
+        );
     }
 
     #[test]

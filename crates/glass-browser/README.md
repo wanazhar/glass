@@ -79,7 +79,8 @@ viewport scrolling, inherited text color, bounded `overflow:hidden` clips
 shared by paint, viewport projection, and point hit-testing, bounded
   side-specific solid/dashed/dotted-border paint, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
-  line-height flow, bounded direct-text flow fragments and source-order text
+  line-height flow with bounded inherited line-height, bounded direct-text
+  flow fragments and source-order text
   paint, bounded word-aware wrapping, bounded source-whitespace boundaries
   across sibling text and supported inline items, bounded inherited
   `white-space: nowrap` collapsed one-line flow, bounded root horizontal

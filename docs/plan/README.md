@@ -317,6 +317,11 @@ and history contracts. The completed follow-on
 horizontal scroll path. Its implementation and validation evidence are
 recorded in the task file and issue #40.
 
+The next active dependency-ordered slice is
+[native-engine-047](tasks/native-engine-047.md), which propagates the existing
+positive pixel `line-height` floor through the DOM style walk while preserving
+explicit child declarations and height precedence.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -845,6 +845,7 @@ impl NativeDocument {
 
         let mut inherited_color = Some(NativeColor::BLACK);
         let mut inherited_white_space = WhiteSpaceValue::Normal;
+        let mut inherited_line_height = None;
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
@@ -854,9 +855,11 @@ impl NativeDocument {
                 current_id,
                 inherited_color,
                 inherited_white_space,
+                inherited_line_height,
             );
             inherited_color = style.color().or(inherited_color);
             inherited_white_space = style.white_space();
+            inherited_line_height = style.line_height().or(inherited_line_height);
             if current_id == id {
                 return style;
             }

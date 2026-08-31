@@ -8,7 +8,7 @@ bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
 bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture/
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
-bounded-pre-wrap-whitespace/bounded-nowrap-whitespace slices,
+bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -41,7 +41,8 @@ inherited text color through DOM parent links, bounded `overflow:hidden`/
 `overflow:clip` paint clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
 bounded circular border radii, bounded outer/content box geometry, explicit root
 horizontal and vertical viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
-line-height flow, bounded direct-text fragments at actual flow origins,
+line-height flow with bounded inheritance, bounded direct-text fragments at
+actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
 four-side padding/margin edges, bounded source-whitespace boundaries, and
 bounded hard line breaks in supported inline flow, and
@@ -552,6 +553,13 @@ supported subset, nested scrolling, scrollbars, and browser line-breaking
 parity remain outside the slice. Its implementation and validation evidence
 are recorded in the task file and issue #40.
 
+The 047 bounded-inherited-line-height boundary is the next active slice. It
+will propagate the existing positive pixel `line-height` floor through the
+DOM style walk so descendants without a valid local declaration use the
+nearest computed value. Font-relative metrics, CSS-wide keywords, baselines,
+`vertical-align`, and general computed-style inheritance remain outside the
+slice.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -755,8 +763,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inline-box preflight line placement, deterministic line-height flow,
   and consistent layout/display-list/hit-test coordinates for adjacent inline
   elements.
-- bounded positive-pixel line-height parsing/cascade, flow minimums, inline
-  auto-height behavior, and explicit-height precedence.
+- bounded positive-pixel line-height parsing/cascade, bounded inheritance
+  through the DOM style walk, flow minimums, inline auto-height behavior, and
+  explicit-height precedence.
 - bounded logical-surface PNG encoding, capture-byte enforcement, read-only
   revision behavior, real native backend dispatch, and explicit JPEG/PDF
   denials.

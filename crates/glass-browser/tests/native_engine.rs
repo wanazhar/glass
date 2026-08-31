@@ -800,6 +800,49 @@ fn native_fixed_line_height_controls_wrapped_flow_and_preserves_explicit_height(
 }
 
 #[test]
+fn native_inherited_line_height_controls_nested_auto_height_and_preserves_explicit_height() {
+    let document = NativeDocument::parse(
+        "<style>#parent { width:24px; line-height:28px; } #explicit { line-height:32px; }</style><div id='parent'><span id='inherit' style='display:inline'>A</span><span id='explicit' style='display:inline'>B</span><span id='invalid' style='display:inline;line-height:0px;height:4px'>C</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let explicit = document.resolve_target("id=explicit").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(parent).unwrap().height, 32);
+    assert_eq!(layout.box_for(inherit).unwrap().height, 28);
+    assert_eq!(layout.box_for(explicit).unwrap().height, 32);
+    assert_eq!(layout.box_for(invalid).unwrap().height, 4);
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(inherit));
+    assert_eq!(layout.hit_test(9, 1).unwrap(), Some(explicit));
+    assert_eq!(layout.hit_test(17, 1).unwrap(), Some(invalid));
+    assert!(layout.text_runs.iter().all(|run| run.origin.y == 0));
+
+    let list = document.display_list(viewport).unwrap();
+    let text_origins = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id, origin, ..
+            } => Some((*node_id, *origin)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(text_origins.contains(&(inherit, NativePoint { x: 0, y: 0 })));
+    assert!(text_origins.contains(&(explicit, NativePoint { x: 8, y: 0 })));
+    assert!(text_origins.contains(&(invalid, NativePoint { x: 16, y: 0 })));
+}
+
+#[test]
 fn native_text_fragments_follow_inline_flow_and_source_order() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:24px'>AB<span id='middle' style='display:inline;width:8px;color:red'>C</span>DE</div>",
@@ -1160,7 +1203,7 @@ fn native_pre_preserves_bounded_whitespace_without_soft_wrap() {
             x: 0,
             y: 24,
             width: 32,
-            height: 20,
+            height: 24,
         })
     );
     assert_eq!(
@@ -1221,7 +1264,7 @@ fn native_pre_wrap_preserves_whitespace_and_soft_wraps_at_fixed_cell_capacity() 
             x: 0,
             y: 48,
             width: 32,
-            height: 20,
+            height: 24,
         })
     );
     assert_eq!(

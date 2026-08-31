@@ -1,6 +1,7 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
-    DisplayValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue, WhiteSpaceValue,
+    DisplayValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue, TextTransformValue,
+    WhiteSpaceValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -1019,6 +1020,24 @@ impl<'a> LayoutBuilder<'a> {
         }
     }
 
+    fn transform_text(&self, parent: NativeNodeId, value: &str) -> String {
+        match self
+            .document
+            .computed_style_for_layout(parent)
+            .text_transform()
+        {
+            TextTransformValue::None => value.to_owned(),
+            TextTransformValue::Uppercase => value
+                .chars()
+                .map(|character| character.to_ascii_uppercase())
+                .collect(),
+            TextTransformValue::Lowercase => value
+                .chars()
+                .map(|character| character.to_ascii_lowercase())
+                .collect(),
+        }
+    }
+
     fn place_pre_line_text(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {
         let mut segment_start = 0;
         let mut offset = 0;
@@ -1086,14 +1105,15 @@ impl<'a> LayoutBuilder<'a> {
         value: &str,
         allow_soft_wrap: bool,
     ) {
+        let value = self.transform_text(parent, value);
         if value.is_empty() {
             return;
         }
         if allow_soft_wrap {
-            self.place_preformatted_wrapped_segment(parent, flow, value);
+            self.place_preformatted_wrapped_segment(parent, flow, &value);
             return;
         }
-        let width = Self::text_width(value);
+        let width = Self::text_width(&value);
         let Some(origin) = flow.place_unwrapped_with_origin(width, DEFAULT_LINE_HEIGHT) else {
             return;
         };
@@ -1101,7 +1121,7 @@ impl<'a> LayoutBuilder<'a> {
         self.text_runs.push(NativeTextLayout {
             node_id: parent,
             origin,
-            text: value.to_owned(),
+            text: value,
             truncated: false,
         });
         self.paint_order
@@ -1142,10 +1162,11 @@ impl<'a> LayoutBuilder<'a> {
     }
 
     fn place_text_segment(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {
+        let value = self.transform_text(parent, value);
         let leading_whitespace = value.chars().next().is_some_and(char::is_whitespace);
         let trailing_whitespace = value.chars().next_back().is_some_and(char::is_whitespace);
         let pending_whitespace = flow.take_pending_whitespace();
-        let (text, truncated) = NativeDocument::collapse_text_for_layout(value);
+        let (text, truncated) = NativeDocument::collapse_text_for_layout(&value);
         if text.is_empty() {
             if leading_whitespace || trailing_whitespace || pending_whitespace {
                 flow.mark_pending_whitespace();

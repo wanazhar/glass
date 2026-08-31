@@ -10,7 +10,7 @@ use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
         NativeColor, NativeComputedStyle, NativeInheritedStyle, TextAlignValue,
-        TextDecorationValue, WhiteSpaceValue,
+        TextDecorationValue, TextTransformValue, WhiteSpaceValue,
     },
 };
 use std::collections::BTreeMap;
@@ -851,6 +851,7 @@ impl NativeDocument {
         let mut inherited_line_height = None;
         let mut inherited_text_align = TextAlignValue::Left;
         let mut inherited_text_decoration = TextDecorationValue::None;
+        let mut inherited_text_transform = TextTransformValue::None;
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
@@ -864,6 +865,7 @@ impl NativeDocument {
                     line_height: inherited_line_height,
                     text_align: inherited_text_align,
                     text_decoration: inherited_text_decoration,
+                    text_transform: inherited_text_transform,
                 },
             );
             inherited_color = style.color().or(inherited_color);
@@ -871,6 +873,7 @@ impl NativeDocument {
             inherited_line_height = style.line_height().or(inherited_line_height);
             inherited_text_align = style.text_align();
             inherited_text_decoration = style.text_decoration();
+            inherited_text_transform = style.text_transform();
             if current_id == id {
                 return style;
             }

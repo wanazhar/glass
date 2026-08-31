@@ -73,9 +73,10 @@ in `glass-dev`, not optional browser features.
 The native engine is an explicit, default-off backend inside `glass-browser`.
 It currently supports only local `about:blank`, bounded percent-decoded or
 standard padded-base64 `data:text/html`, registered `fixture://` documents, and
-bounded fragment navigation with UTF-8 percent-decoded exact-id root scrolling,
-per-entry scroll restoration, and explicit Rust history traversal. Rust callers can also
-activate fragment-only, fixture-relative, and absolute local links through the
+bounded fragment navigation with UTF-8 percent-decoded exact-id or legacy
+`<a name>` root scrolling, per-entry scroll restoration, and explicit Rust
+history traversal. IDs take precedence and duplicate legacy names fail closed.
+Rust callers can also activate fragment-only, fixture-relative, and absolute local links through the
 existing semantic click path; empty hrefs remain click-only. Rust callers can
 construct it through the
 backend factory or `BrowserRuntimeSession::connect_native`; a feature-enabled

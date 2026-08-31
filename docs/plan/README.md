@@ -294,6 +294,12 @@ percent escapes before exact visible local `id` matching while retaining the
 existing duplicate-safe root scrolling, history restoration, local-only
 resource, and malformed-target failure behavior.
 
+The completed legacy-name-fragment-target slice is
+[native-engine-042](tasks/native-engine-042.md). It adds a bounded exact
+legacy `<a name>` fallback after decoded `id` lookup while retaining ID
+precedence, duplicate-safe scrolling, and the existing local navigation and
+history boundaries.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -901,12 +901,30 @@ impl NativeDocument {
             .flatten()
     }
 
-    /// Resolve one un-decoded, exact local fragment id. Duplicate ids are
-    /// rejected so the bounded engine never invents browser recovery rules.
+    /// Resolve one decoded, exact local fragment target. A unique `id` wins;
+    /// when no `id` matches, a unique legacy `<a name>` anchor is accepted.
+    /// Duplicate targets are rejected so the bounded engine never invents
+    /// browser recovery rules.
     pub(crate) fn fragment_target(&self, fragment: &str) -> Option<NativeNodeId> {
+        if fragment.is_empty() {
+            return None;
+        }
         let mut target = None;
         for node in &self.nodes {
             if node.element_name().is_none() || node.attribute("id") != Some(fragment) {
+                continue;
+            }
+            if target.is_some() {
+                return None;
+            }
+            target = Some(node.id());
+        }
+        if target.is_some() {
+            return target;
+        }
+
+        for node in &self.nodes {
+            if node.element_name() != Some("a") || node.attribute("name") != Some(fragment) {
                 continue;
             }
             if target.is_some() {
@@ -1814,6 +1832,38 @@ mod tests {
         assert!(first.node(first.root()).is_some());
         assert!(second.node(first.root()).is_none());
         assert_eq!(second.generation(), 2);
+    }
+
+    #[test]
+    fn fragment_target_uses_unique_legacy_name_after_id_precedence() {
+        let document = NativeDocument::parse(
+            "<a name='legacy'>Legacy</a><a name='café'>UTF-8 legacy</a><div name='not-anchor'>Not an anchor</div><div id='same'>ID wins</div><a name='same'>Name loses</a><a name='duplicate'>One</a><a name='duplicate'>Two</a><p id='duplicate-id'>ID target</p>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let legacy = document
+            .node(document.fragment_target("legacy").unwrap())
+            .unwrap();
+        assert_eq!(legacy.element_name(), Some("a"));
+        assert_eq!(legacy.attribute("name"), Some("legacy"));
+        assert_eq!(
+            document
+                .node(document.fragment_target("café").unwrap())
+                .unwrap()
+                .attribute("name"),
+            Some("café")
+        );
+        assert_eq!(
+            document.fragment_target("same"),
+            Some(document.resolve_target("id=same").unwrap())
+        );
+        assert_eq!(document.fragment_target("not-anchor"), None);
+        assert_eq!(document.fragment_target("duplicate"), None);
+        assert_eq!(document.fragment_target("DUPLICATE"), None);
+        assert_eq!(
+            document.fragment_target("duplicate-id"),
+            Some(document.resolve_target("id=duplicate-id").unwrap())
+        );
     }
 
     #[test]

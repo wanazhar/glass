@@ -61,9 +61,11 @@ The completed runtime integration slice is
 [native-engine-008](tasks/native-engine-008.md). It adds a feature-gated
 `BrowserRuntime::Native`, an explicit Rust session constructor, and a local
 one-shot CLI path for navigate/click/type/text/observe/targets. The CLI default
-configuration accepts only `about:blank` and bounded `data:text/html`; it does
-not register fixtures or contact endpoints. Unsupported flags, remote URLs,
-script/evaluate, MCP, and TUI remain fail-closed.
+configuration at that boundary accepted only `about:blank` and bounded
+percent-decoded `data:text/html`; it did not register fixtures or contact
+endpoints. The later 036 slice below adds bounded standard padded-base64
+navigation. Unsupported flags, remote URLs, script/evaluate, MCP, and TUI
+remain fail-closed.
 
 The completed layout/input slice is
 [native-engine-009](tasks/native-engine-009.md). It owns bounded integer-pixel
@@ -251,6 +253,13 @@ The completed pre-wrap-whitespace slice is
 source-whitespace path with fixed-cell soft wrapping for `white-space: pre-wrap`,
 while retaining explicit limits for browser line breaking, tab
 stops, font metrics, shaping, bidi, and general CSS conformance.
+
+The completed base64-data-url slice is
+[native-engine-036](tasks/native-engine-036.md). It adds bounded standard
+base64 `data:text/html` loading through the existing native navigation and
+dispatcher path, while retaining explicit local-only, UTF-8, size, and
+non-network limits. Its implementation and full validation evidence are
+recorded in the task file and issue #40.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

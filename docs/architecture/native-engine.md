@@ -9,11 +9,12 @@ bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golde
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace slices,
+bounded-base64-data-url,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
 and content-box geometry,
-plus feature-gated
+bounded base64 data-URL loading, plus feature-gated
 runtime/CLI integration; not a stable browser compatibility or security
 boundary.
 
@@ -133,7 +134,8 @@ backend ranking.
 
 The same feature exposes `--browser-runtime native` in the one-shot CLI. The
 CLI constructs the default local configuration, so it accepts `about:blank` and
-bounded `data:text/html` navigation. Rust callers can still register bounded
+bounded percent-decoded or standard padded-base64 `data:text/html` navigation.
+Rust callers can still register bounded
 `fixture://` documents through `NativeEngineConfig`; fixture registration is
 not a CLI file-loading or network capability. Native CLI commands are limited
 to navigate, click, type, text, observe, and targets, with semantic locators
@@ -169,7 +171,9 @@ document's explicitly bounded evidence projection.
 The current resource boundary (the Phase 1 loader) supports only:
 
 - `about:blank`, which loads an empty document;
-- `data:text/html,...` with UTF-8 percent-decoded HTML; and
+- `data:text/html,...` with UTF-8 percent-decoded HTML;
+- `data:text/html;base64,...` with standard padded RFC 4648 base64 decoding to
+  UTF-8 HTML; and
 - exact `fixture://...` URLs registered in `NativeEngineConfig`.
 
 HTTP, HTTPS, filesystem, custom network, redirects, cookies, and all other
@@ -401,6 +405,17 @@ breaking, tab stops, font metrics, shaping, baselines, bidi, justification,
 `break-spaces`, `nowrap`, and general CSS whitespace/overflow conformance
 remain unsupported. Its implementation and validation evidence are recorded
 in the task file and issue #40.
+
+The 036 bounded-base64-data-url boundary accepts standard padded base64
+`data:text/html` payloads through the existing local resource loader and real
+navigation/dispatcher path. A derived encoded bound is checked before decode,
+the decoded UTF-8 body is checked against the document limit, and successful
+resources retain the original URL with the existing opaque local origin.
+Non-HTML media types, invalid or URL-safe/whitespace-tolerant encodings,
+percent-encoded base64, invalid UTF-8, and network/filesystem schemes remain
+rejected; this adds no subresource, script, storage, or remote-content
+behavior. Its implementation and validation evidence are recorded in the task
+file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

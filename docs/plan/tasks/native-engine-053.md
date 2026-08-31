@@ -1,7 +1,7 @@
 ---
 id: native-engine-053
 scope: glass-browser/native-engine/functional-alpha-colors
-status: active
+status: done
 depends-on: [native-engine-052]
 ---
 
@@ -74,6 +74,14 @@ is introduced.
 
 ## Completion evidence
 
-Implementation is not yet complete. This task records the contract before
-source changes; the next checkpoint must replace this section with exact
-local test, lint, documentation, commit, issue, and cleanup evidence.
+Implementation completed locally in the focused checkpoint. The native
+integration suite passed 67 tests and the native-engine module unit suite
+passed 52 tests, including valid/invalid functional alpha parsing, bounded
+alpha quantization, computed-style propagation, display-list colors, and
+background/border/text source-over replay. Strict Clippy passed with all
+targets/all features and with no default features, and the pre-commit
+formatting, whitespace, documentation, version, and feature-parity gates
+passed with zero current-claim failures. The implementation is committed
+locally as a focused Conventional Commit; issue #40 is synchronized under
+the authenticated `wanazhar` account; remote CI remains pending because this
+branch has not been pushed.

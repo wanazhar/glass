@@ -599,6 +599,68 @@ fn native_text_alignment_shifts_complete_fixed_cell_line_items() {
 }
 
 #[test]
+fn native_functional_alpha_colors_reach_display_list_and_raster() {
+    let document = NativeDocument::parse(
+        "<div id='background' style='display:block;width:8px;height:8px;background-color:rgba(255, 0, 0, 0.5)'></div><div id='border' style='display:block;width:8px;height:8px;border:1px solid rgba(0, 0, 255, 50%)'></div><div id='text' style='display:block;width:8px;height:8px;color:rgba(0, 128, 0, 0.5)'>A</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 16,
+        height: 28,
+        device_scale_factor_milli: 1000,
+    };
+    let background = document.resolve_target("id=background").unwrap();
+    let border = document.resolve_target("id=border").unwrap();
+    let text = document.resolve_target("id=text").unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let background_color = NativeColor {
+        red: 255,
+        green: 0,
+        blue: 0,
+        alpha: 128,
+    };
+    let border_color = NativeColor {
+        red: 0,
+        green: 0,
+        blue: 255,
+        alpha: 128,
+    };
+    let text_color = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: 128,
+    };
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, color, .. }
+                if *node_id == background && *color == background_color
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::BorderRect { node_id, borders, .. }
+                if *node_id == border && borders.top.color == border_color
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun { node_id, color, .. }
+                if *node_id == text && *color == text_color
+        )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(4, 4), Some([255, 127, 127, 255]));
+    assert_eq!(surface.pixel(0, 8), Some([127, 127, 255, 255]));
+    assert_eq!(surface.pixel(1, 18), Some([127, 191, 127, 255]));
+}
+
+#[test]
 fn native_display_list_inherits_text_color_and_preserves_transparent_override() {
     let document = NativeDocument::parse(
         "<style>#parent { color: blue; }</style><div id='parent'><span id='child'>Child</span><span id='transparent' style='color:transparent'>Clear</span></div>",

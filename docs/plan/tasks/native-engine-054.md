@@ -1,7 +1,7 @@
 ---
 id: native-engine-054
 scope: glass-browser/native-engine/fixed-cell-text-decoration
-status: active
+status: done
 depends-on: [native-engine-053]
 ---
 
@@ -78,6 +78,32 @@ second text/layout owner is introduced.
 
 ## Completion evidence
 
-Implementation is not yet complete. This task records the contract before
-source changes; the next checkpoint must replace this section with exact
-local test, lint, documentation, commit, issue, and cleanup evidence.
+Implemented locally in `33a773d` (`feat(native-engine): add fixed-cell text
+decoration`). The bounded parser/cascade, DOM inheritance, immutable display
+command bit, clipped alpha-aware raster underline, and direct/nested/
+`display:contents` coverage are all present without a new dependency.
+
+Post-implementation local evidence:
+
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  -- --nocapture`: 68 passed, 0 failed;
+- `cargo test -p glass-browser --features native-engine --lib
+  surface_draws_alpha_underlines_across_fixed_cells_and_clips_them --
+  --nocapture`: 1 passed, 836 filtered out;
+- the native-engine library inventory contains 55 unit tests, including the
+  parser, inheritance, and raster underline tests;
+- `RUST_MIN_STACK=4194304 scripts/check-rust-workspace.sh test`: passed after
+  a warm rerun; the first clean run exposed the existing cold-start
+  rust-analyzer diagnostic timing race, then the exact test and complete
+  `glass-dev` library suite passed 365/365;
+- strict all-target/all-feature Clippy passes for both workspace packages,
+  plus the browser no-default-feature pass;
+- formatting, diff, and documentation/release validators pass after the
+  synchronized docs checkpoint;
+- issue #40 is updated under the authenticated `wanazhar` account with this
+  implementation, validation, and cleanup evidence; remote CI remains pending
+  because this local branch has not been pushed;
+- exact regenerable Cargo output is reclaimed after the final Cargo command;
+  no long-lived Glass process is terminated.
+
+No later native-engine slice is active in this checkpoint.

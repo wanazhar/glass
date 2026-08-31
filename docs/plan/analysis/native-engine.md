@@ -157,11 +157,13 @@ justification parity. The completed dependency-ordered `native-engine-053`
 task adds bounded functional `rgba(R, G, B, A)` alpha parsing for background,
 border, and text colors through the existing `NativeColor` and software
 source-over owners. It does not imply CSS Color 4, color-space, or
-color-management parity. No later native-engine slice is active in this
-checkpoint. The active dependency-ordered `native-engine-054` task adds
+color-management parity. The completed dependency-ordered `native-engine-054`
+task adds
 bounded inherited `text-decoration: none|underline` through immutable text
 commands and fixed-cell software replay. It does not imply font metrics,
-decoration propagation, or browser text-paint parity.
+decoration propagation, or browser text-paint parity. Its implementation and
+validation evidence are recorded in the task file and issue #40. No later
+native-engine slice is active in this checkpoint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -590,8 +592,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-054.md` is the active contract;
-`docs/plan/tasks/native-engine-053.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-054.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-053.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-052.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-051.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-050.md` is the preceding completed checkpoint;

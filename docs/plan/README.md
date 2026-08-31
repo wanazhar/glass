@@ -282,6 +282,12 @@ history traversal, while retaining raw-fragment, parse-before-commit, and
 non-network limits. Its implementation and validation evidence are recorded in
 the task file and issue #40.
 
+The completed fixture-relative-link slice is
+[native-engine-040](tasks/native-engine-040.md). It adds bounded same-host
+relative resolution for registered fixtures while retaining explicit local
+resource loading, parse-before-commit, fragment scrolling, and failure-atomic
+navigation limits.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

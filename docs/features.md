@@ -68,8 +68,8 @@ source-behavior reference.
   surface,
   bounded PNG capture, bounded local fragment navigation with exact visible-id
   root scrolling and per-entry Rust history scroll restoration, bounded local
-  anchor activation for fragment-only and absolute local hrefs, and bounded
-  revisioned Rust diagnostics for unsupported
+  anchor activation for fragment-only, fixture-relative, and absolute local
+  hrefs, and bounded revisioned Rust diagnostics for unsupported
   CSS; these are not screenshot-containing evidence or stable transport
   diagnostics.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,

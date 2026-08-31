@@ -156,7 +156,7 @@ does not own or close the external browser.
 | Knowledge | `KnowledgeStore` | Scoped advisory persistence and freshness assessment |
 | Backend interface | `browser_backend` | Capability-evidenced semantic backend dispatch |
 | Alternative runtimes | `BrowserRuntimeSession` | Portable Firefox BiDi and Safari WebDriver session; feature-gated native local session |
-| Native engine | `BackendFactory::native`, `BrowserRuntimeSession::connect_native` (feature-gated) | Experimental local fixture/data-URL engine with bounded layout/point input, root vertical viewport scrolling, exact visible-id fragment scrolling/history restoration, local link activation, and Rust-only display/raster artifacts; native CLI is explicit and local-only |
+| Native engine | `BackendFactory::native`, `BrowserRuntimeSession::connect_native` (feature-gated) | Experimental local fixture/data-URL engine with bounded layout/point input, root vertical viewport scrolling, exact visible-id fragment scrolling/history restoration, fragment-only, fixture-relative, and absolute local link activation, and Rust-only display/raster artifacts; native CLI is explicit and local-only |
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -168,7 +168,7 @@ does not own or close the external browser.
 |---|---:|---|
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
-| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded physical box-edge layout/point input, root vertical viewport scrolling, exact visible-id fragment scrolling/history restoration, local link activation, and Rust-only display/raster artifacts |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded physical box-edge layout/point input, root vertical viewport scrolling, exact visible-id fragment scrolling/history restoration, fragment-only, fixture-relative, and absolute local link activation, and Rust-only display/raster artifacts |
 
 ## MCP
 

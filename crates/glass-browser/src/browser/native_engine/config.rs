@@ -277,3 +277,72 @@ pub(crate) fn canonical_fixture_url(value: &str) -> Result<String, NativeEngineE
     }
     Ok(parsed.to_string())
 }
+
+/// Resolve a non-absolute link reference against a registered fixture base.
+///
+/// Relative navigation is deliberately narrower than URL parsing in general:
+/// it is available only while the current document has a fixture origin, and
+/// the resolved reference must remain on that exact fixture host and port.
+pub(crate) fn resolve_fixture_relative_url(
+    base_url: &str,
+    reference: &str,
+) -> Result<String, NativeEngineError> {
+    validate_url_text("link href", reference)?;
+    let base =
+        Url::parse(without_fragment(base_url)).map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "relative link resolution requires a registered fixture base".into(),
+        })?;
+    if base.scheme() != "fixture" || base.host_str().is_none() {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "relative link resolution requires a registered fixture base".into(),
+        });
+    }
+    let resolved = base
+        .join(reference)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "relative link reference is malformed".into(),
+        })?;
+    if resolved.scheme() != "fixture"
+        || resolved.host_str() != base.host_str()
+        || resolved.port() != base.port()
+        || !resolved.username().is_empty()
+        || resolved.password().is_some()
+    {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "relative link must remain on the current fixture host".into(),
+        });
+    }
+    let resolved = resolved.to_string();
+    validate_url_text("link target URL", &resolved)?;
+    Ok(resolved)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NativeEngineError, resolve_fixture_relative_url};
+
+    #[test]
+    fn fixture_relative_resolution_normalizes_and_keeps_the_current_host() {
+        assert_eq!(
+            resolve_fixture_relative_url(
+                "fixture://site.test/docs/index#old",
+                "./child/../next?mode=fast#target",
+            )
+            .unwrap(),
+            "fixture://site.test/docs/next?mode=fast#target"
+        );
+    }
+
+    #[test]
+    fn fixture_relative_resolution_rejects_opaque_or_cross_host_references() {
+        for (base, reference) in [
+            ("data:text/html,%3Cp%3Eopaque%3C%2Fp%3E", "next"),
+            ("fixture://site.test/docs/index", "//other.test/next"),
+            ("fixture://site.test/docs/index", "//["),
+        ] {
+            let error = resolve_fixture_relative_url(base, reference).unwrap_err();
+            assert!(matches!(error, NativeEngineError::UnsupportedUrl { .. }));
+            assert!(!error.to_string().contains(reference));
+        }
+    }
+}

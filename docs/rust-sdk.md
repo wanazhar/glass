@@ -121,7 +121,8 @@ longhands plus explicit box sizing,
 hit-testing,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
-flow, bounded direct-text flow fragments and source-order text paint, bounded
+flow with bounded inherited line-height, bounded direct-text flow fragments and
+source-order text paint, bounded
 word-aware wrapping, bounded source-whitespace boundaries across supported
 inline flow, bounded inherited `white-space: nowrap` collapsed one-line flow,
 bounded root horizontal scrolling,

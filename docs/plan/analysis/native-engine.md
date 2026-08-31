@@ -134,7 +134,9 @@ inherited and inline `white-space: nowrap`, collapses supported whitespace
 through the existing fixed-cell policy, disables soft wrapping, and reuses the
 measured root horizontal scroll/projection path. Its complete gate evidence is
 recorded below, in `docs/plan/tasks/native-engine-046.md`, and on issue #40.
-No later native-engine slice is active at this checkpoint.
+The next active dependency-ordered task is `native-engine-047`: bounded
+inherited positive-pixel `line-height` through the existing DOM style walk and
+flow minimum owner. No later native-engine slice is active at this checkpoint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -189,8 +191,8 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, pixel dimensions, fixed pixel line-height, physical solid/dashed/dotted borders, circular border radii, and physical padding/margin edges | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
-| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, root scroll projection, and rounded point hit testing | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color and positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, and physical padding/margin edges | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, root scroll projection, and rounded point hit testing | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
@@ -291,6 +293,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-044` | bounded exact prefix/suffix text-fragment affixes around a same-run `start[,end]` match | `native-engine-043` | cross-run ranges, multiple directives, highlights, Unicode normalization, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser text-fragment parity |
 | `native-engine-045` | bounded root horizontal scrolling from measured document overflow width with independent x/y clamping and shared projection | `native-engine-044` | nested scrolling, scrollbars, smooth/keyboard/snap scrolling, axis-specific CSS overflow, scroll anchoring, and browser parity |
 | `native-engine-046` | bounded inherited `white-space: nowrap` with collapsed fixed-cell one-line flow and measured root overflow | `native-engine-045` | preserved whitespace modes beyond the existing subset, nested scrolling, scrollbars, Unicode line breaking, font metrics, and browser parity |
+| `native-engine-047` | bounded inherited positive-pixel `line-height` through the DOM style walk and existing flow minimum/inline auto-height owners | `native-engine-046` | font-relative, unitless, percentage, CSS-wide keyword, baseline, `vertical-align`, general inheritance, and browser line metrics |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -461,6 +464,10 @@ Phase 2 integration chains added by these slices are:
 51. Native inherited `white-space: nowrap` collapses supported whitespace while
     preventing soft wrapping, measures the resulting one-line overflow, and
     reaches the existing root horizontal scroll/projection path.
+52. Native positive-pixel `line-height` inherits through the bounded DOM style
+    walk when a descendant has no valid local declaration, while explicit child
+    values and explicit heights retain precedence through the existing flow,
+    display, hit-test, and raster owners.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -519,14 +526,16 @@ visual stacking.
 | bounded text-fragment affixes | makes common prefix/suffix disambiguation useful without adding a range/highlight tree | no cross-run ranges, highlighting, Unicode normalization, or browser parity | strip only raw affix markers before bounded per-term decoding, require exact adjacency in one visible layout run, and preserve the existing scroll fallback |
 | bounded root horizontal scrolling | makes wide deterministic local content reachable through the existing root scroll owner without nested scroll state | no nested scrolling, scrollbars, smooth/keyboard/snap scrolling, axis-specific overflow, or browser parity | derive bounded document width from visible layout output, clamp x/y independently, and reuse the existing projection/history path |
 | bounded `white-space: nowrap` | preserves collapsed text on one fixed-cell line so the root horizontal path can reach wide local content | no preserved whitespace, nested scrolling, scrollbars, Unicode line breaking, font metrics, or browser parity | inherit one explicit mode through the existing style walk, disable soft wrapping only for that mode, and measure the resulting text runs |
+| bounded inherited fixed `line-height` | keeps nested fixture line boxes consistent with the nearest positive pixel floor without importing font metrics | no relative/unitless/percentage values, CSS-wide keywords, baselines, vertical-align, general inheritance, or browser line metrics | carry only the already-supported positive pixel value through the existing parent walk, preserve explicit child/height precedence, and reuse the current flow minimum |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-047.md` is the current in-progress checkpoint;
 `docs/plan/tasks/native-engine-046.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-045.md` is the preceding completed checkpoint;
-`docs/plan/tasks/native-engine-044.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-044.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-043.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-042.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-041.md` is the preceding completed checkpoint;

@@ -82,7 +82,7 @@ semantic subset. It does not enter the TUI/MCP/Chrome lifecycle shown above.
   standard padded-base64 `data:text/html`) in its current phase,
   exposes bounded presentation/normal-flow and outer/content box geometry with
   physical four-side padding/margin shorthand and longhand cascade,
-  root vertical viewport scrolling, plus native point hit testing through explicit Rust or feature-gated local CLI
+  root horizontal and vertical viewport scrolling, plus native point hit testing through explicit Rust or feature-gated local CLI
   paths. Its current Rust-only presentation artifacts include side-specific
   solid/dashed/dotted-border paint, bounded physical circular border radii, a
   bounded inline-box line placement, bounded fixed pixel line-height flow,

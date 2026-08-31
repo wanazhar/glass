@@ -125,7 +125,12 @@ same-run prefix/suffix affixes around the existing matcher, with the same
 raw-comma parsing, per-term UTF-8 decoding, scroll, history, and fail-closed
 boundaries. Its complete gate evidence is recorded below, in
 `docs/plan/tasks/native-engine-044.md`, and on issue #40. No later
-native-engine slice is active in this checkout.
+native-engine slice was active at that checkpoint. The 045 bounded
+root-horizontal-scroll slice is complete locally: it derives measured overflow
+width, independently clamps x/y, and reuses the existing viewport, hit-test,
+display-list, raster, and history owners. Its complete gate evidence is
+recorded below, in `docs/plan/tasks/native-engine-045.md`, and on issue #40.
+No later native-engine slice is active in this checkout.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -280,6 +285,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-042` | bounded exact legacy `<a name>` fragment-target fallback after decoded `id` lookup, with ID precedence and duplicate-safe root-scroll/history behavior | `native-engine-041` | arbitrary `name` attributes, text fragments, duplicate-id recovery, malformed-fragment error policy, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser URL/scrolling parity |
 | `native-engine-043` | bounded `#:~:text=start[,end]` matching against the first visible non-truncated text run after per-term UTF-8 decoding | `native-engine-042` | prefix/suffix syntax, multiple directives, cross-run ranges, highlights, duplicate-text disambiguation, Unicode normalization, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser text-fragment parity |
 | `native-engine-044` | bounded exact prefix/suffix text-fragment affixes around a same-run `start[,end]` match | `native-engine-043` | cross-run ranges, multiple directives, highlights, Unicode normalization, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser text-fragment parity |
+| `native-engine-045` | bounded root horizontal scrolling from measured document overflow width with independent x/y clamping and shared projection | `native-engine-044` | nested scrolling, scrollbars, smooth/keyboard/snap scrolling, axis-specific CSS overflow, scroll anchoring, and browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -443,6 +449,10 @@ Phase 2 integration chains added by these slices are:
 49. Native text-fragment prefix/suffix affixes are matched exactly adjacent to
     the start/end terms inside the first complete visible layout run, while
     malformed or cross-run forms preserve the existing scroll fallback.
+50. Native root horizontal scroll uses measured document overflow width,
+    clamps x and y independently, records both coordinates in history/effects,
+    and projects the same offset through viewport rectangles, hit testing,
+    display-list replay, and raster capture.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -499,11 +509,13 @@ visual stacking.
 | bounded legacy `name` fragment targets | makes common historical `<a name>` anchors reachable without broadening arbitrary attribute semantics | no arbitrary `name` targets, duplicate recovery, or browser URL/scrolling parity | use one exact visible `<a name>` only after no matching `id`, preserve ID precedence, and fail closed on duplicate names |
 | bounded text fragments | makes simple text-directed local links useful without a second semantic text tree or highlight renderer | no multiple directives, cross-run ranges, highlighting, Unicode normalization, or browser parity | parse raw term separators before decode, match one visible layout run in document order, and preserve the existing scroll fallback |
 | bounded text-fragment affixes | makes common prefix/suffix disambiguation useful without adding a range/highlight tree | no cross-run ranges, highlighting, Unicode normalization, or browser parity | strip only raw affix markers before bounded per-term decoding, require exact adjacency in one visible layout run, and preserve the existing scroll fallback |
+| bounded root horizontal scrolling | makes wide deterministic local content reachable through the existing root scroll owner without nested scroll state | no nested scrolling, scrollbars, smooth/keyboard/snap scrolling, axis-specific overflow, or browser parity | derive bounded document width from visible layout output, clamp x/y independently, and reuse the existing projection/history path |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-045.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-044.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-043.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-042.md` is the preceding completed checkpoint;

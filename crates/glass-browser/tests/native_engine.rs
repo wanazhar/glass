@@ -213,18 +213,116 @@ fn native_vertical_scroll_maps_layout_hit_testing_and_raster_output() {
     assert_eq!(no_op.revision, 3);
     assert_eq!(engine.scroll_offset(), layout.scroll_offset);
 
-    let horizontal = engine
+    let horizontal_edge = engine
         .action(NativeAction::Scroll {
             delta_x: 1,
             delta_y: 0,
         })
-        .unwrap_err();
-    assert!(matches!(
-        horizontal,
-        NativeEngineError::InvalidConfiguration { field, .. }
-            if field == "native scroll action"
-    ));
+        .unwrap();
+    assert!(!horizontal_edge.accepted);
     assert_eq!(engine.revision(), 3);
+}
+
+#[test]
+fn native_horizontal_scroll_projects_wide_preformatted_content_and_history() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 16,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://wide",
+            "<pre id='wide' style='white-space:pre'>A A</pre><div id='below' style='display:block;height:40px'>Below</div><pre style='display:none;white-space:pre'>Hidden hidden hidden</pre><script>Invisible invisible invisible</script>",
+        )
+        .unwrap()
+        .with_fixture("fixture://narrow", "<p>Narrow</p>")
+        .unwrap()
+        .with_initial_url("fixture://wide");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let initial = engine.layout().unwrap();
+    let wide_text = initial
+        .text_runs
+        .iter()
+        .find(|run| run.text == "A A")
+        .unwrap();
+    let wide = wide_text.node_id;
+    assert_eq!(initial.content_width, 24);
+    assert_eq!(initial.max_scroll_offset(), NativePoint { x: 8, y: 36 });
+    assert_eq!(initial.scroll_offset, NativePoint { x: 0, y: 0 });
+    assert_eq!(wide_text.origin, NativePoint { x: 0, y: 0 });
+    assert!(!wide_text.truncated);
+    assert_eq!(initial.viewport_rect_for(wide).unwrap().width, 16);
+
+    let unscrolled = engine.rasterize().unwrap();
+    assert_eq!(unscrolled.pixel(1, 0), Some([0, 0, 0, 255]));
+
+    let horizontal = engine
+        .action(NativeAction::Scroll {
+            delta_x: i32::MAX,
+            delta_y: 0,
+        })
+        .unwrap();
+    assert!(horizontal.accepted);
+    assert_eq!(horizontal.revision, 2);
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 8, y: 0 });
+    let horizontal_layout = engine.layout().unwrap();
+    assert_eq!(
+        horizontal_layout.max_scroll_offset(),
+        NativePoint { x: 8, y: 36 }
+    );
+    assert_eq!(
+        horizontal_layout.viewport_rect_for(wide),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 20,
+        })
+    );
+    assert_eq!(engine.hit_test(1, 0).unwrap(), Some(wide));
+    assert_eq!(engine.display_list().unwrap().scroll_offset.x, 8);
+    assert_eq!(
+        engine.rasterize().unwrap().pixel(1, 0),
+        Some([255, 255, 255, 255])
+    );
+
+    let diagonal = engine
+        .action(NativeAction::Scroll {
+            delta_x: -4,
+            delta_y: i32::MAX,
+        })
+        .unwrap();
+    assert!(diagonal.accepted);
+    assert_eq!(diagonal.revision, 3);
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 4, y: 36 });
+
+    let edge = engine
+        .action(NativeAction::Scroll {
+            delta_x: i32::MAX,
+            delta_y: i32::MAX,
+        })
+        .unwrap();
+    assert!(edge.accepted);
+    assert_eq!(edge.revision, 4);
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 8, y: 36 });
+
+    let no_op = engine
+        .action(NativeAction::Scroll {
+            delta_x: i32::MAX,
+            delta_y: i32::MAX,
+        })
+        .unwrap();
+    assert!(!no_op.accepted);
+    assert_eq!(no_op.revision, 4);
+
+    let saved = engine.scroll_offset();
+    engine.navigate("fixture://narrow").unwrap();
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 0 });
+    engine.go_back().unwrap().unwrap();
+    assert_eq!(engine.scroll_offset(), saved);
 }
 
 #[test]
@@ -1683,7 +1781,7 @@ async fn native_backend_dispatches_vertical_scroll_into_capture() {
     let pixel_index = output.line_size + 4;
     assert_eq!(&decoded[pixel_index..pixel_index + 4], &[0, 0, 255, 255]);
 
-    let horizontal = dispatcher
+    let horizontal_edge = dispatcher
         .action(ActionRequest {
             context_id: "native-context".into(),
             action: SemanticAction::Scroll {
@@ -1692,12 +1790,72 @@ async fn native_backend_dispatches_vertical_scroll_into_capture() {
             },
         })
         .await
-        .unwrap_err();
-    assert!(matches!(
-        horizontal,
-        glass_browser::browser_backend::BrowserBackendError::InvalidConfiguration { field, .. }
-            if field == "native scroll action"
-    ));
+        .unwrap();
+    assert!(!horizontal_edge.accepted);
+    dispatcher.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_backend_dispatches_horizontal_scroll_into_capture() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 16,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://wide-dispatch",
+            "<pre style='white-space:pre'>A A</pre>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://wide-dispatch");
+    let backend = NativeEngineBackend::new(config).unwrap();
+    let dispatcher = BrowserBackendDispatcher::new(&backend);
+    dispatcher.initialize().await.unwrap();
+
+    let action = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Scroll {
+                delta_x: i32::MAX,
+                delta_y: 0,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(action.revision, 2);
+    assert!(action.accepted);
+
+    let capture = dispatcher
+        .capture(CaptureRequest {
+            context_id: "native-context".into(),
+            format: CaptureFormat::Png,
+        })
+        .await
+        .unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture.bytes));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (16, 24));
+    let pixel_index = output.line_size;
+    assert_eq!(
+        &decoded[pixel_index..pixel_index + 4],
+        &[255, 255, 255, 255]
+    );
+
+    let edge = dispatcher
+        .action(ActionRequest {
+            context_id: "native-context".into(),
+            action: SemanticAction::Scroll {
+                delta_x: i32::MAX,
+                delta_y: 0,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(edge.revision, 2);
+    assert!(!edge.accepted);
     dispatcher.close().await.unwrap();
 }
 

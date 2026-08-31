@@ -356,6 +356,12 @@ fn intersect_rect(first: NativeRect, second: NativeRect) -> NativeRect {
     }
 }
 
+fn constrain_dimension(value: u32, minimum: Option<u32>, maximum: Option<u32>) -> u32 {
+    let minimum = minimum.unwrap_or_default();
+    let value = value.max(minimum);
+    maximum.map_or(value, |maximum| value.min(maximum.max(minimum)))
+}
+
 pub(crate) fn rounded_rect_contains(
     rect: NativeRect,
     radius: NativeBorderRadius,
@@ -793,6 +799,21 @@ impl<'a> LayoutBuilder<'a> {
                 }
             },
         );
+        let min_height = style.min_height().map(|declared| {
+            if style.is_border_box() {
+                declared
+            } else {
+                declared.saturating_add(vertical_inset)
+            }
+        });
+        let max_height = style.max_height().map(|declared| {
+            if style.is_border_box() {
+                declared
+            } else {
+                declared.saturating_add(vertical_inset)
+            }
+        });
+        let height = constrain_dimension(height, min_height, max_height);
         let content_height = height.saturating_sub(vertical_inset);
         self.boxes[box_index].rect.height = height;
         self.boxes[box_index].content_rect = NativeRect {
@@ -832,7 +853,22 @@ impl<'a> LayoutBuilder<'a> {
                 declared.saturating_add(horizontal_inset)
             }
         });
-        width.min(available_width)
+        let min_width = style.min_width().map(|declared| {
+            if style.is_border_box() {
+                declared
+            } else {
+                declared.saturating_add(horizontal_inset)
+            }
+        });
+        let max_width = style.max_width().map(|declared| {
+            if style.is_border_box() {
+                declared
+            } else {
+                declared.saturating_add(horizontal_inset)
+            }
+        });
+        constrain_dimension(width, min_width, max_width)
+            .min(available_width.max(min_width.unwrap_or_default()))
     }
 
     fn place_text(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {

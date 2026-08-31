@@ -1794,6 +1794,67 @@ fn native_axis_specific_overflow_clips_only_selected_axis_across_consumers() {
 }
 
 #[test]
+fn native_min_max_dimensions_constrain_content_and_border_box_geometry() {
+    let document = NativeDocument::parse(
+        "<style>#min { min-width: 40px; min-height: 30px; } #max { width: 24px; height: 20px; max-width: 16px; max-height: 10px; } #border { box-sizing: border-box; width: 20px; height: 20px; min-width: 28px; max-width: 32px; min-height: 26px; max-height: 30px; padding: 2px; border: 2px solid red; }</style><div id='min'>Min</div><div id='max'>Max</div><div id='border'>Border</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let min = document.resolve_target("id=min").unwrap();
+    let max = document.resolve_target("id=max").unwrap();
+    let border = document.resolve_target("id=border").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(min),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 30,
+        })
+    );
+    assert_eq!(
+        layout.box_for(max),
+        Some(NativeRect {
+            x: 0,
+            y: 30,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.box_for(border),
+        Some(NativeRect {
+            x: 0,
+            y: 40,
+            width: 28,
+            height: 26,
+        })
+    );
+    assert_eq!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == border)
+            .map(|layout_box| layout_box.content_rect),
+        Some(NativeRect {
+            x: 4,
+            y: 44,
+            width: 20,
+            height: 18,
+        })
+    );
+    assert_eq!(layout.content_width, 40);
+    assert_eq!(layout.max_scroll_offset().x, 8);
+}
+
+#[test]
 fn native_engine_display_list_revision_tracks_accepted_actions() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://paint", "<button id='save'>Save</button>")

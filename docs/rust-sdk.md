@@ -115,7 +115,8 @@ The backend profile declares lifecycle, navigation, one context, bounded
 evidence, semantic click/type actions, native point hit testing, and revision
 effects. Rust callers can additionally inspect the native layout's outer and
 content rectangles, bounded physical four-side padding/margin shorthands and
-longhands plus explicit box sizing,
+longhands plus explicit box sizing and bounded physical min/max width/height
+constraints,
  bounded root horizontal and vertical viewport scrolling, inherited text color, bounded
 `overflow:hidden` clips shared by paint, viewport projection, and point
 hit-testing, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip`

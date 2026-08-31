@@ -9,7 +9,8 @@ bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golde
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
-bounded-clip-aware-root-overflow/bounded-axis-specific-overflow slices,
+bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
+bounded-min-max-dimensions slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -40,7 +41,8 @@ normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
 display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden`/
 `overflow:clip` paint clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
-bounded circular border radii, bounded outer/content box geometry, explicit root
+bounded circular border radii, bounded outer/content box geometry with bounded
+min/max width/height constraints, explicit root
 horizontal and vertical viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
 line-height flow with bounded inheritance, bounded direct-text fragments at
 actual flow origins,
@@ -57,6 +59,9 @@ navigation and Rust history traversal.
 The 049 boundary adds independent bounded `overflow-x:hidden`/`clip` and
 `overflow-y:hidden`/`clip` clips through that same rectangular owner; it does
 not add nested scrolling, scrollbars, or visible-overflow propagation.
+The 050 boundary adds bounded physical `min-width`/`max-width` and
+`min-height`/`max-height` constraints through the same box-model owner;
+intrinsic, percentage, and flex/grid sizing remain outside the boundary.
 Semantic local anchor activation reaches that same bounded navigation owner for
 fragment-only, fixture-relative, and absolute local hrefs; unsupported href
 forms fail closed.
@@ -568,11 +573,15 @@ contribution to root `content_width` through the same document-space overflow
 clip already shared by paint, viewport projection, and point hit testing, so
 fully clipped text cannot create a false horizontal scroll range.
 
-The 049 bounded-axis-specific-overflow boundary is the next active slice. It
-will accept only bounded `overflow-x`/`overflow-y` `hidden` and `clip` values,
-cascade the two axes independently, and preserve the existing rectangular
-clip owner across paint, viewport projection, hit testing, and root-overflow
-measurement.
+The completed 049 bounded-axis-specific-overflow boundary accepts only bounded
+`overflow-x`/`overflow-y` `hidden` and `clip` values, cascades the two axes
+independently, and preserves the existing rectangular clip owner across paint,
+viewport projection, hit testing, and root-overflow measurement.
+
+The 050 bounded-min-max-dimensions boundary is the next active slice. It will
+apply bounded physical minimum and maximum pixel constraints to the existing
+content-box or border-box width/height calculations while preserving normal
+flow and all downstream geometry owners.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -622,8 +631,8 @@ values per side. It keeps
 `NativeLayoutBox::rect` as the outer border box and exposes a derived content
 rectangle after border and padding insets; child flow and direct text begin at
 that content origin. Side-specific margins consume normal-flow space without
-margin collapsing. Percentages, negative/auto values, logical sides, min/max
-constraints, positioning, flex/grid, and fractional metrics remained
+margin collapsing. Percentages, negative/auto values, logical sides,
+positioning, flex/grid, and fractional metrics remained
 unsupported at the 016 checkpoint; later 045 adds bounded root horizontal
 scrolling without nested scrolling.
 
@@ -752,9 +761,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded stylesheet/inline selector matching and display/visibility cascade
   feeding visible text and semantic actionability.
 - deterministic integer-pixel normal-flow layout, bounded width/height
-  declarations, physical padding/margin shorthand and longhand cascade,
-  explicit box sizing, outer/content rectangles, hidden-box exclusion, and
-  Rust-only layout inspection.
+  declarations and min/max width/height constraints, physical padding/margin
+  shorthand and longhand cascade, explicit box sizing, outer/content
+  rectangles, hidden-box exclusion, and Rust-only layout inspection.
 - point hit testing with viewport bounds, deepest-hit ordering, actionable
   ancestor resolution, and pre-mutation rejection for empty/out-of-viewport
   points.

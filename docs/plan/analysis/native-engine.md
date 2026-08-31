@@ -54,6 +54,11 @@ elements advance the existing integer inline-flow cursor without creating
 synthetic semantic/layout/paint nodes or claiming general inline formatting
 conformance. Its complete gate evidence is recorded below and its issue #40
 checkpoint is updated from the same commit.
+The 033 bounded-pre-line-breaks slice is complete locally: inherited
+`white-space: pre-line` turns bounded source line-feed and carriage-return
+boundaries into the same hard flow breaks while retaining space collapsing and
+the no-general-CSS boundary. Its complete gate evidence is recorded below and
+its issue #40 checkpoint is updated from the same commit.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -196,6 +201,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-030` | bounded descendant selector chains across the owned DOM ancestry with summed specificity and existing cascade precedence | `native-engine-029` | direct-child/sibling/pseudo/functional/namespace selectors, general CSS conformance, style caching, and browser parity |
 | `native-engine-031` | bounded non-scrolling `overflow: clip` through the existing rectangular clip, viewport projection, and point hit-testing path | `native-engine-030` | `visible`/`auto`/`scroll`, axis-specific overflow, nested scrolling, scrollbars, rounded descendant clips, general CSS conformance, and browser parity |
 | `native-engine-032` | bounded visible `<br>` hard line breaks through the existing integer inline-flow cursor and fixed line-height floor | `native-engine-031` | `<wbr>`, preserved source newlines, CSS `white-space`, font metrics, Unicode line breaking, bidi, general inline formatting, and browser parity |
+| `native-engine-033` | bounded inherited `white-space: pre-line` source newline breaks through the existing hard-break cursor while collapsing other whitespace | `native-engine-032` | `pre`/`pre-wrap`/`break-spaces`/`nowrap`, preserved tabs or arbitrary whitespace, text alignment, font metrics, Unicode line breaking, bidi, and browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -309,6 +315,9 @@ Phase 2 integration chains added by these slices are:
 37. Native visible `<br>` elements advance the containing integer flow cursor by
     one fixed line-height floor, reset the inline origin, and create no
     semantic/layout/paint node; hidden breaks are ignored.
+38. Native inherited `white-space: pre-line` turns bounded LF/CR/CRLF source
+    boundaries into the same hard-break cursor transition while retaining
+    collapsed spaces and the default `white-space: normal` behavior.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -353,16 +362,16 @@ stacking, or that clicking a link performs browser navigation.
 | bounded descendant selectors | makes ancestor-scoped fixture styles observable through the real DOM ownership chain | no sibling/child/pseudo/functional/namespace selectors, selector caching, general CSS conformance, or browser parity | cap chains at eight compounds, traverse only bounded parent links, sum existing specificity, and preserve explicit unsupported-selector diagnostics |
 | bounded `overflow: clip` | removes a common false diagnostic while reusing the existing rectangular clip invariant | no axis-specific overflow, nested scrolling, scrollbars, rounded descendant clips, or public distinction from `hidden` | accept only the single value, map both supported values to one internal clip bit, and preserve bounded diagnostics for `visible`/`auto`/`scroll` |
 | bounded hard line breaks | makes author-visible `<br>` structure affect fixture flow without adding a renderer or font engine | no `<wbr>`, preserved source newline, CSS whitespace, font metric, Unicode line-breaking, bidi, or browser inline-formatting claim | move only the existing bounded cursor, emit no synthetic node, and keep hidden/display:none breaks inert |
+| bounded `white-space: pre-line` breaks | preserves common source newlines through the proven hard-break transition while retaining a collapsed-space model | no `pre`/`pre-wrap`/`break-spaces`/`nowrap`, tabs, arbitrary whitespace, text alignment, font metrics, Unicode line breaking, bidi, or browser parity | inherit one explicit mode through the existing bounded style walk, normalize CRLF, and reuse the `<br>` flow transition |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-032.md` is the latest completed checkpoint,
-`docs/plan/tasks/native-engine-031.md` is the preceding completed checkpoint,
-`docs/plan/tasks/native-engine-030.md` is the earlier completed checkpoint,
-and `docs/plan/tasks/native-engine-029.md` is the earlier pixel-capture
-checkpoint.
+`docs/plan/tasks/native-engine-033.md` is the latest completed checkpoint,
+`docs/plan/tasks/native-engine-032.md` is the preceding completed checkpoint,
+`docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
+and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 A checkpoint is complete only when
 the native feature tests pass, strict lint
 passes for the touched code, and the diff confirms no unrelated browser/TUI/

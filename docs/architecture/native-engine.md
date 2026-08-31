@@ -9,7 +9,7 @@ bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golde
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
-bounded-clip-aware-root-overflow slices,
+bounded-clip-aware-root-overflow/bounded-axis-specific-overflow slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -54,6 +54,9 @@ bounded rectangular
 viewport projection, and point hit testing, and bounded read-only diagnostics
 for unsupported CSS input, plus bounded local same-document fragment
 navigation and Rust history traversal.
+The 049 boundary adds independent bounded `overflow-x:hidden`/`clip` and
+`overflow-y:hidden`/`clip` clips through that same rectangular owner; it does
+not add nested scrolling, scrollbars, or visible-overflow propagation.
 Semantic local anchor activation reaches that same bounded navigation owner for
 fragment-only, fixture-relative, and absolute local hrefs; unsupported href
 forms fail closed.
@@ -62,8 +65,8 @@ case-sensitive `id` obtained after bounded percent-decoding; the active history
 entry retains the bounded scroll offset for restoration.
 The engine does not
 yet own
-general CSS, nested/smooth/keyboard scrolling, scrollbars, axis-specific
-overflow, or scrolling/stacking layout,
+general CSS, nested/smooth/keyboard scrolling, scrollbars, nested overflow
+scrolling, or scrolling/stacking layout,
 screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
 network access, storage, downloads, prompts, or platform windows. Unsupported
@@ -560,11 +563,16 @@ descendants without a valid local declaration use the nearest computed value.
 Font-relative metrics, CSS-wide keywords, baselines, `vertical-align`, and
 general computed-style inheritance remain outside the slice.
 
-The 048 bounded-clip-aware-root-overflow boundary is the next active slice. It
-will measure text contribution to root `content_width` through the same
-document-space overflow clip already shared by paint, viewport projection, and
-point hit testing, so fully clipped text cannot create a false horizontal
-scroll range.
+The completed 048 bounded-clip-aware-root-overflow boundary measures text
+contribution to root `content_width` through the same document-space overflow
+clip already shared by paint, viewport projection, and point hit testing, so
+fully clipped text cannot create a false horizontal scroll range.
+
+The 049 bounded-axis-specific-overflow boundary is the next active slice. It
+will accept only bounded `overflow-x`/`overflow-y` `hidden` and `clip` values,
+cascade the two axes independently, and preserve the existing rectangular
+clip owner across paint, viewport projection, hit testing, and root-overflow
+measurement.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -720,6 +728,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded text-fragment prefix/suffix affixes within one visible text run;
 - bounded root horizontal/vertical scroll extents, independent clamping, and
   two-axis projection through layout, hit testing, display, raster, and history;
+- bounded independent `overflow-x`/`overflow-y` `hidden`/`clip` rectangles
+  through paint, viewport projection, point hit testing, and root-overflow
+  measurement, with shorthand/longhand cascade precedence;
 - semantic local anchor activation through dispatcher click;
 - fixture-relative local link resolution with same-host enforcement;
 - title and visible-text projection with hidden `head`, `script`, and `style`;

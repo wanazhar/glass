@@ -1726,6 +1726,74 @@ fn native_overflow_clip_reuses_rectangular_clip_without_scroll() {
 }
 
 #[test]
+fn native_axis_specific_overflow_clips_only_selected_axis_across_consumers() {
+    let x_only = NativeDocument::parse(
+        "<style>#clip { overflow-x: hidden; width: 16px; height: 10px; } #child { display: block; white-space: nowrap; background-color: red; }</style><div id='clip'><div id='child'>ABCDEFG</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let x_clip = x_only.resolve_target("id=clip").unwrap();
+    let x_child = x_only.resolve_target("id=child").unwrap();
+    let x_layout = x_only.layout(viewport).unwrap();
+
+    assert_eq!(x_layout.box_for(x_clip).unwrap().height, 10);
+    assert_eq!(
+        x_layout.viewport_rect_for(x_child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 20,
+        })
+    );
+    assert_eq!(x_layout.content_width, viewport.width);
+    assert_eq!(x_layout.max_scroll_offset().x, 0);
+    assert_eq!(x_layout.hit_test(5, 15).unwrap(), Some(x_child));
+    assert_eq!(x_layout.hit_test(16, 15).unwrap(), None);
+    let x_surface = x_only.display_list(viewport).unwrap().rasterize().unwrap();
+    assert_eq!(x_surface.pixel(5, 15), Some([255, 0, 0, 255]));
+
+    let y_only = NativeDocument::parse(
+        "<style>#clip { overflow-y: clip; width: 16px; height: 10px; } #child { display: block; white-space: nowrap; background-color: red; }</style><div id='clip'><div id='child'>ABCDEFG</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let y_child = y_only.resolve_target("id=child").unwrap();
+    let y_layout = y_only.layout(viewport).unwrap();
+
+    assert_eq!(
+        y_layout.viewport_rect_for(y_child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(y_layout.content_width, 56);
+    assert_eq!(y_layout.max_scroll_offset().x, 24);
+    assert_eq!(y_layout.hit_test(5, 5).unwrap(), Some(y_child));
+    assert_eq!(y_layout.hit_test(5, 15).unwrap(), None);
+    let y_surface = y_only.display_list(viewport).unwrap().rasterize().unwrap();
+    assert_eq!(y_surface.pixel(5, 5), Some([255, 0, 0, 255]));
+    assert_eq!(y_surface.pixel(5, 15), Some([255, 255, 255, 255]));
+
+    assert!(!x_only.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+            && matches!(diagnostic.detail.as_str(), "overflow-x" | "overflow-y")
+    }));
+    assert!(!y_only.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+            && matches!(diagnostic.detail.as_str(), "overflow-x" | "overflow-y")
+    }));
+}
+
+#[test]
 fn native_engine_display_list_revision_tracks_accepted_actions() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://paint", "<button id='save'>Save</button>")

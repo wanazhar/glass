@@ -213,7 +213,8 @@ pub(crate) struct NativeComputedStyle {
     margin: NativeBoxEdges,
     box_sizing: NativeBoxSizing,
     color: Option<NativeColor>,
-    overflow_clip: bool,
+    overflow_clip_x: bool,
+    overflow_clip_y: bool,
 }
 
 impl NativeComputedStyle {
@@ -269,8 +270,12 @@ impl NativeComputedStyle {
         self.color
     }
 
-    pub(crate) const fn overflow_clip(self) -> bool {
-        self.overflow_clip
+    pub(crate) const fn overflow_clip_x(self) -> bool {
+        self.overflow_clip_x
+    }
+
+    pub(crate) const fn overflow_clip_y(self) -> bool {
+        self.overflow_clip_y
     }
 }
 
@@ -369,7 +374,8 @@ impl NativeStylesheet {
         let mut margin: [Option<CascadeValue<u32>>; 4] = [None; 4];
         let mut box_sizing = None;
         let mut color = None;
-        let mut overflow = None;
+        let mut overflow_x = None;
+        let mut overflow_y = None;
         for rule in &self.rules {
             if !matches(&rule.selector) {
                 continue;
@@ -500,10 +506,20 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.overflow
-                && wins(rule.selector.specificity, rule.order, false, overflow)
+            if let Some(value) = rule.declarations.overflow_x
+                && wins(rule.selector.specificity, rule.order, false, overflow_x)
             {
-                overflow = Some(CascadeValue {
+                overflow_x = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.overflow_y
+                && wins(rule.selector.specificity, rule.order, false, overflow_y)
+            {
+                overflow_y = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -635,10 +651,20 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.overflow
-                && wins(u16::MAX, usize::MAX, true, overflow)
+            if let Some(value) = declarations.overflow_x
+                && wins(u16::MAX, usize::MAX, true, overflow_x)
             {
-                overflow = Some(CascadeValue {
+                overflow_x = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
+            if let Some(value) = declarations.overflow_y
+                && wins(u16::MAX, usize::MAX, true, overflow_y)
+            {
+                overflow_y = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -664,7 +690,10 @@ impl NativeStylesheet {
             margin: NativeBoxEdges::from_cascade(margin),
             box_sizing: box_sizing.map_or(NativeBoxSizing::ContentBox, |value| value.value),
             color: color.map(|value| value.value).or(inherited_color),
-            overflow_clip: overflow.is_some_and(|value| {
+            overflow_clip_x: overflow_x.is_some_and(|value| {
+                matches!(value.value, OverflowValue::Hidden | OverflowValue::Clip)
+            }),
+            overflow_clip_y: overflow_y.is_some_and(|value| {
                 matches!(value.value, OverflowValue::Hidden | OverflowValue::Clip)
             }),
         }
@@ -756,6 +785,8 @@ struct NativeDeclarations {
     box_sizing: Option<NativeBoxSizing>,
     color: Option<NativeColor>,
     overflow: Option<OverflowValue>,
+    overflow_x: Option<OverflowValue>,
+    overflow_y: Option<OverflowValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -908,7 +939,9 @@ fn parse_source(
             || declarations.margin.iter().any(Option::is_some)
             || declarations.box_sizing.is_some()
             || declarations.color.is_some()
-            || declarations.overflow.is_some();
+            || declarations.overflow.is_some()
+            || declarations.overflow_x.is_some()
+            || declarations.overflow_y.is_some();
         let selector_source = &source[cursor..open];
         let mut selector_offset = cursor;
         for selector_text in selector_source.split(',') {
@@ -1022,7 +1055,7 @@ fn parse_declarations_with_diagnostics(
             "padding-top" | "padding-right" | "padding-bottom" | "padding-left" | "margin-top"
             | "margin-right" | "margin-bottom" | "margin-left" => parse_dimension(value).is_some(),
             "box-sizing" => parse_box_sizing(value).is_some(),
-            "overflow" => parse_overflow(value)
+            "overflow" | "overflow-x" | "overflow-y" => parse_overflow(value)
                 .is_some_and(|value| matches!(value, OverflowValue::Hidden | OverflowValue::Clip)),
             _ => {
                 diagnostics.push(
@@ -1085,6 +1118,8 @@ fn is_known_css_property(property: &str) -> bool {
             | "margin-left"
             | "box-sizing"
             | "overflow"
+            | "overflow-x"
+            | "overflow-y"
     )
 }
 
@@ -1218,7 +1253,16 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.color = parse_color(value);
             }
             "overflow" => {
-                declarations.overflow = parse_overflow(value);
+                let parsed = parse_overflow(value);
+                declarations.overflow = parsed;
+                declarations.overflow_x = parsed;
+                declarations.overflow_y = parsed;
+            }
+            "overflow-x" => {
+                declarations.overflow_x = parse_overflow(value);
+            }
+            "overflow-y" => {
+                declarations.overflow_y = parse_overflow(value);
             }
             _ => {}
         }
@@ -1743,6 +1787,8 @@ mod tests {
         assert_eq!(declarations.margin, [Some(3); 4]);
         assert_eq!(declarations.box_sizing, Some(NativeBoxSizing::BorderBox));
         assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
+        assert_eq!(declarations.overflow_x, Some(OverflowValue::Hidden));
+        assert_eq!(declarations.overflow_y, Some(OverflowValue::Hidden));
         assert_eq!(parse_white_space("normal"), Some(WhiteSpaceValue::Normal));
         assert_eq!(
             parse_white_space("pre-line"),
@@ -1943,6 +1989,24 @@ mod tests {
         .unwrap();
         let node = node("<div id='card' class='card' style='line-height: 28px'>Card</div>");
         assert_eq!(stylesheet.computed_for(&node).line_height(), Some(28));
+    }
+
+    #[test]
+    fn overflow_axis_longhands_cascade_independently_from_shorthand() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            ".card { overflow: hidden; } #card { overflow-x: clip; overflow-y: visible; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='card' class='card'>Card</div>");
+        let style = stylesheet.computed_for(&node);
+
+        assert!(style.overflow_clip_x());
+        assert!(!style.overflow_clip_y());
+
+        let declarations =
+            parse_declarations("overflow-x: hidden; overflow: clip; overflow-y: visible;");
+        assert_eq!(declarations.overflow_x, Some(OverflowValue::Clip));
+        assert_eq!(declarations.overflow_y, Some(OverflowValue::Other));
     }
 
     #[test]

@@ -333,7 +333,8 @@ longhands, explicit content-box or border-box sizing, outer/content layout
 rectangles, bounded root horizontal and vertical viewport scrolling, semantic click/type actions,
 revisioned effects for supported local controls, inherited text color
 for nested content, bounded `overflow:hidden` clips shared by paint, viewport
-projection, and point hit-testing, bounded side-specific solid/dashed/dotted-border paint, bounded
+projection, and point hit-testing, bounded axis-specific `overflow-x`/`overflow-y`
+`hidden`/`clip` clips through the same owner, bounded side-specific solid/dashed/dotted-border paint, bounded
 physical circular border radii, bounded inline-box line placement, bounded
 fixed pixel line-height flow with bounded inherited line-height, bounded
 direct-text flow fragments and

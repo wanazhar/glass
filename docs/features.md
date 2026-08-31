@@ -59,7 +59,9 @@ source-behavior reference.
   physical four-side padding/margin shorthands and longhands plus explicit box
   sizing, bounded root horizontal and vertical viewport scrolling,
   inherited text color, bounded `overflow:hidden` clips shared by paint,
-  viewport projection, and point hit-testing, side-specific solid/dashed/dotted borders, bounded physical circular
+  viewport projection, and point hit-testing, bounded axis-specific
+  `overflow-x`/`overflow-y` `hidden`/`clip` clips through the same owner,
+  side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow with bounded inherited line-height, bounded direct-text
   flow fragments and source-order text
@@ -252,7 +254,9 @@ semantic session. The feature-gated native engine is an experimental,
 fixture/data-URL-only Glass-owned backend exposed through the explicit Rust
 factory and local one-shot runtime. Its current semantic surface includes
 bounded presentation, inherited text color, bounded `overflow:hidden` clips
-shared by paint, viewport projection, and point hit-testing, side-specific
+shared by paint, viewport projection, and point hit-testing, bounded
+axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips through the same
+owner, side-specific
 solid/dashed/dotted-border paint, bounded physical circular border radii,
 bounded inline-box line placement, bounded fixed pixel line-height flow with
 bounded inherited line-height,

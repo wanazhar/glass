@@ -674,6 +674,102 @@ fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
 }
 
 #[test]
+fn native_text_transform_aligns_layout_and_display_with_source_text_preserved() {
+    let document = NativeDocument::parse(
+        "<style>#upper { display:block; width:80px; text-transform:uppercase; } #lower { display:block; width:80px; text-transform:lowercase; } #parent { display:block; width:80px; text-transform:uppercase; } #clear { text-transform:none; } #contents { display:contents; text-transform:lowercase; } #pre { display:block; width:80px; white-space:pre-wrap; text-transform:uppercase; } #nowrap { display:block; text-transform:uppercase; white-space:nowrap; }</style><button id='upper'>aBc dEf</button><div id='lower'>aBc dEf</div><div id='parent'>One <span id='clear'>aBc</span> <span id='contents'><span id='nested'>aBc</span></span></div><div id='pre'>aB\ncD</div><div id='nowrap'>aB cD</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 80,
+        height: 140,
+        device_scale_factor_milli: 1000,
+    };
+    let upper = document.resolve_target("id=upper").unwrap();
+    let lower = document.resolve_target("id=lower").unwrap();
+    let parent = document.resolve_target("id=parent").unwrap();
+    let clear = document.resolve_target("id=clear").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let pre = document.resolve_target("id=pre").unwrap();
+    let nowrap = document.resolve_target("id=nowrap").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    let run_text = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| run.text.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(run_text(upper), vec!["ABC", " DEF"]);
+    assert_eq!(run_text(lower), vec!["abc", " def"]);
+    assert!(run_text(parent).contains(&"ONE"));
+    assert_eq!(run_text(clear), vec!["aBc"]);
+    assert_eq!(run_text(nested), vec!["abc"]);
+    assert_eq!(run_text(pre), vec!["AB", "CD"]);
+    assert_eq!(run_text(nowrap), vec!["AB CD"]);
+
+    let (source_text, truncated) = document.visible_text(1024);
+    assert!(!truncated);
+    assert!(source_text.contains("aBc dEf"));
+    assert!(!source_text.contains("ABC DEF"));
+    assert!(document.resolve_target("text=aBc dEf").is_ok());
+
+    let list = document.display_list(viewport).unwrap();
+    for run in &layout.text_runs {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::TextRun { node_id, origin, text, .. }
+                    if *node_id == run.node_id && *origin == run.origin && text == &run.text
+            )
+        }));
+    }
+}
+
+#[test]
+fn native_text_transform_feeds_text_fragments_without_mutating_evidence() {
+    let html = "<div style='display:block;height:40px'>one</div><div id='target' style='display:block;height:40px;text-transform:uppercase;white-space:pre'>target phrase</div>";
+    let viewport = Viewport {
+        width: 240,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let expected_document = NativeDocument::parse(html, &NativeEngineLimits::default()).unwrap();
+    let expected_layout = expected_document.layout(viewport).unwrap();
+    let target_run = expected_layout
+        .text_runs
+        .iter()
+        .find(|run| run.text == "TARGET PHRASE")
+        .unwrap();
+    let expected_scroll = NativePoint {
+        x: 0,
+        y: expected_layout
+            .box_for(target_run.node_id)
+            .unwrap()
+            .y
+            .min(expected_layout.max_scroll_offset().y),
+    };
+    assert!(expected_scroll.y > 0);
+
+    let config = NativeEngineConfig::default()
+        .with_viewport(viewport)
+        .with_fixture("fixture://text-transform-fragment", html)
+        .unwrap()
+        .with_initial_url("fixture://text-transform-fragment");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    assert_eq!(engine.snapshot().unwrap().visible_text, "one target phrase");
+
+    engine
+        .navigate("fixture://text-transform-fragment#:~:text=TARGET%20PHRASE")
+        .unwrap();
+    assert_eq!(engine.scroll_offset(), expected_scroll);
+    assert_eq!(engine.snapshot().unwrap().visible_text, "one target phrase");
+}
+
+#[test]
 fn native_functional_alpha_colors_reach_display_list_and_raster() {
     let document = NativeDocument::parse(
         "<div id='background' style='display:block;width:8px;height:8px;background-color:rgba(255, 0, 0, 0.5)'></div><div id='border' style='display:block;width:8px;height:8px;border:1px solid rgba(0, 0, 255, 50%)'></div><div id='text' style='display:block;width:8px;height:8px;color:rgba(0, 128, 0, 0.5)'>A</div>",
@@ -4280,7 +4376,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -4320,6 +4416,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-decoration"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-transform"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

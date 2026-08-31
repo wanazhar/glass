@@ -170,12 +170,21 @@ pub(crate) enum TextDecorationValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TextTransformValue {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
     pub(crate) text_align: TextAlignValue,
     pub(crate) text_decoration: TextDecorationValue,
+    pub(crate) text_transform: TextTransformValue,
 }
 
 /// Bounded physical top, right, bottom, and left box values.
@@ -230,6 +239,7 @@ pub(crate) struct NativeComputedStyle {
     white_space: WhiteSpaceValue,
     text_align: TextAlignValue,
     text_decoration: TextDecorationValue,
+    text_transform: TextTransformValue,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -274,6 +284,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_decoration(self) -> TextDecorationValue {
         self.text_decoration
+    }
+
+    pub(crate) const fn text_transform(self) -> TextTransformValue {
+        self.text_transform
     }
 
     pub(crate) const fn width(self) -> Option<u32> {
@@ -422,6 +436,7 @@ impl NativeStylesheet {
         let mut white_space = None;
         let mut text_align = None;
         let mut text_decoration = None;
+        let mut text_transform = None;
         let mut width = None;
         let mut height = None;
         let mut min_width = None;
@@ -501,6 +516,16 @@ impl NativeStylesheet {
                 )
             {
                 text_decoration = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_transform
+                && wins(rule.selector.specificity, rule.order, false, text_transform)
+            {
+                text_transform = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -727,6 +752,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_transform
+                && wins(u16::MAX, usize::MAX, true, text_transform)
+            {
+                text_transform = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -888,6 +923,7 @@ impl NativeStylesheet {
             white_space: white_space.map_or(inherited.white_space, |value| value.value),
             text_align: text_align.map_or(inherited.text_align, |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
+            text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             min_width: min_width.map(|value| value.value),
@@ -991,6 +1027,7 @@ struct NativeDeclarations {
     white_space: Option<WhiteSpaceValue>,
     text_align: Option<TextAlignValue>,
     text_decoration: Option<TextDecorationValue>,
+    text_transform: Option<TextTransformValue>,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -1153,6 +1190,7 @@ fn parse_source(
             || declarations.white_space.is_some()
             || declarations.text_align.is_some()
             || declarations.text_decoration.is_some()
+            || declarations.text_transform.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.min_width.is_some()
@@ -1275,6 +1313,7 @@ fn parse_declarations_with_diagnostics(
             "white-space" => parse_white_space(value).is_some(),
             "text-align" => parse_text_align(value).is_some(),
             "text-decoration" => parse_text_decoration(value).is_some(),
+            "text-transform" => parse_text_transform(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
             }
@@ -1331,6 +1370,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "white-space"
             | "text-align"
             | "text-decoration"
+            | "text-transform"
             | "width"
             | "height"
             | "min-width"
@@ -1412,6 +1452,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-decoration" => {
                 declarations.text_decoration = parse_text_decoration(value);
+            }
+            "text-transform" => {
+                declarations.text_transform = parse_text_transform(value);
             }
             "width" => {
                 declarations.width = parse_dimension(value);
@@ -1808,6 +1851,15 @@ fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
     match value.to_ascii_lowercase().as_str() {
         "none" => Some(TextDecorationValue::None),
         "underline" => Some(TextDecorationValue::Underline),
+        _ => None,
+    }
+}
+
+fn parse_text_transform(value: &str) -> Option<TextTransformValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "none" => Some(TextTransformValue::None),
+        "uppercase" => Some(TextTransformValue::Uppercase),
+        "lowercase" => Some(TextTransformValue::Lowercase),
         _ => None,
     }
 }
@@ -2544,6 +2596,22 @@ mod tests {
     }
 
     #[test]
+    fn text_transform_parser_accepts_only_bounded_ascii_modes() {
+        assert_eq!(
+            parse_text_transform("UPPERCASE"),
+            Some(TextTransformValue::Uppercase)
+        );
+        assert_eq!(
+            parse_text_transform("lowercase"),
+            Some(TextTransformValue::Lowercase)
+        );
+        assert_eq!(parse_text_transform("none"), Some(TextTransformValue::None));
+        assert_eq!(parse_text_transform("capitalize"), None);
+        assert_eq!(parse_text_transform("full-width"), None);
+        assert_eq!(parse_text_transform("initial"), None);
+    }
+
+    #[test]
     fn opacity_is_cascaded_locally_without_inheriting_to_children() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { opacity: 25%; } #target { opacity: 75%; }".into(),
@@ -2642,6 +2710,46 @@ mod tests {
                 .computed_style_for_layout(invalid)
                 .text_decoration(),
             TextDecorationValue::Underline
+        );
+    }
+
+    #[test]
+    fn text_transform_is_inherited_and_child_none_clears_it() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { text-transform: uppercase; } #target { text-transform: lowercase; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='target'>Target</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).text_transform(),
+            TextTransformValue::Lowercase
+        );
+
+        let document = NativeDocument::parse(
+            "<style>#parent { text-transform: uppercase; } #clear { text-transform: none; } #invalid { text-transform: capitalize; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let clear = document.resolve_target("id=clear").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).text_transform(),
+            TextTransformValue::Uppercase
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).text_transform(),
+            TextTransformValue::Uppercase
+        );
+        assert_eq!(
+            document.computed_style_for_layout(clear).text_transform(),
+            TextTransformValue::None
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).text_transform(),
+            TextTransformValue::Uppercase
         );
     }
 

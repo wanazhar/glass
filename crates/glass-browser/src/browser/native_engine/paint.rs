@@ -5,7 +5,7 @@ use super::error::NativeEngineError;
 use super::layout::{NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect};
 
 /// Maximum number of immutable commands retained in one native display list.
-pub const MAX_NATIVE_DISPLAY_COMMANDS: usize = MAX_NATIVE_NODES.saturating_mul(2).saturating_add(1);
+pub const MAX_NATIVE_DISPLAY_COMMANDS: usize = MAX_NATIVE_NODES.saturating_mul(4).saturating_add(1);
 
 /// One physical border side carried by a native display-list border command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +47,10 @@ impl NativeBorderPaint {
 /// One bounded command consumed by the native software rasterizer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeDisplayCommand {
+    BeginOpacityGroup {
+        node_id: NativeNodeId,
+        opacity: u8,
+    },
     Clear {
         color: NativeColor,
     },
@@ -71,6 +75,9 @@ pub enum NativeDisplayCommand {
         truncated: bool,
         color: NativeColor,
         clip: Option<NativeRect>,
+    },
+    EndOpacityGroup {
+        node_id: NativeNodeId,
     },
 }
 
@@ -110,6 +117,12 @@ impl NativeDisplayList {
         )?;
         for entry in &layout.paint_order {
             match *entry {
+                NativeLayoutPaintOrder::BeginOpacityGroup { node_id, opacity } => {
+                    push_command(
+                        &mut commands,
+                        NativeDisplayCommand::BeginOpacityGroup { node_id, opacity },
+                    )?;
+                }
                 NativeLayoutPaintOrder::Box(box_index) => {
                     let layout_box = layout.boxes.get(box_index).ok_or_else(|| {
                         NativeEngineError::invalid(
@@ -169,6 +182,12 @@ impl NativeDisplayList {
                             color: style.color().unwrap_or(NativeColor::BLACK),
                             clip,
                         },
+                    )?;
+                }
+                NativeLayoutPaintOrder::EndOpacityGroup { node_id } => {
+                    push_command(
+                        &mut commands,
+                        NativeDisplayCommand::EndOpacityGroup { node_id },
                     )?;
                 }
             }

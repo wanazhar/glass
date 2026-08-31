@@ -345,7 +345,8 @@ flow items, bounded inherited `white-space: nowrap` collapsed one-line flow,
 bounded `overflow:hidden` clips shared by paint, viewport
 projection, and point hit-testing, bounded
 PNG capture through the explicit backend operation, and Rust-only
-display-list/software-surface artifacts, plus bounded revisioned Rust
+display-list/software-surface artifacts with bounded local opacity subtree
+groups, plus bounded revisioned Rust
 diagnostics for unsupported CSS without raw stylesheet echo. A
 `native-engine` feature build exposes the explicit local
 `--browser-runtime native` one-shot path; its default CLI configuration does

@@ -320,21 +320,27 @@ recorded in the task file and issue #40.
 The completed dependency-ordered slice
 [native-engine-047](tasks/native-engine-047.md) propagated the existing
 positive pixel `line-height` floor through the DOM style walk while preserving
-explicit child declarations and height precedence. The next active
-dependency-ordered slice is
-[native-engine-048](tasks/native-engine-048.md), which makes measured root
-horizontal overflow consume the existing `overflow:hidden`/`overflow:clip`
-intersection so fully clipped text cannot create a false scroll range.
+explicit child declarations and height precedence. The completed follow-on
+[native-engine-048](tasks/native-engine-048.md) makes measured root horizontal
+overflow consume the existing `overflow:hidden`/`overflow:clip` intersection
+so fully clipped text cannot create a false scroll range.
 
 The completed dependency-ordered slice
 [native-engine-049](tasks/native-engine-049.md) adds independently cascaded
 `overflow-x:hidden`/`clip` and `overflow-y:hidden`/`clip` rectangles through
 the existing paint, viewport, hit-test, and root-overflow owners.
 
-The next active dependency-ordered slice is
-[native-engine-050](tasks/native-engine-050.md), which adds bounded physical
+The completed dependency-ordered slice
+[native-engine-050](tasks/native-engine-050.md) adds bounded physical
 `min-width`/`max-width`/`min-height`/`max-height` constraints through the
 existing content-box and border-box geometry owner.
+
+The completed dependency-ordered slice
+[native-engine-051](tasks/native-engine-051.md) adds bounded CSS opacity groups
+through the existing display-list and software-rasterizer owners. Subtree
+compositing is explicit and bounded; layout and hit-testing do not treat
+opacity as visibility. No later native-engine slice is active in this
+checkpoint.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

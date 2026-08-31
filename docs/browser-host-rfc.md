@@ -114,6 +114,7 @@ width/height constraints, bounded vertical viewport
 scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip`
 clips through the existing projection and point-hit owner, and bounded PNG
 capture through the explicit backend operation,
+bounded local opacity subtree groups through transparent software layers,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
 Rust diagnostics for unsupported CSS. It does not yet provide
 general CSS/nested/horizontal/stacking layout, logical writing-mode sides,

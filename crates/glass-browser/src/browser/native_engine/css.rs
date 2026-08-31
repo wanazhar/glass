@@ -202,6 +202,7 @@ impl NativeBoxEdges {
 pub(crate) struct NativeComputedStyle {
     display: DisplayValue,
     visibility_hidden: bool,
+    opacity: Option<u8>,
     white_space: WhiteSpaceValue,
     width: Option<u32>,
     height: Option<u32>,
@@ -228,6 +229,13 @@ impl NativeComputedStyle {
 
     pub(crate) const fn display(self) -> DisplayValue {
         self.display
+    }
+
+    pub(crate) const fn opacity(self) -> u8 {
+        match self.opacity {
+            Some(value) => value,
+            None => u8::MAX,
+        }
     }
 
     pub(crate) const fn white_space(self) -> WhiteSpaceValue {
@@ -383,6 +391,7 @@ impl NativeStylesheet {
     ) -> NativeComputedStyle {
         let mut display = None;
         let mut visibility = None;
+        let mut opacity = None;
         let mut white_space = None;
         let mut width = None;
         let mut height = None;
@@ -418,6 +427,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, visibility)
             {
                 visibility = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.opacity
+                && wins(rule.selector.specificity, rule.order, false, opacity)
+            {
+                opacity = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -614,6 +633,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.opacity
+                && wins(u16::MAX, usize::MAX, true, opacity)
+            {
+                opacity = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.white_space
                 && wins(u16::MAX, usize::MAX, true, white_space)
             {
@@ -781,6 +810,7 @@ impl NativeStylesheet {
             display: display.map_or(DisplayValue::Auto, |value| value.value),
             visibility_hidden: visibility
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
+            opacity: opacity.map(|value| value.value),
             white_space: white_space.map_or(inherited_white_space, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
@@ -881,6 +911,7 @@ fn apply_box_edges(
 struct NativeDeclarations {
     display: Option<DisplayValue>,
     visibility: Option<VisibilityValue>,
+    opacity: Option<u8>,
     white_space: Option<WhiteSpaceValue>,
     width: Option<u32>,
     height: Option<u32>,
@@ -1040,6 +1071,7 @@ fn parse_source(
         );
         let has_supported_declaration = declarations.display.is_some()
             || declarations.visibility.is_some()
+            || declarations.opacity.is_some()
             || declarations.white_space.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
@@ -1159,6 +1191,7 @@ fn parse_declarations_with_diagnostics(
                 )
             }
             "visibility" => parse_visibility(value).is_some(),
+            "opacity" => parse_opacity(value).is_some(),
             "white-space" => parse_white_space(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
@@ -1212,6 +1245,7 @@ fn is_known_css_property(property: &str) -> bool {
         property,
         "display"
             | "visibility"
+            | "opacity"
             | "white-space"
             | "width"
             | "height"
@@ -1282,6 +1316,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "visibility" => {
                 declarations.visibility = parse_visibility(value);
+            }
+            "opacity" => {
+                declarations.opacity = parse_opacity(value);
             }
             "white-space" => {
                 declarations.white_space = parse_white_space(value);
@@ -1585,6 +1622,54 @@ fn parse_dimension(value: &str) -> Option<u32> {
 
 fn parse_line_height(value: &str) -> Option<u32> {
     parse_dimension(value).filter(|value| *value > 0)
+}
+
+fn parse_opacity(value: &str) -> Option<u8> {
+    let value = value.trim();
+    let percentage = value.strip_suffix('%');
+    let number = percentage.unwrap_or(value);
+    let scaled = parse_decimal_milli(number)?;
+    let denominator: u32 = if percentage.is_some() { 100_000 } else { 1_000 };
+    if scaled > denominator {
+        return None;
+    }
+    let alpha = (u64::from(scaled) * u64::from(u8::MAX) + u64::from(denominator / 2))
+        / u64::from(denominator);
+    u8::try_from(alpha).ok()
+}
+
+fn parse_decimal_milli(value: &str) -> Option<u32> {
+    let (whole, fraction, has_decimal) = match value.split_once('.') {
+        Some((whole, fraction)) => (whole, fraction, true),
+        None => (value, "", false),
+    };
+    if whole.is_empty() && !has_decimal || has_decimal && fraction.is_empty() {
+        return None;
+    }
+    if !whole.is_empty() && !whole.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if fraction.len() > 3 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole.parse::<u32>().ok()?
+    };
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        fraction
+            .parse::<u32>()
+            .ok()?
+            .saturating_mul(match fraction.len() {
+                1 => 100,
+                2 => 10,
+                _ => 1,
+            })
+    };
+    whole.checked_mul(1_000)?.checked_add(fraction)
 }
 
 fn parse_white_space(value: &str) -> Option<WhiteSpaceValue> {
@@ -1892,10 +1977,11 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; white-space: pre-line; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
+        assert_eq!(declarations.opacity, Some(128));
         assert_eq!(declarations.white_space, Some(WhiteSpaceValue::PreLine));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
@@ -2243,6 +2329,41 @@ mod tests {
         assert_eq!(parse_line_height("1.5"), None);
         assert_eq!(parse_line_height("50%"), None);
         assert_eq!(parse_line_height("20000px"), None);
+    }
+
+    #[test]
+    fn opacity_parser_quantizes_bounded_numbers_and_percentages() {
+        assert_eq!(parse_opacity("0"), Some(0));
+        assert_eq!(parse_opacity("0.5"), Some(128));
+        assert_eq!(parse_opacity(".5"), Some(128));
+        assert_eq!(parse_opacity("1"), Some(255));
+        assert_eq!(parse_opacity("50%"), Some(128));
+        assert_eq!(parse_opacity("100%"), Some(255));
+        assert_eq!(parse_opacity("1.001"), None);
+        assert_eq!(parse_opacity("101%"), None);
+        assert_eq!(parse_opacity("-0.1"), None);
+        assert_eq!(parse_opacity("0.1234"), None);
+        assert_eq!(parse_opacity("1e-1"), None);
+    }
+
+    #[test]
+    fn opacity_is_cascaded_locally_without_inheriting_to_children() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { opacity: 25%; } #target { opacity: 75%; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='target'>Target</div>");
+        assert_eq!(stylesheet.computed_for(&node).opacity(), 191);
+
+        let document = NativeDocument::parse(
+            "<style>#parent { opacity: 50%; }</style><div id='parent'><span id='child'>Child</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        assert_eq!(document.computed_style_for_layout(parent).opacity(), 128);
+        assert_eq!(document.computed_style_for_layout(child).opacity(), 255);
     }
 
     #[test]

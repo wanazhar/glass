@@ -7,7 +7,7 @@ use super::layout::NativeLayoutSnapshot;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::{
-    config::{MAX_NATIVE_DOM_DEPTH, Viewport},
+    config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{NativeColor, NativeComputedStyle, WhiteSpaceValue},
 };
 use std::collections::BTreeMap;
@@ -941,10 +941,9 @@ impl NativeDocument {
     pub(crate) fn text_fragment_target(
         &self,
         layout: &NativeLayoutSnapshot,
-        start: &str,
-        end: Option<&str>,
+        terms: &TextFragmentTerms,
     ) -> Option<NativeNodeId> {
-        if start.is_empty() {
+        if terms.start.is_empty() {
             return None;
         }
         layout
@@ -952,13 +951,48 @@ impl NativeDocument {
             .iter()
             .filter(|run| !run.truncated)
             .find_map(|run| {
-                let start_offset = run.text.find(start)?;
-                if let Some(end) = end {
-                    let end_start = start_offset.saturating_add(start.len());
-                    run.text.get(end_start..)?.find(end)?;
-                }
-                Some(run.node_id)
+                Self::text_fragment_run_matches(&run.text, terms).then_some(run.node_id)
             })
+    }
+
+    fn text_fragment_run_matches(text: &str, terms: &TextFragmentTerms) -> bool {
+        let mut start_search = 0;
+        while start_search < text.len() {
+            let Some(relative_start) = text[start_search..].find(&terms.start) else {
+                return false;
+            };
+            let start_offset = start_search.saturating_add(relative_start);
+            let start_end = start_offset.saturating_add(terms.start.len());
+            let prefix_matches = terms.prefix.as_ref().is_none_or(|prefix| {
+                start_offset
+                    .checked_sub(prefix.len())
+                    .and_then(|prefix_start| text.get(prefix_start..start_offset))
+                    == Some(prefix.as_str())
+            });
+            if prefix_matches {
+                let (match_end, range_matches) = if let Some(end) = terms.end.as_deref() {
+                    match text
+                        .get(start_end..)
+                        .and_then(|remaining| remaining.find(end))
+                        .map(|relative_end| start_end.saturating_add(relative_end))
+                    {
+                        Some(end_offset) => (end_offset.saturating_add(end.len()), true),
+                        None => (start_end, false),
+                    }
+                } else {
+                    (start_end, true)
+                };
+                let suffix_matches = terms.suffix.as_ref().is_none_or(|suffix| {
+                    text.get(match_end..)
+                        .is_some_and(|remaining| remaining.starts_with(suffix))
+                });
+                if range_matches && suffix_matches {
+                    return true;
+                }
+            }
+            start_search = start_end;
+        }
+        false
     }
 
     fn semantic_role(&self, id: NativeNodeId) -> Option<&'static str> {
@@ -1911,26 +1945,47 @@ mod tests {
             .iter()
             .find(|run| run.text == "target phrase anchor")
             .unwrap();
+        let start = TextFragmentTerms {
+            prefix: None,
+            start: "target phrase".into(),
+            end: None,
+            suffix: None,
+        };
         assert_eq!(
-            document.text_fragment_target(&layout, "target phrase", None),
+            document.text_fragment_target(&layout, &start),
             Some(first.node_id)
         );
+        let range = TextFragmentTerms {
+            prefix: None,
+            start: "target phrase".into(),
+            end: Some("anchor".into()),
+            suffix: None,
+        };
         assert_eq!(
-            document.text_fragment_target(&layout, "target phrase", Some("anchor")),
+            document.text_fragment_target(&layout, &range),
             Some(first.node_id)
         );
-        assert_eq!(
-            document.text_fragment_target(&layout, "anchor", Some("target")),
-            None
-        );
-        assert_eq!(
-            document.text_fragment_target(&layout, "hidden target", None),
-            None
-        );
-        assert_eq!(
-            document.text_fragment_target(&layout, "cross", Some("target")),
-            None
-        );
+        let reversed = TextFragmentTerms {
+            prefix: None,
+            start: "anchor".into(),
+            end: Some("target".into()),
+            suffix: None,
+        };
+        assert_eq!(document.text_fragment_target(&layout, &reversed), None);
+        let hidden = TextFragmentTerms {
+            prefix: None,
+            start: "hidden target".into(),
+            end: None,
+            suffix: None,
+        };
+        assert_eq!(document.text_fragment_target(&layout, &hidden), None);
+        let cross_run = TextFragmentTerms {
+            prefix: None,
+            start: "cross".into(),
+            end: Some("target".into()),
+            suffix: None,
+        };
+        assert_eq!(document.text_fragment_target(&layout, &cross_run), None);
     }
 
     #[test]

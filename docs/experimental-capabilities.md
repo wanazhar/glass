@@ -162,8 +162,9 @@ malformed, and invalid-UTF-8 targets preserve the current offset. IDs take
 precedence and duplicate legacy names fail closed. Simple `#:~:text=start` and
 `#:~:text=start,end` fragments also match the first visible, non-truncated
 layout text run after independently decoding each term as bounded UTF-8;
-prefix/suffix syntax, cross-run ranges, highlights, and browser text-fragment
-parity remain unsupported.
+bounded exact prefix/suffix affixes are supported when directly adjacent in
+that same run; cross-run ranges, multiple directives, highlights, Unicode
+normalization, and browser text-fragment parity remain unsupported.
 Fragment-only, fixture-relative, and absolute local link activation uses the
 existing bounded navigation path; fixture-relative links retain the current
 registered fixture host. The

@@ -566,10 +566,10 @@ impl NativeEngine {
         }
         let layout = document.layout(self.config.viewport)?;
         let target_id = if fragment.starts_with(":~:text=") {
-            let Some((start, end)) = decode_text_fragment_terms(fragment) else {
+            let Some(terms) = decode_text_fragment_terms(fragment) else {
                 return Ok(fallback);
             };
-            document.text_fragment_target(&layout, &start, end.as_deref())
+            document.text_fragment_target(&layout, &terms)
         } else {
             let Some(decoded_fragment) = decode_percent_encoded_fragment(fragment) else {
                 return Ok(fallback);

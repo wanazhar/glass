@@ -2947,6 +2947,99 @@ async fn text_fragments_match_bounded_visible_runs_and_fail_closed() {
 }
 
 #[tokio::test]
+async fn text_fragment_affixes_match_adjacent_terms_and_fail_closed() {
+    let html = "<a id='jump' href='#:~:text=prefix%20-,target%20phrase,anchor,-%20suffix'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><p style='white-space:pre'>prefix target phrase anchor suffix</p><p style='white-space:pre'>prefix target phrase mismatch</p><p style='white-space:pre'>target phrase anchor suffix</p><p>cross <span>target phrase</span></p><p style='display:none'>prefix target phrase anchor suffix</p><p style='white-space:pre'>target phrase anchor</p>";
+    let viewport = Viewport {
+        width: 240,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let expected_document = NativeDocument::parse(html, &NativeEngineLimits::default()).unwrap();
+    let expected_layout = expected_document.layout(viewport).unwrap();
+    let affix_run = expected_layout
+        .text_runs
+        .iter()
+        .find(|run| run.text == "prefix target phrase anchor suffix")
+        .unwrap();
+    let affix_scroll = NativePoint {
+        x: 0,
+        y: expected_layout
+            .box_for(affix_run.node_id)
+            .unwrap()
+            .y
+            .min(expected_layout.max_scroll_offset().y),
+    };
+    assert!(affix_scroll.y > 0);
+
+    let config = NativeEngineConfig::default()
+        .with_viewport(viewport)
+        .with_fixture("fixture://text-affixes", html)
+        .unwrap()
+        .with_initial_url("fixture://text-affixes");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let jumped = engine
+        .action(NativeAction::Click {
+            target: "id=jump".into(),
+        })
+        .unwrap();
+    assert!(jumped.accepted);
+    assert_eq!(engine.scroll_offset(), affix_scroll);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://text-affixes#:~:text=prefix%20-,target%20phrase,anchor,-%20suffix"
+    );
+
+    let initial = engine.go_back().unwrap().unwrap();
+    assert_eq!(initial.url, "fixture://text-affixes");
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 0 });
+    let restored = engine.go_forward().unwrap().unwrap();
+    assert_eq!(
+        restored.url,
+        "fixture://text-affixes#:~:text=prefix%20-,target%20phrase,anchor,-%20suffix"
+    );
+    assert_eq!(engine.scroll_offset(), affix_scroll);
+
+    for fragment in [
+        ":~:text=target%20phrase",
+        ":~:text=target%20phrase,anchor",
+        ":~:text=prefix%20-,target%20phrase",
+        ":~:text=target%20phrase,-%20suffix",
+        ":~:text=prefix%20-,target%20phrase,-%20suffix",
+        ":~:text=prefix%20-,target%20phrase,anchor",
+        ":~:text=target%20phrase,anchor,-%20suffix",
+        ":~:text=prefix%20-,target%20phrase,anchor,-%20suffix",
+    ] {
+        engine
+            .navigate(format!("fixture://text-affixes#{fragment}"))
+            .unwrap();
+        assert_eq!(engine.scroll_offset(), affix_scroll, "fragment={fragment}");
+    }
+
+    for fragment in [
+        ":~:text=prefix-,target%20phrase",
+        ":~:text=target%20phrase,-suffix",
+        ":~:text=wrong%20-,target%20phrase",
+        ":~:text=target%20phrase,-%20wrong",
+        ":~:text=anchor,target%20phrase",
+        ":~:text=cross,target",
+        ":~:text=hidden%20-,target%20phrase",
+        ":~:text=target%20phrase,anchor,extra",
+        ":~:text=prefix%20-,target%20phrase,anchor,extra",
+        ":~:text=prefix%20-,target%20phrase,-%20suffix,extra",
+        ":~:text=target%20phrase,anchor,-",
+        ":~:text=bad%ZZ,target",
+    ] {
+        let before = engine.scroll_offset();
+        engine
+            .navigate(format!("fixture://text-affixes#{fragment}"))
+            .unwrap();
+        assert_eq!(engine.scroll_offset(), before, "fragment={fragment}");
+    }
+}
+
+#[tokio::test]
 async fn semantic_actions_and_effects_use_the_backend_contract() {
     let config = NativeEngineConfig::default()
         .with_fixture(

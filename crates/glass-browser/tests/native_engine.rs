@@ -2367,6 +2367,128 @@ async fn local_link_activation_uses_bounded_navigation_default_action() {
 }
 
 #[tokio::test]
+async fn fragment_targets_scroll_and_restore_bounded_history_offsets() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 160,
+            height: 40,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://anchors",
+            "<a id='jump' href='#target'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><p>twenty-seven twenty-eight twenty-nine thirty thirty-one thirty-two thirty-three thirty-four thirty-five</p><p>thirty-six thirty-seven thirty-eight thirty-nine forty forty-one forty-two forty-three forty-four forty-five</p><button id='target'>Target</button><p id='hidden' style='display:none'>Hidden</p><p id='duplicate'>First</p><p id='duplicate'>Second</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://other",
+            "<p>other one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><button id='other-target'>Other target</button>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://anchors");
+
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let target_id = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.tag_name == "button" && node.name == "Target")
+        .map(|node| node.node_id)
+        .unwrap();
+    let target_box = engine.layout().unwrap().box_for(target_id).unwrap();
+    assert!(target_box.y > 40);
+    let max_scroll = engine.layout().unwrap().max_scroll_offset().y;
+    let target_scroll = NativePoint {
+        x: 0,
+        y: target_box.y.min(max_scroll),
+    };
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 0 });
+    assert_eq!(
+        engine.history().current().unwrap().scroll_offset,
+        NativePoint { x: 0, y: 0 }
+    );
+
+    let jump = engine
+        .action(NativeAction::Click {
+            target: "id=jump".into(),
+        })
+        .unwrap();
+    assert!(jump.accepted);
+    assert_eq!(engine.snapshot().unwrap().url, "fixture://anchors#target");
+    assert_eq!(engine.scroll_offset(), target_scroll);
+    assert_eq!(
+        engine.history().current().unwrap().scroll_offset,
+        target_scroll
+    );
+
+    let missing = engine.navigate("fixture://anchors#missing").unwrap();
+    assert_eq!(missing.url, "fixture://anchors#missing");
+    assert_eq!(engine.scroll_offset(), target_scroll);
+    assert_eq!(
+        engine.history().current().unwrap().scroll_offset,
+        target_scroll
+    );
+
+    let target = engine.go_back().unwrap().unwrap();
+    assert_eq!(target.url, "fixture://anchors#target");
+    assert_eq!(engine.scroll_offset(), target_scroll);
+    let initial = engine.go_back().unwrap().unwrap();
+    assert_eq!(initial.url, "fixture://anchors");
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 0 });
+    assert_eq!(
+        engine.history().current().unwrap().scroll_offset,
+        NativePoint { x: 0, y: 0 }
+    );
+    let target_again = engine.go_forward().unwrap().unwrap();
+    assert_eq!(target_again.url, "fixture://anchors#target");
+    assert_eq!(engine.scroll_offset(), target_scroll);
+
+    engine.go_back().unwrap().unwrap();
+    let scrolled_initial = engine
+        .action(NativeAction::Scroll {
+            delta_x: 0,
+            delta_y: 1,
+        })
+        .unwrap();
+    assert!(scrolled_initial.accepted);
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 1 });
+    assert_eq!(
+        engine.history().current().unwrap().scroll_offset,
+        NativePoint { x: 0, y: 1 }
+    );
+
+    let other = engine.navigate("fixture://other#other-target").unwrap();
+    assert_eq!(other.url, "fixture://other#other-target");
+    let other_target_id = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.tag_name == "button" && node.name == "Other target")
+        .map(|node| node.node_id)
+        .unwrap();
+    let other_target_box = engine.layout().unwrap().box_for(other_target_id).unwrap();
+    let other_max_scroll = engine.layout().unwrap().max_scroll_offset().y;
+    assert_eq!(
+        engine.scroll_offset(),
+        NativePoint {
+            x: 0,
+            y: other_target_box.y.min(other_max_scroll),
+        }
+    );
+
+    let restored = engine.go_back().unwrap().unwrap();
+    assert_eq!(restored.url, "fixture://anchors");
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 1 });
+
+    let hidden = engine.navigate("fixture://anchors#hidden").unwrap();
+    assert_eq!(hidden.url, "fixture://anchors#hidden");
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 1 });
+    let duplicate = engine.navigate("fixture://anchors#duplicate").unwrap();
+    assert_eq!(duplicate.url, "fixture://anchors#duplicate");
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 1 });
+}
+
+#[tokio::test]
 async fn semantic_actions_and_effects_use_the_backend_contract() {
     let config = NativeEngineConfig::default()
         .with_fixture(

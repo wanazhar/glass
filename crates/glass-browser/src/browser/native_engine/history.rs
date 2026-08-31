@@ -1,8 +1,11 @@
+use super::layout::NativePoint;
+
 /// One committed local navigation entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeHistoryEntry {
     pub url: String,
     pub revision: u64,
+    pub scroll_offset: NativePoint,
 }
 
 /// Direction for explicit bounded history traversal.
@@ -29,11 +32,15 @@ impl NativeHistory {
         }
     }
 
-    pub(crate) fn push(&mut self, url: String, revision: u64) {
+    pub(crate) fn push(&mut self, url: String, revision: u64, scroll_offset: NativePoint) {
         if let Some(current) = self.current {
             self.entries.truncate(current.saturating_add(1));
         }
-        self.entries.push(NativeHistoryEntry { url, revision });
+        self.entries.push(NativeHistoryEntry {
+            url,
+            revision,
+            scroll_offset,
+        });
         if self.entries.len() > self.max_entries {
             let overflow = self.entries.len() - self.max_entries;
             self.entries.drain(..overflow);
@@ -70,6 +77,14 @@ impl NativeHistory {
 
     pub(crate) fn entry(&self, index: usize) -> Option<&NativeHistoryEntry> {
         self.entries.get(index)
+    }
+
+    pub(crate) fn update_current_scroll(&mut self, scroll_offset: NativePoint) {
+        if let Some(index) = self.current
+            && let Some(entry) = self.entries.get_mut(index)
+        {
+            entry.scroll_offset = scroll_offset;
+        }
     }
 
     pub(crate) fn activate(&mut self, index: usize, revision: u64) -> Option<NativeHistoryEntry> {

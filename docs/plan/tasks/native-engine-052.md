@@ -1,7 +1,7 @@
 ---
 id: native-engine-052
 scope: glass-browser/native-engine/text-alignment
-status: in-progress
+status: done
 depends-on: [native-engine-051]
 ---
 
@@ -78,6 +78,13 @@ limits and does not add a dependency or a second geometry owner.
 
 ## Completion evidence
 
-Implementation is not yet complete. This file records the dependency-ordered
-contract before source changes; validation and commit evidence will be added
-after the focused implementation pass.
+Implementation completed locally in the focused checkpoint. The native
+integration suite passed 66 tests and the native-engine module unit suite
+passed 51 tests, including inherited cascade, invalid diagnostics, multiline
+fixed-cell offsets, complete inline-box range shifts, display-list/raster
+projection, and hard-break regression coverage. Strict Clippy passed with all
+targets/all features and with no default features, formatting and whitespace
+checks passed, and the documentation/version/feature-parity validators passed
+with zero current-claim failures. The implementation is committed locally as
+a focused Conventional Commit; remote CI remains pending because this branch
+has not been pushed.

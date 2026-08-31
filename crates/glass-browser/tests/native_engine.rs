@@ -527,6 +527,78 @@ fn native_nested_opacity_and_zero_opacity_keep_geometry_but_change_pixels() {
 }
 
 #[test]
+fn native_text_alignment_shifts_complete_fixed_cell_line_items() {
+    let document = NativeDocument::parse(
+        "<style>#center { display: block; width: 32px; text-align: center; } #right { display: block; width: 32px; text-align: right; } #inline { display: block; width: 32px; text-align: center; } #chip { display: inline-block; width: 8px; height: 8px; background-color: red; }</style><div id='center'>A B C</div><div id='right'>D</div><div id='inline'><span id='chip'></span>Q</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 80,
+        device_scale_factor_milli: 1000,
+    };
+    let center = document.resolve_target("id=center").unwrap();
+    let right = document.resolve_target("id=right").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let chip = document.resolve_target("id=chip").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(center).unwrap().width, 32);
+    assert_eq!(layout.box_for(center).unwrap().height, 40);
+    assert_eq!(layout.box_for(right).unwrap().y, 40);
+    assert_eq!(layout.box_for(inline).unwrap().y, 60);
+    assert_eq!(layout.box_for(chip).unwrap().x, 8);
+    assert_eq!(layout.box_for(chip).unwrap().y, 60);
+    assert_eq!(layout.hit_test(9, 61).unwrap(), Some(chip));
+
+    let center_text = layout
+        .text_runs
+        .iter()
+        .filter(|text_run| text_run.node_id == center)
+        .map(|text_run| (text_run.origin, text_run.text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        center_text,
+        vec![
+            (NativePoint { x: 4, y: 0 }, "A"),
+            (NativePoint { x: 12, y: 0 }, " B"),
+            (NativePoint { x: 12, y: 20 }, "C"),
+        ]
+    );
+    let right_text = layout
+        .text_runs
+        .iter()
+        .find(|text_run| text_run.node_id == right)
+        .unwrap();
+    assert_eq!(right_text.origin, NativePoint { x: 24, y: 40 });
+    let inline_text = layout
+        .text_runs
+        .iter()
+        .find(|text_run| text_run.node_id == inline)
+        .unwrap();
+    assert_eq!(inline_text.origin, NativePoint { x: 16, y: 60 });
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == chip && rect.x == 8 && rect.y == 60
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun { node_id, origin, .. }
+                if *node_id == inline && *origin == NativePoint { x: 16, y: 60 }
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(9, 61), Some([255, 0, 0, 255]));
+}
+
+#[test]
 fn native_display_list_inherits_text_color_and_preserves_transparent_override() {
     let document = NativeDocument::parse(
         "<style>#parent { color: blue; }</style><div id='parent'><span id='child'>Child</span><span id='transparent' style='color:transparent'>Clear</span></div>",
@@ -4071,7 +4143,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -4103,6 +4175,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "opacity"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-align"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

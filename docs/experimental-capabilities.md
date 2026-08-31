@@ -143,7 +143,9 @@ source-order text paint, bounded
 word-aware wrapping, bounded source-whitespace boundaries across supported
 inline flow, bounded inherited `white-space: nowrap` collapsed one-line flow,
 bounded root horizontal scrolling, bounded local opacity subtree groups with
-inside-out transparent-layer compositing, bounded PNG capture, and
+inside-out transparent-layer compositing, bounded inherited physical
+`text-align:left|center|right` fixed-cell line placement, bounded PNG capture,
+and
 Rust-only
 display-list/software-surface artifacts;
 Rust callers can inspect bounded revisioned diagnostics for unsupported CSS

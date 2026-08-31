@@ -70,8 +70,9 @@ source-behavior reference.
   across supported inline flow, bounded inherited `white-space: nowrap`
   collapsed one-line flow, bounded `overflow:hidden` clips shared by
   paint, viewport projection, and point hit-testing, a display list, a logical RGBA software
-  surface, and bounded local opacity subtree groups composited through
-  transparent software layers,
+  surface, bounded local opacity subtree groups composited through transparent
+  software layers, and inherited physical `text-align:left|center|right`
+  fixed-cell line placement,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,

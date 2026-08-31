@@ -129,6 +129,8 @@ word-aware wrapping, bounded source-whitespace boundaries across supported
 inline flow, bounded inherited `white-space: nowrap` collapsed one-line flow,
 bounded root horizontal scrolling,
 bounded local opacity subtree groups through transparent software layers,
+bounded inherited physical `text-align:left|center|right` fixed-cell line
+placement,
 deterministic display list, bounded logical RGBA software surface, and bounded PNG capture
 through the native backend directly. Rust callers can also inspect bounded
 revisioned diagnostics for unsupported CSS; screenshot-containing evidence, JPEG/PDF,

@@ -935,6 +935,32 @@ impl NativeDocument {
         target
     }
 
+    /// Resolve a bounded text fragment against the first complete visible
+    /// layout run in document order. Ranges stay inside one run so matching
+    /// never invents cross-node whitespace or browser range semantics.
+    pub(crate) fn text_fragment_target(
+        &self,
+        layout: &NativeLayoutSnapshot,
+        start: &str,
+        end: Option<&str>,
+    ) -> Option<NativeNodeId> {
+        if start.is_empty() {
+            return None;
+        }
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| !run.truncated)
+            .find_map(|run| {
+                let start_offset = run.text.find(start)?;
+                if let Some(end) = end {
+                    let end_start = start_offset.saturating_add(start.len());
+                    run.text.get(end_start..)?.find(end)?;
+                }
+                Some(run.node_id)
+            })
+    }
+
     fn semantic_role(&self, id: NativeNodeId) -> Option<&'static str> {
         let node = self.node(id)?;
         if let Some(role) = node
@@ -1863,6 +1889,47 @@ mod tests {
         assert_eq!(
             document.fragment_target("duplicate-id"),
             Some(document.resolve_target("id=duplicate-id").unwrap())
+        );
+    }
+
+    #[test]
+    fn text_fragment_target_stays_inside_one_visible_layout_run() {
+        let document = NativeDocument::parse(
+            "<p style='white-space:pre'>target phrase anchor</p><p hidden>hidden target</p><p><span>cross </span><span>run target</span></p>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let layout = document
+            .layout(Viewport {
+                width: 240,
+                height: 100,
+                device_scale_factor_milli: 1000,
+            })
+            .unwrap();
+        let first = layout
+            .text_runs
+            .iter()
+            .find(|run| run.text == "target phrase anchor")
+            .unwrap();
+        assert_eq!(
+            document.text_fragment_target(&layout, "target phrase", None),
+            Some(first.node_id)
+        );
+        assert_eq!(
+            document.text_fragment_target(&layout, "target phrase", Some("anchor")),
+            Some(first.node_id)
+        );
+        assert_eq!(
+            document.text_fragment_target(&layout, "anchor", Some("target")),
+            None
+        );
+        assert_eq!(
+            document.text_fragment_target(&layout, "hidden target", None),
+            None
+        );
+        assert_eq!(
+            document.text_fragment_target(&layout, "cross", Some("target")),
+            None
         );
     }
 

@@ -157,9 +157,13 @@ then uses one exact, case-sensitive visible non-empty `id` target or, when no
 `id` matches, one exact visible legacy `<a name>` target. It positions the
 root viewport at the selected target's clamped document-space top and stores
 one bounded root-scroll point per history entry for traversal restoration.
-Literal `+` remains a plus; missing, hidden, duplicate, malformed, and
-invalid-UTF-8 targets preserve the current offset. IDs take precedence and
-duplicate legacy names fail closed.
+For ID/name targets, literal `+` remains a plus; missing, hidden, duplicate,
+malformed, and invalid-UTF-8 targets preserve the current offset. IDs take
+precedence and duplicate legacy names fail closed. Simple `#:~:text=start` and
+`#:~:text=start,end` fragments also match the first visible, non-truncated
+layout text run after independently decoding each term as bounded UTF-8;
+prefix/suffix syntax, cross-run ranges, highlights, and browser text-fragment
+parity remain unsupported.
 Fragment-only, fixture-relative, and absolute local link activation uses the
 existing bounded navigation path; fixture-relative links retain the current
 registered fixture host. The

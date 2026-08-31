@@ -123,7 +123,8 @@ side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow, bounded direct-text flow fragments and source-order text paint, bounded
 word-aware wrapping, bounded source-whitespace boundaries across supported
-inline flow,
+inline flow, bounded inherited `white-space: nowrap` collapsed one-line flow,
+bounded root horizontal scrolling,
 deterministic display list, bounded logical RGBA software surface, and bounded PNG capture
 through the native backend directly. Rust callers can also inspect bounded
 revisioned diagnostics for unsupported CSS; screenshot-containing evidence, JPEG/PDF,

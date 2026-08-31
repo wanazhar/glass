@@ -1262,6 +1262,65 @@ fn native_pre_wrap_preserves_whitespace_and_soft_wraps_at_fixed_cell_capacity() 
 }
 
 #[test]
+fn native_nowrap_collapses_whitespace_without_soft_wrap_and_reaches_root_scroll() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 32,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://nowrap",
+            "<style>#flow { white-space: nowrap; line-height: 24px; }</style><div id='flow'> A   B\n<span id='inline' style='display:inline; white-space:nowrap'> C   D E</span><span id='hidden' style='display:none;white-space:nowrap'> hidden hidden hidden</span></div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://nowrap");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let initial = engine.layout().unwrap();
+    assert!(initial.content_width > initial.viewport.width);
+    assert!(initial.max_scroll_offset().x > 0);
+    assert_eq!(initial.max_scroll_offset().y, 0);
+    assert!(initial.text_runs.iter().all(|run| run.origin.y == 0));
+    assert!(initial.text_runs.iter().any(|run| run.text == "A B"));
+    assert!(initial.text_runs.iter().any(|run| run.text == "C D E"));
+    assert!(
+        initial
+            .text_runs
+            .iter()
+            .all(|run| !run.text.contains("hidden"))
+    );
+
+    let unscrolled = engine.rasterize().unwrap();
+    let moved = engine
+        .action(NativeAction::Scroll {
+            delta_x: i32::MAX,
+            delta_y: 0,
+        })
+        .unwrap();
+    assert!(moved.accepted);
+    assert_eq!(moved.revision, 2);
+    assert_eq!(engine.scroll_offset().x, initial.max_scroll_offset().x);
+    assert_eq!(engine.scroll_offset().y, 0);
+    assert_eq!(
+        engine.display_list().unwrap().scroll_offset.x,
+        engine.scroll_offset().x
+    );
+    let scrolled = engine.rasterize().unwrap();
+    assert_ne!(unscrolled.rgba(), scrolled.rgba());
+
+    let no_op = engine
+        .action(NativeAction::Scroll {
+            delta_x: i32::MAX,
+            delta_y: 0,
+        })
+        .unwrap();
+    assert!(!no_op.accepted);
+    assert_eq!(no_op.revision, 2);
+}
+
+#[test]
 fn native_text_boundary_separator_drops_when_inline_item_wraps() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:16px'>A <span id='middle' style='display:inline'>B</span> C</div>",
@@ -1805,7 +1864,7 @@ async fn native_backend_dispatches_horizontal_scroll_into_capture() {
         })
         .with_fixture(
             "fixture://wide-dispatch",
-            "<pre style='white-space:pre'>A A</pre>",
+            "<div style='white-space:nowrap'>A A</div>",
         )
         .unwrap()
         .with_initial_url("fixture://wide-dispatch");

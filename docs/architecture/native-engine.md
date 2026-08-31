@@ -8,7 +8,7 @@ bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
 bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture/
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
-bounded-pre-wrap-whitespace slices,
+bounded-pre-wrap-whitespace/bounded-nowrap-whitespace slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -45,8 +45,9 @@ line-height flow, bounded direct-text fragments at actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
 four-side padding/margin edges, bounded source-whitespace boundaries, and
 bounded hard line breaks in supported inline flow, and
-bounded inherited `white-space: pre-line`, `white-space: pre`, and
-`white-space: pre-wrap` source whitespace flow, and bounded rectangular
+bounded inherited `white-space: pre-line`, `white-space: pre`,
+`white-space: pre-wrap`, and `white-space: nowrap` source whitespace flow, and
+bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
 for unsupported CSS input, plus bounded local same-document fragment
@@ -541,6 +542,15 @@ hit-test, display-list, and raster projections. Nested scroll containers,
 scrollbars, smooth scrolling, and axis-specific CSS overflow remain outside
 the slice. Its implementation and validation evidence are recorded in the
 task file and issue #40.
+
+The completed 046 bounded-nowrap-whitespace boundary adds inherited
+`white-space: nowrap` to the existing collapsed fixed-cell text flow. It keeps
+the resulting text on one measured line and reaches the 045 root horizontal
+scroll path through the existing layout, viewport, hit-test, display-list,
+raster, action, and history owners. Preserved whitespace modes beyond the
+supported subset, nested scrolling, scrollbars, and browser line-breaking
+parity remain outside the slice. Its implementation and validation evidence
+are recorded in the task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

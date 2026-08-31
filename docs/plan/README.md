@@ -311,7 +311,11 @@ comma grammar, per-term decoding, scroll, history, and fail-closed boundaries.
 The completed follow-on [native-engine-045](tasks/native-engine-045.md) adds
 bounded root horizontal scrolling from measured overflow width while retaining
 independent clamping and the existing viewport, hit-test, display-list, raster,
-and history contracts. No later native-engine slice is active in this checkout.
+and history contracts. The completed follow-on
+[native-engine-046](tasks/native-engine-046.md) adds bounded inherited
+`white-space: nowrap` through the same fixed-cell flow and measured root
+horizontal scroll path. Its implementation and validation evidence are
+recorded in the task file and issue #40.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

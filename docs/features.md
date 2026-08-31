@@ -63,7 +63,8 @@ source-behavior reference.
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow, bounded direct-text flow fragments and source-order text
   paint, bounded word-aware wrapping, bounded source-whitespace boundaries
-  across supported inline flow, bounded `overflow:hidden` clips shared by
+  across supported inline flow, bounded inherited `white-space: nowrap`
+  collapsed one-line flow, bounded `overflow:hidden` clips shared by
   paint, viewport projection, and point hit-testing, a display list, a logical RGBA software
   surface,
   bounded PNG capture, bounded local fragment navigation with bounded

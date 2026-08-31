@@ -579,11 +579,12 @@ impl<'a> LayoutBuilder<'a> {
             .computed_style_for_layout(parent)
             .line_height()
             .unwrap_or(DEFAULT_LINE_HEIGHT);
-        let allow_soft_wrap = self
+        let white_space = self
             .document
             .computed_style_for_layout(parent)
-            .white_space()
-            != WhiteSpaceValue::Pre;
+            .white_space();
+        let allow_soft_wrap =
+            !matches!(white_space, WhiteSpaceValue::Pre | WhiteSpaceValue::NoWrap);
         let mut flow = FlowCursor::new(x, y, available_width, minimum_line_height, allow_soft_wrap);
         self.process_children(parent, &mut flow, depth);
         let bottom = flow.max_bottom;
@@ -822,6 +823,7 @@ impl<'a> LayoutBuilder<'a> {
             WhiteSpaceValue::PreLine => self.place_pre_line_text(parent, flow, value),
             WhiteSpaceValue::Pre => self.place_preformatted_text(parent, flow, value, false),
             WhiteSpaceValue::PreWrap => self.place_preformatted_text(parent, flow, value, true),
+            WhiteSpaceValue::NoWrap => self.place_text_segment(parent, flow, value),
         }
     }
 
@@ -955,6 +957,15 @@ impl<'a> LayoutBuilder<'a> {
         if flow.available_width == 0 {
             return;
         }
+        if !flow.allow_soft_wrap {
+            let separator = (leading_whitespace || pending_whitespace) && flow.line_has_content;
+            let fragment = if separator { format!(" {text}") } else { text };
+            self.place_text_fragment(parent, flow, &fragment, truncated);
+            if trailing_whitespace {
+                flow.mark_pending_whitespace();
+            }
+            return;
+        }
         let words = text
             .split(' ')
             .filter(|word| !word.is_empty())
@@ -998,6 +1009,10 @@ impl<'a> LayoutBuilder<'a> {
             .available_width
             .saturating_sub(flow.x.saturating_sub(flow.start_x));
         if CHARACTER_WIDTH > remaining_width {
+            if !flow.allow_soft_wrap {
+                self.place_text_fragment(parent, flow, " ", false);
+                return;
+            }
             flow.flush_line();
             return;
         }

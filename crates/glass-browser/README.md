@@ -81,7 +81,9 @@ shared by paint, viewport projection, and point hit-testing, bounded
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow, bounded direct-text flow fragments and source-order text
   paint, bounded word-aware wrapping, bounded source-whitespace boundaries
-  across sibling text and supported inline items, a deterministic
+  across sibling text and supported inline items, bounded inherited
+  `white-space: nowrap` collapsed one-line flow, bounded root horizontal
+  scrolling, a deterministic
   clear/fill/text/border display list, a
 logical RGBA software surface, and
 bounded PNG capture through the explicit backend operation. Rust callers can
@@ -197,7 +199,9 @@ agreement reports exact schema and capability status.
 - The native engine is experimental, default-off, fixture/data-URL-only, and
   available through the explicit Rust backend factory and feature-gated local
   CLI runtime. Its current semantic slice supports bounded box-model layout,
-  vertical viewport scrolling, point input, click/type actions, and revision effects for local controls. The CLI default configuration
+  root horizontal and vertical viewport scrolling, bounded inherited
+  `white-space: nowrap` collapsed one-line flow, point input, click/type
+  actions, and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary
   for hostile remote content.

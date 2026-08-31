@@ -599,10 +599,11 @@ replays each group in a transparent layer before source-over compositing it
 onto its parent. Fixed-point alpha parsing, nested groups, `display:contents`,
 zero-opacity layout/hit behavior, and explicit layer budgets are in scope;
 general stacking, transforms, filters, animation, and browser compositor parity
-remain outside the boundary. The next active 052 boundary adds bounded
-inherited physical text alignment for fixed-cell direct text and supported
-inline boxes; logical directions, justification, and browser inline-formatting
-parity remain outside the boundary.
+remain outside the boundary. The completed 052 boundary adds bounded inherited
+physical text alignment for fixed-cell direct text and supported inline boxes;
+logical directions, justification, and browser inline-formatting parity remain
+outside the boundary. No later native-engine slice is active in this
+checkpoint.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

@@ -154,6 +154,14 @@ pub(crate) enum WhiteSpaceValue {
     NoWrap,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TextAlignValue {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
 /// Bounded physical top, right, bottom, and left box values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeBoxEdges {
@@ -204,6 +212,7 @@ pub(crate) struct NativeComputedStyle {
     visibility_hidden: bool,
     opacity: Option<u8>,
     white_space: WhiteSpaceValue,
+    text_align: TextAlignValue,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -240,6 +249,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn white_space(self) -> WhiteSpaceValue {
         self.white_space
+    }
+
+    pub(crate) const fn text_align(self) -> TextAlignValue {
+        self.text_align
     }
 
     pub(crate) const fn width(self) -> Option<u32> {
@@ -341,9 +354,14 @@ impl NativeStylesheet {
 
     #[cfg(test)]
     pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
-        self.computed_for_with_matcher(node, None, WhiteSpaceValue::Normal, None, |selector| {
-            selector.matches(node)
-        })
+        self.computed_for_with_matcher(
+            node,
+            None,
+            WhiteSpaceValue::Normal,
+            None,
+            TextAlignValue::Left,
+            |selector| selector.matches(node),
+        )
     }
 
     pub(crate) fn computed_for_in_document(
@@ -358,6 +376,7 @@ impl NativeStylesheet {
             inherited_color,
             WhiteSpaceValue::Normal,
             None,
+            TextAlignValue::Left,
         )
     }
 
@@ -368,6 +387,7 @@ impl NativeStylesheet {
         inherited_color: Option<NativeColor>,
         inherited_white_space: WhiteSpaceValue,
         inherited_line_height: Option<u32>,
+        inherited_text_align: TextAlignValue,
     ) -> NativeComputedStyle {
         let Some(node) = document.node(node_id) else {
             return NativeComputedStyle::default();
@@ -377,6 +397,7 @@ impl NativeStylesheet {
             inherited_color,
             inherited_white_space,
             inherited_line_height,
+            inherited_text_align,
             |selector| selector.matches_in_document(document, node_id),
         )
     }
@@ -387,12 +408,14 @@ impl NativeStylesheet {
         inherited_color: Option<NativeColor>,
         inherited_white_space: WhiteSpaceValue,
         inherited_line_height: Option<u32>,
+        inherited_text_align: TextAlignValue,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
         let mut display = None;
         let mut visibility = None;
         let mut opacity = None;
         let mut white_space = None;
+        let mut text_align = None;
         let mut width = None;
         let mut height = None;
         let mut min_width = None;
@@ -447,6 +470,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, white_space)
             {
                 white_space = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_align
+                && wins(rule.selector.specificity, rule.order, false, text_align)
+            {
+                text_align = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -653,6 +686,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_align
+                && wins(u16::MAX, usize::MAX, true, text_align)
+            {
+                text_align = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -812,6 +855,7 @@ impl NativeStylesheet {
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
             opacity: opacity.map(|value| value.value),
             white_space: white_space.map_or(inherited_white_space, |value| value.value),
+            text_align: text_align.map_or(inherited_text_align, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             min_width: min_width.map(|value| value.value),
@@ -913,6 +957,7 @@ struct NativeDeclarations {
     visibility: Option<VisibilityValue>,
     opacity: Option<u8>,
     white_space: Option<WhiteSpaceValue>,
+    text_align: Option<TextAlignValue>,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -1073,6 +1118,7 @@ fn parse_source(
             || declarations.visibility.is_some()
             || declarations.opacity.is_some()
             || declarations.white_space.is_some()
+            || declarations.text_align.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.min_width.is_some()
@@ -1193,6 +1239,7 @@ fn parse_declarations_with_diagnostics(
             "visibility" => parse_visibility(value).is_some(),
             "opacity" => parse_opacity(value).is_some(),
             "white-space" => parse_white_space(value).is_some(),
+            "text-align" => parse_text_align(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
             }
@@ -1247,6 +1294,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "visibility"
             | "opacity"
             | "white-space"
+            | "text-align"
             | "width"
             | "height"
             | "min-width"
@@ -1322,6 +1370,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "white-space" => {
                 declarations.white_space = parse_white_space(value);
+            }
+            "text-align" => {
+                declarations.text_align = parse_text_align(value);
             }
             "width" => {
                 declarations.width = parse_dimension(value);
@@ -1683,6 +1734,15 @@ fn parse_white_space(value: &str) -> Option<WhiteSpaceValue> {
     }
 }
 
+fn parse_text_align(value: &str) -> Option<TextAlignValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "left" => Some(TextAlignValue::Left),
+        "center" => Some(TextAlignValue::Center),
+        "right" => Some(TextAlignValue::Right),
+        _ => None,
+    }
+}
+
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(VisibilityValue::Hidden),
@@ -1977,12 +2037,13 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.opacity, Some(128));
         assert_eq!(declarations.white_space, Some(WhiteSpaceValue::PreLine));
+        assert_eq!(declarations.text_align, Some(TextAlignValue::Center));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.min_width, Some(12));
@@ -2347,6 +2408,16 @@ mod tests {
     }
 
     #[test]
+    fn text_align_parser_accepts_only_bounded_physical_values() {
+        assert_eq!(parse_text_align("left"), Some(TextAlignValue::Left));
+        assert_eq!(parse_text_align("CENTER"), Some(TextAlignValue::Center));
+        assert_eq!(parse_text_align("right"), Some(TextAlignValue::Right));
+        assert_eq!(parse_text_align("justify"), None);
+        assert_eq!(parse_text_align("start"), None);
+        assert_eq!(parse_text_align("end"), None);
+    }
+
+    #[test]
     fn opacity_is_cascaded_locally_without_inheriting_to_children() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { opacity: 25%; } #target { opacity: 75%; }".into(),
@@ -2364,6 +2435,46 @@ mod tests {
         let child = document.resolve_target("id=child").unwrap();
         assert_eq!(document.computed_style_for_layout(parent).opacity(), 128);
         assert_eq!(document.computed_style_for_layout(child).opacity(), 255);
+    }
+
+    #[test]
+    fn text_align_is_cascaded_and_inherited_with_child_precedence() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { text-align: left; } #target { text-align: right; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='target' style='text-align: center'>Target</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).text_align(),
+            TextAlignValue::Center
+        );
+
+        let document = NativeDocument::parse(
+            "<style>#parent { text-align: center; } #explicit { text-align: right; } #invalid { text-align: justify; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).text_align(),
+            TextAlignValue::Center
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).text_align(),
+            TextAlignValue::Center
+        );
+        assert_eq!(
+            document.computed_style_for_layout(explicit).text_align(),
+            TextAlignValue::Right
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).text_align(),
+            TextAlignValue::Center
+        );
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
-use super::css::{DisplayValue, NativeBorderRadius, NativeComputedStyle, WhiteSpaceValue};
+use super::css::{
+    DisplayValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue, WhiteSpaceValue,
+};
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
 
@@ -448,6 +450,14 @@ struct FlowSize {
     height: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FlowItem {
+    box_start: usize,
+    box_end: usize,
+    text_start: usize,
+    text_end: usize,
+}
+
 struct FlowCursor {
     start_x: u32,
     start_y: u32,
@@ -455,10 +465,12 @@ struct FlowCursor {
     x: u32,
     y: u32,
     minimum_line_height: u32,
+    text_align: TextAlignValue,
     allow_soft_wrap: bool,
     line_height: u32,
     line_has_content: bool,
     pending_whitespace: bool,
+    line_items: Vec<FlowItem>,
     max_right: u32,
     max_bottom: u32,
 }
@@ -469,6 +481,7 @@ impl FlowCursor {
         y: u32,
         available_width: u32,
         minimum_line_height: u32,
+        text_align: TextAlignValue,
         allow_soft_wrap: bool,
     ) -> Self {
         Self {
@@ -478,10 +491,12 @@ impl FlowCursor {
             x,
             y,
             minimum_line_height,
+            text_align,
             allow_soft_wrap,
             line_height: 0,
             line_has_content: false,
             pending_whitespace: false,
+            line_items: Vec::new(),
             max_right: x,
             max_bottom: y,
         }
@@ -497,6 +512,7 @@ impl FlowCursor {
             self.x = self.start_x;
             self.line_height = 0;
             self.line_has_content = false;
+            self.line_items.clear();
         }
     }
 
@@ -511,6 +527,7 @@ impl FlowCursor {
         self.x = self.start_x;
         self.line_height = 0;
         self.line_has_content = false;
+        self.line_items.clear();
     }
 
     fn take_pending_whitespace(&mut self) -> bool {
@@ -538,8 +555,8 @@ impl FlowCursor {
         usize::try_from(remaining_width / CHARACTER_WIDTH).unwrap_or(usize::MAX)
     }
 
-    fn place_inline(&mut self, width: u32, height: u32) {
-        let _ = self.place_inline_with_origin(width, height);
+    fn place_inline(&mut self, width: u32, height: u32) -> Option<NativePoint> {
+        self.place_inline_with_origin(width, height)
     }
 
     fn place_inline_with_origin(&mut self, mut width: u32, height: u32) -> Option<NativePoint> {
@@ -548,9 +565,6 @@ impl FlowCursor {
         }
         if self.allow_soft_wrap {
             width = width.min(self.available_width);
-        }
-        if self.would_wrap(width) {
-            self.flush_line();
         }
         let origin = NativePoint {
             x: self.x,
@@ -581,9 +595,27 @@ impl FlowCursor {
     }
 
     fn place_block(&mut self, height: u32) {
-        self.flush_line();
         self.y = self.y.saturating_add(height);
         self.max_bottom = self.max_bottom.max(self.y);
+    }
+
+    fn record_item(&mut self, item: FlowItem) {
+        self.line_items.push(item);
+    }
+
+    fn alignment_offset(&self) -> u32 {
+        let remaining = self
+            .available_width
+            .saturating_sub(self.x.saturating_sub(self.start_x));
+        match self.text_align {
+            TextAlignValue::Left => 0,
+            TextAlignValue::Center => remaining / 2,
+            TextAlignValue::Right => remaining,
+        }
+    }
+
+    fn take_line_items(&mut self) -> Vec<FlowItem> {
+        std::mem::take(&mut self.line_items)
     }
 
     fn finish(mut self) -> FlowSize {
@@ -613,15 +645,59 @@ impl<'a> LayoutBuilder<'a> {
             .document
             .computed_style_for_layout(parent)
             .white_space();
+        let text_align = self.document.computed_style_for_layout(parent).text_align();
         let allow_soft_wrap =
             !matches!(white_space, WhiteSpaceValue::Pre | WhiteSpaceValue::NoWrap);
-        let mut flow = FlowCursor::new(x, y, available_width, minimum_line_height, allow_soft_wrap);
+        let mut flow = FlowCursor::new(
+            x,
+            y,
+            available_width,
+            minimum_line_height,
+            text_align,
+            allow_soft_wrap,
+        );
         self.process_children(parent, &mut flow, depth);
+        self.flush_line(&mut flow);
         let bottom = flow.max_bottom;
         let start_y = y;
         let mut result = flow.finish();
         result.height = bottom.saturating_sub(start_y).max(result.height);
         result
+    }
+
+    fn flush_line(&mut self, flow: &mut FlowCursor) {
+        if flow.line_has_content {
+            let offset = flow.alignment_offset();
+            let line_right = flow.x.saturating_add(offset);
+            flow.max_right = flow.max_right.max(line_right);
+            for item in flow.take_line_items() {
+                let box_end = item.box_end.min(self.boxes.len());
+                let box_start = item.box_start.min(box_end);
+                for layout_box in &mut self.boxes[box_start..box_end] {
+                    layout_box.rect.x = layout_box.rect.x.saturating_add(offset);
+                    layout_box.content_rect.x = layout_box.content_rect.x.saturating_add(offset);
+                }
+
+                let text_end = item.text_end.min(self.text_runs.len());
+                let text_start = item.text_start.min(text_end);
+                for text_run in &mut self.text_runs[text_start..text_end] {
+                    text_run.origin.x = text_run.origin.x.saturating_add(offset);
+                }
+            }
+        }
+        flow.flush_line();
+    }
+
+    fn force_line_break(&mut self, flow: &mut FlowCursor) {
+        let had_content = flow.line_has_content;
+        self.flush_line(flow);
+        if had_content {
+            flow.max_bottom = flow
+                .max_bottom
+                .max(flow.y.saturating_add(flow.minimum_line_height));
+        } else {
+            flow.force_line_break();
+        }
     }
 
     fn process_children(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, depth: usize) {
@@ -654,7 +730,7 @@ impl<'a> LayoutBuilder<'a> {
                         == Some("br")
                     {
                         if display != DisplayValue::None {
-                            flow.force_line_break();
+                            self.force_line_break(flow);
                         }
                         continue;
                     }
@@ -679,7 +755,7 @@ impl<'a> LayoutBuilder<'a> {
                             }
                         }
                         DisplayValue::Block => {
-                            flow.flush_line();
+                            self.flush_line(flow);
                             let margin = self.document.computed_style_for_layout(child).margin();
                             let size = self.layout_element(
                                 child,
@@ -712,10 +788,12 @@ impl<'a> LayoutBuilder<'a> {
                                     0
                                 };
                             if flow.would_wrap(candidate_width.saturating_add(separator_width)) {
-                                flow.flush_line();
+                                self.flush_line(flow);
                             } else {
                                 self.place_pending_separator(parent, flow);
                             }
+                            let box_start = self.boxes.len();
+                            let text_start = self.text_runs.len();
                             let size = self.layout_element(
                                 child,
                                 flow.x.saturating_add(margin.left()),
@@ -723,10 +801,20 @@ impl<'a> LayoutBuilder<'a> {
                                 available_width,
                                 depth,
                             );
-                            flow.place_inline(
-                                size.width.saturating_add(margin.horizontal()),
-                                size.height.saturating_add(margin.vertical()),
-                            );
+                            if flow
+                                .place_inline(
+                                    size.width.saturating_add(margin.horizontal()),
+                                    size.height.saturating_add(margin.vertical()),
+                                )
+                                .is_some()
+                            {
+                                flow.record_item(FlowItem {
+                                    box_start,
+                                    box_end: self.boxes.len(),
+                                    text_start,
+                                    text_end: self.text_runs.len(),
+                                });
+                            }
                         }
                     }
                 }
@@ -944,7 +1032,7 @@ impl<'a> LayoutBuilder<'a> {
                 } else {
                     offset + 1
                 };
-                flow.force_line_break();
+                self.force_line_break(flow);
                 offset = break_end;
                 segment_start = break_end;
             } else {
@@ -980,7 +1068,7 @@ impl<'a> LayoutBuilder<'a> {
                 } else {
                     offset + 1
                 };
-                flow.force_line_break();
+                self.force_line_break(flow);
                 offset = break_end;
                 segment_start = break_end;
             } else {
@@ -1018,6 +1106,12 @@ impl<'a> LayoutBuilder<'a> {
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));
+        flow.record_item(FlowItem {
+            box_start: self.boxes.len(),
+            box_end: self.boxes.len(),
+            text_start: text_index,
+            text_end: text_index.saturating_add(1),
+        });
     }
 
     fn place_preformatted_wrapped_segment(
@@ -1032,7 +1126,7 @@ impl<'a> LayoutBuilder<'a> {
         let mut offset = 0;
         while offset < value.len() {
             if flow.line_has_content && flow.line_capacity() == 0 {
-                flow.flush_line();
+                self.flush_line(flow);
             }
             let chunk_length = flow.line_capacity().max(1);
             let mut end = offset;
@@ -1096,7 +1190,7 @@ impl<'a> LayoutBuilder<'a> {
                     self.place_text_fragment(parent, flow, &fragment, truncated && is_last_word);
                     continue;
                 }
-                flow.flush_line();
+                self.flush_line(flow);
             }
             self.place_word(parent, flow, word, is_last_word, truncated);
         }
@@ -1117,7 +1211,7 @@ impl<'a> LayoutBuilder<'a> {
                 self.place_text_fragment(parent, flow, " ", false);
                 return;
             }
-            flow.flush_line();
+            self.flush_line(flow);
             return;
         }
         self.place_text_fragment(parent, flow, " ", false);
@@ -1141,7 +1235,7 @@ impl<'a> LayoutBuilder<'a> {
         let mut offset = 0;
         while offset < characters.len() {
             if flow.line_has_content {
-                flow.flush_line();
+                self.flush_line(flow);
             }
             let characters_on_line = usize::try_from(flow.available_width / CHARACTER_WIDTH)
                 .unwrap_or_default()
@@ -1159,7 +1253,7 @@ impl<'a> LayoutBuilder<'a> {
             );
             offset += fragment_length;
             if !fragment_is_last {
-                flow.flush_line();
+                self.flush_line(flow);
             }
         }
     }
@@ -1184,6 +1278,12 @@ impl<'a> LayoutBuilder<'a> {
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));
+        flow.record_item(FlowItem {
+            box_start: self.boxes.len(),
+            box_end: self.boxes.len(),
+            text_start: text_index,
+            text_end: text_index.saturating_add(1),
+        });
     }
 
     fn text_width(value: &str) -> u32 {

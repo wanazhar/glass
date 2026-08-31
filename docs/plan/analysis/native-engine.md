@@ -150,10 +150,11 @@ dependency-ordered task is `native-engine-050`: bounded physical min/max
 width/height constraints through the existing box-model owner. The completed
 `native-engine-051` task adds bounded CSS opacity groups through transparent
 display-list layers and software compositing. No general stacking, transform,
-filter, animation, or browser compositor parity is implied. The next active
-task is `native-engine-052`: bounded inherited `text-align` for fixed-cell
+filter, animation, or browser compositor parity is implied. The completed
+`native-engine-052` task adds bounded inherited `text-align` for fixed-cell
 direct text and supported inline flow, with no logical-direction or
-justification parity.
+justification parity. No later native-engine slice is active in this
+checkpoint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -574,13 +575,14 @@ visual stacking.
 | bounded axis-specific overflow | keeps one axis visible while clipping the other through the existing rectangle and independently cascaded CSS declarations | no nested scrolling, scrollbars, mixed visible/auto/scroll used values, rounded descendant clips, or browser overflow parity | carry two bounded clip bits, map the selected axis to a finite document-space range, and reuse paint/projection/hit-test/root-overflow consumers |
 | bounded min/max dimensions | makes common minimum and maximum box constraints observable without replacing the integer box-model owner | no negative/percentage/auto values, intrinsic sizing, aspect ratio, margin collapsing, positioning, flex/grid, or browser sizing parity | convert bounds through existing insets, apply lower/upper constraints before available-width clamping, and preserve deterministic outer/content rectangles |
 | bounded opacity groups | makes local translucent subtrees compose as one paint group without changing the layout owner | off-screen layers add memory and a second pixel pass; no stacking contexts, transforms, filters, animation, or browser compositor parity | parse bounded fixed-point alpha, bracket only reduced-opacity rendered subtrees, cap group depth and aggregate layer pixels, and keep opacity out of layout/hit visibility |
+| bounded text alignment | keeps direct text and supported inline boxes visually and interactively together within a line | no justification, logical-direction, writing-mode, vertical-alignment, bidi, font-metric, or browser inline-formatting parity | track bounded line-item artifact ranges and apply deterministic fixed-cell left/center/right offsets at line flush without changing line breaks or dimensions |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-052.md` is the current in-progress checkpoint;
-`docs/plan/tasks/native-engine-051.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-052.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-051.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-050.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-049.md` is the earlier completed checkpoint;
 `docs/plan/tasks/native-engine-048.md` is the preceding completed checkpoint;

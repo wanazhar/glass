@@ -80,6 +80,8 @@ pub struct NativeLayoutSnapshot {
     pub scroll_offset: NativePoint,
     /// The bounded document height before the viewport is translated.
     pub content_height: u32,
+    /// The bounded document width before the viewport is translated.
+    pub content_width: u32,
     pub boxes: Vec<NativeLayoutBox>,
     pub text_runs: Vec<NativeTextLayout>,
     pub(crate) paint_order: Vec<NativeLayoutPaintOrder>,
@@ -105,6 +107,23 @@ impl NativeLayoutSnapshot {
             .map(|layout_box| layout_box.rect.bottom())
             .max()
             .unwrap_or(0);
+        let max_box_right = builder
+            .boxes
+            .iter()
+            .map(|layout_box| layout_box.rect.right())
+            .max()
+            .unwrap_or(0);
+        let max_text_right = builder
+            .text_runs
+            .iter()
+            .map(|text_run| {
+                text_run
+                    .origin
+                    .x
+                    .saturating_add(LayoutBuilder::text_width(&text_run.text))
+            })
+            .max()
+            .unwrap_or(0);
         let overflow_clips = builder
             .boxes
             .iter()
@@ -115,6 +134,11 @@ impl NativeLayoutSnapshot {
             viewport,
             scroll_offset: NativePoint { x: 0, y: 0 },
             content_height: viewport.height.max(flow.height).max(max_box_bottom),
+            content_width: viewport
+                .width
+                .max(flow.width)
+                .max(max_box_right)
+                .max(max_text_right),
             boxes: builder.boxes,
             text_runs: builder.text_runs,
             paint_order: builder.paint_order,
@@ -173,10 +197,11 @@ impl NativeLayoutSnapshot {
         })
     }
 
-    /// Return the maximum root vertical scroll offset for this document.
+    /// Return the maximum root horizontal and vertical scroll offset for this
+    /// document.
     pub const fn max_scroll_offset(&self) -> NativePoint {
         NativePoint {
-            x: 0,
+            x: self.content_width.saturating_sub(self.viewport.width),
             y: self.content_height.saturating_sub(self.viewport.height),
         }
     }
@@ -186,10 +211,10 @@ impl NativeLayoutSnapshot {
         scroll_offset: NativePoint,
     ) -> Result<Self, NativeEngineError> {
         let max_scroll = self.max_scroll_offset();
-        if scroll_offset.x != 0 {
+        if scroll_offset.x > max_scroll.x {
             return Err(NativeEngineError::invalid(
                 "native scroll offset",
-                "horizontal scrolling is unsupported",
+                "horizontal scroll offset exceeds document bounds",
             ));
         }
         if scroll_offset.y > max_scroll.y {

@@ -490,14 +490,13 @@ impl NativeEngine {
             .ok_or_else(|| NativeEngineError::Scheduler {
                 reason: "history target is no longer available".into(),
             })?;
-        let max_scroll_y = prepared
+        let max_scroll = prepared
             .document
             .layout(self.config.viewport)?
-            .max_scroll_offset()
-            .y;
+            .max_scroll_offset();
         let scroll_offset = NativePoint {
-            x: 0,
-            y: saved_scroll.y.min(max_scroll_y),
+            x: saved_scroll.x.min(max_scroll.x),
+            y: saved_scroll.y.min(max_scroll.y),
         };
         self.run_commit_task(NativeTask::TraverseHistory, "history traversal")?;
         let revision = self.next_revision()?;
@@ -664,30 +663,30 @@ impl NativeEngine {
     }
 
     fn apply_scroll(&mut self, delta_x: i32, delta_y: i32) -> Result<bool, NativeEngineError> {
-        if delta_x != 0 {
-            return Err(NativeEngineError::invalid(
-                "native scroll action",
-                "horizontal scrolling is unsupported",
-            ));
-        }
-        if delta_y == 0 {
+        if delta_x == 0 && delta_y == 0 {
             return Ok(false);
         }
-        let max_scroll_y = self
+        let max_scroll = self
             .document
             .layout(self.config.viewport)?
-            .max_scroll_offset()
-            .y;
-        let current = i64::from(self.scroll_offset.y);
-        let requested = current.saturating_add(i64::from(delta_y));
-        let next = requested.clamp(0, i64::from(max_scroll_y));
-        let next = u32::try_from(next).map_err(|_| {
+            .max_scroll_offset();
+        let requested_x = i64::from(self.scroll_offset.x).saturating_add(i64::from(delta_x));
+        let next_x = requested_x.clamp(0, i64::from(max_scroll.x));
+        let next_x = u32::try_from(next_x).map_err(|_| {
             NativeEngineError::invalid("native scroll action", "scroll offset exceeds bounds")
         })?;
-        if next == self.scroll_offset.y {
+        let requested_y = i64::from(self.scroll_offset.y).saturating_add(i64::from(delta_y));
+        let next_y = requested_y.clamp(0, i64::from(max_scroll.y));
+        let next_y = u32::try_from(next_y).map_err(|_| {
+            NativeEngineError::invalid("native scroll action", "scroll offset exceeds bounds")
+        })?;
+        if next_x == self.scroll_offset.x && next_y == self.scroll_offset.y {
             return Ok(false);
         }
-        self.scroll_offset.y = next;
+        self.scroll_offset = NativePoint {
+            x: next_x,
+            y: next_y,
+        };
         Ok(true)
     }
 

@@ -57,7 +57,7 @@ source-behavior reference.
   never contacts an endpoint. Its current
   Rust-only presentation artifacts include bounded outer/content box layout with
   physical four-side padding/margin shorthands and longhands plus explicit box
-  sizing, bounded vertical viewport scrolling,
+  sizing, bounded root horizontal and vertical viewport scrolling,
   inherited text color, bounded `overflow:hidden` clips shared by paint,
   viewport projection, and point hit-testing, side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
@@ -259,7 +259,7 @@ inline flow, bounded `overflow:hidden` clips shared by paint, viewport
 projection, and point hit-testing,
   normal-flow outer/content box geometry with physical four-side padding/margin
   shorthands and longhands,
-explicit box sizing, and bounded vertical viewport scrolling,
+explicit box sizing, and bounded root horizontal and vertical viewport scrolling,
 native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible

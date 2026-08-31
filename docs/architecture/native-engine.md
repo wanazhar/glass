@@ -13,7 +13,7 @@ bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
 bounded-legacy-name-fragment-targets/bounded-text-fragment-targets/
-bounded-text-fragment-affixes,
+bounded-text-fragment-affixes/bounded-root-horizontal-scroll,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -40,7 +40,7 @@ display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden`/
 `overflow:clip` paint clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
 bounded circular border radii, bounded outer/content box geometry, explicit root
-viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
+horizontal and vertical viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
 line-height flow, bounded direct-text fragments at actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
 four-side padding/margin edges, bounded source-whitespace boundaries, and
@@ -59,7 +59,8 @@ case-sensitive `id` obtained after bounded percent-decoding; the active history
 entry retains the bounded scroll offset for restoration.
 The engine does not
 yet own
-general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
+general CSS, nested/smooth/keyboard scrolling, scrollbars, axis-specific
+overflow, or scrolling/stacking layout,
 screenshot semantics, font/image
 fidelity, hit-test visuals, JavaScript,
 network access, storage, downloads, prompts, or platform windows. Unsupported
@@ -533,6 +534,14 @@ Cross-run ranges, multiple directives, highlights, Unicode normalization, and
 browser text-fragment parity remain unsupported. Its implementation and
 validation evidence are recorded in the task file and issue #40.
 
+The 045 bounded-root-horizontal-scroll boundary is complete locally. It
+extends the existing root scroll offset with bounded document width,
+independent horizontal/vertical clamping, and the already shared viewport,
+hit-test, display-list, and raster projections. Nested scroll containers,
+scrollbars, smooth scrolling, and axis-specific CSS overflow remain outside
+the slice. Its implementation and validation evidence are recorded in the
+task file and issue #40.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -582,8 +591,9 @@ values per side. It keeps
 rectangle after border and padding insets; child flow and direct text begin at
 that content origin. Side-specific margins consume normal-flow space without
 margin collapsing. Percentages, negative/auto values, logical sides, min/max
-constraints, positioning, flex/grid, fractional metrics, and nested or
-horizontal scrolling remain unsupported.
+constraints, positioning, flex/grid, and fractional metrics remained
+unsupported at the 016 checkpoint; later 045 adds bounded root horizontal
+scrolling without nested scrolling.
 
 The native locator grammar is explicit and bounded:
 
@@ -684,6 +694,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded legacy `<a name>` fragment identifiers as an exact-ID fallback;
 - bounded `#:~:text=start[,end]` visible text-fragment targets;
 - bounded text-fragment prefix/suffix affixes within one visible text run;
+- bounded root horizontal/vertical scroll extents, independent clamping, and
+  two-axis projection through layout, hit testing, display, raster, and history;
 - semantic local anchor activation through dispatcher click;
 - fixture-relative local link resolution with same-host enforcement;
 - title and visible-text projection with hidden `head`, `script`, and `style`;

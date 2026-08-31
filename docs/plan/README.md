@@ -308,7 +308,10 @@ history, and local-resource limits. The completed follow-on
 [native-engine-044](tasks/native-engine-044.md) adds bounded exact prefix and
 suffix affixes around that one-run matcher while retaining the current raw
 comma grammar, per-term decoding, scroll, history, and fail-closed boundaries.
-No later native-engine slice is active in this checkout.
+The completed follow-on [native-engine-045](tasks/native-engine-045.md) adds
+bounded root horizontal scrolling from measured overflow width while retaining
+independent clamping and the existing viewport, hit-test, display-list, raster,
+and history contracts. No later native-engine slice is active in this checkout.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

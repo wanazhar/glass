@@ -225,6 +225,13 @@ preserving root-scroll, hit-testing, diagnostics, and no-general-CSS limits.
 Its implementation and full validation evidence are recorded in the task file
 and issue #40.
 
+The completed hard-line-break slice is
+[native-engine-032](tasks/native-engine-032.md). It treats visible `<br>`
+elements as bounded hard line breaks in the existing inline-flow cursor while
+preserving hidden-state handling, text ownership, fixed line-height, and the
+no-general-CSS boundary. Its implementation and full validation evidence are
+recorded in the task file and issue #40.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

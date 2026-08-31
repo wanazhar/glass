@@ -437,6 +437,19 @@ impl FlowCursor {
         }
     }
 
+    fn force_line_break(&mut self) {
+        self.pending_whitespace = false;
+        self.y = self
+            .y
+            .saturating_add(self.line_height.max(self.minimum_line_height));
+        self.max_bottom = self
+            .max_bottom
+            .max(self.y.saturating_add(self.minimum_line_height));
+        self.x = self.start_x;
+        self.line_height = 0;
+        self.line_has_content = false;
+    }
+
     fn take_pending_whitespace(&mut self) -> bool {
         std::mem::take(&mut self.pending_whitespace)
     }
@@ -539,6 +552,17 @@ impl<'a> LayoutBuilder<'a> {
                         continue;
                     }
                     let display = self.effective_display(child);
+                    if self
+                        .document
+                        .node(child)
+                        .and_then(|node| node.element_name())
+                        == Some("br")
+                    {
+                        if display != DisplayValue::None {
+                            flow.force_line_break();
+                        }
+                        continue;
+                    }
                     match display {
                         DisplayValue::None => {}
                         DisplayValue::Contents => self.process_children(child, flow, depth + 1),

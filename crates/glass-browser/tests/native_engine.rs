@@ -872,6 +872,96 @@ fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
 }
 
 #[test]
+fn native_br_elements_create_bounded_hard_breaks_without_layout_nodes() {
+    let document = NativeDocument::parse(
+        "<div id='flow'><br id='leading'>A<br id='middle-a'><br id='middle-b'>B<br id='trailing'></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 100,
+        device_scale_factor_milli: 1000,
+    };
+    let flow = document.resolve_target("id=flow").unwrap();
+    let leading = document.resolve_target("id=leading").unwrap();
+    let middle_a = document.resolve_target("id=middle-a").unwrap();
+    let middle_b = document.resolve_target("id=middle-b").unwrap();
+    let trailing = document.resolve_target("id=trailing").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(leading), None);
+    assert_eq!(layout.box_for(middle_a), None);
+    assert_eq!(layout.box_for(middle_b), None);
+    assert_eq!(layout.box_for(trailing), None);
+    assert_eq!(layout.box_for(flow).unwrap().height, 100);
+    assert_eq!(layout.text_runs.len(), 2);
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .map(|run| (run.node_id, run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (flow, NativePoint { x: 0, y: 20 }, "A"),
+            (flow, NativePoint { x: 0, y: 60 }, "B"),
+        ]
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let runs = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id,
+                origin,
+                text,
+                ..
+            } => Some((*node_id, *origin, text.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        runs,
+        vec![
+            (flow, NativePoint { x: 0, y: 20 }, "A"),
+            (flow, NativePoint { x: 0, y: 60 }, "B"),
+        ]
+    );
+    assert!(list.commands.iter().all(|command| match command {
+        NativeDisplayCommand::FillRect { node_id, .. }
+        | NativeDisplayCommand::BorderRect { node_id, .. }
+        | NativeDisplayCommand::TextRun { node_id, .. } => {
+            *node_id != leading
+                && *node_id != middle_a
+                && *node_id != middle_b
+                && *node_id != trailing
+        }
+        NativeDisplayCommand::Clear { .. } => true,
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 20), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(1, 60), Some([0, 0, 0, 255]));
+
+    let hidden = NativeDocument::parse(
+        "<div id='flow'>A<br id='hidden' hidden>B<br id='aria-hidden' aria-hidden='true'>C<br id='display-none' style='display:none'>D</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let hidden_flow = hidden.resolve_target("id=flow").unwrap();
+    let hidden_break = hidden.resolve_target("id=hidden").unwrap();
+    let aria_hidden_break = hidden.resolve_target("id=aria-hidden").unwrap();
+    let display_none_break = hidden.resolve_target("id=display-none").unwrap();
+    let hidden_layout = hidden.layout(viewport).unwrap();
+    assert_eq!(hidden_layout.box_for(hidden_break), None);
+    assert_eq!(hidden_layout.box_for(aria_hidden_break), None);
+    assert_eq!(hidden_layout.box_for(display_none_break), None);
+    assert_eq!(hidden_layout.box_for(hidden_flow).unwrap().height, 20);
+    assert!(hidden_layout.text_runs.iter().all(|run| run.origin.y == 0));
+}
+
+#[test]
 fn native_text_boundary_separator_drops_when_inline_item_wraps() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:16px'>A <span id='middle' style='display:inline'>B</span> C</div>",

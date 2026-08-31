@@ -6,7 +6,7 @@ viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radiu
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
 bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
 bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture/
-bounded-descendant-selectors/bounded-overflow-clip slices,
+bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -37,6 +37,7 @@ viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
 line-height flow, bounded direct-text fragments at actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
 four-side padding/margin edges, bounded source-whitespace boundaries, and
+bounded hard line breaks in supported inline flow, and
 bounded rectangular `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
 for unsupported CSS input.
@@ -359,6 +360,14 @@ clip intersection, viewport projection, and point hit-testing consumers with
 overflow, or public computed-value distinction. `visible`, `auto`, and
 `scroll` remain unsupported and continue to produce bounded diagnostics.
 
+The 032 bounded-hard-line-breaks boundary treats a visible `<br>` as a hard
+line break in the existing integer inline flow. It advances the containing
+cursor by the current fixed line-height floor, resets the inline origin, and
+creates no semantic node, layout box, or paint command. Hidden or
+`display:none` breaks are ignored. `<wbr>`, preserved source newlines, CSS
+`white-space` modes, font metrics, and browser inline-formatting parity remain
+unsupported.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -564,6 +573,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded rectangular `overflow:hidden`/`overflow:clip` ancestor clips shared by paint,
   viewport rectangle projection, and point hit-testing, including nested clip
   intersection in document coordinates.
+- bounded hard `<br>` line breaks in supported inline flow, including leading,
+  consecutive, trailing, and hidden-break behavior without synthetic semantic
+  or paint nodes.
 - bounded root viewport scrolling, content-height/max-offset derivation,
   viewport-to-document hit-test mapping, translated software replay/capture,
   clamping, and revision/effect behavior for moved scroll actions.

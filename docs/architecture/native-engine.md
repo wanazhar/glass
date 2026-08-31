@@ -5,7 +5,7 @@ presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
 bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
-bounded-overflow-hit-test-projection/bounded-css-diagnostics
+bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture
 slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
@@ -376,6 +376,12 @@ the stable capture-byte limit. JPEG and PDF are explicit denials, and
 `EvidenceLevel::Screenshot`/`Combined` remain denied because the stable
 evidence result has no image payload. The native CLI still has no screenshot
 command.
+
+The 029 capture certification adds a complete small logical-pixel golden for
+the existing renderer and compares both direct surface output and decoded PNG
+bytes against it. This protects deterministic clear/fill coordinates and the
+capture encoder without claiming physical pixels, font/image fidelity,
+anti-aliasing, color management, screenshot evidence, or browser parity.
 
 The 016 box-model boundary accepted only uniform, non-negative `padding:Npx`
 and `margin:Npx` values plus `box-sizing:content-box|border-box`. The current

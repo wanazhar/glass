@@ -359,7 +359,10 @@ wrapping, text-fragment matching, display-list projection, and root-overflow
 measurement share one transformed output; semantic source text remains
 unchanged and Unicode/locale/font parity remains outside the boundary. Its
 implementation and validation evidence are recorded in the task file and issue
-#40; no later native-engine slice is active in this checkpoint.
+#40. The active follow-on [native-engine-056](tasks/native-engine-056.md) task
+adds non-negative fixed-pixel `text-indent` to the first line of block
+containers, clamps it to retain one fixed cell, and leaves inline and
+`display:contents` elements on their containing block's flow.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

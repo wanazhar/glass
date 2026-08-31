@@ -12,7 +12,7 @@ bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-hei
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
-bounded-inherited-text-transform slices,
+bounded-inherited-text-transform/bounded-first-line-text-indent slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -622,6 +622,13 @@ and root-overflow measurement. Semantic source text remains unchanged; Unicode
 case mapping, locale behavior, and font-specific glyph metrics remain outside
 the boundary. Implementation and validation evidence are recorded in the 055
 task file and issue #40.
+The active 056 boundary adds non-negative fixed-pixel `text-indent` for the
+first line of block containers. It reduces only that line's fixed-cell
+capacity, resets later lines to the full content width, and leaves inline and
+`display:contents` elements on their containing block's flow. The effective
+indent is clamped to retain one fixed cell; negative, percentage, and
+font-relative forms remain outside the boundary. Implementation is tracked in
+the 056 task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -827,6 +834,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited ASCII `text-transform:none|uppercase|lowercase` parsing and
   cascade, transformed fixed-cell layout fragments, and consistent wrapping,
   text-fragment, display-list, and root-overflow consumers.
+- bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
+  first line of block containers, with one-cell clamping and shared
+  layout/wrapping/fragment/paint/hit-test/overflow coordinates.
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden`/`overflow:clip` ancestor intersections on

@@ -1618,8 +1618,30 @@ fn parse_color(value: &str) -> Option<NativeColor> {
                 alpha: u8::MAX,
             })
         }
+        _ if value.starts_with("rgba(") && value.ends_with(')') => {
+            let values = value[5..value.len() - 1]
+                .split(',')
+                .map(str::trim)
+                .collect::<Vec<_>>();
+            if values.len() != 4 {
+                return None;
+            }
+            Some(NativeColor {
+                red: parse_color_channel(values[0])?,
+                green: parse_color_channel(values[1])?,
+                blue: parse_color_channel(values[2])?,
+                alpha: parse_opacity(values[3])?,
+            })
+        }
         _ => None,
     }
+}
+
+fn parse_color_channel(value: &str) -> Option<u8> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
 }
 
 fn parse_hex_color(value: &str) -> Option<NativeColor> {
@@ -2129,6 +2151,44 @@ mod tests {
     }
 
     #[test]
+    fn functional_alpha_color_parser_accepts_bounded_rgba_values() {
+        assert_eq!(
+            parse_color("RGBA( 16, 32, 48, 0.5 )"),
+            Some(NativeColor {
+                red: 16,
+                green: 32,
+                blue: 48,
+                alpha: 128,
+            })
+        );
+        assert_eq!(
+            parse_color("rgba(255,0,1,50%)"),
+            Some(NativeColor {
+                red: 255,
+                green: 0,
+                blue: 1,
+                alpha: 128,
+            })
+        );
+        assert_eq!(
+            parse_color("rgba(0, 0, 0, 0)"),
+            Some(NativeColor {
+                red: 0,
+                green: 0,
+                blue: 0,
+                alpha: 0,
+            })
+        );
+        assert_eq!(parse_color("rgba(256, 0, 0, 1)"), None);
+        assert_eq!(parse_color("rgba(0, -1, 0, 1)"), None);
+        assert_eq!(parse_color("rgba(0, 0, 0, 1.001)"), None);
+        assert_eq!(parse_color("rgba(0, 0, 0, 101%)"), None);
+        assert_eq!(parse_color("rgba(0, 0, 0, 1, 0)"), None);
+        assert_eq!(parse_color("rgba(0%, 0, 0, 1)"), None);
+        assert_eq!(parse_color("rgb(0 0 0 / 0.5)"), None);
+    }
+
+    #[test]
     fn border_radius_parser_expands_bounded_physical_shorthand() {
         assert_eq!(
             parse_border_radius("5px"),
@@ -2506,7 +2566,15 @@ mod tests {
                 alpha: 255,
             })
         );
-        assert_eq!(parse_color("rgba(1, 2, 3, 0.5)"), None);
+        assert_eq!(
+            parse_color("rgba(1, 2, 3, 0.5)"),
+            Some(NativeColor {
+                red: 1,
+                green: 2,
+                blue: 3,
+                alpha: 128,
+            })
+        );
         assert_eq!(parse_color("rgb(101%, 2, 3)"), None);
     }
 }

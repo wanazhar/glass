@@ -5,8 +5,8 @@ use glass_browser::browser::native_engine::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeAction, NativeBorderRadius,
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativePoint, NativeRect,
-    NativeSurface, Viewport,
+    NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeNodeId, NativePoint,
+    NativeRect, NativeSurface, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -16,6 +16,25 @@ use glass_browser::browser_backend::{
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use std::io::Cursor;
+
+fn find_element_with_attribute(
+    document: &NativeDocument,
+    element_name: &str,
+    attribute_name: &str,
+    attribute_value: &str,
+) -> NativeNodeId {
+    let mut pending = vec![document.root()];
+    while let Some(id) = pending.pop() {
+        let node = document.node(id).unwrap();
+        if node.element_name() == Some(element_name)
+            && node.attribute(attribute_name) == Some(attribute_value)
+        {
+            return id;
+        }
+        pending.extend(node.children().iter().copied());
+    }
+    panic!("missing {element_name} element with {attribute_name}={attribute_value:?}");
+}
 
 #[tokio::test]
 async fn native_runtime_session_uses_explicit_local_constructor() {
@@ -2710,6 +2729,93 @@ async fn percent_decoded_fragments_match_utf8_ids_and_fail_closed() {
         let before = engine.scroll_offset();
         engine
             .navigate(format!("fixture://encoded-fragments#{fragment}"))
+            .unwrap();
+        assert_eq!(engine.scroll_offset(), before, "fragment={fragment}");
+    }
+}
+
+#[tokio::test]
+async fn legacy_name_fragments_use_decoded_fallback_and_preserve_scroll_safety() {
+    let html = "<a id='jump' href='#legacy%20plan'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><a name='legacy plan'>Legacy target</a><a name='café'>UTF-8 legacy target</a><a name='same'>Name should lose</a><a name='hidden' style='display:none'>Hidden legacy target</a><a name='zero' style='display:contents'></a><a name='duplicate'>First duplicate</a><a name='duplicate'>Second duplicate</a><div name='not-anchor'>Not a target</div><p id='same'>ID target</p>";
+    let viewport = Viewport {
+        width: 160,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let expected_document = NativeDocument::parse(html, &NativeEngineLimits::default()).unwrap();
+    let expected_layout = expected_document.layout(viewport).unwrap();
+    let legacy = find_element_with_attribute(&expected_document, "a", "name", "legacy plan");
+    let legacy_scroll = NativePoint {
+        x: 0,
+        y: expected_layout
+            .box_for(legacy)
+            .expect("legacy anchor layout")
+            .y
+            .min(expected_layout.max_scroll_offset().y),
+    };
+    assert!(legacy_scroll.y > 0);
+
+    let config = NativeEngineConfig::default()
+        .with_viewport(viewport)
+        .with_fixture("fixture://name-fragments", html)
+        .unwrap()
+        .with_initial_url("fixture://name-fragments");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    let jumped = engine
+        .action(NativeAction::Click {
+            target: "id=jump".into(),
+        })
+        .unwrap();
+    assert!(jumped.accepted);
+    assert_eq!(engine.scroll_offset(), legacy_scroll);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://name-fragments#legacy%20plan"
+    );
+
+    let initial = engine.go_back().unwrap().unwrap();
+    assert_eq!(initial.url, "fixture://name-fragments");
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 0 });
+    let restored = engine.go_forward().unwrap().unwrap();
+    assert_eq!(restored.url, "fixture://name-fragments#legacy%20plan");
+    assert_eq!(engine.scroll_offset(), legacy_scroll);
+
+    engine
+        .navigate("fixture://name-fragments#caf%C3%A9")
+        .unwrap();
+    let utf8_target = find_element_with_attribute(&expected_document, "a", "name", "café");
+    assert_eq!(
+        engine.scroll_offset().y,
+        expected_layout
+            .box_for(utf8_target)
+            .unwrap()
+            .y
+            .min(expected_layout.max_scroll_offset().y)
+    );
+
+    engine.navigate("fixture://name-fragments#same").unwrap();
+    let id_target = expected_document.resolve_target("id=same").unwrap();
+    assert_eq!(
+        engine.scroll_offset().y,
+        expected_layout
+            .box_for(id_target)
+            .unwrap()
+            .y
+            .min(expected_layout.max_scroll_offset().y)
+    );
+    for fragment in [
+        "duplicate",
+        "not-anchor",
+        "DUPLICATE",
+        "hidden",
+        "zero",
+        "missing",
+    ] {
+        let before = engine.scroll_offset();
+        engine
+            .navigate(format!("fixture://name-fragments#{fragment}"))
             .unwrap();
         assert_eq!(engine.scroll_offset(), before, "fragment={fragment}");
     }

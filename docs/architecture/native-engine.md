@@ -11,7 +11,8 @@ bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
-bounded-relative-local-links/bounded-percent-decoded-fragment-targets,
+bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
+bounded-legacy-name-fragment-targets,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -502,6 +503,13 @@ anchors, text fragments, and general URL-decoding parity remain unsupported.
 Its implementation and validation evidence are recorded in the task file and
 issue #40.
 
+The 042 bounded-legacy-name-fragment-target boundary is complete locally:
+after 041 decoding, a unique exact `<a name>` anchor is used only when no
+matching `id` exists. IDs retain precedence, duplicate IDs or names fail
+closed, and the existing visible-layout-box, root-scroll, history, and
+failure-atomicity rules remain unchanged. Text fragments, arbitrary `name`
+attributes, and browser URL/scrolling parity remain unsupported.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -650,6 +658,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - raw-fragment URL retention and bounded same-document local navigation;
 - exact visible fragment-target scroll and saved history offsets;
 - bounded percent-decoded fragment identifiers for exact visible local IDs;
+- bounded legacy `<a name>` fragment identifiers as an exact-ID fallback;
 - semantic local anchor activation through dispatcher click;
 - fixture-relative local link resolution with same-host enforcement;
 - title and visible-text projection with hidden `head`, `script`, and `style`;

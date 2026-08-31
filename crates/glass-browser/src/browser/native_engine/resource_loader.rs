@@ -1,6 +1,7 @@
 use super::config::{NativeEngineConfig, canonical_fixture_url, validate_url_text};
 use super::error::NativeEngineError;
 use super::origin::NativeOrigin;
+use base64::Engine as _;
 use std::collections::BTreeMap;
 
 /// A bounded HTML resource accepted by the Phase 1 engine.
@@ -76,12 +77,11 @@ impl NativeResourceLoader {
                 reason: "only data:text/html resources are supported".into(),
             });
         }
-        if metadata_parts.any(|part| part.eq_ignore_ascii_case("base64")) {
-            return Err(NativeEngineError::UnsupportedUrl {
-                reason: "base64 data URLs are not supported in Phase 1".into(),
-            });
-        }
-        let body = percent_decode(payload)?;
+        let body = if metadata_parts.any(|part| part.eq_ignore_ascii_case("base64")) {
+            decode_base64(payload, self.max_document_bytes)?
+        } else {
+            percent_decode(payload)?
+        };
         if body.len() > self.max_document_bytes {
             return Err(NativeEngineError::limit(
                 "data document",
@@ -95,6 +95,32 @@ impl NativeResourceLoader {
             body,
         })
     }
+}
+
+fn decode_base64(payload: &str, max_document_bytes: usize) -> Result<String, NativeEngineError> {
+    let max_encoded_bytes = (max_document_bytes.saturating_add(2) / 3).saturating_mul(4);
+    if payload.len() > max_encoded_bytes {
+        return Err(NativeEngineError::limit(
+            "base64 data payload",
+            max_encoded_bytes,
+            payload.len(),
+        ));
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "data URL contains an invalid standard base64 payload".into(),
+        })?;
+    if decoded.len() > max_document_bytes {
+        return Err(NativeEngineError::limit(
+            "data document",
+            max_document_bytes,
+            decoded.len(),
+        ));
+    }
+    String::from_utf8(decoded).map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "base64 data URL payload is not valid UTF-8 HTML".into(),
+    })
 }
 
 fn percent_decode(value: &str) -> Result<String, NativeEngineError> {

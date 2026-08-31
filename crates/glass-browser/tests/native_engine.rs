@@ -1979,7 +1979,69 @@ async fn data_url_and_limits_are_bounded() {
         .unwrap();
     assert_eq!(evidence.title, "Data");
     assert_eq!(evidence.visible_text, "loaded");
+
+    let base64_url = "data:text/html;base64,PHRpdGxlPkRhdGE8L3RpdGxlPjxwPmxvYWRlZDwvcD4=";
+    let navigation = dispatcher
+        .navigate(NavigationRequest {
+            url: base64_url.into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(navigation.url, base64_url);
+    let base64_evidence = dispatcher
+        .evidence(EvidenceRequest {
+            context_id: "native-context".into(),
+            level: EvidenceLevel::Compact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(base64_evidence.url, base64_url);
+    assert_eq!(base64_evidence.title, "Data");
+    assert_eq!(base64_evidence.visible_text, "loaded");
     dispatcher.close().await.unwrap();
+
+    let mut engine = NativeEngine::new(NativeEngineConfig::default()).unwrap();
+    engine.initialize().unwrap();
+    assert!(matches!(
+        engine.navigate("data:text/html;base64,not-base64"),
+        Err(NativeEngineError::UnsupportedUrl { .. })
+    ));
+    assert!(matches!(
+        engine.navigate("data:text/html;base64,PHRpdGxlPkRhdGE8L3RpdGxlPj%3D"),
+        Err(NativeEngineError::UnsupportedUrl { .. })
+    ));
+    assert!(matches!(
+        engine.navigate("data:text/plain;base64,SGk="),
+        Err(NativeEngineError::UnsupportedUrl { .. })
+    ));
+    assert!(matches!(
+        engine.navigate("data:text/html;base64,/w=="),
+        Err(NativeEngineError::UnsupportedUrl { .. })
+    ));
+
+    let small_limits = NativeEngineLimits {
+        max_document_bytes: 8,
+        ..NativeEngineLimits::default()
+    };
+    let mut small_engine =
+        NativeEngine::new(NativeEngineConfig::default().with_limits(small_limits)).unwrap();
+    small_engine.initialize().unwrap();
+    assert!(matches!(
+        small_engine.navigate("data:text/html;base64,PHRpdGxlPkRhdGE8L3RpdGxlPg=="),
+        Err(NativeEngineError::LimitExceeded { .. })
+    ));
+
+    let tiny_limits = NativeEngineLimits {
+        max_document_bytes: 3,
+        ..NativeEngineLimits::default()
+    };
+    let mut tiny_engine =
+        NativeEngine::new(NativeEngineConfig::default().with_limits(tiny_limits)).unwrap();
+    tiny_engine.initialize().unwrap();
+    assert!(matches!(
+        tiny_engine.navigate("data:text/html;base64,AAAAAA"),
+        Err(NativeEngineError::LimitExceeded { .. })
+    ));
 }
 
 #[tokio::test]

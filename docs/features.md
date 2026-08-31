@@ -53,7 +53,8 @@ source-behavior reference.
 - A `native-engine` feature build can construct the explicit local
   `BrowserRuntimeSession::connect_native` path or use
   `--browser-runtime native`; it accepts only local `about:blank` and bounded
-  `data:text/html` from the CLI and never contacts an endpoint. Its current
+  percent-decoded or standard padded-base64 `data:text/html` from the CLI and
+  never contacts an endpoint. Its current
   Rust-only presentation artifacts include bounded outer/content box layout with
   physical four-side padding/margin shorthands and longhands plus explicit box
   sizing, bounded vertical viewport scrolling,

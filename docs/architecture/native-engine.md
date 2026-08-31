@@ -608,10 +608,12 @@ outside the boundary. The completed 053 boundary extends the existing bounded
 color grammar with decimal-channel `rgba(R, G, B, A)` values using fixed-point
 alpha quantization and the existing source-over raster path; CSS Color 4,
 wide-gamut, interpolation, and color-management behavior remain outside the
-boundary. The active 054 boundary adds inherited fixed-cell
+boundary. The completed 054 boundary adds inherited fixed-cell
 `text-decoration:none|underline` as a text-command bit and a clipped,
 alpha-aware one-pixel baseline-offset replay. Font metrics, decoration
-propagation, and browser text-paint parity remain outside the boundary.
+propagation, and browser text-paint parity remain outside the boundary. Its
+implementation and validation evidence are recorded in the 054 task file and
+issue #40. No later native-engine slice is active in this checkpoint.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

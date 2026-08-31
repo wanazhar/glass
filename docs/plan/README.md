@@ -347,12 +347,13 @@ follow-on dependency-ordered slice
 color grammar with fixed-point `rgba(R, G, B, A)` alpha for background, border,
 and text paint while preserving the current display-list and raster owners.
 Its implementation and validation evidence are recorded in the task file and
-issue #40. No general CSS Color 4 or color-management parity is implied, and
-no later native-engine slice is active in this checkpoint. The active
-follow-on dependency-ordered slice
+issue #40. No general CSS Color 4 or color-management parity is implied. The
+completed follow-on dependency-ordered slice
 [native-engine-054](tasks/native-engine-054.md) adds inherited fixed-cell
 `text-decoration: none|underline` to text display commands and software
-replay without changing layout or hit-testing ownership.
+replay without changing layout or hit-testing ownership. Its implementation
+and validation evidence are recorded in the task file and issue #40. No later
+native-engine slice is active in this checkpoint.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

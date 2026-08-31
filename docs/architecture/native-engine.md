@@ -5,8 +5,8 @@ presentation/layout/display-list/software-surface/PNG-capture/box-model/
 viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radius/
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
 bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
-bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture
-slices,
+bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture/
+bounded-descendant-selectors slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -219,12 +219,21 @@ content is consumed to the bounded document end; this is parser containment,
 not an HTML5 conformance claim.
 
 The initial presentation subset reads bounded `style` elements and inline
-`style` attributes. It matches only one-compound universal/type, ID, class, or
-attribute-presence/exact-value selectors and cascades `display` and
-`visibility` by specificity, source order, and inline precedence. Unsupported
-selectors and declarations are ignored. This state feeds text exclusion,
-semantic actionability, and the bounded paint artifacts; it does not imply
-general CSS, inheritance, or general paint.
+`style` attributes. It matches bounded chains of one to eight universal/type,
+ID, class, or attribute-presence/exact-value compounds joined by descendant
+whitespace, then cascades `display` and `visibility` by summed specificity,
+source order, and inline precedence. Unsupported selectors and declarations
+are ignored. This state feeds text exclusion, semantic actionability, and the
+bounded paint artifacts; it does not imply general CSS, inheritance, or
+general paint. Direct-child, sibling, pseudo, functional, namespace, and
+other combinators remain unsupported.
+
+The 030 selector boundary resolves descendant chains through the same
+arena-owned parent links used by semantic projection and layout. Intermediate
+ancestors may be skipped, but traversal is capped by the native DOM depth and
+the selector's eight-compound limit. The computed result is therefore still a
+deterministic derived style; no selector cache or second ownership graph is
+introduced.
 
 The 009 layout seed derives integer-pixel rectangles from the current
 presentation state and configured viewport using normal block/inline flow.

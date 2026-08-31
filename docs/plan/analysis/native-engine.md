@@ -39,6 +39,11 @@ gate evidence is recorded below and its issue #40 checkpoint is updated from
 the same commit. It certifies the existing logical surface and PNG path with
 one complete fixed fixture golden without expanding screenshot evidence or
 renderer scope.
+The 030 bounded descendant-selector slice is complete locally; its complete
+gate evidence is recorded below and its issue #40 checkpoint is updated from
+the same commit. It extends the narrow compound-selector grammar through
+bounded descendant ancestor matching without claiming general CSS selector
+conformance.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -178,6 +183,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-027` | bounded rectangular `overflow:hidden` ancestor clips shared by paint, viewport rectangle projection, and point hit-testing | `native-engine-026` | visible overflow, `overflow:clip`, axis-specific or nested scrolling, rounded descendant clips, stacking contexts, transforms, and browser parity |
 | `native-engine-028` | bounded revisioned diagnostics for unsupported selectors, properties, values, and malformed CSS in stylesheet and inline-style sources | `native-engine-027` | general CSS parsing/conformance, raw source echo, stable transport diagnostics, and browser parity |
 | `native-engine-029` | complete logical-pixel golden for the bounded native surface and decoded PNG capture path | `native-engine-028` | screenshot compatibility, physical pixels, font/image fidelity, anti-aliasing, color management, stable evidence schema, and browser parity |
+| `native-engine-030` | bounded descendant selector chains across the owned DOM ancestry with summed specificity and existing cascade precedence | `native-engine-029` | direct-child/sibling/pseudo/functional/namespace selectors, general CSS conformance, style caching, and browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -282,6 +288,9 @@ Phase 2 integration chains added by these slices are:
 34. Native direct surface output and decoded bounded PNG bytes match one
     complete checked-in logical-pixel golden while capture preserves revision
     state and does not add screenshot evidence.
+35. Native descendant selector chains resolve through the existing DOM parent
+    links before style cascade, visibility, layout, and paint consume the
+    computed result; unsupported combinators remain diagnosed and ignored.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -323,13 +332,14 @@ stacking, or that clicking a link performs browser navigation.
 | bounded overflow hit-test/projection clips | keeps layout visibility and point interaction aligned with existing `overflow:hidden` paint clipping | no visible overflow, nested/axis-specific scrolling, rounded descendant clips, stacking contexts, or transforms | retain one bounded document-space ancestor intersection per layout box and apply it before viewport translation and rounded hit testing |
 | bounded unsupported-CSS diagnostics | makes the narrow CSS contract auditable without changing its deterministic fallback behavior | no general CSS parser, conformance location model, raw stylesheet echo, or stable transport capability | retain a fixed diagnostic bound, report sanitized source/category tokens, and replace diagnostics atomically with the prepared document |
 | bounded pixel-golden capture | detects full-frame drift in the existing logical renderer and PNG encoder | no physical-pixel, font/image, anti-aliasing, color-management, or screenshot compatibility claim | keep one tiny fixed logical fixture, compare direct and decoded output, and retain capture as a read-only explicit operation |
+| bounded descendant selectors | makes ancestor-scoped fixture styles observable through the real DOM ownership chain | no sibling/child/pseudo/functional/namespace selectors, selector caching, general CSS conformance, or browser parity | cap chains at eight compounds, traverse only bounded parent links, sum existing specificity, and preserve explicit unsupported-selector diagnostics |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-029.md` is the latest completed checkpoint and
-`docs/plan/tasks/native-engine-028.md` is the preceding completed checkpoint.
+`docs/plan/tasks/native-engine-030.md` is the latest completed checkpoint and
+`docs/plan/tasks/native-engine-029.md` is the preceding completed checkpoint.
 A checkpoint is complete only when
 the native feature tests pass, strict lint
 passes for the touched code, and the diff confirms no unrelated browser/TUI/

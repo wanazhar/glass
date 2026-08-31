@@ -2110,6 +2110,57 @@ fn stylesheet_presentation_state_feeds_text_and_actionability() {
 }
 
 #[test]
+fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://descendant-selectors",
+            "<style>main .panel button { display: none; } main .panel .shown { display: block; width: 8px; height: 4px; background-color: red; } main button { display: block; }</style><main><section class='panel'><button id='hidden'>Hidden</button><button id='shown' class='shown'>Shown</button></section></main>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://descendant-selectors");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+
+    assert_eq!(engine.snapshot().unwrap().visible_text, "Shown");
+    let hidden = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Hidden")
+        .expect("hidden descendant node");
+    let shown = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Shown")
+        .expect("shown descendant node");
+    assert!(hidden.hidden);
+    assert!(!shown.hidden);
+
+    let layout = engine.layout().unwrap();
+    assert_eq!(layout.box_for(hidden.node_id), None);
+    let shown_rect = layout.box_for(shown.node_id).expect("shown layout box");
+    let list = engine.display_list().unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect {
+                node_id,
+                color,
+                ..
+            } if *node_id == shown.node_id && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(
+        engine
+            .rasterize()
+            .unwrap()
+            .pixel(shown_rect.x, shown_rect.y),
+        Some([255, 0, 0, 255])
+    );
+}
+
+#[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
         "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: clip; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",

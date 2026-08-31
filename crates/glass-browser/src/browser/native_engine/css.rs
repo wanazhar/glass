@@ -1,10 +1,11 @@
-use super::config::MAX_NATIVE_VIEWPORT_DIMENSION;
+use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_VIEWPORT_DIMENSION};
 use super::diagnostics::{NativeDiagnosticCode, NativeDiagnosticSink, NativeDiagnosticSource};
-use super::dom::NativeNode;
+use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
 
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 const MAX_SELECTOR_BYTES: usize = 256;
+const MAX_SELECTOR_PARTS: usize = 8;
 
 /// A bounded RGBA color used by the native display-list seed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,14 +291,30 @@ impl NativeStylesheet {
         Ok(stylesheet)
     }
 
+    #[cfg(test)]
     pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
-        self.computed_for_with_inherited_color(node, None)
+        self.computed_for_with_matcher(node, None, |selector| selector.matches(node))
     }
 
-    pub(crate) fn computed_for_with_inherited_color(
+    pub(crate) fn computed_for_in_document(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        inherited_color: Option<NativeColor>,
+    ) -> NativeComputedStyle {
+        let Some(node) = document.node(node_id) else {
+            return NativeComputedStyle::default();
+        };
+        self.computed_for_with_matcher(node, inherited_color, |selector| {
+            selector.matches_in_document(document, node_id)
+        })
+    }
+
+    fn computed_for_with_matcher(
         &self,
         node: &NativeNode,
         inherited_color: Option<NativeColor>,
+        matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
         let mut display = None;
         let mut visibility = None;
@@ -313,7 +330,7 @@ impl NativeStylesheet {
         let mut color = None;
         let mut overflow = None;
         for rule in &self.rules {
-            if !rule.selector.matches(node) {
+            if !matches(&rule.selector) {
                 continue;
             }
             if let Some(value) = rule.declarations.display
@@ -682,10 +699,7 @@ struct NativeStyleRule {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeSelector {
-    tag: Option<String>,
-    id: Option<String>,
-    classes: Vec<String>,
-    attributes: Vec<NativeAttributeSelector>,
+    compounds: Vec<NativeCompoundSelector>,
     specificity: u16,
 }
 
@@ -695,7 +709,62 @@ struct NativeAttributeSelector {
     value: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeCompoundSelector {
+    tag: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
+    attributes: Vec<NativeAttributeSelector>,
+    specificity: u16,
+}
+
 impl NativeSelector {
+    #[cfg(test)]
+    fn matches(&self, node: &NativeNode) -> bool {
+        self.compounds
+            .last()
+            .is_some_and(|compound| compound.matches(node))
+    }
+
+    fn matches_in_document(&self, document: &NativeDocument, node_id: NativeNodeId) -> bool {
+        let Some(node) = document.node(node_id) else {
+            return false;
+        };
+        if node.element_name().is_none() {
+            return false;
+        }
+        let Some(target) = self.compounds.last() else {
+            return false;
+        };
+        if !target.matches(node) {
+            return false;
+        }
+
+        let mut ancestor = node.parent();
+        for compound in self.compounds.iter().rev().skip(1) {
+            let mut found = false;
+            for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+                let Some(ancestor_id) = ancestor else {
+                    break;
+                };
+                let Some(ancestor_node) = document.node(ancestor_id) else {
+                    break;
+                };
+                ancestor = ancestor_node.parent();
+                if ancestor_node.element_name().is_some() && compound.matches(ancestor_node) {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl NativeCompoundSelector {
     fn matches(&self, node: &NativeNode) -> bool {
         if self
             .tag
@@ -955,9 +1024,13 @@ fn selector_diagnostic_detail(selector: &str) -> &'static str {
         "empty-selector"
     } else if selector.len() > MAX_SELECTOR_BYTES {
         "selector-too-long"
+    } else if split_selector_compounds(selector)
+        .is_some_and(|compounds| compounds.len() > MAX_SELECTOR_PARTS)
+    {
+        "selector-too-complex"
     } else if selector.contains(':') {
         "pseudo-selector"
-    } else if selector.chars().any(char::is_whitespace) || selector.contains(['>', '+', '~']) {
+    } else if selector.contains(['>', '+', '~']) {
         "selector-combinator"
     } else {
         "invalid-selector"
@@ -1281,15 +1354,78 @@ fn parse_overflow(value: &str) -> Option<OverflowValue> {
 
 fn parse_selector(source: &str) -> Option<NativeSelector> {
     let source = source.trim();
-    if source.is_empty()
-        || source.len() > MAX_SELECTOR_BYTES
-        || source.chars().any(char::is_whitespace)
-    {
+    if source.is_empty() || source.len() > MAX_SELECTOR_BYTES {
         return None;
     }
+    let compound_sources = split_selector_compounds(source)?;
+    if compound_sources.len() > MAX_SELECTOR_PARTS {
+        return None;
+    }
+    let compounds = compound_sources
+        .into_iter()
+        .map(parse_compound_selector)
+        .collect::<Option<Vec<_>>>()?;
+    let specificity = compounds.iter().fold(0u16, |specificity, compound| {
+        specificity.saturating_add(compound.specificity)
+    });
+    Some(NativeSelector {
+        compounds,
+        specificity,
+    })
+}
+
+fn split_selector_compounds(source: &str) -> Option<Vec<&str>> {
+    let bytes = source.as_bytes();
+    let mut compounds = Vec::new();
+    let mut start = 0;
+    let mut cursor = 0;
+    let mut bracket_depth = 0usize;
+    let mut quote = None;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(delimiter) = quote {
+            if byte == delimiter {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' if bracket_depth > 0 => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' => {
+                if bracket_depth == 0 {
+                    return None;
+                }
+                bracket_depth -= 1;
+            }
+            byte if byte.is_ascii_whitespace() && bracket_depth == 0 => {
+                if start < cursor {
+                    compounds.push(&source[start..cursor]);
+                }
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                start = cursor;
+                continue;
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    if bracket_depth != 0 || quote.is_some() {
+        return None;
+    }
+    if start < source.len() {
+        compounds.push(&source[start..]);
+    }
+    (!compounds.is_empty()).then_some(compounds)
+}
+
+fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
     let bytes = source.as_bytes();
     let mut cursor = 0;
-    let mut selector = NativeSelector {
+    let mut selector = NativeCompoundSelector {
         tag: None,
         id: None,
         classes: Vec::new(),
@@ -1451,11 +1587,43 @@ mod tests {
     }
 
     #[test]
-    fn selector_parser_supports_one_compound_selector() {
-        let selector = parse_selector("button.primary[data-state=ready]").unwrap();
-        assert_eq!(selector.specificity, 21);
+    fn selector_parser_supports_bounded_compound_and_descendant_selectors() {
+        let selector = parse_selector("main .card button[data-state=ready]").unwrap();
+        assert_eq!(selector.specificity, 22);
+        assert!(parse_selector("button[data-label='ready now']").is_some());
         assert!(parse_selector("main > button").is_none());
+        assert!(parse_selector("main + button").is_none());
         assert!(parse_selector("button:hover").is_none());
+        let too_many = ["div"; MAX_SELECTOR_PARTS + 1].join(" ");
+        assert!(parse_selector(&too_many).is_none());
+        assert_eq!(
+            selector_diagnostic_detail(&too_many),
+            "selector-too-complex"
+        );
+    }
+
+    #[test]
+    fn descendant_selector_matches_owned_ancestors_before_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "main .card button { display: none; background-color: red; } main button { display: block; }"
+                .into(),
+        ])
+        .unwrap();
+        let document = NativeDocument::parse(
+            "<main><section class='card'><button id='target'>Target</button></section><button id='other'>Other</button></main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let target = document.resolve_target("id=target").unwrap();
+        let other = document.resolve_target("id=other").unwrap();
+
+        let target_style = stylesheet.computed_for_in_document(&document, target, None);
+        assert!(target_style.hidden());
+        assert_eq!(target_style.background_color(), Some(NativeColor::RED));
+
+        let other_style = stylesheet.computed_for_in_document(&document, other, None);
+        assert!(!other_style.hidden());
+        assert_eq!(other_style.background_color(), None);
     }
 
     #[test]

@@ -845,12 +845,12 @@ impl NativeDocument {
 
         let mut inherited_color = Some(NativeColor::BLACK);
         for current_id in chain.into_iter().rev() {
-            let Some(node) = self.node(current_id) else {
+            let Some(_) = self.node(current_id) else {
                 continue;
             };
             let style = self
                 .stylesheet
-                .computed_for_with_inherited_color(node, inherited_color);
+                .computed_for_in_document(self, current_id, inherited_color);
             inherited_color = style.color().or(inherited_color);
             if current_id == id {
                 return style;
@@ -1056,7 +1056,11 @@ impl NativeDocument {
             {
                 return true;
             }
-            if self.stylesheet.computed_for(node).hidden() {
+            if self
+                .stylesheet
+                .computed_for_in_document(self, current_id, None)
+                .hidden()
+            {
                 return true;
             }
             current = node.parent();

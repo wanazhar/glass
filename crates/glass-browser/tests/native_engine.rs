@@ -1021,6 +1021,67 @@ fn native_pre_line_preserves_bounded_source_breaks_and_inherits_through_contents
 }
 
 #[test]
+fn native_pre_preserves_bounded_whitespace_without_soft_wrap() {
+    let document = NativeDocument::parse(
+        "<style>#flow { white-space: pre; line-height: 24px; width: 32px; }</style><div id='flow'> A  B\n<span id='inline' style='display:inline'>\tCDEFG</span>\r\nD </div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 96,
+        device_scale_factor_milli: 1000,
+    };
+    let flow = document.resolve_target("id=flow").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(flow).unwrap().height, 72);
+    assert_eq!(
+        layout.box_for(inline),
+        Some(NativeRect {
+            x: 0,
+            y: 24,
+            width: 32,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .map(|run| (run.node_id, run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (flow, NativePoint { x: 0, y: 0 }, " A  B"),
+            (inline, NativePoint { x: 0, y: 24 }, "\tCDEFG"),
+            (flow, NativePoint { x: 0, y: 48 }, "D "),
+        ]
+    );
+    assert_eq!(
+        document.visible_text(100),
+        ("A B CDEFG D".to_owned(), false)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert_eq!(
+        list.commands
+            .iter()
+            .filter_map(|command| match command {
+                NativeDisplayCommand::TextRun { origin, text, .. } =>
+                    Some((*origin, text.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (NativePoint { x: 0, y: 0 }, " A  B"),
+            (NativePoint { x: 0, y: 24 }, "\tCDEFG"),
+            (NativePoint { x: 0, y: 48 }, "D "),
+        ]
+    );
+}
+
+#[test]
 fn native_text_boundary_separator_drops_when_inline_item_wraps() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:16px'>A <span id='middle' style='display:inline'>B</span> C</div>",
@@ -2353,7 +2414,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: visible; white-space: pre; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: visible; white-space: pre-wrap; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

@@ -7,7 +7,7 @@ bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
 bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
 bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture/
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
-bounded-pre-line-breaks slices,
+bounded-pre-line-breaks/bounded-preformatted-whitespace slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -39,7 +39,8 @@ line-height flow, bounded direct-text fragments at actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
 four-side padding/margin edges, bounded source-whitespace boundaries, and
 bounded hard line breaks in supported inline flow, and
-bounded rectangular `overflow:hidden`/`overflow:clip` clips shared by paint,
+bounded inherited `white-space: pre-line` and `white-space: pre` source
+whitespace flow, and bounded rectangular `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
 for unsupported CSS input.
 The engine does not
@@ -376,6 +377,17 @@ collapsed. `normal` remains the default; `pre`, `pre-wrap`, `break-spaces`,
 `nowrap`, preserved tabs, and general CSS white-space conformance remain
 unsupported. Its implementation and full validation evidence are recorded in
 the task file and issue #40.
+
+The 034 bounded-preformatted-whitespace boundary adds inherited
+`white-space: pre`. Literal source spaces, tabs, and other non-line-break
+characters retain deterministic one-cell advances; LF, CR, and CRLF reuse the
+same hard-break cursor transition, and preformatted segments do not soft-wrap
+at the content width. A wide line is bounded by the existing surface and
+ancestor clips rather than reflowed or horizontally scrolled. Tab stops,
+font metrics, unsupported glyph fidelity, `pre-wrap`, `break-spaces`,
+`nowrap`, text alignment, and general CSS whitespace/overflow conformance
+remain unsupported. Its implementation and full validation evidence are
+recorded in the task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

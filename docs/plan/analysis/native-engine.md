@@ -59,6 +59,14 @@ The 033 bounded-pre-line-breaks slice is complete locally: inherited
 boundaries into the same hard flow breaks while retaining space collapsing and
 the no-general-CSS boundary. Its complete gate evidence is recorded below and
 its issue #40 checkpoint is updated from the same commit.
+The 034 bounded-preformatted-whitespace slice is complete locally: inherited
+`white-space: pre` retains literal fixed-cell source whitespace, turns bounded
+LF/CR/CRLF boundaries into the same hard flow breaks, and does not soft-wrap
+preformatted segments. Its contract explicitly leaves tab stops, wide-line
+reflow/scrolling, text alignment, font metrics, and general CSS whitespace
+conformance outside the native claim; its complete gate evidence is recorded
+in `docs/plan/tasks/native-engine-034.md` and its issue #40 checkpoint is
+updated from the same commit.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -202,6 +210,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-031` | bounded non-scrolling `overflow: clip` through the existing rectangular clip, viewport projection, and point hit-testing path | `native-engine-030` | `visible`/`auto`/`scroll`, axis-specific overflow, nested scrolling, scrollbars, rounded descendant clips, general CSS conformance, and browser parity |
 | `native-engine-032` | bounded visible `<br>` hard line breaks through the existing integer inline-flow cursor and fixed line-height floor | `native-engine-031` | `<wbr>`, preserved source newlines, CSS `white-space`, font metrics, Unicode line breaking, bidi, general inline formatting, and browser parity |
 | `native-engine-033` | bounded inherited `white-space: pre-line` source newline breaks through the existing hard-break cursor while collapsing other whitespace | `native-engine-032` | `pre`/`pre-wrap`/`break-spaces`/`nowrap`, preserved tabs or arbitrary whitespace, text alignment, font metrics, Unicode line breaking, bidi, and browser parity |
+| `native-engine-034` | bounded inherited `white-space: pre` with literal fixed-cell source whitespace, LF/CR/CRLF hard breaks, and no soft wrapping | `native-engine-033` | `pre-wrap`/`break-spaces`/`nowrap`, browser tab stops, wide-line reflow or horizontal scrolling, text alignment, word spacing, Unicode line breaking, bidi, font metrics, and browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -363,12 +372,13 @@ stacking, or that clicking a link performs browser navigation.
 | bounded `overflow: clip` | removes a common false diagnostic while reusing the existing rectangular clip invariant | no axis-specific overflow, nested scrolling, scrollbars, rounded descendant clips, or public distinction from `hidden` | accept only the single value, map both supported values to one internal clip bit, and preserve bounded diagnostics for `visible`/`auto`/`scroll` |
 | bounded hard line breaks | makes author-visible `<br>` structure affect fixture flow without adding a renderer or font engine | no `<wbr>`, preserved source newline, CSS whitespace, font metric, Unicode line-breaking, bidi, or browser inline-formatting claim | move only the existing bounded cursor, emit no synthetic node, and keep hidden/display:none breaks inert |
 | bounded `white-space: pre-line` breaks | preserves common source newlines through the proven hard-break transition while retaining a collapsed-space model | no `pre`/`pre-wrap`/`break-spaces`/`nowrap`, tabs, arbitrary whitespace, text alignment, font metrics, Unicode line breaking, bidi, or browser parity | inherit one explicit mode through the existing bounded style walk, normalize CRLF, and reuse the `<br>` flow transition |
+| bounded `white-space: pre` | preserves bounded literal source whitespace and line boundaries without inventing soft-wrap or tab-stop policy | no `pre-wrap`/`break-spaces`/`nowrap`, browser tab stops, wide-line reflow or horizontal scrolling, text alignment, word spacing, Unicode line breaking, bidi, font metrics, or browser parity | inherit one explicit mode through the existing style walk, retain fixed-cell text runs, normalize CRLF, and reuse the proven hard-break transition |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-033.md` is the latest completed checkpoint,
+`docs/plan/tasks/native-engine-034.md` is the latest completed checkpoint,
 `docs/plan/tasks/native-engine-032.md` is the preceding completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.

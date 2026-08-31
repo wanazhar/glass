@@ -239,6 +239,13 @@ cursor while retaining whitespace collapsing, CRLF normalization, and the
 no-general-CSS boundary. Its implementation and full validation evidence are
 recorded in the task file and issue #40.
 
+The completed preformatted-whitespace slice is
+[native-engine-034](tasks/native-engine-034.md). It adds inherited
+`white-space: pre` with literal fixed-cell source whitespace, LF/CR/CRLF hard
+breaks, and no soft wrapping, while retaining explicit limits for wide-line
+overflow, tab stops, font metrics, text alignment, and general CSS whitespace
+conformance.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -11,6 +11,7 @@ bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
 bounded-min-max-dimensions/bounded-opacity-groups slices,
+bounded-text-alignment,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -51,6 +52,7 @@ four-side padding/margin edges, bounded source-whitespace boundaries, and
 bounded hard line breaks in supported inline flow, and
 bounded inherited `white-space: pre-line`, `white-space: pre`,
 `white-space: pre-wrap`, and `white-space: nowrap` source whitespace flow, and
+bounded inherited physical `text-align:left|center|right` line placement, and
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -597,8 +599,10 @@ replays each group in a transparent layer before source-over compositing it
 onto its parent. Fixed-point alpha parsing, nested groups, `display:contents`,
 zero-opacity layout/hit behavior, and explicit layer budgets are in scope;
 general stacking, transforms, filters, animation, and browser compositor parity
-remain outside the boundary. No later native-engine slice is active in this
-checkpoint.
+remain outside the boundary. The next active 052 boundary adds bounded
+inherited physical text alignment for fixed-cell direct text and supported
+inline boxes; logical directions, justification, and browser inline-formatting
+parity remain outside the boundary.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -792,6 +796,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   transparent-layer replay, inside-out source-over group compositing, and
   explicit aggregate layer depth/pixel limits without changing layout or hit
   testing.
+- bounded inherited physical `text-align:left|center|right` parsing and
+  cascade, deterministic fixed-cell line offsets across direct text and
+  supported inline boxes, and shared layout/paint/raster/hit-test coordinates.
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden`/`overflow:clip` ancestor intersections on

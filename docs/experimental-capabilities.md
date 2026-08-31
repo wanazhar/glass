@@ -138,14 +138,15 @@ hit-testing, side-specific solid/dashed/dotted-border paint, bounded physical ci
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow, bounded direct-text flow fragments and source-order text paint, bounded
 word-aware wrapping, bounded source-whitespace boundaries across supported
-inline flow, bounded PNG capture, and
+inline flow, bounded inherited `white-space: nowrap` collapsed one-line flow,
+bounded root horizontal scrolling, bounded PNG capture, and
 Rust-only
 display-list/software-surface artifacts;
 Rust callers can inspect bounded revisioned diagnostics for unsupported CSS
 without raw stylesheet echo;
 it does not
 provide network access,
-filesystem navigation, general CSS/nested/horizontal/stacking layout, logical
+filesystem navigation, general CSS/nested/stacking layout, logical
 writing-mode sides, negative, percentage, or auto box-model values,
 positioned/flex/grid layout,
 screen-shot-containing evidence, JPEG/PDF capture, physical pixels,

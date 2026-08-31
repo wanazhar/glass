@@ -124,13 +124,17 @@ The 044 bounded-text-fragment-affix slice is complete locally: it adds exact
 same-run prefix/suffix affixes around the existing matcher, with the same
 raw-comma parsing, per-term UTF-8 decoding, scroll, history, and fail-closed
 boundaries. Its complete gate evidence is recorded below, in
-`docs/plan/tasks/native-engine-044.md`, and on issue #40. No later
-native-engine slice was active at that checkpoint. The 045 bounded
+`docs/plan/tasks/native-engine-044.md`, and on issue #40. The 045 bounded
 root-horizontal-scroll slice is complete locally: it derives measured overflow
 width, independently clamps x/y, and reuses the existing viewport, hit-test,
 display-list, raster, and history owners. Its complete gate evidence is
 recorded below, in `docs/plan/tasks/native-engine-045.md`, and on issue #40.
-No later native-engine slice is active in this checkout.
+The 046 bounded-nowrap-whitespace slice is complete locally: it accepts
+inherited and inline `white-space: nowrap`, collapses supported whitespace
+through the existing fixed-cell policy, disables soft wrapping, and reuses the
+measured root horizontal scroll/projection path. Its complete gate evidence is
+recorded below, in `docs/plan/tasks/native-engine-046.md`, and on issue #40.
+No later native-engine slice is active at this checkpoint.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -286,6 +290,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-043` | bounded `#:~:text=start[,end]` matching against the first visible non-truncated text run after per-term UTF-8 decoding | `native-engine-042` | prefix/suffix syntax, multiple directives, cross-run ranges, highlights, duplicate-text disambiguation, Unicode normalization, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser text-fragment parity |
 | `native-engine-044` | bounded exact prefix/suffix text-fragment affixes around a same-run `start[,end]` match | `native-engine-043` | cross-run ranges, multiple directives, highlights, Unicode normalization, general URL decoding, smooth/nested/horizontal/keyboard/snap scrolling, and browser text-fragment parity |
 | `native-engine-045` | bounded root horizontal scrolling from measured document overflow width with independent x/y clamping and shared projection | `native-engine-044` | nested scrolling, scrollbars, smooth/keyboard/snap scrolling, axis-specific CSS overflow, scroll anchoring, and browser parity |
+| `native-engine-046` | bounded inherited `white-space: nowrap` with collapsed fixed-cell one-line flow and measured root overflow | `native-engine-045` | preserved whitespace modes beyond the existing subset, nested scrolling, scrollbars, Unicode line breaking, font metrics, and browser parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -453,6 +458,9 @@ Phase 2 integration chains added by these slices are:
     clamps x and y independently, records both coordinates in history/effects,
     and projects the same offset through viewport rectangles, hit testing,
     display-list replay, and raster capture.
+51. Native inherited `white-space: nowrap` collapses supported whitespace while
+    preventing soft wrapping, measures the resulting one-line overflow, and
+    reaches the existing root horizontal scroll/projection path.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -510,12 +518,14 @@ visual stacking.
 | bounded text fragments | makes simple text-directed local links useful without a second semantic text tree or highlight renderer | no multiple directives, cross-run ranges, highlighting, Unicode normalization, or browser parity | parse raw term separators before decode, match one visible layout run in document order, and preserve the existing scroll fallback |
 | bounded text-fragment affixes | makes common prefix/suffix disambiguation useful without adding a range/highlight tree | no cross-run ranges, highlighting, Unicode normalization, or browser parity | strip only raw affix markers before bounded per-term decoding, require exact adjacency in one visible layout run, and preserve the existing scroll fallback |
 | bounded root horizontal scrolling | makes wide deterministic local content reachable through the existing root scroll owner without nested scroll state | no nested scrolling, scrollbars, smooth/keyboard/snap scrolling, axis-specific overflow, or browser parity | derive bounded document width from visible layout output, clamp x/y independently, and reuse the existing projection/history path |
+| bounded `white-space: nowrap` | preserves collapsed text on one fixed-cell line so the root horizontal path can reach wide local content | no preserved whitespace, nested scrolling, scrollbars, Unicode line breaking, font metrics, or browser parity | inherit one explicit mode through the existing style walk, disable soft wrapping only for that mode, and measure the resulting text runs |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-045.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-046.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-045.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-044.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-043.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-042.md` is the preceding completed checkpoint;

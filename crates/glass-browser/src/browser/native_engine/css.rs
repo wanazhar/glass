@@ -151,6 +151,7 @@ pub(crate) enum WhiteSpaceValue {
     PreLine,
     Pre,
     PreWrap,
+    NoWrap,
 }
 
 /// Bounded physical top, right, bottom, and left box values.
@@ -1405,6 +1406,7 @@ fn parse_white_space(value: &str) -> Option<WhiteSpaceValue> {
         "pre-line" => Some(WhiteSpaceValue::PreLine),
         "pre" => Some(WhiteSpaceValue::Pre),
         "pre-wrap" => Some(WhiteSpaceValue::PreWrap),
+        "nowrap" => Some(WhiteSpaceValue::NoWrap),
         _ => None,
     }
 }
@@ -1742,7 +1744,7 @@ mod tests {
             parse_white_space("pre-wrap"),
             Some(WhiteSpaceValue::PreWrap)
         );
-        assert_eq!(parse_white_space("nowrap"), None);
+        assert_eq!(parse_white_space("nowrap"), Some(WhiteSpaceValue::NoWrap));
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("visible"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("auto"), Some(OverflowValue::Other));

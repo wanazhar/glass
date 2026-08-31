@@ -1,7 +1,7 @@
 ---
 id: native-engine-056
 scope: glass-browser/native-engine/first-line-text-indent
-status: active
+status: complete
 depends-on: [native-engine-055]
 ---
 
@@ -80,6 +80,21 @@ font metrics, or browser CSS conformance is introduced.
 
 ## Completion evidence
 
-To be filled after implementation and validation. Remote CI remains pending
-until this local branch is pushed; no push, tag, publication, or release is
-part of this epic checkpoint.
+Implemented in local commit `3eb8bab` (`feat(native-engine): add bounded
+first-line indent`). The focused native integration test passed with 1 test;
+the full native integration target passed with 71 tests; the two new CSS unit
+tests passed; and formatting, whitespace, strict package clippy, and full
+workspace clippy checks passed. The documentation gates passed for version
+sync, feature parity, release documentation, documentation depth and
+coverage, TUI shortcuts, reliability matrix, public read-only adapters, and
+the Web IR corpus; rustdoc passed with warnings denied. The exact workspace
+test wrapper first observed the known load-sensitive rust-analyzer diagnostic
+test failure, then the unchanged warm rerun passed: browser/native tests,
+`glass-dev`'s 365 tests, integrations, and PTY coverage were green.
+
+The implementation keeps the value in the existing bounded CSS cascade,
+applies the clamped first-line offset through `FlowCursor`, and reuses the
+resulting coordinates for wrapping, fragments, display-list projection, hit
+testing, and root overflow. Remote CI remains pending until this local branch
+is pushed; no push, tag, publication, or release is part of this epic
+checkpoint.

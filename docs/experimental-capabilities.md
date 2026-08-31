@@ -146,7 +146,8 @@ bounded root horizontal scrolling, bounded local opacity subtree groups with
 inside-out transparent-layer compositing, bounded inherited physical
 `text-align:left|center|right` fixed-cell line placement, bounded functional
 `rgba(R, G, B, A)` alpha colors for background, border, and text paint, bounded
-PNG capture,
+inherited fixed-cell `text-decoration:none|underline` paint, bounded PNG
+capture,
 and
 Rust-only
 display-list/software-surface artifacts;

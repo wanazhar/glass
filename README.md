@@ -348,7 +348,8 @@ PNG capture through the explicit backend operation, and Rust-only
 display-list/software-surface artifacts with bounded local opacity subtree
 groups, inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
-text paint,
+text paint, bounded inherited fixed-cell `text-decoration:none|underline`
+paint,
 plus bounded revisioned Rust
 diagnostics for unsupported CSS without raw stylesheet echo. A
 `native-engine` feature build exposes the explicit local

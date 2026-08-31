@@ -11,7 +11,7 @@ bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace/bounded-nowrap-whitespace/bounded-inherited-line-height/
 bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
-bounded-functional-alpha-colors slices,
+bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -54,7 +54,7 @@ bounded inherited `white-space: pre-line`, `white-space: pre`,
 `white-space: pre-wrap`, and `white-space: nowrap` source whitespace flow, and
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
-text paint, and
+text paint, bounded fixed-cell `text-decoration:none|underline` paint, and
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -608,7 +608,10 @@ outside the boundary. The completed 053 boundary extends the existing bounded
 color grammar with decimal-channel `rgba(R, G, B, A)` values using fixed-point
 alpha quantization and the existing source-over raster path; CSS Color 4,
 wide-gamut, interpolation, and color-management behavior remain outside the
-boundary. No later native-engine slice is active in this checkpoint.
+boundary. The active 054 boundary adds inherited fixed-cell
+`text-decoration:none|underline` as a text-command bit and a clipped,
+alpha-aware one-pixel baseline-offset replay. Font metrics, decoration
+propagation, and browser text-paint parity remain outside the boundary.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -808,6 +811,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded `rgba(R, G, B, A)` functional alpha parsing for background, border,
   and text colors, with shared fixed-point quantization, display-list color
   ownership, and integer source-over replay.
+- bounded inherited `text-decoration:none|underline` parsing and cascade,
+  immutable text-command decoration bits, and deterministic clipped
+  alpha-aware fixed-cell underline replay.
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
 - bounded `overflow:hidden`/`overflow:clip` ancestor intersections on

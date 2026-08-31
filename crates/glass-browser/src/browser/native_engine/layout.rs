@@ -476,6 +476,13 @@ impl FlowCursor {
             && self.x.saturating_sub(self.start_x).saturating_add(width) > self.available_width
     }
 
+    fn line_capacity(&self) -> usize {
+        let remaining_width = self
+            .available_width
+            .saturating_sub(self.x.saturating_sub(self.start_x));
+        usize::try_from(remaining_width / CHARACTER_WIDTH).unwrap_or(usize::MAX)
+    }
+
     fn place_inline(&mut self, width: u32, height: u32) {
         let _ = self.place_inline_with_origin(width, height);
     }
@@ -788,7 +795,8 @@ impl<'a> LayoutBuilder<'a> {
         {
             WhiteSpaceValue::Normal => self.place_text_segment(parent, flow, value),
             WhiteSpaceValue::PreLine => self.place_pre_line_text(parent, flow, value),
-            WhiteSpaceValue::Pre => self.place_preformatted_text(parent, flow, value),
+            WhiteSpaceValue::Pre => self.place_preformatted_text(parent, flow, value, false),
+            WhiteSpaceValue::PreWrap => self.place_preformatted_text(parent, flow, value, true),
         }
     }
 
@@ -821,13 +829,20 @@ impl<'a> LayoutBuilder<'a> {
         parent: NativeNodeId,
         flow: &mut FlowCursor,
         value: &str,
+        allow_soft_wrap: bool,
     ) {
+        let _ = flow.take_pending_whitespace();
         let mut segment_start = 0;
         let mut offset = 0;
         while offset < value.len() {
             let byte = value.as_bytes()[offset];
             if byte == b'\n' || byte == b'\r' {
-                self.place_preformatted_segment(parent, flow, &value[segment_start..offset]);
+                self.place_preformatted_segment(
+                    parent,
+                    flow,
+                    &value[segment_start..offset],
+                    allow_soft_wrap,
+                );
                 let break_end = if byte == b'\r' && value.as_bytes().get(offset + 1) == Some(&b'\n')
                 {
                     offset + 2
@@ -842,7 +857,7 @@ impl<'a> LayoutBuilder<'a> {
                 offset = offset.saturating_add(character.len_utf8());
             }
         }
-        self.place_preformatted_segment(parent, flow, &value[segment_start..]);
+        self.place_preformatted_segment(parent, flow, &value[segment_start..], allow_soft_wrap);
     }
 
     fn place_preformatted_segment(
@@ -850,8 +865,13 @@ impl<'a> LayoutBuilder<'a> {
         parent: NativeNodeId,
         flow: &mut FlowCursor,
         value: &str,
+        allow_soft_wrap: bool,
     ) {
         if value.is_empty() {
+            return;
+        }
+        if allow_soft_wrap {
+            self.place_preformatted_wrapped_segment(parent, flow, value);
             return;
         }
         let width = Self::text_width(value);
@@ -867,6 +887,33 @@ impl<'a> LayoutBuilder<'a> {
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));
+    }
+
+    fn place_preformatted_wrapped_segment(
+        &mut self,
+        parent: NativeNodeId,
+        flow: &mut FlowCursor,
+        value: &str,
+    ) {
+        if flow.available_width == 0 {
+            return;
+        }
+        let mut offset = 0;
+        while offset < value.len() {
+            if flow.line_has_content && flow.line_capacity() == 0 {
+                flow.flush_line();
+            }
+            let chunk_length = flow.line_capacity().max(1);
+            let mut end = offset;
+            for (relative_offset, character) in value[offset..].char_indices().take(chunk_length) {
+                end = offset + relative_offset + character.len_utf8();
+            }
+            if end == offset {
+                break;
+            }
+            self.place_text_fragment(parent, flow, &value[offset..end], false);
+            offset = end;
+        }
     }
 
     fn place_text_segment(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {

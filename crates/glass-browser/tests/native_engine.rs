@@ -1082,6 +1082,69 @@ fn native_pre_preserves_bounded_whitespace_without_soft_wrap() {
 }
 
 #[test]
+fn native_pre_wrap_preserves_whitespace_and_soft_wraps_at_fixed_cell_capacity() {
+    let document = NativeDocument::parse(
+        "<style>#flow { white-space: pre-wrap; line-height: 24px; width: 32px; }</style><div id='flow'>AB C D\n<span id='inline' style='display:inline; width:32px'> \tDE</span>\r\nF </div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 128,
+        device_scale_factor_milli: 1000,
+    };
+    let flow = document.resolve_target("id=flow").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(flow).unwrap().height, 96);
+    assert_eq!(
+        layout.box_for(inline),
+        Some(NativeRect {
+            x: 0,
+            y: 48,
+            width: 32,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .map(|run| (run.node_id, run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (flow, NativePoint { x: 0, y: 0 }, "AB C"),
+            (flow, NativePoint { x: 0, y: 24 }, " D"),
+            (inline, NativePoint { x: 0, y: 48 }, " \tDE"),
+            (flow, NativePoint { x: 0, y: 72 }, "F "),
+        ]
+    );
+    assert_eq!(
+        document.visible_text(100),
+        ("AB C D DE F".to_owned(), false)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert_eq!(
+        list.commands
+            .iter()
+            .filter_map(|command| match command {
+                NativeDisplayCommand::TextRun { origin, text, .. } =>
+                    Some((*origin, text.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "AB C"),
+            (NativePoint { x: 0, y: 24 }, " D"),
+            (NativePoint { x: 0, y: 48 }, " \tDE"),
+            (NativePoint { x: 0, y: 72 }, "F "),
+        ]
+    );
+}
+
+#[test]
 fn native_text_boundary_separator_drops_when_inline_item_wraps() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:16px'>A <span id='middle' style='display:inline'>B</span> C</div>",
@@ -2414,7 +2477,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: visible; white-space: pre-wrap; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

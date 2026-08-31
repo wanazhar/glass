@@ -7,7 +7,8 @@ bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
 bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
 bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture/
 bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
-bounded-pre-line-breaks/bounded-preformatted-whitespace slices,
+bounded-pre-line-breaks/bounded-preformatted-whitespace/
+bounded-pre-wrap-whitespace slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -39,8 +40,9 @@ line-height flow, bounded direct-text fragments at actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
 four-side padding/margin edges, bounded source-whitespace boundaries, and
 bounded hard line breaks in supported inline flow, and
-bounded inherited `white-space: pre-line` and `white-space: pre` source
-whitespace flow, and bounded rectangular `overflow:hidden`/`overflow:clip` clips shared by paint,
+bounded inherited `white-space: pre-line`, `white-space: pre`, and
+`white-space: pre-wrap` source whitespace flow, and bounded rectangular
+`overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
 for unsupported CSS input.
 The engine does not
@@ -366,28 +368,39 @@ The 032 bounded-hard-line-breaks boundary treats a visible `<br>` as a hard
 line break in the existing integer inline flow. It advances the containing
 cursor by the current fixed line-height floor, resets the inline origin, and
 creates no semantic node, layout box, or paint command. Hidden or
-`display:none` breaks are ignored. `<wbr>`, preserved source newlines, CSS
-`white-space` modes, font metrics, and browser inline-formatting parity remain
-unsupported.
+`display:none` breaks are ignored. At that boundary, `<wbr>`, preserved source
+newlines, CSS `white-space` modes, font metrics, and browser inline-formatting
+parity remained unsupported.
 
 The completed 033 bounded-pre-line-breaks boundary supports inherited
 `white-space: pre-line` as a source-newline mode. LF, CR, and CRLF boundaries
 reuse the same hard-break cursor transition while other whitespace remains
-collapsed. `normal` remains the default; `pre`, `pre-wrap`, `break-spaces`,
-`nowrap`, preserved tabs, and general CSS white-space conformance remain
-unsupported. Its implementation and full validation evidence are recorded in
-the task file and issue #40.
+collapsed. `normal` remains the default. At the 033 boundary, `pre`,
+`pre-wrap`, `break-spaces`, `nowrap`, preserved tabs, and general CSS
+white-space conformance were outside the native claim. Its implementation and
+full validation evidence are recorded in the task file and issue #40.
 
 The 034 bounded-preformatted-whitespace boundary adds inherited
 `white-space: pre`. Literal source spaces, tabs, and other non-line-break
 characters retain deterministic one-cell advances; LF, CR, and CRLF reuse the
 same hard-break cursor transition, and preformatted segments do not soft-wrap
 at the content width. A wide line is bounded by the existing surface and
-ancestor clips rather than reflowed or horizontally scrolled. Tab stops,
-font metrics, unsupported glyph fidelity, `pre-wrap`, `break-spaces`,
-`nowrap`, text alignment, and general CSS whitespace/overflow conformance
-remain unsupported. Its implementation and full validation evidence are
-recorded in the task file and issue #40.
+ancestor clips rather than reflowed or horizontally scrolled. At the 034
+boundary, tab stops, font metrics, unsupported glyph fidelity, `pre-wrap`,
+`break-spaces`, `nowrap`, text alignment, and general CSS whitespace/overflow
+conformance were outside the native claim. Its implementation and full
+validation evidence are recorded in the task file and issue #40.
+
+The 035 bounded-pre-wrap-whitespace boundary adds inherited
+`white-space: pre-wrap`. Literal source spaces, tabs, and other non-line-break
+characters remain fixed-cell text, LF, CR, and CRLF reuse the same hard-break
+cursor transition, and source segments may soft-wrap at deterministic
+fixed-cell content capacity. Text runs may split at those boundaries while
+semantic, layout, and paint node ownership remains unchanged. Browser line
+breaking, tab stops, font metrics, shaping, baselines, bidi, justification,
+`break-spaces`, `nowrap`, and general CSS whitespace/overflow conformance
+remain unsupported. Its implementation and validation evidence are recorded
+in the task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

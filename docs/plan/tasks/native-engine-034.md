@@ -91,8 +91,8 @@ Verified locally on 2026-08-31:
   unsupported `pre-wrap` diagnostics, and existing CSS cascade coverage;
 - strict Clippy for default/no-default and `native-engine` feature targets
   passed with warnings denied;
-- locked all-target/all-feature `glass-browser` matrix: 819 library tests
-  passed with 1 ignored, and all integration and example targets green;
+- locked all-target/all-feature `glass-browser` matrix: 819 library tests ran,
+  with 818 passed and 1 ignored, and all integration and example targets green;
 - native-feature Rust doctests: 4 passed; and
 - documentation coverage, depth, release-truth, version-sync, and feature
   parity validators passed. Final counts and report paths are recorded in the

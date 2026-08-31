@@ -39,7 +39,7 @@ pub use engine::{
     NativeEngineSnapshot,
 };
 pub use error::NativeEngineError;
-pub use history::{NativeHistory, NativeHistoryEntry};
+pub use history::{NativeHistory, NativeHistoryDirection, NativeHistoryEntry};
 pub use interaction::{MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind};
 pub use layout::{
     NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeTextLayout,

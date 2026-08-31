@@ -247,7 +247,17 @@ pub(crate) fn validate_url_text(field: &str, value: &str) -> Result<(), NativeEn
 }
 
 pub(crate) fn is_supported_url_shape(value: &str) -> bool {
-    value == "about:blank" || value.starts_with("data:") || value.starts_with("fixture:")
+    let resource_url = without_fragment(value);
+    resource_url == "about:blank"
+        || resource_url.starts_with("data:")
+        || resource_url.starts_with("fixture:")
+}
+
+/// Return the resource portion of a URL, excluding raw fragment metadata.
+pub(crate) fn without_fragment(value: &str) -> &str {
+    value
+        .split_once('#')
+        .map_or(value, |(resource, _)| resource)
 }
 
 pub(crate) fn canonical_fixture_url(value: &str) -> Result<String, NativeEngineError> {
@@ -258,6 +268,11 @@ pub(crate) fn canonical_fixture_url(value: &str) -> Result<String, NativeEngineE
     if parsed.scheme() != "fixture" || parsed.host_str().is_none() {
         return Err(NativeEngineError::UnsupportedUrl {
             reason: "fixture URLs require the fixture:// scheme and a host".into(),
+        });
+    }
+    if parsed.fragment().is_some() {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "registered fixture URLs must not contain a fragment".into(),
         });
     }
     Ok(parsed.to_string())

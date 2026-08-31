@@ -84,6 +84,12 @@ filesystem, script, storage, and arbitrary schemes outside the native claim;
 its complete gate evidence is recorded in
 `docs/plan/tasks/native-engine-036.md` and its issue #40 checkpoint is updated
 from the same commit.
+The 037 bounded-fragment-navigation-history slice is complete locally: raw
+fragments are separated from local resource lookup, same-resource navigation
+is document-preserving and revisioned, and explicit Rust back/forward traversal
+is implemented without inventing a transport-level history operation. Its
+completion evidence is recorded in `docs/plan/tasks/native-engine-037.md` and
+issue #40.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -230,6 +236,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-034` | bounded inherited `white-space: pre` with literal fixed-cell source whitespace, LF/CR/CRLF hard breaks, and no soft wrapping | `native-engine-033` | `pre-wrap`/`break-spaces`/`nowrap`, browser tab stops, wide-line reflow or horizontal scrolling, text alignment, word spacing, Unicode line breaking, bidi, font metrics, and browser parity |
 | `native-engine-035` | bounded inherited `white-space: pre-wrap` with literal fixed-cell source whitespace, LF/CR/CRLF hard breaks, and deterministic fixed-cell soft wrapping | `native-engine-034` | `break-spaces`/`nowrap`, browser line-breaking opportunities, tab stops, wide-line scrolling, text alignment/justification, word spacing, Unicode line breaking, bidi, font metrics/shaping, and browser parity |
 | `native-engine-036` | bounded standard padded base64 `data:text/html` loading through the existing local resource and dispatcher path with pre-decode and decoded-body bounds | `native-engine-035` | URL-safe or whitespace-tolerant base64, percent-encoded payloads, non-HTML media types, alternate charsets, subresources, network/filesystem loading, cancellation, and browser data-URL parity |
+| `native-engine-037` | bounded raw-fragment same-document navigation plus explicit Rust back/forward traversal for local resources, preserving document state and parse-before-commit failure atomicity | `native-engine-036` | anchor scrolling, document snapshots for mutable history state, redirects, HTTP/network history, credentials/cookies, transport-level history operations, and browser navigation parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -358,6 +365,11 @@ Phase 2 integration chains added by these slices are:
     navigation revision, and real backend dispatcher while retaining opaque
     origin and rejecting invalid, non-UTF-8, percent-encoded, non-HTML, and
     unbounded payloads without echoing their contents.
+42. Native raw URL fragments are removed from local resource lookup but retained
+    in navigation evidence; same-resource fragment navigation preserves the
+    document and scroll state while advancing revision/history, and explicit
+    Rust back/forward traversal reuses or reparses bounded local resources
+    atomically at the history cursor boundaries.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -406,12 +418,14 @@ stacking, or that clicking a link performs browser navigation.
 | bounded `white-space: pre` | preserves bounded literal source whitespace and line boundaries without inventing soft-wrap or tab-stop policy | no `pre-wrap`/`break-spaces`/`nowrap`, browser tab stops, wide-line reflow or horizontal scrolling, text alignment, word spacing, Unicode line breaking, bidi, font metrics, or browser parity | inherit one explicit mode through the existing style walk, retain fixed-cell text runs, normalize CRLF, and reuse the proven hard-break transition |
 | bounded `white-space: pre-wrap` | retains authored whitespace while making bounded preformatted content usable in narrow fixed-cell lines | no `break-spaces`/`nowrap`, browser line-breaking opportunities, tab stops, wide-line scrolling, text alignment/justification, word spacing, Unicode line breaking, bidi, font metrics/shaping, or browser parity | inherit one explicit mode through the existing style walk, split source text at deterministic cell capacity, normalize CRLF, and reuse the proven hard-break transition |
 | bounded base64 `data:text/html` loading | makes self-contained local HTML fixtures transportable through the real navigation path without network access | no URL-safe/whitespace-tolerant decoding, percent-encoded base64, alternate charsets, subresources, cancellation, network/filesystem policy, or arbitrary data-URL modes | reject non-HTML metadata, enforce a derived encoded bound before decode and the decoded document limit after decode, require UTF-8, and retain the existing opaque local origin |
+| bounded fragment navigation and history traversal | makes local URL/history behavior observable through the existing navigation owner without a second document store or network dependency | no anchor scrolling, mutable document snapshots, redirects, HTTP history, credentials/cookies, or shared transport operation | remove only raw fragments for resource lookup, preserve URL/document state for same-resource entries, parse different resources before moving the cursor, and return explicit boundary no-ops |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-036.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-037.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-036.md` is the preceding completed checkpoint,
 `docs/plan/tasks/native-engine-035.md` is the preceding completed checkpoint,
 `docs/plan/tasks/native-engine-034.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,

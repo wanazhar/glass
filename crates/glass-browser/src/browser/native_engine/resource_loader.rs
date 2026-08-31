@@ -1,4 +1,6 @@
-use super::config::{NativeEngineConfig, canonical_fixture_url, validate_url_text};
+use super::config::{
+    NativeEngineConfig, canonical_fixture_url, validate_url_text, without_fragment,
+};
 use super::error::NativeEngineError;
 use super::origin::NativeOrigin;
 use base64::Engine as _;
@@ -36,25 +38,26 @@ impl NativeResourceLoader {
     /// Load one supported local resource without filesystem or network access.
     pub fn load(&self, url: &str) -> Result<NativeResource, NativeEngineError> {
         validate_url_text("navigation URL", url)?;
-        if url == "about:blank" {
+        let resource_url = without_fragment(url);
+        if resource_url == "about:blank" {
             return Ok(NativeResource {
                 url: url.into(),
                 origin: NativeOrigin::Opaque,
                 body: String::new(),
             });
         }
-        if let Some(data) = url.strip_prefix("data:") {
+        if let Some(data) = resource_url.strip_prefix("data:") {
             return self.load_data_url(url, data);
         }
-        if url.starts_with("fixture:") {
-            let canonical = canonical_fixture_url(url)?;
+        if resource_url.starts_with("fixture:") {
+            let canonical = canonical_fixture_url(resource_url)?;
             let Some(body) = self.fixtures.get(&canonical) else {
                 return Err(NativeEngineError::UnsupportedUrl {
                     reason: "fixture URL is not registered in the engine configuration".into(),
                 });
             };
             return Ok(NativeResource {
-                url: canonical,
+                url: fixture_navigation_url(&canonical, url),
                 origin: NativeOrigin::Opaque,
                 body: body.clone(),
             });
@@ -95,6 +98,13 @@ impl NativeResourceLoader {
             body,
         })
     }
+}
+
+fn fixture_navigation_url(canonical: &str, original: &str) -> String {
+    original.split_once('#').map_or_else(
+        || canonical.to_owned(),
+        |(_, fragment)| format!("{canonical}#{fragment}"),
+    )
 }
 
 fn decode_base64(payload: &str, max_document_bytes: usize) -> Result<String, NativeEngineError> {

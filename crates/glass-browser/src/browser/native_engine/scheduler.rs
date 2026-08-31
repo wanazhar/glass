@@ -22,11 +22,13 @@ impl DeterministicClock {
     }
 }
 
-/// The only task kind used by Phase 1. Future phases add typed task kinds;
-/// arbitrary callbacks never cross this scheduler boundary.
+/// Typed commit tasks used by the local navigation kernel. Arbitrary callbacks
+/// never cross this scheduler boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeTask {
     CommitNavigation,
+    CommitSameDocumentNavigation,
+    TraverseHistory,
 }
 
 /// A bounded task with deterministic insertion order.

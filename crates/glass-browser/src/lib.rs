@@ -273,9 +273,10 @@ pub use browser::{
     NativeBorderRadius, NativeBorderStyle, NativeBrowsingContext, NativeColor,
     NativeDisplayCommand, NativeDisplayList, NativeDocument, NativeEngine, NativeEngineBackend,
     NativeEngineConfig, NativeEngineError, NativeEngineLimits, NativeEngineSnapshot, NativeFixture,
-    NativeHistory, NativeHistoryEntry, NativeLayoutBox, NativeLayoutSnapshot, NativeLifecycleState,
-    NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativePoint, NativeRect,
-    NativeResource, NativeResourceLoader, NativeSurface, NativeTask, ScheduledTask, Viewport,
+    NativeHistory, NativeHistoryDirection, NativeHistoryEntry, NativeLayoutBox,
+    NativeLayoutSnapshot, NativeLifecycleState, NativeNode, NativeNodeId, NativeNodeKind,
+    NativeOrigin, NativePoint, NativeRect, NativeResource, NativeResourceLoader, NativeSurface,
+    NativeTask, ScheduledTask, Viewport,
 };
 
 pub use task_protocol::{

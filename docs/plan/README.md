@@ -261,6 +261,13 @@ dispatcher path, while retaining explicit local-only, UTF-8, size, and
 non-network limits. Its implementation and full validation evidence are
 recorded in the task file and issue #40.
 
+The completed local-navigation-history slice is
+[native-engine-037](tasks/native-engine-037.md). It adds bounded raw-fragment
+same-document navigation and explicit Rust back/forward traversal for local
+resources, while retaining parse-before-commit, revision, history, scroll, and
+non-network limits. Its implementation and validation evidence are recorded in
+the task file and issue #40.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -169,7 +169,11 @@ wrapping, text-fragment matching, display-list projection, and root-overflow
 measurement consume the same presentation text. Semantic source text remains
 unchanged; Unicode case mapping, locale behavior, and font-specific glyph
 metrics remain outside the boundary. Its implementation and validation
-evidence are recorded in the task file and issue #40.
+evidence are recorded in the task file and issue #40. The active
+dependency-ordered `native-engine-056` task adds bounded non-negative
+fixed-pixel `text-indent` to the first line of block containers, clamps the
+effective value to retain one fixed cell, and keeps inline/`display:contents`
+text on the containing block's flow.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -335,6 +339,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-053` | bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and text through the existing fixed-point/source-over path | `native-engine-052` | CSS Color 4 syntax, color spaces, interpolation, wide gamut, and color-management parity |
 | `native-engine-054` | bounded inherited fixed-cell `text-decoration:none|underline` carried through immutable text commands and clipped software replay | `native-engine-053` | font metrics, decoration propagation, other decoration styles, and browser text-paint parity |
 | `native-engine-055` | bounded inherited ASCII `text-transform:none|uppercase|lowercase` applied during fixed-cell text layout and consumed by wrapping, text fragments, paint, and overflow measurement | `native-engine-054` | Unicode case mapping/expansion, locale behavior, `capitalize`/other transforms, font shaping/metrics, and browser text-rendering parity |
+| `native-engine-056` | bounded non-negative fixed-pixel `text-indent` applied to the first line of block containers, with one-cell clamping and shared flow consumers | `native-engine-055` | negative/hanging indentation, each-line/hanging keywords, percentages and font-relative units, bidi/logical writing modes, inline-formatting parity, and browser CSS conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -535,6 +540,12 @@ Phase 2 integration chains added by these slices are:
     wrapping, text-fragment matching, display-list projection, root-overflow
     measurement, and capture share one transformed output, while semantic
     source text remains unchanged.
+59. Native non-negative fixed-pixel `text-indent` applies only to the first
+    line of block-container flow, reduces that line's fixed-cell capacity,
+    resets subsequent lines to the full content width, and shares the resulting
+    coordinates with text fragments, display-list projection, hit testing, and
+    root-overflow measurement while inline and `display:contents` elements do
+    not create an independent indent context.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -602,11 +613,13 @@ visual stacking.
 | bounded functional alpha colors | makes common translucent background, border, and text fixtures expressible through the existing paint path | no CSS Color 4 syntax, channel percentages, modern space-separated functions, wide-gamut colors, interpolation, or color-management parity | parse decimal integer channels plus the existing fixed-point alpha grammar, then reuse immutable `NativeColor` and integer source-over replay |
 | bounded fixed-cell text decoration | makes a deterministic one-pixel underline available across supported text fragments | no font metrics, descender-aware placement, decoration propagation parity, styles, colors, thickness, offsets, overline, line-through, blink, or browser parity | inherit one bounded `none`/`underline` value, carry it in immutable text commands, and draw a clipped alpha-aware line at the fixed glyph baseline offset |
 | bounded inherited text transform | makes common ASCII case presentation available across the existing fixed-cell text-flow path | no Unicode case mapping or expansion, locale-sensitive casing, `capitalize`/other transforms, font shaping/metrics, or browser text-rendering parity | inherit one bounded `none`/`uppercase`/`lowercase` value, transform ASCII letters during layout, preserve source semantic text, and keep fixed-cell width invariant |
+| bounded first-line text indent | makes common block first-line indentation observable without a second formatting context | no negative/hanging indentation, keyword/percentage/font-relative units, bidi/logical writing modes, or browser CSS parity | keep one non-negative fixed-pixel value in computed style, clamp it to leave one fixed cell, and switch the existing flow cursor to full width after the first line |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-056.md` is the active checkpoint;
 `docs/plan/tasks/native-engine-055.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-054.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-053.md` is the preceding completed checkpoint;

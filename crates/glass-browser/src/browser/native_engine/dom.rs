@@ -901,6 +901,22 @@ impl NativeDocument {
             .flatten()
     }
 
+    /// Resolve one un-decoded, exact local fragment id. Duplicate ids are
+    /// rejected so the bounded engine never invents browser recovery rules.
+    pub(crate) fn fragment_target(&self, fragment: &str) -> Option<NativeNodeId> {
+        let mut target = None;
+        for node in &self.nodes {
+            if node.element_name().is_none() || node.attribute("id") != Some(fragment) {
+                continue;
+            }
+            if target.is_some() {
+                return None;
+            }
+            target = Some(node.id());
+        }
+        target
+    }
+
     fn semantic_role(&self, id: NativeNodeId) -> Option<&'static str> {
         let node = self.node(id)?;
         if let Some(role) = node

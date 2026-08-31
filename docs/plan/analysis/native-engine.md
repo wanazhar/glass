@@ -95,6 +95,11 @@ anchor clicks route through the existing action and navigation owner while
 relative, remote, and other unsupported href destinations remain rejected. Its
 completion evidence is recorded in `docs/plan/tasks/native-engine-038.md` and
 issue #40.
+The 039 bounded-fragment-target-scroll slice is complete locally: exact visible
+local `id` targets position the root viewport at a bounded document-space top,
+and each history entry retains its saved root-scroll offset for same- and
+different-resource traversal restoration. Its implementation and validation
+evidence are recorded in `docs/plan/tasks/native-engine-039.md` and issue #40.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -146,7 +151,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::config` | public startup configuration and hard limits | URLs, viewport, fixtures, limits | validated `NativeEngineConfig` | `url`, typed native error |
 | `native_engine::lifecycle` | lifecycle state | transitions | `New`, `Running`, `Closed` | none |
 | `native_engine::scheduler` | logical clock and bounded ordered tasks | task kind, delay | deterministic task IDs/order | native limits |
-| `native_engine::history` | current local history | committed URL/revision | bounded entries/current index | native limits |
+| `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
 | `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, pixel dimensions, fixed pixel line-height, physical solid/dashed/dotted borders, circular border radii, and physical padding/margin edges | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
@@ -243,6 +248,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-036` | bounded standard padded base64 `data:text/html` loading through the existing local resource and dispatcher path with pre-decode and decoded-body bounds | `native-engine-035` | URL-safe or whitespace-tolerant base64, percent-encoded payloads, non-HTML media types, alternate charsets, subresources, network/filesystem loading, cancellation, and browser data-URL parity |
 | `native-engine-037` | bounded raw-fragment same-document navigation plus explicit Rust back/forward traversal for local resources, preserving document state and parse-before-commit failure atomicity | `native-engine-036` | anchor scrolling, document snapshots for mutable history state, redirects, HTTP/network history, credentials/cookies, transport-level history operations, and browser navigation parity |
 | `native-engine-038` | bounded semantic local anchor activation through the existing click and navigation path for fragment-only and absolute local hrefs, with empty-href click behavior and parse-before-commit failure atomicity | `native-engine-037` | relative URL resolution, remote/network navigation, downloads, target contexts, event propagation/default-action ordering, redirects, and browser navigation parity |
+| `native-engine-039` | exact visible local fragment `id` target scrolling plus bounded per-history-entry root-scroll save/restore across same- and different-resource traversal | `native-engine-038` | percent-decoded fragment matching, `name`/text fragments, duplicate-id recovery, smooth/nested/horizontal/keyboard/snap scrolling, sticky layout, mutable DOM snapshots, and browser scrolling parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -373,14 +379,19 @@ Phase 2 integration chains added by these slices are:
     unbounded payloads without echoing their contents.
 42. Native raw URL fragments are removed from local resource lookup but retained
     in navigation evidence; same-resource fragment navigation preserves the
-    document and scroll state while advancing revision/history, and explicit
-    Rust back/forward traversal reuses or reparses bounded local resources
-    atomically at the history cursor boundaries.
+    document owner while advancing revision/history and applies the bounded
+    visible-id scroll rule, and explicit Rust back/forward traversal reuses or
+    reparses bounded local resources atomically at the history cursor
+    boundaries.
 43. Native semantic local anchor clicks resolve bounded fragment-only or
     absolute local hrefs through the existing navigation owner; successful
     same-resource activation preserves bounded document state, successful
     cross-resource activation parses before commit, and unsupported hrefs fail
     without mutation.
+44. Native same-resource fragment navigation resolves one exact visible local
+    `id`, clamps its document-space top to the root viewport, records that
+    bounded scroll offset in history, and restores saved offsets at traversal;
+    unresolved targets preserve the current offset.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -431,12 +442,14 @@ visual stacking.
 | bounded base64 `data:text/html` loading | makes self-contained local HTML fixtures transportable through the real navigation path without network access | no URL-safe/whitespace-tolerant decoding, percent-encoded base64, alternate charsets, subresources, cancellation, network/filesystem policy, or arbitrary data-URL modes | reject non-HTML metadata, enforce a derived encoded bound before decode and the decoded document limit after decode, require UTF-8, and retain the existing opaque local origin |
 | bounded fragment navigation and history traversal | makes local URL/history behavior observable through the existing navigation owner without a second document store or network dependency | no anchor scrolling, mutable document snapshots, redirects, HTTP history, credentials/cookies, or shared transport operation | remove only raw fragments for resource lookup, preserve URL/document state for same-resource entries, parse different resources before moving the cursor, and return explicit boundary no-ops |
 | bounded local link activation | makes existing semantic link clicks reach the proven local navigation/history owner without adding a new transport operation | no relative URL base resolution, remote navigation, download/default-action event loop, target contexts, or network policy | resolve only fragment-only and absolute local hrefs, preflight the resource, then commit the existing same-document or parsed navigation path; leave empty href as a click-only action |
+| bounded fragment-target scrolling | makes local fragment navigation useful without adding a general scroll engine or retaining full documents | no percent-decoding, name/text fragments, duplicate-id recovery, smooth/nested/horizontal/keyboard/snap scrolling, sticky layout, or browser alignment parity | match one exact raw `id`, use its visible document-space top clamped to the root viewport, and retain one bounded scroll point per history entry |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-038.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-039.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-038.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-037.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-036.md` is the preceding completed checkpoint,
 `docs/plan/tasks/native-engine-035.md` is the preceding completed checkpoint,

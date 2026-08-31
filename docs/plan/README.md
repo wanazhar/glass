@@ -275,6 +275,13 @@ fragment, parse-before-commit, revision, history, scroll, and non-network
 limits. Its implementation and validation evidence are recorded in the task
 file and issue #40.
 
+The completed fragment-target-scroll slice is
+[native-engine-039](tasks/native-engine-039.md). It adds exact visible local
+fragment-target scrolling and saved root-scroll restoration across bounded
+history traversal, while retaining raw-fragment, parse-before-commit, and
+non-network limits. Its implementation and validation evidence are recorded in
+the task file and issue #40.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

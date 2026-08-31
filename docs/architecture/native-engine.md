@@ -10,7 +10,7 @@ bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
 bounded-pre-line-breaks/bounded-preformatted-whitespace/
 bounded-pre-wrap-whitespace slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
-bounded-local-link-activation,
+bounded-local-link-activation/bounded-fragment-target-scroll,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -50,6 +50,9 @@ for unsupported CSS input, plus bounded local same-document fragment
 navigation and Rust history traversal.
 Semantic local anchor activation reaches that same bounded navigation owner for
 fragment-only and absolute local hrefs; unsupported href forms fail closed.
+Visible local fragment targets may position the root viewport at their exact
+raw `id`; the active history entry retains the bounded scroll offset for
+restoration.
 The engine does not
 yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
@@ -161,7 +164,7 @@ The default limits are intentionally bounded:
 | DOM nodes | 4,096 | parse fails before state commit |
 | open DOM depth | 128 | parse fails before state commit |
 | visible text | 16 KiB | evidence is marked incomplete |
-| history entries | 64 | oldest entry is evicted deterministically |
+| history entries | 64 | oldest entry is evicted deterministically; each entry retains one root scroll point |
 | queued scheduler tasks | 256 | scheduling fails explicitly |
 | registered fixtures | 32 | configuration fails explicitly |
 | retained CSS diagnostics | 256 | later diagnostics are dropped and `truncated` is set |
@@ -214,10 +217,13 @@ before any navigation or mutation is rejected as detached.
 
 Same-document fragment navigation changes the URL, revision, and history
 cursor while retaining the current document generation and derived layout,
-control state, and root scroll offset. It does not automatically scroll to an
-element identified by the fragment. Explicit Rust back/forward traversal moves
+control state, and bounded root-scroll state. If the raw fragment identifies a
+visible exact `id`, the root viewport is positioned at that element's clamped
+document-space top; missing, empty, hidden, and non-layout targets preserve the
+current offset. Explicit Rust back/forward traversal moves
 the bounded history cursor; different-resource entries are parsed before
-commit, while same-resource fragment entries reuse the current document.
+commit, while same-resource fragment entries reuse the current document and
+restore the target history entry's saved root offset.
 
 Semantic anchor clicks use the existing action path as one bounded default
 action. Fragment-only hrefs resolve against the current local resource, and
@@ -444,9 +450,10 @@ navigation validates the local resource, preserves the current document and
 scroll state, and commits one revision/history entry through the existing
 navigation path. Explicit Rust back/forward traversal moves the bounded
 history cursor without creating entries, reparses different local resources
-before commit, and returns a no-op at either boundary. Anchor scrolling,
-network navigation, redirects, HTTP state, credentials, cookies, and shared
-transport history operations remain unsupported. Its implementation and
+before commit, and returns a no-op at either boundary. At the 037 checkpoint,
+anchor scrolling, network navigation, redirects, HTTP state, credentials,
+cookies, and shared transport history operations remained unsupported; the
+039 slice adds the bounded anchor-scroll behavior described below. Its implementation and
 validation evidence are recorded in the task file and issue #40.
 
 The 038 bounded-local-link-activation boundary routes semantic `<a href>`
@@ -457,6 +464,16 @@ parse-before-commit invariants. Relative paths, remote/network navigation,
 downloads, target contexts, and event-loop/default-action behavior remain
 unsupported. Its implementation and validation evidence are recorded in the
 task file and issue #40.
+
+The 039 bounded-fragment-target-scroll boundary resolves one exact raw local
+`id` through the existing document/layout owner and positions the root viewport
+at its clamped document-space top. Every history entry stores one bounded root
+scroll point; scroll actions update the active entry and traversal restores it,
+including reparsed different-resource entries. Percent-decoded fragments,
+`name`/text fragments, duplicate-id recovery, smooth/nested/horizontal/keyboard/
+snap scrolling, sticky layout, and browser alignment parity remain unsupported.
+Its implementation and validation evidence are recorded in the task file and
+issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -543,8 +560,9 @@ an option in a single-select combobox selects it and clears its siblings. Type
 replaces private state for native `input` and `textarea` textboxes. A bounded
 visibility gate recognizes `hidden`, `aria-hidden="true"`, and computed
 `display:none`/`visibility:hidden`; hidden subtrees are omitted from text,
-layout, and hit testing. Links do not perform default navigation, and no
-action performs keyboard navigation, multi-select, or JavaScript execution.
+layout, and hit testing. Supported local links perform the bounded default
+navigation described above; unsupported links fail closed. No action performs
+keyboard navigation, multi-select, or JavaScript execution.
 Each accepted mutating action advances the document revision exactly once, so
 earlier references must be re-observed. The effects operation returns the current
 revision and changed bit; bounded native event metadata remains an internal
@@ -603,6 +621,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - lifecycle transitions and repeated/invalid close behavior;
 - `about:blank`, percent-decoded `data:` HTML, and registered fixtures;
 - raw-fragment URL retention and bounded same-document local navigation;
+- exact visible fragment-target scroll and saved history offsets;
 - semantic local anchor activation through dispatcher click;
 - title and visible-text projection with hidden `head`, `script`, and `style`;
 - bounded history entries, monotonic revisions, and explicit Rust traversal;

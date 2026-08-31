@@ -271,6 +271,7 @@ impl NativeEngine {
         let next_revision = self.next_revision()?;
         self.document.set_revision(next_revision);
         self.revision = next_revision;
+        self.history.update_current_scroll(self.scroll_offset);
         self.record_effects(events);
         Ok(NativeActionResult {
             revision: next_revision,
@@ -287,6 +288,7 @@ impl NativeEngine {
         let resource = self.loader.load(&target_url)?;
         let revision = self.next_revision()?;
         if self.is_same_document_navigation(&resource.url) {
+            let scroll_offset = self.fragment_scroll_offset(&resource.url)?;
             self.run_commit_task(
                 NativeTask::CommitSameDocumentNavigation,
                 "link same-document navigation",
@@ -294,8 +296,9 @@ impl NativeEngine {
             let events = self.document.apply_click(id)?;
             self.document.set_revision(revision);
             self.url = resource.url.clone();
+            self.scroll_offset = scroll_offset;
             self.revision = revision;
-            self.history.push(resource.url, revision);
+            self.history.push(resource.url, revision, scroll_offset);
             self.record_effects(events);
             return Ok(NativeActionResult {
                 revision,
@@ -304,14 +307,19 @@ impl NativeEngine {
         }
 
         let prepared = self.prepare_navigation_resource(resource)?;
+        let scroll_offset = self.fragment_scroll_offset_for_document(
+            &prepared.document,
+            &prepared.resource.url,
+            NativePoint { x: 0, y: 0 },
+        )?;
         self.run_commit_task(NativeTask::CommitNavigation, "link navigation")?;
         let _events = self.document.apply_click(id)?;
         self.document = prepared.document;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
-        self.scroll_offset = NativePoint { x: 0, y: 0 };
+        self.scroll_offset = scroll_offset;
         self.revision = revision;
-        self.history.push(self.url.clone(), revision);
+        self.history.push(self.url.clone(), revision, scroll_offset);
         Ok(NativeActionResult {
             revision,
             accepted: true,
@@ -406,14 +414,19 @@ impl NativeEngine {
     }
 
     fn commit_navigation(&mut self, prepared: PreparedNavigation) -> Result<(), NativeEngineError> {
+        let scroll_offset = self.fragment_scroll_offset_for_document(
+            &prepared.document,
+            &prepared.resource.url,
+            NativePoint { x: 0, y: 0 },
+        )?;
         self.run_commit_task(NativeTask::CommitNavigation, "navigation")?;
         let revision = self.next_revision()?;
         self.document = prepared.document;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
-        self.scroll_offset = NativePoint { x: 0, y: 0 };
+        self.scroll_offset = scroll_offset;
         self.revision = revision;
-        self.history.push(self.url.clone(), revision);
+        self.history.push(self.url.clone(), revision, scroll_offset);
         Ok(())
     }
 
@@ -422,6 +435,16 @@ impl NativeEngine {
         url: String,
         history_commit: HistoryCommit,
     ) -> Result<(), NativeEngineError> {
+        let scroll_offset = match &history_commit {
+            HistoryCommit::Push => self.fragment_scroll_offset(&url)?,
+            HistoryCommit::Activate(index) => self
+                .history
+                .entry(*index)
+                .map(|entry| entry.scroll_offset)
+                .ok_or_else(|| NativeEngineError::Scheduler {
+                    reason: "history target is no longer available".into(),
+                })?,
+        };
         self.run_commit_task(
             NativeTask::CommitSameDocumentNavigation,
             "same-document navigation",
@@ -429,9 +452,10 @@ impl NativeEngine {
         let revision = self.next_revision()?;
         self.document.set_revision(revision);
         self.url = url.clone();
+        self.scroll_offset = scroll_offset;
         self.revision = revision;
         match history_commit {
-            HistoryCommit::Push => self.history.push(url, revision),
+            HistoryCommit::Push => self.history.push(url, revision, scroll_offset),
             HistoryCommit::Activate(index) => {
                 self.history.activate(index, revision).ok_or_else(|| {
                     NativeEngineError::Scheduler {
@@ -453,12 +477,28 @@ impl NativeEngine {
                 reason: "history target is no longer available".into(),
             });
         }
+        let saved_scroll = self
+            .history
+            .entry(history_index)
+            .map(|entry| entry.scroll_offset)
+            .ok_or_else(|| NativeEngineError::Scheduler {
+                reason: "history target is no longer available".into(),
+            })?;
+        let max_scroll_y = prepared
+            .document
+            .layout(self.config.viewport)?
+            .max_scroll_offset()
+            .y;
+        let scroll_offset = NativePoint {
+            x: 0,
+            y: saved_scroll.y.min(max_scroll_y),
+        };
         self.run_commit_task(NativeTask::TraverseHistory, "history traversal")?;
         let revision = self.next_revision()?;
         self.document = prepared.document;
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
-        self.scroll_offset = NativePoint { x: 0, y: 0 };
+        self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.history
             .activate(history_index, revision)
@@ -500,6 +540,38 @@ impl NativeEngine {
 
     fn is_same_document_navigation(&self, target_url: &str) -> bool {
         self.url != target_url && without_fragment(&self.url) == without_fragment(target_url)
+    }
+
+    fn fragment_scroll_offset(&self, target_url: &str) -> Result<NativePoint, NativeEngineError> {
+        self.fragment_scroll_offset_for_document(&self.document, target_url, self.scroll_offset)
+    }
+
+    fn fragment_scroll_offset_for_document(
+        &self,
+        document: &NativeDocument,
+        target_url: &str,
+        fallback: NativePoint,
+    ) -> Result<NativePoint, NativeEngineError> {
+        let Some((_, fragment)) = target_url.split_once('#') else {
+            return Ok(fallback);
+        };
+        if fragment.is_empty() {
+            return Ok(fallback);
+        }
+        let Some(target_id) = document.fragment_target(fragment) else {
+            return Ok(fallback);
+        };
+        let layout = document.layout(self.config.viewport)?;
+        let Some(target_box) = layout.box_for(target_id) else {
+            return Ok(fallback);
+        };
+        if target_box.width == 0 || target_box.height == 0 {
+            return Ok(fallback);
+        }
+        Ok(NativePoint {
+            x: 0,
+            y: target_box.y.min(layout.max_scroll_offset().y),
+        })
     }
 
     fn run_commit_task(

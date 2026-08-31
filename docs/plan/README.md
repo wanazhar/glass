@@ -218,6 +218,13 @@ limits, diagnostics, cascade precedence, and the no-general-CSS boundary. Its
 implementation and full validation evidence are recorded in the task file and
 issue #40.
 
+The completed overflow-clip slice is
+[native-engine-031](tasks/native-engine-031.md). It accepts non-scrolling
+`overflow: clip` through the existing bounded rectangular clip path while
+preserving root-scroll, hit-testing, diagnostics, and no-general-CSS limits.
+Its implementation and full validation evidence are recorded in the task file
+and issue #40.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

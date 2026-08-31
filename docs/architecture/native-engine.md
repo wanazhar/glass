@@ -6,7 +6,7 @@ viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radiu
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
 bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
 bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture/
-bounded-descendant-selectors slices,
+bounded-descendant-selectors/bounded-overflow-clip slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -30,15 +30,16 @@ single-select controls, plus bounded visibility/actionability and raw-text/RCDAT
 parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
 normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
 display list, a bounded logical RGBA software surface and PNG capture,
-inherited text color through DOM parent links, bounded `overflow:hidden` paint
-clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
+inherited text color through DOM parent links, bounded `overflow:hidden`/
+`overflow:clip` paint clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
 bounded circular border radii, bounded outer/content box geometry, explicit root
 viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
 line-height flow, bounded direct-text fragments at actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
 four-side padding/margin edges, bounded source-whitespace boundaries, and
-bounded `overflow:hidden` clips shared by paint, viewport projection, and point
-hit testing, and bounded read-only diagnostics for unsupported CSS input.
+bounded rectangular `overflow:hidden`/`overflow:clip` clips shared by paint,
+viewport projection, and point hit testing, and bounded read-only diagnostics
+for unsupported CSS input.
 The engine does not
 yet own
 general CSS, nested/smooth/horizontal scrolling or scrolling/stacking layout,
@@ -351,6 +352,13 @@ it before root-scroll translation, and point hit testing rejects descendants
 outside it. The clip remains rectangular and does not create nested scrolling,
 axis-specific overflow, or rounded descendant clip geometry.
 
+The 031 bounded-overflow-clip boundary accepts `overflow:clip` as the same
+non-scrolling rectangular clip primitive. It shares the existing style cascade,
+clip intersection, viewport projection, and point hit-testing consumers with
+`overflow:hidden`; it adds no nested scroll offset, scrollbar, axis-specific
+overflow, or public computed-value distinction. `visible`, `auto`, and
+`scroll` remain unsupported and continue to produce bounded diagnostics.
+
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
 runs. The 011 raster boundary replays that list into a capped logical RGBA
@@ -526,7 +534,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   text drawing, viewport clipping, and explicit surface-allocation limits.
 - bounded inherited text-color resolution through DOM parent links, with
   explicit child overrides feeding deterministic text-run commands.
-- bounded `overflow:hidden` ancestor intersections on fill/text commands and
+- bounded `overflow:hidden`/`overflow:clip` ancestor intersections on
+  fill/text commands and
   software-surface clipping, viewport projection, and point-hit filtering with
   no nested scrolling or screenshot-evidence capability.
 - bounded solid-border parsing, deterministic `BorderRect` command ordering,
@@ -552,7 +561,7 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded source-whitespace boundaries across direct text, `display:contents`,
   and supported inline flow items, including source-order separator paint and
   drop-on-wrap behavior.
-- bounded rectangular `overflow:hidden` ancestor clips shared by paint,
+- bounded rectangular `overflow:hidden`/`overflow:clip` ancestor clips shared by paint,
   viewport rectangle projection, and point hit-testing, including nested clip
   intersection in document coordinates.
 - bounded root viewport scrolling, content-height/max-offset derivation,

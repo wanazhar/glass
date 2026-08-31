@@ -202,7 +202,7 @@ pub(crate) struct NativeComputedStyle {
     margin: NativeBoxEdges,
     box_sizing: NativeBoxSizing,
     color: Option<NativeColor>,
-    overflow_hidden: bool,
+    overflow_clip: bool,
 }
 
 impl NativeComputedStyle {
@@ -254,8 +254,8 @@ impl NativeComputedStyle {
         self.color
     }
 
-    pub(crate) const fn overflow_hidden(self) -> bool {
-        self.overflow_hidden
+    pub(crate) const fn overflow_clip(self) -> bool {
+        self.overflow_clip
     }
 }
 
@@ -600,7 +600,9 @@ impl NativeStylesheet {
             margin: NativeBoxEdges::from_cascade(margin),
             box_sizing: box_sizing.map_or(NativeBoxSizing::ContentBox, |value| value.value),
             color: color.map(|value| value.value).or(inherited_color),
-            overflow_hidden: overflow.is_some_and(|value| value.value == OverflowValue::Hidden),
+            overflow_clip: overflow.is_some_and(|value| {
+                matches!(value.value, OverflowValue::Hidden | OverflowValue::Clip)
+            }),
         }
     }
 }
@@ -614,6 +616,7 @@ enum VisibilityValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverflowValue {
     Hidden,
+    Clip,
     Other,
 }
 
@@ -952,9 +955,8 @@ fn parse_declarations_with_diagnostics(
             "padding-top" | "padding-right" | "padding-bottom" | "padding-left" | "margin-top"
             | "margin-right" | "margin-bottom" | "margin-left" => parse_dimension(value).is_some(),
             "box-sizing" => parse_box_sizing(value).is_some(),
-            "overflow" => {
-                parse_overflow(value).is_some_and(|_| value.eq_ignore_ascii_case("hidden"))
-            }
+            "overflow" => parse_overflow(value)
+                .is_some_and(|value| matches!(value, OverflowValue::Hidden | OverflowValue::Clip)),
             _ => {
                 diagnostics.push(
                     NativeDiagnosticCode::UnsupportedCssProperty,
@@ -1347,6 +1349,7 @@ fn parse_visibility(value: &str) -> Option<VisibilityValue> {
 fn parse_overflow(value: &str) -> Option<OverflowValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(OverflowValue::Hidden),
+        "clip" => Some(OverflowValue::Clip),
         "visible" | "auto" | "scroll" => Some(OverflowValue::Other),
         _ => None,
     }
@@ -1658,7 +1661,9 @@ mod tests {
         assert_eq!(declarations.box_sizing, Some(NativeBoxSizing::BorderBox));
         assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
-        assert_eq!(parse_overflow("clip"), None);
+        assert_eq!(parse_overflow("visible"), Some(OverflowValue::Other));
+        assert_eq!(parse_overflow("auto"), Some(OverflowValue::Other));
+        assert_eq!(parse_overflow("clip"), Some(OverflowValue::Clip));
         assert_eq!(
             parse_border("1px dashed red"),
             Some(styled_border_side(

@@ -1148,6 +1148,47 @@ fn native_overflow_hidden_clips_hit_testing_and_viewport_projection() {
 }
 
 #[test]
+fn native_overflow_clip_reuses_rectangular_clip_without_scroll() {
+    let document = NativeDocument::parse(
+        "<style>#clip { overflow: clip; width: 10px; height: 10px; } #child { display: block; width: 20px; height: 20px; background-color: red; }</style><div id='clip'><div id='child'>Child</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let clip = document.resolve_target("id=clip").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "overflow"
+    }));
+    assert_eq!(layout.scroll_offset, NativePoint { x: 0, y: 0 });
+    assert_eq!(layout.max_scroll_offset(), NativePoint { x: 0, y: 0 });
+    assert_eq!(layout.box_for(clip).unwrap().height, 10);
+    assert_eq!(
+        layout.viewport_rect_for(child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        })
+    );
+    assert_eq!(layout.hit_test(5, 5).unwrap(), Some(child));
+    assert_eq!(layout.hit_test(5, 10).unwrap(), None);
+
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(5, 5), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 15), Some([255, 255, 255, 255]));
+}
+
+#[test]
 fn native_engine_display_list_revision_tracks_accepted_actions() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://paint", "<button id='save'>Save</button>")
@@ -2163,7 +2204,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: clip; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: visible; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

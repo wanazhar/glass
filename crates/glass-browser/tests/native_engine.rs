@@ -962,6 +962,65 @@ fn native_br_elements_create_bounded_hard_breaks_without_layout_nodes() {
 }
 
 #[test]
+fn native_pre_line_preserves_bounded_source_breaks_and_inherits_through_contents() {
+    let document = NativeDocument::parse(
+        "<style>#flow { white-space: pre-line; line-height: 24px; }</style><div id='flow'>\nA\n\n<span id='contents' style='display:contents'>B\r\nC</span>\n</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 144,
+        device_scale_factor_milli: 1000,
+    };
+    let flow = document.resolve_target("id=flow").unwrap();
+    let contents = document.resolve_target("id=contents").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(contents), None);
+    assert_eq!(layout.box_for(flow).unwrap().height, 144);
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .map(|run| (run.node_id, run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (flow, NativePoint { x: 0, y: 24 }, "A"),
+            (contents, NativePoint { x: 0, y: 72 }, "B"),
+            (contents, NativePoint { x: 0, y: 96 }, "C"),
+        ]
+    );
+
+    let normal = NativeDocument::parse(
+        "<div id='normal'>A\nB</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let normal_flow = normal.resolve_target("id=normal").unwrap();
+    let normal_layout = normal
+        .layout(Viewport {
+            width: 32,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(normal_layout.box_for(normal_flow).unwrap().height, 20);
+    assert_eq!(normal_layout.text_runs.len(), 2);
+    assert_eq!(
+        normal_layout
+            .text_runs
+            .iter()
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "A"),
+            (NativePoint { x: 8, y: 0 }, " B"),
+        ]
+    );
+}
+
+#[test]
 fn native_text_boundary_separator_drops_when_inline_item_wraps() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:16px'>A <span id='middle' style='display:inline'>B</span> C</div>",
@@ -2294,7 +2353,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: visible; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; overflow: visible; white-space: pre; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -2330,6 +2389,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "overflow"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "white-space"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

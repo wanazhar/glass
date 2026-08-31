@@ -6,7 +6,8 @@ viewport-scroll/side-specific-border/bounded-pattern-border/bounded-corner-radiu
 bounded-inline-flow/bounded-fixed-line-height/bounded-direct-text-flow/
 bounded-word-wrap/bounded-physical-box-edges/bounded-whitespace-boundaries/
 bounded-overflow-hit-test-projection/bounded-css-diagnostics/bounded-pixel-golden-capture/
-bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks slices,
+bounded-descendant-selectors/bounded-overflow-clip/bounded-hard-line-breaks/
+bounded-pre-line-breaks slices,
 including bounded style
 inheritance, paint clipping, solid/dashed/dotted border painting, rounded
 fill/border masks, inline-box line placement, fixed pixel line-height floors,
@@ -367,6 +368,14 @@ creates no semantic node, layout box, or paint command. Hidden or
 `display:none` breaks are ignored. `<wbr>`, preserved source newlines, CSS
 `white-space` modes, font metrics, and browser inline-formatting parity remain
 unsupported.
+
+The completed 033 bounded-pre-line-breaks boundary supports inherited
+`white-space: pre-line` as a source-newline mode. LF, CR, and CRLF boundaries
+reuse the same hard-break cursor transition while other whitespace remains
+collapsed. `normal` remains the default; `pre`, `pre-wrap`, `break-spaces`,
+`nowrap`, preserved tabs, and general CSS white-space conformance remain
+unsupported. Its implementation and full validation evidence are recorded in
+the task file and issue #40.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

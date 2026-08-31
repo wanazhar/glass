@@ -1,5 +1,5 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
-use super::css::{DisplayValue, NativeBorderRadius, NativeComputedStyle};
+use super::css::{DisplayValue, NativeBorderRadius, NativeComputedStyle, WhiteSpaceValue};
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
 
@@ -749,6 +749,43 @@ impl<'a> LayoutBuilder<'a> {
     }
 
     fn place_text(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {
+        if self
+            .document
+            .computed_style_for_layout(parent)
+            .white_space()
+            == WhiteSpaceValue::PreLine
+        {
+            self.place_pre_line_text(parent, flow, value);
+        } else {
+            self.place_text_segment(parent, flow, value);
+        }
+    }
+
+    fn place_pre_line_text(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {
+        let mut segment_start = 0;
+        let mut offset = 0;
+        while offset < value.len() {
+            let byte = value.as_bytes()[offset];
+            if byte == b'\n' || byte == b'\r' {
+                self.place_text_segment(parent, flow, &value[segment_start..offset]);
+                let break_end = if byte == b'\r' && value.as_bytes().get(offset + 1) == Some(&b'\n')
+                {
+                    offset + 2
+                } else {
+                    offset + 1
+                };
+                flow.force_line_break();
+                offset = break_end;
+                segment_start = break_end;
+            } else {
+                let character = value[offset..].chars().next().unwrap_or_default();
+                offset = offset.saturating_add(character.len_utf8());
+            }
+        }
+        self.place_text_segment(parent, flow, &value[segment_start..]);
+    }
+
+    fn place_text_segment(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {
         let leading_whitespace = value.chars().next().is_some_and(char::is_whitespace);
         let trailing_whitespace = value.chars().next_back().is_some_and(char::is_whitespace);
         let pending_whitespace = flow.take_pending_whitespace();

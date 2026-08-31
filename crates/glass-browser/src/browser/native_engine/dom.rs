@@ -8,7 +8,7 @@ use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, Viewport},
-    css::{NativeColor, NativeComputedStyle},
+    css::{NativeColor, NativeComputedStyle, WhiteSpaceValue},
 };
 use std::collections::BTreeMap;
 
@@ -844,14 +844,19 @@ impl NativeDocument {
         }
 
         let mut inherited_color = Some(NativeColor::BLACK);
+        let mut inherited_white_space = WhiteSpaceValue::Normal;
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
             };
-            let style = self
-                .stylesheet
-                .computed_for_in_document(self, current_id, inherited_color);
+            let style = self.stylesheet.computed_for_in_document_with_inheritance(
+                self,
+                current_id,
+                inherited_color,
+                inherited_white_space,
+            );
             inherited_color = style.color().or(inherited_color);
+            inherited_white_space = style.white_space();
             if current_id == id {
                 return style;
             }

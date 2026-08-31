@@ -144,6 +144,13 @@ pub(crate) enum DisplayValue {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum WhiteSpaceValue {
+    #[default]
+    Normal,
+    PreLine,
+}
+
 /// Bounded physical top, right, bottom, and left box values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeBoxEdges {
@@ -192,6 +199,7 @@ impl NativeBoxEdges {
 pub(crate) struct NativeComputedStyle {
     display: DisplayValue,
     visibility_hidden: bool,
+    white_space: WhiteSpaceValue,
     width: Option<u32>,
     height: Option<u32>,
     line_height: Option<u32>,
@@ -212,6 +220,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn display(self) -> DisplayValue {
         self.display
+    }
+
+    pub(crate) const fn white_space(self) -> WhiteSpaceValue {
+        self.white_space
     }
 
     pub(crate) const fn width(self) -> Option<u32> {
@@ -293,7 +305,9 @@ impl NativeStylesheet {
 
     #[cfg(test)]
     pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
-        self.computed_for_with_matcher(node, None, |selector| selector.matches(node))
+        self.computed_for_with_matcher(node, None, WhiteSpaceValue::Normal, |selector| {
+            selector.matches(node)
+        })
     }
 
     pub(crate) fn computed_for_in_document(
@@ -302,10 +316,25 @@ impl NativeStylesheet {
         node_id: NativeNodeId,
         inherited_color: Option<NativeColor>,
     ) -> NativeComputedStyle {
+        self.computed_for_in_document_with_inheritance(
+            document,
+            node_id,
+            inherited_color,
+            WhiteSpaceValue::Normal,
+        )
+    }
+
+    pub(crate) fn computed_for_in_document_with_inheritance(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        inherited_color: Option<NativeColor>,
+        inherited_white_space: WhiteSpaceValue,
+    ) -> NativeComputedStyle {
         let Some(node) = document.node(node_id) else {
             return NativeComputedStyle::default();
         };
-        self.computed_for_with_matcher(node, inherited_color, |selector| {
+        self.computed_for_with_matcher(node, inherited_color, inherited_white_space, |selector| {
             selector.matches_in_document(document, node_id)
         })
     }
@@ -314,10 +343,12 @@ impl NativeStylesheet {
         &self,
         node: &NativeNode,
         inherited_color: Option<NativeColor>,
+        inherited_white_space: WhiteSpaceValue,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
         let mut display = None;
         let mut visibility = None;
+        let mut white_space = None;
         let mut width = None;
         let mut height = None;
         let mut line_height = None;
@@ -347,6 +378,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, visibility)
             {
                 visibility = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.white_space
+                && wins(rule.selector.specificity, rule.order, false, white_space)
+            {
+                white_space = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -483,6 +524,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.white_space
+                && wins(u16::MAX, usize::MAX, true, white_space)
+            {
+                white_space = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -590,6 +641,7 @@ impl NativeStylesheet {
             display: display.map_or(DisplayValue::Auto, |value| value.value),
             visibility_hidden: visibility
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
+            white_space: white_space.map_or(inherited_white_space, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             line_height: line_height.map(|value| value.value),
@@ -680,6 +732,7 @@ fn apply_box_edges(
 struct NativeDeclarations {
     display: Option<DisplayValue>,
     visibility: Option<VisibilityValue>,
+    white_space: Option<WhiteSpaceValue>,
     width: Option<u32>,
     height: Option<u32>,
     line_height: Option<u32>,
@@ -832,6 +885,7 @@ fn parse_source(
         );
         let has_supported_declaration = declarations.display.is_some()
             || declarations.visibility.is_some()
+            || declarations.white_space.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.line_height.is_some()
@@ -944,6 +998,7 @@ fn parse_declarations_with_diagnostics(
                 )
             }
             "visibility" => parse_visibility(value).is_some(),
+            "white-space" => parse_white_space(value).is_some(),
             "width" | "height" => parse_dimension(value).is_some(),
             "line-height" => parse_line_height(value).is_some(),
             "background-color" | "color" => parse_color(value).is_some(),
@@ -994,6 +1049,7 @@ fn is_known_css_property(property: &str) -> bool {
         property,
         "display"
             | "visibility"
+            | "white-space"
             | "width"
             | "height"
             | "line-height"
@@ -1057,6 +1113,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "visibility" => {
                 declarations.visibility = parse_visibility(value);
+            }
+            "white-space" => {
+                declarations.white_space = parse_white_space(value);
             }
             "width" => {
                 declarations.width = parse_dimension(value);
@@ -1336,6 +1395,14 @@ fn parse_dimension(value: &str) -> Option<u32> {
 
 fn parse_line_height(value: &str) -> Option<u32> {
     parse_dimension(value).filter(|value| *value > 0)
+}
+
+fn parse_white_space(value: &str) -> Option<WhiteSpaceValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "normal" => Some(WhiteSpaceValue::Normal),
+        "pre-line" => Some(WhiteSpaceValue::PreLine),
+        _ => None,
+    }
 }
 
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
@@ -1632,10 +1699,11 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; width: 240px; height: 30px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; white-space: pre-line; width: 240px; height: 30px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
+        assert_eq!(declarations.white_space, Some(WhiteSpaceValue::PreLine));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.line_height, Some(28));
@@ -1660,6 +1728,14 @@ mod tests {
         assert_eq!(declarations.margin, [Some(3); 4]);
         assert_eq!(declarations.box_sizing, Some(NativeBoxSizing::BorderBox));
         assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
+        assert_eq!(parse_white_space("normal"), Some(WhiteSpaceValue::Normal));
+        assert_eq!(
+            parse_white_space("pre-line"),
+            Some(WhiteSpaceValue::PreLine)
+        );
+        assert_eq!(parse_white_space("pre"), None);
+        assert_eq!(parse_white_space("pre-wrap"), None);
+        assert_eq!(parse_white_space("nowrap"), None);
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("visible"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("auto"), Some(OverflowValue::Other));

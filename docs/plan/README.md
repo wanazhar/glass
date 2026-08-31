@@ -232,6 +232,13 @@ preserving hidden-state handling, text ownership, fixed line-height, and the
 no-general-CSS boundary. Its implementation and full validation evidence are
 recorded in the task file and issue #40.
 
+The completed pre-line-break slice is
+[native-engine-033](tasks/native-engine-033.md). It supports inherited
+`white-space: pre-line` source newline breaks through the same bounded flow
+cursor while retaining whitespace collapsing, CRLF normalization, and the
+no-general-CSS boundary. Its implementation and full validation evidence are
+recorded in the task file and issue #40.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

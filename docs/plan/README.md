@@ -512,8 +512,9 @@ slice adds bounded non-inherited
 It distributes only positive cross-axis free space in an explicit content box
 after 070 line formation, preserving line membership, per-line item alignment,
 shared artifact coordinates, and the default `flex-start` fallback. The design
-is `71bd380`, the implementation is `cc1d602`, and local validation and cleanup
-evidence are recorded in the task file. `stretch`, around-line distribution,
+is `71bd380`, the implementation is `cc1d602`, the final single-line coverage
+test is `050d41b`, and local validation and cleanup evidence are recorded in
+the task file. `stretch`, around-line distribution,
 cross-axis gaps, column directions, `wrap-reverse`, and general Flexbox remain
 outside the contract. Remote CI remains pending until this branch is pushed.
 

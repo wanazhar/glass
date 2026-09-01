@@ -339,8 +339,9 @@ explicit content height after 070 line formation, translates complete line
 artifact ranges after per-line `align-items` placement, and preserves the
 default `flex-start`/`nowrap` geometry. The contract is recorded in
 `docs/plan/tasks/native-engine-071.md`; design is `71bd380`, implementation is
-`cc1d602`, and local validation and cleanup evidence are recorded in the task
-file. Remote CI remains pending because the branch is local-only.
+`cc1d602`, the final single-line coverage test is `050d41b`, and local
+validation and cleanup evidence are recorded in the task file. Remote CI
+remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

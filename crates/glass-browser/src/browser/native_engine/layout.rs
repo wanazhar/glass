@@ -838,7 +838,7 @@ impl<'a> LayoutBuilder<'a> {
                                     });
                             }
                         }
-                        DisplayValue::Block => {
+                        DisplayValue::Block | DisplayValue::Flex => {
                             self.flush_line(flow);
                             let margin = self.document.computed_style_for_layout(child).margin();
                             let size = self.layout_element(
@@ -942,7 +942,7 @@ impl<'a> LayoutBuilder<'a> {
             return result;
         }
 
-        let is_block = display == DisplayValue::Block;
+        let is_block = matches!(display, DisplayValue::Block | DisplayValue::Flex);
         let opacity = style.opacity();
         let grouped = opacity < u8::MAX;
         if grouped {
@@ -997,13 +997,23 @@ impl<'a> LayoutBuilder<'a> {
             .push(NativeLayoutPaintOrder::Box(box_index));
 
         let content_width = width.saturating_sub(horizontal_inset);
-        let children = self.layout_children(
-            id,
-            x.saturating_add(left_inset),
-            y.saturating_add(top_inset),
-            content_width,
-            depth + 1,
-        );
+        let children = if display == DisplayValue::Flex && self.can_use_flex_layout(id) {
+            self.layout_flex_children(
+                id,
+                x.saturating_add(left_inset),
+                y.saturating_add(top_inset),
+                content_width,
+                depth + 1,
+            )
+        } else {
+            self.layout_children(
+                id,
+                x.saturating_add(left_inset),
+                y.saturating_add(top_inset),
+                content_width,
+                depth + 1,
+            )
+        };
         let auto_content_height = default_content_height.max(children.height);
         let height = style.height().map_or(
             vertical_inset.saturating_add(auto_content_height),
@@ -1043,6 +1053,86 @@ impl<'a> LayoutBuilder<'a> {
                 .push(NativeLayoutPaintOrder::EndOpacityGroup { node_id: id });
         }
         FlowSize { width, height }
+    }
+
+    fn can_use_flex_layout(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.document.node(id) else {
+            return false;
+        };
+        node.children().iter().all(|child| {
+            let Some(child_node) = self.document.node(*child) else {
+                return false;
+            };
+            match child_node.kind() {
+                NativeNodeKind::Text(value) => value.chars().all(char::is_whitespace),
+                NativeNodeKind::Element { .. } => {
+                    if self.is_non_rendered(*child) || self.document.is_hidden_for_layout(*child) {
+                        return true;
+                    }
+                    let display = self.effective_display(*child);
+                    display != DisplayValue::Contents && child_node.element_name() != Some("br")
+                }
+                NativeNodeKind::Document => false,
+            }
+        })
+    }
+
+    fn layout_flex_children(
+        &mut self,
+        parent: NativeNodeId,
+        x: u32,
+        y: u32,
+        available_width: u32,
+        depth: usize,
+    ) -> FlowSize {
+        if !self.can_use_flex_layout(parent) {
+            return self.layout_children(parent, x, y, available_width, depth);
+        }
+        let children = self
+            .document
+            .node(parent)
+            .map(|node| node.children().to_vec())
+            .unwrap_or_default();
+        let mut cursor_x = x;
+        let mut max_bottom = y;
+        for child in children {
+            let Some(node) = self.document.node(child) else {
+                continue;
+            };
+            match node.kind() {
+                NativeNodeKind::Text(_) => {}
+                NativeNodeKind::Document => {
+                    return self.layout_children(parent, x, y, available_width, depth);
+                }
+                NativeNodeKind::Element { .. } => {
+                    if self.is_non_rendered(child) || self.document.is_hidden_for_layout(child) {
+                        continue;
+                    }
+                    let style = self.document.computed_style_for_layout(child);
+                    if self.effective_display(child) == DisplayValue::None {
+                        continue;
+                    }
+                    let margin = style.margin();
+                    let item_width = self.outer_width(child, style, false, available_width);
+                    let item_x = cursor_x.saturating_add(margin.left());
+                    let item_y = y.saturating_add(margin.top());
+                    let size = self.layout_element(child, item_x, item_y, item_width, depth);
+                    cursor_x = cursor_x
+                        .saturating_add(margin.left())
+                        .saturating_add(size.width)
+                        .saturating_add(margin.right());
+                    max_bottom = max_bottom.max(
+                        y.saturating_add(margin.top())
+                            .saturating_add(size.height)
+                            .saturating_add(margin.bottom()),
+                    );
+                }
+            }
+        }
+        FlowSize {
+            width: cursor_x.saturating_sub(x),
+            height: max_bottom.saturating_sub(y),
+        }
     }
 
     fn outer_width(

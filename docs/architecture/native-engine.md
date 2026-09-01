@@ -16,7 +16,8 @@ bounded-inherited-text-transform/bounded-first-line-text-indent/
 bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
-bounded-text-overflow/bounded-vertical-align/bounded-flex-row slices,
+bounded-text-overflow/bounded-vertical-align/bounded-flex-row slices, with the
+bounded-flex-row-gap slice active,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -738,6 +739,14 @@ content. The contract is recorded in
 `docs/plan/tasks/native-engine-064.md`; implementation `7c38354` and local
 validation evidence are recorded in that task file. Remote CI remains pending
 until this branch is pushed.
+
+The active 065 boundary adds one non-negative fixed-pixel `gap` value between
+visible direct element items in an eligible bounded flex row. Hidden and
+`display:none` items do not consume a gap position; ineligible containers keep
+the existing normal-flow fallback. Multi-value and percentage gap grammar,
+`row-gap`, `column-gap`, flex distribution, wrapping, and general Flexbox
+remain outside the claim. The contract is recorded in
+`docs/plan/tasks/native-engine-065.md`; implementation has not started.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

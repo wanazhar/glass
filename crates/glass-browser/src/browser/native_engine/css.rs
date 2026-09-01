@@ -189,6 +189,7 @@ pub(crate) enum AlignContentValue {
     Center,
     FlexEnd,
     SpaceBetween,
+    SpaceAround,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2489,6 +2490,7 @@ fn parse_align_content(value: &str) -> Option<AlignContentValue> {
         "center" => Some(AlignContentValue::Center),
         "flex-end" => Some(AlignContentValue::FlexEnd),
         "space-between" => Some(AlignContentValue::SpaceBetween),
+        "space-around" => Some(AlignContentValue::SpaceAround),
         _ => None,
     }
 }
@@ -3438,8 +3440,11 @@ mod tests {
             parse_align_content("space-between"),
             Some(AlignContentValue::SpaceBetween)
         );
+        assert_eq!(
+            parse_align_content("space-around"),
+            Some(AlignContentValue::SpaceAround)
+        );
         assert_eq!(parse_align_content("stretch"), None);
-        assert_eq!(parse_align_content("space-around"), None);
         assert_eq!(parse_align_content("space-evenly"), None);
         assert_eq!(parse_align_content("normal"), None);
         assert_eq!(parse_align_content("start"), None);

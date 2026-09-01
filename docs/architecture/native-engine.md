@@ -16,7 +16,7 @@ bounded-inherited-text-transform/bounded-first-line-text-indent/
 bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
-bounded-text-overflow/bounded-vertical-align slices,
+bounded-text-overflow/bounded-vertical-align/bounded-flex-row slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -70,6 +70,8 @@ inherited `font-style:normal|italic` fixed-cell raster presentation, and
 bounded inherited `word-break:normal|break-all` fixed-cell wrapping, and
 bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
 fixed-cell inline and inline-block line items, and
+bounded block-level `display:flex` single-row placement for eligible direct
+element children, and
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -722,6 +724,16 @@ writing modes, ruby, table-cell alignment, and browser conformance remain
 outside the boundary. Its design is `7721df2`, its implementation is
 `facd2f6`, and the task file records the local validation evidence; remote CI
 remains pending until this branch is pushed.
+
+The active 064 boundary adds block-level `display: flex` for eligible
+containers with direct element children. Each item is laid out once in source
+order at its explicit or intrinsic fixed width, including physical margins,
+against the existing content-box origin. Items do not grow, shrink, wrap,
+reverse, reorder, distribute free space, or stretch across the cross axis.
+Meaningful direct text, `display: contents`, and visible `<br>` children use
+the established normal-flow fallback so the bounded mode never drops source
+content. The contract is recorded in
+`docs/plan/tasks/native-engine-064.md`; implementation has not started.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

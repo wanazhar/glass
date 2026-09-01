@@ -1,7 +1,7 @@
 ---
 id: native-engine-061
 scope: glass-browser/native-engine/inherited-word-break
-status: active
+status: complete
 depends-on: [native-engine-060]
 ---
 
@@ -97,5 +97,33 @@ character boundaries and remains a deterministic native fixture rule.
 
 ## Completion evidence
 
-This design checkpoint is active. Implementation and validation evidence will
-be added here before the task is marked complete.
+Implementation is committed locally as `479f3a3` and the synchronized
+architecture, analysis, plan, and public capability documentation is ready for
+the documentation closeout checkpoint. Local verification completed with:
+
+- native integration tests: 76 passed, 0 failed;
+- `cargo test -p glass-browser --features native-engine --lib --locked`: 851
+  passed, 1 ignored, 0 failed;
+- `cargo clippy -p glass-browser --all-targets --all-features --locked --
+  -D warnings`: passed;
+- `cargo clippy -p glass-browser --no-default-features --all-targets --locked
+  -- -D warnings`: passed;
+- `cargo build -p glass-dev --locked`: passed in 13m00s, confirming the
+  feature-gated browser implementation still links through the existing
+  two-crate workspace;
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`:
+  passed in 5m18s;
+- version, feature-parity, release-documentation, documentation-depth,
+  TUI-shortcut, reliability-matrix, public-readonly-adapter, and Web IR
+  validators: all passed; the release-documentation validator found 0 current
+  claim failures;
+- documentation coverage: 475 Markdown files, 345 full-product MCP tools,
+  100 browser-only tools, 17 examples, and 22 public modules;
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+
+The full workspace test wrapper was not rerun because this is a
+feature-gated `glass-browser` native-engine slice; the browser library,
+feature integration suite, both lint configurations, and `glass-dev` linkage
+were exercised directly. Remote CI remains pending until the branch is
+pushed. The final Cargo target cleanup is recorded in issue #40 after all
+verification commands complete.

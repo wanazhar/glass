@@ -1097,7 +1097,7 @@ impl<'a> LayoutBuilder<'a> {
             .map(|node| node.children().to_vec())
             .unwrap_or_default();
         let mut items = Vec::new();
-        for child in children {
+        for (source_index, child) in children.into_iter().enumerate() {
             let Some(node) = self.document.node(child) else {
                 continue;
             };
@@ -1116,13 +1116,20 @@ impl<'a> LayoutBuilder<'a> {
                     }
                     let margin = style.margin();
                     let item_width = self.outer_width(child, style, false, available_width);
-                    items.push((child, margin, item_width));
+                    items.push((
+                        child,
+                        margin,
+                        item_width,
+                        style.flex_item_order().value(),
+                        source_index,
+                    ));
                 }
             }
         }
 
+        items.sort_by_key(|(_, _, _, order, source_index)| (*order, *source_index));
         let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
-        let item_width = items.iter().fold(0u32, |total, (_, margin, width)| {
+        let item_width = items.iter().fold(0u32, |total, (_, margin, width, _, _)| {
             total
                 .saturating_add(margin.horizontal())
                 .saturating_add(*width)
@@ -1150,7 +1157,7 @@ impl<'a> LayoutBuilder<'a> {
         };
         let mut cursor_x = x.saturating_add(leading_offset);
         let mut max_bottom = y;
-        for (index, (child, margin, item_width)) in items.into_iter().enumerate() {
+        for (index, (child, margin, item_width, _, _)) in items.into_iter().enumerate() {
             if index > 0 {
                 cursor_x = cursor_x.saturating_add(gap);
                 if justify_content == JustifyContentValue::SpaceBetween {

@@ -4,6 +4,8 @@ use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
 
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
+pub(crate) const MIN_NATIVE_FLEX_ITEM_ORDER: i32 = -1024;
+pub(crate) const MAX_NATIVE_FLEX_ITEM_ORDER: i32 = 1024;
 const MAX_SELECTOR_BYTES: usize = 256;
 const MAX_SELECTOR_PARTS: usize = 8;
 
@@ -173,6 +175,15 @@ pub(crate) enum JustifyContentValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NativeOrderValue(i32);
+
+impl NativeOrderValue {
+    pub(crate) const fn value(self) -> i32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextDecorationValue {
     #[default]
     None,
@@ -292,6 +303,7 @@ pub(crate) struct NativeComputedStyle {
     white_space: WhiteSpaceValue,
     text_align: TextAlignValue,
     justify_content: JustifyContentValue,
+    flex_item_order: NativeOrderValue,
     text_decoration: TextDecorationValue,
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
@@ -347,6 +359,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn justify_content(self) -> JustifyContentValue {
         self.justify_content
+    }
+
+    pub(crate) const fn flex_item_order(self) -> NativeOrderValue {
+        self.flex_item_order
     }
 
     pub(crate) const fn text_decoration(self) -> TextDecorationValue {
@@ -539,6 +555,7 @@ impl NativeStylesheet {
         let mut white_space = None;
         let mut text_align = None;
         let mut justify_content = None;
+        let mut flex_item_order = None;
         let mut text_decoration = None;
         let mut text_transform = None;
         let mut font_weight = None;
@@ -744,6 +761,21 @@ impl NativeStylesheet {
                 )
             {
                 justify_content = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.order
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    flex_item_order,
+                )
+            {
+                flex_item_order = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1080,6 +1112,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.order
+                && wins(u16::MAX, usize::MAX, true, flex_item_order)
+            {
+                flex_item_order = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -1242,6 +1284,8 @@ impl NativeStylesheet {
             text_align: text_align.map_or(inherited.text_align, |value| value.value),
             justify_content: justify_content
                 .map_or(JustifyContentValue::FlexStart, |value| value.value),
+            flex_item_order: flex_item_order
+                .map_or(NativeOrderValue::default(), |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
@@ -1356,6 +1400,7 @@ struct NativeDeclarations {
     white_space: Option<WhiteSpaceValue>,
     text_align: Option<TextAlignValue>,
     justify_content: Option<JustifyContentValue>,
+    order: Option<NativeOrderValue>,
     text_decoration: Option<TextDecorationValue>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
@@ -1529,6 +1574,7 @@ fn parse_source(
             || declarations.white_space.is_some()
             || declarations.text_align.is_some()
             || declarations.justify_content.is_some()
+            || declarations.order.is_some()
             || declarations.text_decoration.is_some()
             || declarations.text_transform.is_some()
             || declarations.font_weight.is_some()
@@ -1663,6 +1709,7 @@ fn parse_declarations_with_diagnostics(
             "white-space" => parse_white_space(value).is_some(),
             "text-align" => parse_text_align(value).is_some(),
             "justify-content" => parse_justify_content(value).is_some(),
+            "order" => parse_flex_item_order(value).is_some(),
             "text-decoration" => parse_text_decoration(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
@@ -1730,6 +1777,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "white-space"
             | "text-align"
             | "justify-content"
+            | "order"
             | "text-decoration"
             | "text-transform"
             | "font-weight"
@@ -1820,6 +1868,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "justify-content" => {
                 declarations.justify_content = parse_justify_content(value);
+            }
+            "order" => {
+                declarations.order = parse_flex_item_order(value);
             }
             "text-decoration" => {
                 declarations.text_decoration = parse_text_decoration(value);
@@ -2256,6 +2307,21 @@ fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
     }
 }
 
+fn parse_flex_item_order(value: &str) -> Option<NativeOrderValue> {
+    let value = value.trim();
+    let digits = match value.as_bytes().first() {
+        Some(b'+') | Some(b'-') => &value[1..],
+        _ => value,
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let parsed = value.parse::<i32>().ok()?;
+    (MIN_NATIVE_FLEX_ITEM_ORDER..=MAX_NATIVE_FLEX_ITEM_ORDER)
+        .contains(&parsed)
+        .then_some(NativeOrderValue(parsed))
+}
+
 fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
     match value.to_ascii_lowercase().as_str() {
         "none" => Some(TextDecorationValue::None),
@@ -2609,7 +2675,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2620,6 +2686,7 @@ mod tests {
             declarations.justify_content,
             Some(JustifyContentValue::SpaceBetween)
         );
+        assert_eq!(declarations.order, Some(NativeOrderValue(-12)));
         assert_eq!(
             declarations.text_decoration,
             Some(TextDecorationValue::Underline)
@@ -3121,6 +3188,27 @@ mod tests {
         assert_eq!(parse_justify_content("space-around"), None);
         assert_eq!(parse_justify_content("space-evenly"), None);
         assert_eq!(parse_justify_content("start"), None);
+    }
+
+    #[test]
+    fn flex_item_order_parser_accepts_only_bounded_signed_integers() {
+        assert_eq!(
+            parse_flex_item_order("-1024"),
+            Some(NativeOrderValue(-1024))
+        );
+        assert_eq!(parse_flex_item_order("+1024"), Some(NativeOrderValue(1024)));
+        assert_eq!(
+            parse_flex_item_order("  -12  "),
+            Some(NativeOrderValue(-12))
+        );
+        assert_eq!(parse_flex_item_order("1025"), None);
+        assert_eq!(parse_flex_item_order("-1025"), None);
+        assert_eq!(parse_flex_item_order("1.0"), None);
+        assert_eq!(parse_flex_item_order("1e1"), None);
+        assert_eq!(parse_flex_item_order("--1"), None);
+        assert_eq!(parse_flex_item_order("+ 1"), None);
+        assert_eq!(parse_flex_item_order("normal"), None);
+        assert_eq!(parse_flex_item_order("1px"), None);
     }
 
     #[test]
@@ -3693,6 +3781,40 @@ mod tests {
                 .computed_style_for_layout(invalid)
                 .justify_content(),
             JustifyContentValue::FlexStart
+        );
+    }
+
+    #[test]
+    fn flex_item_order_is_cascaded_without_inheriting_to_children() {
+        let document = NativeDocument::parse(
+            "<style>#parent { order: -12; } #explicit { order: 8; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='invalid' style='order: 1025'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).flex_item_order(),
+            NativeOrderValue(-12)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).flex_item_order(),
+            NativeOrderValue(0)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .flex_item_order(),
+            NativeOrderValue(8)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .flex_item_order(),
+            NativeOrderValue(0)
         );
     }
 

@@ -1,7 +1,7 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
-    DisplayValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue, TextOverflowValue,
-    TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+    DisplayValue, JustifyContentValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue,
+    TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -1003,7 +1003,6 @@ impl<'a> LayoutBuilder<'a> {
                 x.saturating_add(left_inset),
                 y.saturating_add(top_inset),
                 content_width,
-                style.gap(),
                 depth + 1,
             )
         } else {
@@ -1084,20 +1083,20 @@ impl<'a> LayoutBuilder<'a> {
         x: u32,
         y: u32,
         available_width: u32,
-        gap: u32,
         depth: usize,
     ) -> FlowSize {
         if !self.can_use_flex_layout(parent) {
             return self.layout_children(parent, x, y, available_width, depth);
         }
+        let parent_style = self.document.computed_style_for_layout(parent);
+        let gap = parent_style.gap();
+        let justify_content = parent_style.justify_content();
         let children = self
             .document
             .node(parent)
             .map(|node| node.children().to_vec())
             .unwrap_or_default();
-        let mut cursor_x = x;
-        let mut max_bottom = y;
-        let mut placed_item = false;
+        let mut items = Vec::new();
         for child in children {
             let Some(node) = self.document.node(child) else {
                 continue;
@@ -1116,25 +1115,65 @@ impl<'a> LayoutBuilder<'a> {
                         continue;
                     }
                     let margin = style.margin();
-                    if placed_item {
-                        cursor_x = cursor_x.saturating_add(gap);
-                    }
                     let item_width = self.outer_width(child, style, false, available_width);
-                    let item_x = cursor_x.saturating_add(margin.left());
-                    let item_y = y.saturating_add(margin.top());
-                    let size = self.layout_element(child, item_x, item_y, item_width, depth);
-                    cursor_x = cursor_x
-                        .saturating_add(margin.left())
-                        .saturating_add(size.width)
-                        .saturating_add(margin.right());
-                    max_bottom = max_bottom.max(
-                        y.saturating_add(margin.top())
-                            .saturating_add(size.height)
-                            .saturating_add(margin.bottom()),
-                    );
-                    placed_item = true;
+                    items.push((child, margin, item_width));
                 }
             }
+        }
+
+        let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        let item_width = items.iter().fold(0u32, |total, (_, margin, width)| {
+            total
+                .saturating_add(margin.horizontal())
+                .saturating_add(*width)
+        });
+        let occupied_width = item_width.saturating_add(gap.saturating_mul(gap_count));
+        let free_space = available_width.saturating_sub(occupied_width);
+        let leading_offset = if items.is_empty() {
+            0
+        } else {
+            match justify_content {
+                JustifyContentValue::Center => free_space / 2,
+                JustifyContentValue::FlexEnd => free_space,
+                JustifyContentValue::FlexStart | JustifyContentValue::SpaceBetween => 0,
+            }
+        };
+        let distributed_gap = if justify_content == JustifyContentValue::SpaceBetween {
+            free_space.checked_div(gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let distributed_remainder = if justify_content == JustifyContentValue::SpaceBetween {
+            free_space.checked_rem(gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let mut cursor_x = x.saturating_add(leading_offset);
+        let mut max_bottom = y;
+        for (index, (child, margin, item_width)) in items.into_iter().enumerate() {
+            if index > 0 {
+                cursor_x = cursor_x.saturating_add(gap);
+                if justify_content == JustifyContentValue::SpaceBetween {
+                    cursor_x = cursor_x.saturating_add(distributed_gap);
+                    if u32::try_from(index - 1)
+                        .is_ok_and(|gap_index| gap_index < distributed_remainder)
+                    {
+                        cursor_x = cursor_x.saturating_add(1);
+                    }
+                }
+            }
+            let item_x = cursor_x.saturating_add(margin.left());
+            let item_y = y.saturating_add(margin.top());
+            let size = self.layout_element(child, item_x, item_y, item_width, depth);
+            cursor_x = cursor_x
+                .saturating_add(margin.left())
+                .saturating_add(size.width)
+                .saturating_add(margin.right());
+            max_bottom = max_bottom.max(
+                y.saturating_add(margin.top())
+                    .saturating_add(size.height)
+                    .saturating_add(margin.bottom()),
+            );
         }
         FlowSize {
             width: cursor_x.saturating_sub(x),

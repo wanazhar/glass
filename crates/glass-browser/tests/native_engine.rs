@@ -2257,6 +2257,111 @@ fn native_flex_row_applies_gap_between_rendered_items_and_ignores_fallback_rows(
 }
 
 #[test]
+fn native_flex_row_justifies_fixed_items_and_distributes_space_deterministically() {
+    let positions = |justify: &str| {
+        let source = format!(
+            "<div id='row' style='display:flex;width:40px;gap:2px;justify-content:{justify}'><div id='first' style='width:6px;height:8px'>A</div><div id='second' style='width:8px;height:8px'>B</div></div>"
+        );
+        let document = NativeDocument::parse(&source, &NativeEngineLimits::default()).unwrap();
+        let first = document.resolve_target("id=first").unwrap();
+        let second = document.resolve_target("id=second").unwrap();
+        let layout = document
+            .layout(Viewport {
+                width: 40,
+                height: 32,
+                device_scale_factor_milli: 1000,
+            })
+            .unwrap();
+        (
+            layout.box_for(first).unwrap().x,
+            layout.box_for(second).unwrap().x,
+        )
+    };
+
+    assert_eq!(positions("flex-start"), (0, 8));
+    assert_eq!(positions("center"), (12, 20));
+    assert_eq!(positions("flex-end"), (24, 32));
+    assert_eq!(positions("space-between"), (0, 32));
+
+    let remainder = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:41px;gap:1px;justify-content:space-between'><div id='first' style='width:6px;height:8px'>A</div><div id='second' style='width:6px;height:8px'>B</div><div id='third' style='width:6px;height:8px'>C</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = remainder.resolve_target("id=first").unwrap();
+    let second = remainder.resolve_target("id=second").unwrap();
+    let third = remainder.resolve_target("id=third").unwrap();
+    let layout = remainder
+        .layout(Viewport {
+            width: 41,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(layout.box_for(first).unwrap().x, 0);
+    assert_eq!(layout.box_for(second).unwrap().x, 18);
+    assert_eq!(layout.box_for(third).unwrap().x, 35);
+}
+
+#[test]
+fn native_flex_row_justification_preserves_overflow_and_ignores_fallback_rows() {
+    let overflow = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:12px;gap:2px;justify-content:center'><div id='first' style='width:10px;height:8px'>A</div><div id='second' style='width:10px;height:8px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = overflow.resolve_target("id=first").unwrap();
+    let second = overflow.resolve_target("id=second").unwrap();
+    let layout = overflow
+        .layout(Viewport {
+            width: 12,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(layout.box_for(first).unwrap().x, 0);
+    assert_eq!(layout.box_for(second).unwrap().x, 12);
+    assert_eq!(layout.content_width, 22);
+    assert_eq!(layout.max_scroll_offset().x, 10);
+
+    let with_justify = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px;justify-content:flex-end'><span id='first' style='display:block;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let without_justify = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px;justify-content:flex-start'><span id='first' style='display:block;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let with_first = with_justify.resolve_target("id=first").unwrap();
+    let with_second = with_justify.resolve_target("id=second").unwrap();
+    let without_first = without_justify.resolve_target("id=first").unwrap();
+    let without_second = without_justify.resolve_target("id=second").unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let with_layout = with_justify.layout(viewport).unwrap();
+    let without_layout = without_justify.layout(viewport).unwrap();
+    assert_eq!(
+        with_layout.box_for(with_first),
+        without_layout.box_for(without_first)
+    );
+    assert_eq!(
+        with_layout.box_for(with_second),
+        without_layout.box_for(without_second)
+    );
+    assert!(
+        with_layout
+            .text_runs
+            .iter()
+            .any(|run| run.text.contains("mean"))
+    );
+}
+
+#[test]
 fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
     let adjacent = NativeDocument::parse(
         "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",
@@ -5216,7 +5321,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; align-items: center; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -5287,6 +5392,14 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "gap"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "justify-content"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+            && diagnostic.detail == "align-items"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty

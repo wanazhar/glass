@@ -164,6 +164,15 @@ pub(crate) enum TextAlignValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum JustifyContentValue {
+    #[default]
+    FlexStart,
+    Center,
+    FlexEnd,
+    SpaceBetween,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextDecorationValue {
     #[default]
     None,
@@ -282,6 +291,7 @@ pub(crate) struct NativeComputedStyle {
     opacity: Option<u8>,
     white_space: WhiteSpaceValue,
     text_align: TextAlignValue,
+    justify_content: JustifyContentValue,
     text_decoration: TextDecorationValue,
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
@@ -333,6 +343,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_align(self) -> TextAlignValue {
         self.text_align
+    }
+
+    pub(crate) const fn justify_content(self) -> JustifyContentValue {
+        self.justify_content
     }
 
     pub(crate) const fn text_decoration(self) -> TextDecorationValue {
@@ -524,6 +538,7 @@ impl NativeStylesheet {
         let mut opacity = None;
         let mut white_space = None;
         let mut text_align = None;
+        let mut justify_content = None;
         let mut text_decoration = None;
         let mut text_transform = None;
         let mut font_weight = None;
@@ -714,6 +729,21 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, gap)
             {
                 gap = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.justify_content
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    justify_content,
+                )
+            {
+                justify_content = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1040,6 +1070,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.justify_content
+                && wins(u16::MAX, usize::MAX, true, justify_content)
+            {
+                justify_content = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -1200,6 +1240,8 @@ impl NativeStylesheet {
             opacity: opacity.map(|value| value.value),
             white_space: white_space.map_or(inherited.white_space, |value| value.value),
             text_align: text_align.map_or(inherited.text_align, |value| value.value),
+            justify_content: justify_content
+                .map_or(JustifyContentValue::FlexStart, |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
@@ -1313,6 +1355,7 @@ struct NativeDeclarations {
     opacity: Option<u8>,
     white_space: Option<WhiteSpaceValue>,
     text_align: Option<TextAlignValue>,
+    justify_content: Option<JustifyContentValue>,
     text_decoration: Option<TextDecorationValue>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
@@ -1485,6 +1528,7 @@ fn parse_source(
             || declarations.opacity.is_some()
             || declarations.white_space.is_some()
             || declarations.text_align.is_some()
+            || declarations.justify_content.is_some()
             || declarations.text_decoration.is_some()
             || declarations.text_transform.is_some()
             || declarations.font_weight.is_some()
@@ -1618,6 +1662,7 @@ fn parse_declarations_with_diagnostics(
             "opacity" => parse_opacity(value).is_some(),
             "white-space" => parse_white_space(value).is_some(),
             "text-align" => parse_text_align(value).is_some(),
+            "justify-content" => parse_justify_content(value).is_some(),
             "text-decoration" => parse_text_decoration(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
@@ -1684,6 +1729,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "opacity"
             | "white-space"
             | "text-align"
+            | "justify-content"
             | "text-decoration"
             | "text-transform"
             | "font-weight"
@@ -1771,6 +1817,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-align" => {
                 declarations.text_align = parse_text_align(value);
+            }
+            "justify-content" => {
+                declarations.justify_content = parse_justify_content(value);
             }
             "text-decoration" => {
                 declarations.text_decoration = parse_text_decoration(value);
@@ -2197,6 +2246,16 @@ fn parse_text_align(value: &str) -> Option<TextAlignValue> {
     }
 }
 
+fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "flex-start" => Some(JustifyContentValue::FlexStart),
+        "center" => Some(JustifyContentValue::Center),
+        "flex-end" => Some(JustifyContentValue::FlexEnd),
+        "space-between" => Some(JustifyContentValue::SpaceBetween),
+        _ => None,
+    }
+}
+
 fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
     match value.to_ascii_lowercase().as_str() {
         "none" => Some(TextDecorationValue::None),
@@ -2550,13 +2609,17 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.opacity, Some(128));
         assert_eq!(declarations.white_space, Some(WhiteSpaceValue::PreLine));
         assert_eq!(declarations.text_align, Some(TextAlignValue::Center));
+        assert_eq!(
+            declarations.justify_content,
+            Some(JustifyContentValue::SpaceBetween)
+        );
         assert_eq!(
             declarations.text_decoration,
             Some(TextDecorationValue::Underline)
@@ -3034,6 +3097,30 @@ mod tests {
         assert_eq!(parse_text_align("justify"), None);
         assert_eq!(parse_text_align("start"), None);
         assert_eq!(parse_text_align("end"), None);
+    }
+
+    #[test]
+    fn justify_content_parser_accepts_only_bounded_row_values() {
+        assert_eq!(
+            parse_justify_content("flex-start"),
+            Some(JustifyContentValue::FlexStart)
+        );
+        assert_eq!(
+            parse_justify_content("CENTER"),
+            Some(JustifyContentValue::Center)
+        );
+        assert_eq!(
+            parse_justify_content("flex-end"),
+            Some(JustifyContentValue::FlexEnd)
+        );
+        assert_eq!(
+            parse_justify_content("space-between"),
+            Some(JustifyContentValue::SpaceBetween)
+        );
+        assert_eq!(parse_justify_content("normal"), None);
+        assert_eq!(parse_justify_content("space-around"), None);
+        assert_eq!(parse_justify_content("space-evenly"), None);
+        assert_eq!(parse_justify_content("start"), None);
     }
 
     #[test]
@@ -3573,6 +3660,40 @@ mod tests {
         assert_eq!(document.computed_style_for_layout(child).gap(), 0);
         assert_eq!(document.computed_style_for_layout(explicit).gap(), 32);
         assert_eq!(document.computed_style_for_layout(invalid).gap(), 0);
+    }
+
+    #[test]
+    fn justify_content_is_cascaded_without_inheriting_to_children() {
+        let document = NativeDocument::parse(
+            "<style>#parent { justify-content: space-between; } #explicit { justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='justify-content: center'>Explicit</span><span id='invalid' style='justify-content: space-around'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).justify_content(),
+            JustifyContentValue::SpaceBetween
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).justify_content(),
+            JustifyContentValue::FlexStart
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .justify_content(),
+            JustifyContentValue::Center
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .justify_content(),
+            JustifyContentValue::FlexStart
+        );
     }
 
     #[test]

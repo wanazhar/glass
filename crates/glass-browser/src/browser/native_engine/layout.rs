@@ -132,6 +132,9 @@ impl NativeLayoutSnapshot {
                         &text_run.text,
                         document
                             .computed_style_for_layout(text_run.node_id)
+                            .letter_spacing(),
+                        document
+                            .computed_style_for_layout(text_run.node_id)
                             .word_spacing(),
                     ),
                     height: DEFAULT_LINE_HEIGHT,
@@ -463,6 +466,7 @@ struct FlowStyle {
     allow_soft_wrap: bool,
     text_indent: u32,
     word_spacing: u32,
+    letter_spacing: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -488,6 +492,7 @@ struct FlowCursor {
     line_has_content: bool,
     pending_whitespace: bool,
     word_spacing: u32,
+    letter_spacing: u32,
     line_items: Vec<FlowItem>,
     max_right: u32,
     max_bottom: u32,
@@ -513,6 +518,7 @@ impl FlowCursor {
             line_has_content: false,
             pending_whitespace: false,
             word_spacing: style.word_spacing,
+            letter_spacing: style.letter_spacing,
             line_items: Vec::new(),
             max_right: x,
             max_bottom: y,
@@ -579,7 +585,8 @@ impl FlowCursor {
         let mut width: u32 = 0;
         let mut count: usize = 0;
         for character in value.chars() {
-            let advance = LayoutBuilder::character_advance(character, self.word_spacing);
+            let advance =
+                LayoutBuilder::character_advance(character, self.letter_spacing, self.word_spacing);
             if width.saturating_add(advance) > remaining_width {
                 if count == 0 && !self.line_has_content {
                     return 1;
@@ -593,7 +600,7 @@ impl FlowCursor {
     }
 
     fn text_width(&self, value: &str) -> u32 {
-        LayoutBuilder::text_width_with_spacing(value, self.word_spacing)
+        LayoutBuilder::text_width_with_spacing(value, self.letter_spacing, self.word_spacing)
     }
 
     fn place_inline(&mut self, width: u32, height: u32) -> Option<NativePoint> {
@@ -694,6 +701,7 @@ impl<'a> LayoutBuilder<'a> {
             0
         };
         let word_spacing = style.word_spacing();
+        let letter_spacing = style.letter_spacing();
         let allow_soft_wrap =
             !matches!(white_space, WhiteSpaceValue::Pre | WhiteSpaceValue::NoWrap);
         let mut flow = FlowCursor::new(
@@ -706,6 +714,7 @@ impl<'a> LayoutBuilder<'a> {
                 allow_soft_wrap,
                 text_indent,
                 word_spacing,
+                letter_spacing,
             },
         );
         self.process_children(parent, &mut flow, depth);
@@ -835,7 +844,7 @@ impl<'a> LayoutBuilder<'a> {
                                 candidate_width.saturating_add(margin.horizontal());
                             let separator_width =
                                 if flow.has_pending_whitespace() && flow.line_has_content {
-                                    CHARACTER_WIDTH.saturating_add(flow.word_spacing)
+                                    flow.text_width(" ")
                                 } else {
                                     0
                                 };
@@ -1247,16 +1256,12 @@ impl<'a> LayoutBuilder<'a> {
             } else {
                 true
             };
-            let word_width = Self::text_width(word);
+            let word_width = flow.text_width(word);
             if flow.line_has_content {
                 let remaining_width = flow
                     .available_width
                     .saturating_sub(flow.x.saturating_sub(flow.start_x));
-                let separator_width = if separator {
-                    CHARACTER_WIDTH.saturating_add(flow.word_spacing)
-                } else {
-                    0
-                };
+                let separator_width = if separator { flow.text_width(" ") } else { 0 };
                 if separator_width.saturating_add(word_width) <= remaining_width {
                     let fragment = if separator {
                         format!(" {word}")
@@ -1282,7 +1287,7 @@ impl<'a> LayoutBuilder<'a> {
         let remaining_width = flow
             .available_width
             .saturating_sub(flow.x.saturating_sub(flow.start_x));
-        let separator_width = CHARACTER_WIDTH.saturating_add(flow.word_spacing);
+        let separator_width = flow.text_width(" ");
         if separator_width > remaining_width {
             if !flow.allow_soft_wrap {
                 self.place_text_fragment(parent, flow, " ", false);
@@ -1302,7 +1307,7 @@ impl<'a> LayoutBuilder<'a> {
         is_last_word: bool,
         truncated: bool,
     ) {
-        let word_width = Self::text_width(word);
+        let word_width = flow.text_width(word);
         if word_width <= flow.available_width {
             self.place_text_fragment(parent, flow, word, truncated && is_last_word);
             return;
@@ -1314,10 +1319,11 @@ impl<'a> LayoutBuilder<'a> {
             if flow.line_has_content {
                 self.flush_line(flow);
             }
-            let characters_on_line = usize::try_from(flow.available_width / CHARACTER_WIDTH)
-                .unwrap_or_default()
-                .max(1);
-            let fragment_length = characters_on_line.min(characters.len() - offset);
+            let remaining = characters[offset..].iter().collect::<String>();
+            let fragment_length = flow
+                .line_capacity_for_text(&remaining)
+                .max(1)
+                .min(characters.len() - offset);
             let fragment = characters[offset..offset + fragment_length]
                 .iter()
                 .collect::<String>();
@@ -1363,19 +1369,19 @@ impl<'a> LayoutBuilder<'a> {
         });
     }
 
-    fn text_width(value: &str) -> u32 {
-        u32::try_from(value.chars().count())
-            .unwrap_or(u32::MAX)
-            .saturating_mul(CHARACTER_WIDTH)
+    fn character_advance(character: char, letter_spacing: u32, word_spacing: u32) -> u32 {
+        CHARACTER_WIDTH
+            .saturating_add(letter_spacing)
+            .saturating_add(if character == ' ' { word_spacing } else { 0 })
     }
 
-    fn character_advance(character: char, word_spacing: u32) -> u32 {
-        CHARACTER_WIDTH.saturating_add(if character == ' ' { word_spacing } else { 0 })
-    }
-
-    fn text_width_with_spacing(value: &str, word_spacing: u32) -> u32 {
+    fn text_width_with_spacing(value: &str, letter_spacing: u32, word_spacing: u32) -> u32 {
         value.chars().fold(0, |width, character| {
-            width.saturating_add(Self::character_advance(character, word_spacing))
+            width.saturating_add(Self::character_advance(
+                character,
+                letter_spacing,
+                word_spacing,
+            ))
         })
     }
 
@@ -1406,19 +1412,29 @@ impl<'a> LayoutBuilder<'a> {
         match style.white_space() {
             WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => {
                 let (value, _) = NativeDocument::collapse_text_for_layout(&value);
-                Self::text_width_with_spacing(&value, style.word_spacing())
+                Self::text_width_with_spacing(&value, style.letter_spacing(), style.word_spacing())
             }
             WhiteSpaceValue::PreLine => value
                 .split(['\n', '\r'])
                 .map(|line| {
                     let (line, _) = NativeDocument::collapse_text_for_layout(line);
-                    Self::text_width_with_spacing(&line, style.word_spacing())
+                    Self::text_width_with_spacing(
+                        &line,
+                        style.letter_spacing(),
+                        style.word_spacing(),
+                    )
                 })
                 .max()
                 .unwrap_or(0),
             WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap => value
                 .split(['\n', '\r'])
-                .map(|line| Self::text_width_with_spacing(line, style.word_spacing()))
+                .map(|line| {
+                    Self::text_width_with_spacing(
+                        line,
+                        style.letter_spacing(),
+                        style.word_spacing(),
+                    )
+                })
                 .max()
                 .unwrap_or(0),
         }

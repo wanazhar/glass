@@ -186,6 +186,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_decoration: TextDecorationValue,
     pub(crate) text_transform: TextTransformValue,
     pub(crate) word_spacing: u32,
+    pub(crate) letter_spacing: u32,
 }
 
 /// Bounded physical top, right, bottom, and left box values.
@@ -243,6 +244,7 @@ pub(crate) struct NativeComputedStyle {
     text_transform: TextTransformValue,
     text_indent: u32,
     word_spacing: u32,
+    letter_spacing: u32,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -299,6 +301,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn word_spacing(self) -> u32 {
         self.word_spacing
+    }
+
+    pub(crate) const fn letter_spacing(self) -> u32 {
+        self.letter_spacing
     }
 
     pub(crate) const fn width(self) -> Option<u32> {
@@ -450,6 +456,7 @@ impl NativeStylesheet {
         let mut text_transform = None;
         let mut text_indent = None;
         let mut word_spacing = None;
+        let mut letter_spacing = None;
         let mut width = None;
         let mut height = None;
         let mut min_width = None;
@@ -559,6 +566,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, word_spacing)
             {
                 word_spacing = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.letter_spacing
+                && wins(rule.selector.specificity, rule.order, false, letter_spacing)
+            {
+                letter_spacing = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -815,6 +832,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.letter_spacing
+                && wins(u16::MAX, usize::MAX, true, letter_spacing)
+            {
+                letter_spacing = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -979,6 +1006,7 @@ impl NativeStylesheet {
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             text_indent: text_indent.map_or(0, |value| value.value),
             word_spacing: word_spacing.map_or(inherited.word_spacing, |value| value.value),
+            letter_spacing: letter_spacing.map_or(inherited.letter_spacing, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             min_width: min_width.map(|value| value.value),
@@ -1085,6 +1113,7 @@ struct NativeDeclarations {
     text_transform: Option<TextTransformValue>,
     text_indent: Option<u32>,
     word_spacing: Option<u32>,
+    letter_spacing: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -1250,6 +1279,7 @@ fn parse_source(
             || declarations.text_transform.is_some()
             || declarations.text_indent.is_some()
             || declarations.word_spacing.is_some()
+            || declarations.letter_spacing.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.min_width.is_some()
@@ -1375,6 +1405,7 @@ fn parse_declarations_with_diagnostics(
             "text-transform" => parse_text_transform(value).is_some(),
             "text-indent" => parse_dimension(value).is_some(),
             "word-spacing" => parse_dimension(value).is_some(),
+            "letter-spacing" => parse_dimension(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
             }
@@ -1523,6 +1554,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "word-spacing" => {
                 declarations.word_spacing = parse_dimension(value);
+            }
+            "letter-spacing" => {
+                declarations.letter_spacing = parse_dimension(value);
             }
             "width" => {
                 declarations.width = parse_dimension(value);
@@ -2226,7 +2260,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; word-spacing: 12px; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2239,6 +2273,7 @@ mod tests {
         );
         assert_eq!(declarations.text_indent, Some(12));
         assert_eq!(declarations.word_spacing, Some(12));
+        assert_eq!(declarations.letter_spacing, Some(12));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.min_width, Some(12));
@@ -2648,6 +2683,18 @@ mod tests {
     }
 
     #[test]
+    fn letter_spacing_parser_accepts_only_bounded_non_negative_pixels() {
+        assert_eq!(parse_dimension("16px"), Some(16));
+        assert_eq!(parse_dimension("0px"), Some(0));
+        assert_eq!(parse_dimension("-1px"), None);
+        assert_eq!(parse_dimension("1.5px"), None);
+        assert_eq!(parse_dimension("2em"), None);
+        assert_eq!(parse_dimension("50%"), None);
+        assert_eq!(parse_dimension("normal"), None);
+        assert_eq!(parse_dimension("20000px"), None);
+    }
+
+    #[test]
     fn opacity_parser_quantizes_bounded_numbers_and_percentages() {
         assert_eq!(parse_opacity("0"), Some(0));
         assert_eq!(parse_opacity("0.5"), Some(128));
@@ -2876,14 +2923,15 @@ mod tests {
     #[test]
     fn word_spacing_is_inherited_and_child_override_replaces_it() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "div { word-spacing: 16px; } #target { word-spacing: 24px; }".into(),
+            "div { word-spacing: 16px; letter-spacing: 16px; } #target { word-spacing: 24px; letter-spacing: 24px; }".into(),
         ])
         .unwrap();
         let node = node("<div id='target'>Target</div>");
         assert_eq!(stylesheet.computed_for(&node).word_spacing(), 24);
+        assert_eq!(stylesheet.computed_for(&node).letter_spacing(), 24);
 
         let document = NativeDocument::parse(
-            "<style>#parent { word-spacing: 16px; } #explicit { word-spacing: 24px; } #invalid { word-spacing: -1px; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span></div>",
+            "<style>#parent { word-spacing: 16px; letter-spacing: 16px; } #explicit { word-spacing: 24px; letter-spacing: 24px; } #invalid { word-spacing: -1px; letter-spacing: -1px; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -2898,11 +2946,25 @@ mod tests {
         );
         assert_eq!(document.computed_style_for_layout(child).word_spacing(), 16);
         assert_eq!(
+            document.computed_style_for_layout(child).letter_spacing(),
+            16
+        );
+        assert_eq!(
             document.computed_style_for_layout(explicit).word_spacing(),
             24
         );
         assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .letter_spacing(),
+            24
+        );
+        assert_eq!(
             document.computed_style_for_layout(invalid).word_spacing(),
+            16
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).letter_spacing(),
             16
         );
     }

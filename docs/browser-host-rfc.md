@@ -137,6 +137,7 @@ fixed-cell inline and inline-block line items within the existing line box,
 bounded block-level `display:flex` single-row placement for eligible direct
 element children with fixed widths and margins, with normal-flow fallback for
 unsupported child shapes,
+one non-negative fixed-pixel `gap` between visible items in eligible flex rows,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
 Rust diagnostics for unsupported CSS. It does not yet provide
 general CSS/nested/horizontal/stacking layout, logical writing-mode sides,

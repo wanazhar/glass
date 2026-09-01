@@ -14,7 +14,7 @@ bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
 bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
-bounded-inherited-font-weight slices,
+bounded-inherited-font-weight slices, bounded-inherited-font-style design,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -668,6 +668,17 @@ variable fonts, shaping, anti-aliasing, and browser text-rendering parity
 remain unsupported. Its implementation is committed locally as `21fcff5`; the
 059 task file records the local validation evidence, and remote CI remains
 pending until this branch is pushed.
+
+The active 060 design adds inherited `font-style: normal|italic` to the
+fixed-cell text path. `normal` retains the existing glyph replay and `italic`
+applies a deterministic bounded row-dependent horizontal shear through the
+existing clipped software rasterizer. Bold dilation, underline, spacing,
+opacity, scrolling, and capture compose through the same immutable text
+command and raster owners; fixed-cell advances, wrapping, origins, overflow,
+hit testing, semantics, and capture coordinates do not change. Oblique forms,
+angles, font selection/loading/metrics, shaping, anti-aliasing, and browser
+text-rendering parity remain unsupported. The contract is recorded in
+`docs/plan/tasks/native-engine-060.md`; implementation is not yet started.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

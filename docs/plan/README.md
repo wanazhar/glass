@@ -391,6 +391,16 @@ coordinates. Font selection, metrics, shaping, variable weights, and browser
 text-rendering parity remain outside the boundary. Implementation and local
 validation evidence are recorded in the task file and issue #40; remote CI
 remains pending until this branch is pushed.
+The active follow-on [native-engine-060](tasks/native-engine-060.md) design
+adds inherited `font-style: normal|italic` to the fixed-cell text presentation
+path. `normal` retains the current glyph replay and `italic` applies a
+deterministic clipped row-dependent horizontal shear without changing
+advances, layout, semantics, hit testing, overflow, or text-fragment
+coordinates. Bold dilation, underline, spacing, opacity, scrolling, and
+capture must compose through the existing immutable text-command and raster
+owners. Oblique forms, angles, font selection/loading/metrics, shaping,
+anti-aliasing, and browser text-rendering parity remain outside the boundary;
+implementation has not started.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

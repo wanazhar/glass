@@ -645,7 +645,7 @@ negative, relative, percentage, keyword, Unicode-whitespace, and browser
 word-boundary behavior remain outside the boundary. Implementation and local
 validation evidence are recorded in the 057 task file and issue #40; remote
 CI remains pending until this branch is pushed.
-The active 058 boundary adds bounded inherited non-negative fixed-pixel
+The completed 058 boundary adds bounded inherited non-negative fixed-pixel
 `letter-spacing` after every rendered fixed-cell character in each emitted
 fragment, including the final character, and composes it with the existing
 word-spacing advance on ASCII spaces. The measured result is shared by
@@ -653,6 +653,9 @@ wrapping, preformatted chunking, text fragments, alignment, display commands,
 raster replay, hit testing, and root overflow. Fragment and line boundaries,
 pair-boundary typography, Unicode shaping, font metrics, negative/relative/
 percentage values, `normal`, and browser parity remain outside the boundary.
+Its implementation is committed locally as `cb191a3`; the task file records
+the local validation evidence, and remote CI remains pending until this branch
+is pushed.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

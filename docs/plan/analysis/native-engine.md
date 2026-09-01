@@ -186,7 +186,7 @@ keyword, Unicode-whitespace, and browser word-boundary behavior remain
 outside the boundary. Its implementation and local validation evidence are
 recorded in the task file and issue #40; remote CI remains pending until this
 branch is pushed.
-The active dependency-ordered `native-engine-058` task adds bounded inherited
+The completed dependency-ordered `native-engine-058` task adds bounded inherited
 non-negative fixed-pixel `letter-spacing` to every rendered fixed-cell
 character in each emitted fragment. Its measured advance composes with
 `word-spacing` on ASCII spaces before wrapping, preformatted chunking,
@@ -194,7 +194,9 @@ fragment projection, alignment, display-list generation, raster replay, hit
 testing, and root-overflow measurement. Fragment and line boundaries remain
 hard boundaries; browser pair-boundary, Unicode, font-metric, negative,
 relative, percentage, `normal`, and conformance semantics remain outside the
-boundary.
+boundary. Its implementation is committed locally as `cb191a3`; the task file
+records the local validation evidence, and remote CI remains pending until this
+branch is pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -655,8 +657,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-058.md` is the active checkpoint;
-`docs/plan/tasks/native-engine-057.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-058.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-057.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-056.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-055.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-054.md` is the preceding completed checkpoint;

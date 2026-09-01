@@ -139,6 +139,8 @@ bounded inherited non-negative fixed-pixel `word-spacing` across collapsed and
 supported preformatted ASCII spaces, bounded inherited non-negative fixed-pixel
 `letter-spacing` after every rendered fixed-cell character in each emitted
 fragment, composed with word spacing,
+bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster
+presentation with unchanged advances and clipped one-pixel bold dilation,
 deterministic display list, bounded logical RGBA software surface, and bounded PNG capture
 through the native backend directly. Rust callers can also inspect bounded
 revisioned diagnostics for unsupported CSS; screenshot-containing evidence, JPEG/PDF,

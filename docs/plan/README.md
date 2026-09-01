@@ -382,14 +382,15 @@ pair-boundary, Unicode, font-metric, negative, relative, percentage, and
 `normal` semantics remain outside the boundary. Implementation and local
 validation evidence are recorded in the task file and issue #40; remote CI
 remains pending until this branch is pushed.
-The active follow-on [native-engine-059](tasks/native-engine-059.md) design
+The completed follow-on [native-engine-059](tasks/native-engine-059.md) task
 adds inherited `font-weight: normal|bold|400|700` to the fixed-cell text
 presentation path. `normal`/`400` retain the current glyph replay and
 `bold`/`700` add a clipped one-pixel horizontal dilation without changing
 advances, layout, semantics, hit testing, overflow, or text-fragment
 coordinates. Font selection, metrics, shaping, variable weights, and browser
-text-rendering parity remain outside the boundary; implementation has not
-started.
+text-rendering parity remain outside the boundary. Implementation and local
+validation evidence are recorded in the task file and issue #40; remote CI
+remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

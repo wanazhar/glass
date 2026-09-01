@@ -356,6 +356,8 @@ bounded inherited non-negative fixed-pixel `word-spacing` across collapsed
 and supported preformatted ASCII spaces, bounded inherited non-negative
 fixed-pixel `letter-spacing` after every rendered fixed-cell character in each
 emitted fragment, composed with word spacing,
+bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster
+presentation with unchanged advances and clipped one-pixel bold dilation,
 plus bounded revisioned Rust
 diagnostics for unsupported CSS without raw stylesheet echo. A
 `native-engine` feature build exposes the explicit local

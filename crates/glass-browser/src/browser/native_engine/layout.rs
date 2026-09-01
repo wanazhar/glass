@@ -1,7 +1,7 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
-    DisplayValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue, TextTransformValue,
-    WhiteSpaceValue, WordBreakValue,
+    DisplayValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue, TextOverflowValue,
+    TextTransformValue, WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -1243,7 +1243,11 @@ impl<'a> LayoutBuilder<'a> {
         if !flow.allow_soft_wrap {
             let separator = (leading_whitespace || pending_whitespace) && flow.line_has_content;
             let fragment = if separator { format!(" {text}") } else { text };
-            self.place_text_fragment(parent, flow, &fragment, truncated);
+            if self.should_apply_ellipsis(parent) {
+                self.place_ellipsis_text(parent, flow, &fragment, truncated);
+            } else {
+                self.place_text_fragment(parent, flow, &fragment, truncated);
+            }
             if trailing_whitespace {
                 flow.mark_pending_whitespace();
             }
@@ -1297,6 +1301,75 @@ impl<'a> LayoutBuilder<'a> {
         if trailing_whitespace {
             flow.mark_pending_whitespace();
         }
+    }
+
+    fn should_apply_ellipsis(&self, parent: NativeNodeId) -> bool {
+        let style = self.document.computed_style_for_layout(parent);
+        if self.effective_display(parent) != DisplayValue::Block
+            || style.white_space() != WhiteSpaceValue::NoWrap
+            || style.text_overflow() != TextOverflowValue::Ellipsis
+            || !style.overflow_clip_x()
+        {
+            return false;
+        }
+        let Some(node) = self.document.node(parent) else {
+            return false;
+        };
+        let children = node.children();
+        children.len() == 1
+            && self
+                .document
+                .node(children[0])
+                .is_some_and(|child| matches!(child.kind(), NativeNodeKind::Text(_)))
+    }
+
+    fn place_ellipsis_text(
+        &mut self,
+        parent: NativeNodeId,
+        flow: &mut FlowCursor,
+        text: &str,
+        truncated: bool,
+    ) {
+        let remaining_width = flow
+            .available_width
+            .saturating_sub(flow.x.saturating_sub(flow.start_x));
+        if flow.text_width(text) <= remaining_width {
+            self.place_text_fragment(parent, flow, text, truncated);
+            return;
+        }
+
+        const ELLIPSIS: &str = "...";
+        let ellipsis_width = flow.text_width(ELLIPSIS);
+        if ellipsis_width <= remaining_width {
+            let prefix = self.text_prefix_for_width(
+                text,
+                remaining_width.saturating_sub(ellipsis_width),
+                flow,
+            );
+            let fragment = format!("{}{}", prefix.trim_end_matches(' '), ELLIPSIS);
+            self.place_text_fragment(parent, flow, &fragment, true);
+            return;
+        }
+
+        let prefix = self.text_prefix_for_width(text, remaining_width, flow);
+        let prefix = prefix.trim_end_matches(' ');
+        if !prefix.is_empty() {
+            self.place_text_fragment(parent, flow, prefix, true);
+        }
+    }
+
+    fn text_prefix_for_width(&self, text: &str, available_width: u32, flow: &FlowCursor) -> String {
+        let mut width: u32 = 0;
+        let mut prefix = String::new();
+        for character in text.chars() {
+            let advance = flow.character_advance(character);
+            if width.saturating_add(advance) > available_width {
+                break;
+            }
+            width = width.saturating_add(advance);
+            prefix.push(character);
+        }
+        prefix
     }
 
     fn place_break_all_text(

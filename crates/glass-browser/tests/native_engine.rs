@@ -1867,6 +1867,158 @@ fn native_word_break_break_all_splits_collapsed_words_without_changing_semantics
 }
 
 #[test]
+fn native_text_overflow_ellipsis_truncates_only_eligible_clipped_nowrap_text() {
+    let document = NativeDocument::parse(
+        "<div id='clip' style='display:block;width:40px;white-space:nowrap;overflow-x:clip;text-overflow:clip'>ABCDEFG</div><div id='ellipsis' style='display:block;width:40px;white-space:nowrap;overflow-x:clip;text-overflow:ellipsis'>ABCDEFG</div><div id='fit' style='display:block;width:40px;white-space:nowrap;overflow-x:clip;text-overflow:ellipsis'>ABC</div><div id='narrow' style='display:block;width:16px;white-space:nowrap;overflow-x:clip;text-overflow:ellipsis'>ABCDEFG</div><div id='nested' style='display:block;width:40px;white-space:nowrap;overflow-x:clip;text-overflow:ellipsis'><span id='nested-child'>ABCDEFG</span></div><div id='styled' style='display:block;width:56px;white-space:nowrap;overflow-x:clip;text-overflow:ellipsis;text-transform:uppercase;word-spacing:4px;letter-spacing:2px;font-weight:bold;font-style:italic;text-decoration:underline'>ab cd ef</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 128,
+        device_scale_factor_milli: 1000,
+    };
+    let clip = document.resolve_target("id=clip").unwrap();
+    let ellipsis = document.resolve_target("id=ellipsis").unwrap();
+    let fit = document.resolve_target("id=fit").unwrap();
+    let narrow = document.resolve_target("id=narrow").unwrap();
+    let nested_child = document.resolve_target("id=nested-child").unwrap();
+    let styled = document.resolve_target("id=styled").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(clip).unwrap().height, 20);
+    assert_eq!(layout.box_for(ellipsis).unwrap().height, 20);
+    assert_eq!(layout.box_for(fit).unwrap().height, 20);
+    assert_eq!(layout.box_for(narrow).unwrap().height, 20);
+    assert_eq!(layout.max_scroll_offset().x, 0);
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == clip)
+            .map(|run| (run.origin, run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>(),
+        vec![(NativePoint { x: 0, y: 0 }, "ABCDEFG", false)]
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == ellipsis)
+            .map(|run| (run.origin, run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>(),
+        vec![(NativePoint { x: 0, y: 20 }, "AB...", true)]
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == fit)
+            .map(|run| (run.origin, run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>(),
+        vec![(NativePoint { x: 0, y: 40 }, "ABC", false)]
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == narrow)
+            .map(|run| (run.origin, run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>(),
+        vec![(NativePoint { x: 0, y: 60 }, "AB", true)]
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == nested_child)
+            .map(|run| (run.origin, run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>(),
+        vec![(NativePoint { x: 0, y: 80 }, "ABCDEFG", false)]
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == styled)
+            .map(|run| (run.origin, run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>(),
+        vec![(NativePoint { x: 0, y: 100 }, "AB...", true)]
+    );
+
+    let (visible_text, truncated) = document.visible_text(1024);
+    assert!(!truncated);
+    assert_eq!(visible_text, "ABCDEFG ABCDEFG ABC ABCDEFG ABCDEFG ab cd ef");
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun {
+                node_id,
+                origin,
+                text,
+                truncated,
+                ..
+            } if *node_id == ellipsis
+                && *origin == NativePoint { x: 0, y: 20 }
+                && text == "AB..."
+                && *truncated
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun {
+                node_id,
+                text,
+                truncated,
+                underline,
+                bold,
+                italic,
+                word_spacing,
+                letter_spacing,
+                ..
+            } if *node_id == styled
+                && text == "AB..."
+                && *truncated
+                && *underline
+                && *bold
+                && *italic
+                && *word_spacing == 4
+                && *letter_spacing == 2
+        )
+    }));
+
+    let visible_overflow = NativeDocument::parse(
+        "<div id='visible' style='display:block;width:40px;white-space:nowrap;text-overflow:ellipsis'>ABCDEFG</div><div id='normal' style='display:block;width:40px;text-overflow:ellipsis'>ABC DEFG</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let visible_layout = visible_overflow.layout(viewport).unwrap();
+    let visible = visible_overflow.resolve_target("id=visible").unwrap();
+    let normal = visible_overflow.resolve_target("id=normal").unwrap();
+    assert_eq!(
+        visible_layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == visible)
+            .map(|run| (run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>(),
+        vec![("ABCDEFG", false)]
+    );
+    assert_eq!(
+        visible_layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == normal)
+            .map(|run| (run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>(),
+        vec![("ABC", false), ("DEFG", false)]
+    );
+}
+
+#[test]
 fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
     let adjacent = NativeDocument::parse(
         "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",
@@ -4826,7 +4978,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -4882,6 +5034,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "word-break"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-overflow"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

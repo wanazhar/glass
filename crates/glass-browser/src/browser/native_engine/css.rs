@@ -199,6 +199,13 @@ pub(crate) enum WordBreakValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TextOverflowValue {
+    #[default]
+    Clip,
+    Ellipsis,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
     pub(crate) white_space: WhiteSpaceValue,
@@ -269,6 +276,7 @@ pub(crate) struct NativeComputedStyle {
     font_weight: FontWeightValue,
     font_style: FontStyleValue,
     word_break: WordBreakValue,
+    text_overflow: TextOverflowValue,
     text_indent: u32,
     word_spacing: u32,
     letter_spacing: u32,
@@ -332,6 +340,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn word_break(self) -> WordBreakValue {
         self.word_break
+    }
+
+    pub(crate) const fn text_overflow(self) -> TextOverflowValue {
+        self.text_overflow
     }
 
     pub(crate) const fn text_indent(self) -> u32 {
@@ -496,6 +508,7 @@ impl NativeStylesheet {
         let mut font_weight = None;
         let mut font_style = None;
         let mut word_break = None;
+        let mut text_overflow = None;
         let mut text_indent = None;
         let mut word_spacing = None;
         let mut letter_spacing = None;
@@ -618,6 +631,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, word_break)
             {
                 word_break = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_overflow
+                && wins(rule.selector.specificity, rule.order, false, text_overflow)
+            {
+                text_overflow = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -914,6 +937,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_overflow
+                && wins(u16::MAX, usize::MAX, true, text_overflow)
+            {
+                text_overflow = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.text_indent
                 && wins(u16::MAX, usize::MAX, true, text_indent)
             {
@@ -1109,6 +1142,7 @@ impl NativeStylesheet {
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
             font_style: font_style.map_or(inherited.font_style, |value| value.value),
             word_break: word_break.map_or(inherited.word_break, |value| value.value),
+            text_overflow: text_overflow.map_or(TextOverflowValue::Clip, |value| value.value),
             text_indent: text_indent.map_or(0, |value| value.value),
             word_spacing: word_spacing.map_or(inherited.word_spacing, |value| value.value),
             letter_spacing: letter_spacing.map_or(inherited.letter_spacing, |value| value.value),
@@ -1219,6 +1253,7 @@ struct NativeDeclarations {
     font_weight: Option<FontWeightValue>,
     font_style: Option<FontStyleValue>,
     word_break: Option<WordBreakValue>,
+    text_overflow: Option<TextOverflowValue>,
     text_indent: Option<u32>,
     word_spacing: Option<u32>,
     letter_spacing: Option<u32>,
@@ -1388,6 +1423,7 @@ fn parse_source(
             || declarations.font_weight.is_some()
             || declarations.font_style.is_some()
             || declarations.word_break.is_some()
+            || declarations.text_overflow.is_some()
             || declarations.text_indent.is_some()
             || declarations.word_spacing.is_some()
             || declarations.letter_spacing.is_some()
@@ -1517,6 +1553,7 @@ fn parse_declarations_with_diagnostics(
             "font-weight" => parse_font_weight(value).is_some(),
             "font-style" => parse_font_style(value).is_some(),
             "word-break" => parse_word_break(value).is_some(),
+            "text-overflow" => parse_text_overflow(value).is_some(),
             "text-indent" => parse_dimension(value).is_some(),
             "word-spacing" => parse_dimension(value).is_some(),
             "letter-spacing" => parse_dimension(value).is_some(),
@@ -1580,6 +1617,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "font-weight"
             | "font-style"
             | "word-break"
+            | "text-overflow"
             | "text-indent"
             | "width"
             | "height"
@@ -1674,6 +1712,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "word-break" => {
                 declarations.word_break = parse_word_break(value);
+            }
+            "text-overflow" => {
+                declarations.text_overflow = parse_text_overflow(value);
             }
             "text-indent" => {
                 declarations.text_indent = parse_dimension(value);
@@ -2116,6 +2157,14 @@ fn parse_word_break(value: &str) -> Option<WordBreakValue> {
     }
 }
 
+fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "clip" => Some(TextOverflowValue::Clip),
+        "ellipsis" => Some(TextOverflowValue::Ellipsis),
+        _ => None,
+    }
+}
+
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(VisibilityValue::Hidden),
@@ -2410,7 +2459,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; font-weight: bold; font-style: italic; word-break: break-all; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2427,6 +2476,10 @@ mod tests {
         assert_eq!(declarations.font_weight, Some(FontWeightValue::Bold));
         assert_eq!(declarations.font_style, Some(FontStyleValue::Italic));
         assert_eq!(declarations.word_break, Some(WordBreakValue::BreakAll));
+        assert_eq!(
+            declarations.text_overflow,
+            Some(TextOverflowValue::Ellipsis)
+        );
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.min_width, Some(12));
@@ -2937,6 +2990,18 @@ mod tests {
     }
 
     #[test]
+    fn text_overflow_parser_accepts_only_clip_and_ellipsis() {
+        assert_eq!(parse_text_overflow("clip"), Some(TextOverflowValue::Clip));
+        assert_eq!(
+            parse_text_overflow("ELLIPSIS"),
+            Some(TextOverflowValue::Ellipsis)
+        );
+        assert_eq!(parse_text_overflow("fade"), None);
+        assert_eq!(parse_text_overflow("initial"), None);
+        assert_eq!(parse_text_overflow(""), None);
+    }
+
+    #[test]
     fn opacity_is_cascaded_locally_without_inheriting_to_children() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { opacity: 25%; } #target { opacity: 75%; }".into(),
@@ -3195,6 +3260,44 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).word_break(),
             WordBreakValue::BreakAll
+        );
+    }
+
+    #[test]
+    fn text_overflow_is_local_and_defaults_to_clip() {
+        let document = NativeDocument::parse(
+            "<style>#parent { text-overflow: ellipsis; } #child { text-overflow: clip; }</style><div id='parent'><span id='child'>Child</span><span id='other'>Other</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let other = document.resolve_target("id=other").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).text_overflow(),
+            TextOverflowValue::Ellipsis
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).text_overflow(),
+            TextOverflowValue::Clip
+        );
+        assert_eq!(
+            document.computed_style_for_layout(other).text_overflow(),
+            TextOverflowValue::Clip
+        );
+
+        let defaults = NativeDocument::parse(
+            "<div id='default'>Default</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let default_node = defaults.resolve_target("id=default").unwrap();
+        assert_eq!(
+            defaults
+                .computed_style_for_layout(default_node)
+                .text_overflow(),
+            TextOverflowValue::Clip
         );
     }
 

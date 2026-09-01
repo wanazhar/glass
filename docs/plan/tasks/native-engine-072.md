@@ -130,6 +130,6 @@ The design checkpoint is `c8e5170` and the implementation checkpoint is
   scenarios, 11 categories).
 
 The exact regenerable Glass Cargo target was reclaimed after validation from
-4.1 GB to 4.0 KB. The separate ForgeBuild target remains at 4.0 KB. No
+5.0 GB to 4.0 KB. The separate ForgeBuild target remains at 4.0 KB. No
 long-lived Glass process was terminated. The branch remains local-only until a
 separately authorized push, so remote CI and release status are not inferred.

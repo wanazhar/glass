@@ -19,6 +19,7 @@ bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
 bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-wrap,
+bounded-flex-cross-line-alignment,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -115,6 +116,13 @@ gaps, flex sizing, and `wrap-reverse` outside the boundary. The design is
 `8772a6a`, the implementation is `5c16185`, and local validation evidence is
 recorded in `docs/plan/tasks/native-engine-070.md`; remote CI remains pending
 because the branch is local-only.
+The active 071 design adds bounded non-inherited
+`align-content:flex-start|center|flex-end|space-between` to wrapped rows. It
+will distribute only positive explicit-content-height remainder before or
+between the existing physical lines, translate complete line artifact ranges
+after per-line `align-items`, and leave `nowrap` and auto-height geometry
+unchanged. The contract is recorded in
+`docs/plan/tasks/native-engine-071.md`; implementation has not started.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1048,6 +1056,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   cascade, explicit/auto cross-axis line sizing, complete item artifact
   translation, overflow preservation, and shared layout/paint/scroll/
   hit-test coordinates.
+- active bounded non-inherited `align-content:flex-start|center|flex-end|
+  space-between` design for wrapped rows, with explicit-height positive
+  cross-line distribution and complete line artifact translation.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

@@ -18,8 +18,7 @@ bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
-bounded-flex-cross-axis-alignment/bounded-flex-direction,
-bounded-flex-wrap design,
+bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-wrap,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -107,12 +106,15 @@ attached, maps existing gap and justification to physical edges, shifts
 overflow as one bounded row, and reuses shared subtree artifacts, root
 scrolling, hit testing, and paint while leaving semantic/source order
 unchanged.
-The active 070 design adds bounded non-inherited `flex-wrap:nowrap|wrap` to
-those rows. `wrap` will form integer physical lines from measured outer item
-widths and the existing gap, reuse the 069 per-line direction and the existing
-justification/alignment/artifact consumers, and stack maximum-height lines
-through root overflow while leaving cross-line distribution, row/column gaps,
-flex sizing, and `wrap-reverse` outside the boundary.
+The completed 070 boundary adds bounded non-inherited `flex-wrap:nowrap|wrap`
+to those rows. `wrap` forms integer physical lines from measured outer item
+widths and the existing gap, reuses the 069 per-line direction and the
+existing justification/alignment/artifact consumers, and stacks maximum-height
+lines through root overflow while leaving cross-line distribution, row/column
+gaps, flex sizing, and `wrap-reverse` outside the boundary. The design is
+`8772a6a`, the implementation is `5c16185`, and local validation evidence is
+recorded in `docs/plan/tasks/native-engine-070.md`; remote CI remains pending
+because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -817,16 +819,16 @@ order. The contract and exclusions are recorded in
 `be11f49`, and local validation evidence is recorded in the task file. Remote
 CI remains pending because the branch is local-only.
 
-The active 070 design adds bounded non-inherited
-`flex-wrap:nowrap|wrap` to the same eligible fixed-width flex rows. `nowrap`
-remains coordinate-equivalent to 069; `wrap` forms deterministic physical
-lines from measured item outer widths plus the existing gap, reuses per-line
-row/reverse placement, justification, and cross-axis alignment, and preserves
-complete subtree artifacts, root overflow, and semantic/source order. The
-contract and exclusions are recorded in
-`docs/plan/tasks/native-engine-070.md`; implementation has not started, so
-public capability claims remain at 069. Remote CI remains pending because the
-branch is local-only.
+The completed dependency-ordered `native-engine-070` slice adds bounded
+non-inherited `flex-wrap:nowrap|wrap` to the same eligible fixed-width flex
+rows. `nowrap` remains coordinate-equivalent to 069; `wrap` forms deterministic
+physical lines from measured item outer widths plus the existing gap, reuses
+per-line row/reverse placement, justification, and cross-axis alignment, and
+preserves complete subtree artifacts, root overflow, and semantic/source order.
+The contract and exclusions are recorded in
+`docs/plan/tasks/native-engine-070.md`; design is `8772a6a`, implementation is
+`5c16185`, and local validation evidence is recorded in the task file. Remote
+CI remains pending because the branch is local-only.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

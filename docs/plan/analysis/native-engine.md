@@ -320,7 +320,7 @@ and semantic/source order. The contract is recorded in
 `be11f49`, and local validation evidence is recorded in the task file. Remote
 CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-070` design adds bounded
+The completed dependency-ordered `native-engine-070` slice adds bounded
 non-inherited `flex-wrap:nowrap|wrap` to eligible fixed-width flex rows.
 `nowrap` remains equivalent to 069; `wrap` partitions the order-sorted visible
 items by measured outer width and the existing gap, then reuses per-line
@@ -328,9 +328,9 @@ justification, physical row/reverse placement, cross-axis alignment, shared
 subtree artifacts, and root overflow consumers. Lines stack top-to-bottom with
 maximum-item outer heights; `align-content`, cross-axis gaps, flex sizing, and
 `wrap-reverse` remain excluded. The contract is recorded in
-`docs/plan/tasks/native-engine-070.md`; implementation has not started and
-public capability claims remain at 069. Remote CI remains pending because the
-branch is local-only.
+`docs/plan/tasks/native-engine-070.md`; design is `8772a6a`, implementation is
+`5c16185`, and local validation evidence is recorded in the task file. Remote
+CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

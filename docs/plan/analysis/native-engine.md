@@ -320,6 +320,18 @@ and semantic/source order. The contract is recorded in
 `be11f49`, and local validation evidence is recorded in the task file. Remote
 CI remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-070` design adds bounded
+non-inherited `flex-wrap:nowrap|wrap` to eligible fixed-width flex rows.
+`nowrap` remains equivalent to 069; `wrap` partitions the order-sorted visible
+items by measured outer width and the existing gap, then reuses per-line
+justification, physical row/reverse placement, cross-axis alignment, shared
+subtree artifacts, and root overflow consumers. Lines stack top-to-bottom with
+maximum-item outer heights; `align-content`, cross-axis gaps, flex sizing, and
+`wrap-reverse` remain excluded. The contract is recorded in
+`docs/plan/tasks/native-engine-070.md`; implementation has not started and
+public capability claims remain at 069. Remote CI remains pending because the
+branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -498,6 +510,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-067` | bounded non-inherited signed `order` values in `-1024..=1024` for eligible fixed-width flex rows, sorted by order with stable source-order ties before gap/justification | `native-engine-066` | flex growth/shrink/basis, wrapping, reverse/column direction, cross-axis alignment, anonymous items, semantic/accessibility/keyboard reordering, and browser Flexbox parity |
 | `native-engine-068` | bounded non-inherited `align-items:flex-start|center|flex-end` for eligible fixed-width single-row flex rows, using explicit or auto line cross size and shared subtree offsets | `native-engine-067` | stretch, baseline/normal/logical alignment, align-content, auto margins, wrapping, reverse/column direction, multiple lines, and browser Flexbox parity |
 | `native-engine-069` | bounded non-inherited `flex-direction:row|row-reverse` for eligible fixed-width single-row flex rows, with margin-aware physical reverse placement and shared consumers | `native-engine-068` | column directions, wrapping, multiple lines, logical direction/RTL, auto margins, flex growth/shrink/basis, and browser Flexbox parity |
+| `native-engine-070` | bounded non-inherited `flex-wrap:nowrap|wrap` for eligible fixed-width flex rows, with deterministic line formation and per-line existing consumers | `native-engine-069` | `wrap-reverse`, `flex-flow`, row/column gaps, multi-value/percentage gap, `align-content`, `place-content`, flex growth/shrink/basis, auto margins, logical direction/RTL, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -829,6 +842,7 @@ visual stacking.
 | bounded flex-item order | makes common fixed-width rows support deterministic visual reordering without changing semantic/source identity | flex growth/shrink/basis, wrapping, reverse/column direction, cross-axis alignment, anonymous text-item sorting, semantic/accessibility/keyboard reordering, stacking-context parity, and browser Flexbox parity | parse a bounded signed integer, sort eligible visual items by `(order, source_index)`, preserve source-order semantic evidence, and reuse the existing gap/justification/layout/paint/hit-test owners |
 | bounded flex cross-axis alignment | makes common fixed-width rows with different item heights visually align without adding a second layout owner | stretch, baseline/normal/logical alignment, align-content, auto margins, wrapping, reverse/column direction, multiple lines, and browser Flexbox parity | parse bounded non-inherited `flex-start|center|flex-end`, determine an explicit or maximum-item line height, lay out once at the top edge, and translate each complete item artifact range by a clamped integer offset |
 | bounded flex direction | makes common fixed-width rows support a deterministic physical reverse direction while preserving semantic/source identity | column directions, wrapping, multiple lines, logical direction/RTL, auto margins, flex growth/shrink/basis, and browser Flexbox parity | parse non-inherited `row|row-reverse`, preserve the existing order-sorted sequence, map justification to physical edges, perform a margin-aware reverse walk, and shift overflowing rows as one bounded artifact-preserving range |
+| bounded flex wrapping | makes common fixed-width rows form deterministic physical lines without adding a second layout owner | `wrap-reverse`, `flex-flow`, row/column gaps, multi-value/percentage gap, `align-content`, `place-content`, flex growth/shrink/basis, auto margins, logical direction/RTL, and browser Flexbox parity | parse non-inherited `nowrap|wrap`, partition sorted visible items by integer outer width plus the existing gap, reuse per-line row/reverse placement and alignment, stack maximum-height lines, and preserve shared subtree/scroll consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence

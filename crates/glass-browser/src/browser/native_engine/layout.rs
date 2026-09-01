@@ -1,7 +1,8 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
-    DisplayValue, JustifyContentValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue,
-    TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+    AlignItemsValue, DisplayValue, JustifyContentValue, NativeBorderRadius, NativeBoxEdges,
+    NativeComputedStyle, TextAlignValue, TextOverflowValue, TextTransformValue, VerticalAlignValue,
+    WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -456,6 +457,15 @@ struct LayoutBuilder<'a> {
 #[derive(Debug, Clone, Copy, Default)]
 struct FlowSize {
     width: u32,
+    height: u32,
+}
+
+struct FlexItemPlacement {
+    box_start: usize,
+    box_end: usize,
+    text_start: usize,
+    text_end: usize,
+    margin: NativeBoxEdges,
     height: u32,
 }
 
@@ -1055,6 +1065,60 @@ impl<'a> LayoutBuilder<'a> {
         FlowSize { width, height }
     }
 
+    fn explicit_content_height(style: NativeComputedStyle) -> Option<u32> {
+        let padding = style.padding();
+        let border_vertical = style.border().map_or(0, |border| {
+            border.top().width().saturating_add(border.bottom().width())
+        });
+        let vertical_inset = padding.vertical().saturating_add(border_vertical);
+        let declared = style.height()?;
+        let outer_height = if style.is_border_box() {
+            declared
+        } else {
+            declared.saturating_add(vertical_inset)
+        };
+        let min_height = style.min_height().map(|value| {
+            if style.is_border_box() {
+                value
+            } else {
+                value.saturating_add(vertical_inset)
+            }
+        });
+        let max_height = style.max_height().map(|value| {
+            if style.is_border_box() {
+                value
+            } else {
+                value.saturating_add(vertical_inset)
+            }
+        });
+        Some(
+            constrain_dimension(outer_height, min_height, max_height)
+                .saturating_sub(vertical_inset),
+        )
+    }
+
+    fn shift_layout_y(
+        &mut self,
+        box_start: usize,
+        box_end: usize,
+        text_start: usize,
+        text_end: usize,
+        offset: u32,
+    ) {
+        let box_end = box_end.min(self.boxes.len());
+        let box_start = box_start.min(box_end);
+        for layout_box in &mut self.boxes[box_start..box_end] {
+            layout_box.rect.y = layout_box.rect.y.saturating_add(offset);
+            layout_box.content_rect.y = layout_box.content_rect.y.saturating_add(offset);
+        }
+
+        let text_end = text_end.min(self.text_runs.len());
+        let text_start = text_start.min(text_end);
+        for text_run in &mut self.text_runs[text_start..text_end] {
+            text_run.origin.y = text_run.origin.y.saturating_add(offset);
+        }
+    }
+
     fn can_use_flex_layout(&self, id: NativeNodeId) -> bool {
         let Some(node) = self.document.node(id) else {
             return false;
@@ -1091,6 +1155,8 @@ impl<'a> LayoutBuilder<'a> {
         let parent_style = self.document.computed_style_for_layout(parent);
         let gap = parent_style.gap();
         let justify_content = parent_style.justify_content();
+        let align_items = parent_style.align_items();
+        let explicit_line_height = Self::explicit_content_height(parent_style);
         let children = self
             .document
             .node(parent)
@@ -1156,7 +1222,7 @@ impl<'a> LayoutBuilder<'a> {
             0
         };
         let mut cursor_x = x.saturating_add(leading_offset);
-        let mut max_bottom = y;
+        let mut placements = Vec::with_capacity(items.len());
         for (index, (child, margin, item_width, _, _)) in items.into_iter().enumerate() {
             if index > 0 {
                 cursor_x = cursor_x.saturating_add(gap);
@@ -1171,15 +1237,50 @@ impl<'a> LayoutBuilder<'a> {
             }
             let item_x = cursor_x.saturating_add(margin.left());
             let item_y = y.saturating_add(margin.top());
+            let box_start = self.boxes.len();
+            let text_start = self.text_runs.len();
             let size = self.layout_element(child, item_x, item_y, item_width, depth);
+            placements.push(FlexItemPlacement {
+                box_start,
+                box_end: self.boxes.len(),
+                text_start,
+                text_end: self.text_runs.len(),
+                margin,
+                height: size.height,
+            });
             cursor_x = cursor_x
                 .saturating_add(margin.left())
                 .saturating_add(size.width)
                 .saturating_add(margin.right());
+        }
+
+        let auto_line_height = placements
+            .iter()
+            .map(|placement| placement.height.saturating_add(placement.margin.vertical()))
+            .max()
+            .unwrap_or(0);
+        let line_height = explicit_line_height.unwrap_or(auto_line_height);
+        let mut max_bottom = y.saturating_add(line_height);
+        for placement in placements {
+            let item_outer_height = placement.height.saturating_add(placement.margin.vertical());
+            let remaining = line_height.saturating_sub(item_outer_height);
+            let offset = match align_items {
+                AlignItemsValue::FlexStart => 0,
+                AlignItemsValue::Center => remaining / 2,
+                AlignItemsValue::FlexEnd => remaining,
+            };
+            self.shift_layout_y(
+                placement.box_start,
+                placement.box_end,
+                placement.text_start,
+                placement.text_end,
+                offset,
+            );
             max_bottom = max_bottom.max(
-                y.saturating_add(margin.top())
-                    .saturating_add(size.height)
-                    .saturating_add(margin.bottom()),
+                y.saturating_add(placement.margin.top())
+                    .saturating_add(offset)
+                    .saturating_add(placement.height)
+                    .saturating_add(placement.margin.bottom()),
             );
         }
         FlowSize {

@@ -332,13 +332,15 @@ maximum-item outer heights; `align-content`, cross-axis gaps, flex sizing, and
 `5c16185`, and local validation evidence is recorded in the task file. Remote
 CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-071` design adds bounded
+The completed dependency-ordered `native-engine-071` slice adds bounded
 non-inherited `align-content:flex-start|center|flex-end|space-between` to
 wrapped flex rows. It distributes only positive cross-axis free space from an
 explicit content height after 070 line formation, translates complete line
 artifact ranges after per-line `align-items` placement, and preserves the
 default `flex-start`/`nowrap` geometry. The contract is recorded in
-`docs/plan/tasks/native-engine-071.md`; implementation has not started.
+`docs/plan/tasks/native-engine-071.md`; design is `71bd380`, implementation is
+`cc1d602`, and local validation and cleanup evidence are recorded in the task
+file. Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -393,8 +395,8 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, inherited physical text alignment, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, and bounded non-inherited flex-row `justify-content`, flex-item `order`, flex cross-axis `align-items`, `flex-direction`, `flex-wrap`, and active `align-content` design | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
-| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, bounded fixed-width flex-row free-space placement, stable visual flex-item order sorting, complete flex cross-axis alignment with explicit/auto line sizing and subtree artifact translation, bounded physical flex wrapping, and active cross-line alignment design | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, inherited physical text alignment, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, and bounded non-inherited flex-row `justify-content`, flex-item `order`, flex cross-axis `align-items`, `flex-direction`, `flex-wrap`, and `align-content` | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, bounded fixed-width flex-row free-space placement, stable visual flex-item order sorting, complete flex cross-axis alignment with explicit/auto line sizing and subtree artifact translation, bounded physical flex wrapping, and bounded cross-line alignment | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity/font presentation, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, nested opacity layers, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
@@ -771,6 +773,16 @@ Phase 2 integration chains added by these slices are:
     `display: contents`, and visible `<br>` preserve the existing normal-flow
     fallback; no flex grow/shrink, wrapping, gaps, reverse/column direction,
     or cross-axis distribution is implied.
+
+67. Native wrapped flex rows apply bounded non-inherited
+    `align-content:flex-start|center|flex-end|space-between` only after 070
+    line formation and per-line `align-items` placement. Positive explicit
+    content-box remainder becomes deterministic leading or inter-line offsets;
+    auto and undersized content boxes do not create negative coordinates. The
+    complete shifted line artifacts feed item boxes, descendants, text runs,
+    display-list paint, viewport projection, root overflow, hit testing, and
+    capture together, while `nowrap`, semantic/source order, and normal-flow
+    fallback remain unchanged.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.

@@ -1,7 +1,7 @@
 ---
 id: native-engine-071
 scope: glass-browser/native-engine/flex-align-content
-status: active
+status: complete
 depends-on: [native-engine-070]
 ---
 
@@ -114,20 +114,42 @@ gaps and does not introduce a separate cross-axis gap property.
 
 ## Verification
 
-- [ ] CSS unit tests cover accepted values, defaulting, rejected values,
+- [x] CSS unit tests cover accepted values, defaulting, rejected values,
   non-inheritance, selector cascade, and inline precedence;
-- [ ] integration tests cover wrapped line offsets for all supported values,
+- [x] integration tests cover wrapped line offsets for all supported values,
   explicit/auto/smaller heights, one-line and multi-line cases, `nowrap`
   equivalence, descendants, root overflow, hit testing, paint, and fallback;
-- [ ] the full native integration suite, strict default/native Clippy,
+- [x] the full native integration suite, strict default/native Clippy,
   formatting, whitespace, and documentation validators pass;
-- [ ] implementation, documentation, and issue #40 checkpoints are committed
+- [x] implementation, documentation, and issue #40 checkpoints are committed
   locally; remote CI is not claimed until this branch is pushed;
-- [ ] exact regenerable Cargo outputs are reclaimed after all validation
+- [x] exact regenerable Cargo outputs are reclaimed after all validation
   without terminating long-lived Glass processes.
 
 ## Completion evidence
 
-Implementation and validation evidence will be recorded here after the
-documented slice is implemented. The branch is local-only until a separately
-authorized push, so remote CI and release status must not be inferred.
+The design checkpoint is `71bd380` and the implementation checkpoint is
+`cc1d602`. Local verification completed on 2026-09-01 UTC:
+
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine native_flex_align_content --locked -- --nocapture`: 2 passed (latest clean-target run completed in 14m23s; test runtime 0.20s);
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --lib align_content --locked -- --nocapture`: 2 passed;
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine --locked -- --nocapture`: 94 passed;
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --lib --locked`: 869 passed, 1 ignored;
+- `RUST_MIN_STACK=4194304 cargo clippy -p glass-browser --all-targets --all-features --locked -- -D warnings`: passed in 8m28s;
+- `RUST_MIN_STACK=4194304 cargo clippy -p glass-browser --no-default-features --all-targets --locked -- -D warnings`: passed in 5m31s;
+- `cargo fmt --all -- --check` and `git diff --check`: passed;
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`: passed in 8m11s;
+- `cargo build -p glass-dev --locked`: passed in 13m04s;
+- repository validators passed: version sync, feature parity, release documentation
+  (485 Markdown documents; 83 current documents; 0 current-claim failures), TUI
+  shortcuts, documentation depth, documentation coverage (485 Markdown files,
+  345 full-product MCP tools, 17 examples, 22 public modules), reliability
+  matrix, public read-only adapters, and the web-IR corpus (8 fixtures, 8
+  scenarios, 11 categories).
+
+The exact regenerable Glass Cargo target was reclaimed after validation: 5.8 GB
+to 4.0 KB. The separate ForgeBuild target was already reclaimed from 1.5 GB to
+4.0 KB. No long-lived Glass process was terminated. The branch remains
+local-only until a separately authorized push, so remote CI and release status
+are not inferred. The issue #40 completion checkpoint and documentation
+closeout are recorded after the documentation commit.

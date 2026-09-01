@@ -116,13 +116,15 @@ gaps, flex sizing, and `wrap-reverse` outside the boundary. The design is
 `8772a6a`, the implementation is `5c16185`, and local validation evidence is
 recorded in `docs/plan/tasks/native-engine-070.md`; remote CI remains pending
 because the branch is local-only.
-The active 071 design adds bounded non-inherited
+The completed 071 boundary adds bounded non-inherited
 `align-content:flex-start|center|flex-end|space-between` to wrapped rows. It
-will distribute only positive explicit-content-height remainder before or
-between the existing physical lines, translate complete line artifact ranges
-after per-line `align-items`, and leave `nowrap` and auto-height geometry
+distributes only positive explicit-content-height remainder before or between
+the existing physical lines, translates complete line artifact ranges after
+per-line `align-items`, and leaves `nowrap` and auto-height geometry
 unchanged. The contract is recorded in
-`docs/plan/tasks/native-engine-071.md`; implementation has not started.
+`docs/plan/tasks/native-engine-071.md`; design is `71bd380`, implementation is
+`cc1d602`, and local validation and cleanup evidence are recorded in the task
+file. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1056,9 +1058,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   cascade, explicit/auto cross-axis line sizing, complete item artifact
   translation, overflow preservation, and shared layout/paint/scroll/
   hit-test coordinates.
-- active bounded non-inherited `align-content:flex-start|center|flex-end|
-  space-between` design for wrapped rows, with explicit-height positive
-  cross-line distribution and complete line artifact translation.
+- bounded non-inherited `align-content:flex-start|center|flex-end|space-between`
+  for wrapped rows, with explicit-height positive cross-line distribution and
+  complete line artifact translation.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

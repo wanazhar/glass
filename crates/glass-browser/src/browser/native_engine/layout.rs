@@ -1,7 +1,7 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
     DisplayValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue, TextOverflowValue,
-    TextTransformValue, WhiteSpaceValue, WordBreakValue,
+    TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -475,6 +475,19 @@ struct FlowItem {
     box_end: usize,
     text_start: usize,
     text_end: usize,
+    height: u32,
+    vertical_align: VerticalAlignValue,
+}
+
+impl FlowItem {
+    fn vertical_offset(self, line_height: u32) -> u32 {
+        let remaining = line_height.saturating_sub(self.height);
+        match self.vertical_align {
+            VerticalAlignValue::Baseline | VerticalAlignValue::Top => 0,
+            VerticalAlignValue::Middle => remaining / 2,
+            VerticalAlignValue::Bottom => remaining,
+        }
+    }
 }
 
 struct FlowCursor {
@@ -733,20 +746,26 @@ impl<'a> LayoutBuilder<'a> {
     fn flush_line(&mut self, flow: &mut FlowCursor) {
         if flow.line_has_content {
             let offset = flow.alignment_offset();
+            let line_height = flow.line_height.max(flow.minimum_line_height);
             let line_right = flow.x.saturating_add(offset);
             flow.max_right = flow.max_right.max(line_right);
             for item in flow.take_line_items() {
+                let vertical_offset = item.vertical_offset(line_height);
                 let box_end = item.box_end.min(self.boxes.len());
                 let box_start = item.box_start.min(box_end);
                 for layout_box in &mut self.boxes[box_start..box_end] {
                     layout_box.rect.x = layout_box.rect.x.saturating_add(offset);
+                    layout_box.rect.y = layout_box.rect.y.saturating_add(vertical_offset);
                     layout_box.content_rect.x = layout_box.content_rect.x.saturating_add(offset);
+                    layout_box.content_rect.y =
+                        layout_box.content_rect.y.saturating_add(vertical_offset);
                 }
 
                 let text_end = item.text_end.min(self.text_runs.len());
                 let text_start = item.text_start.min(text_end);
                 for text_run in &mut self.text_runs[text_start..text_end] {
                     text_run.origin.x = text_run.origin.x.saturating_add(offset);
+                    text_run.origin.y = text_run.origin.y.saturating_add(vertical_offset);
                 }
             }
         }
@@ -878,6 +897,8 @@ impl<'a> LayoutBuilder<'a> {
                                     box_end: self.boxes.len(),
                                     text_start,
                                     text_end: self.text_runs.len(),
+                                    height: size.height.saturating_add(margin.vertical()),
+                                    vertical_align: style.vertical_align(),
                                 });
                             }
                         }
@@ -1195,6 +1216,8 @@ impl<'a> LayoutBuilder<'a> {
             box_end: self.boxes.len(),
             text_start: text_index,
             text_end: text_index.saturating_add(1),
+            height: DEFAULT_LINE_HEIGHT,
+            vertical_align: VerticalAlignValue::Baseline,
         });
     }
 
@@ -1541,6 +1564,8 @@ impl<'a> LayoutBuilder<'a> {
             box_end: self.boxes.len(),
             text_start: text_index,
             text_end: text_index.saturating_add(1),
+            height: DEFAULT_LINE_HEIGHT,
+            vertical_align: VerticalAlignValue::Baseline,
         });
     }
 

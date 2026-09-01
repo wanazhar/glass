@@ -206,6 +206,15 @@ pub(crate) enum TextOverflowValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum VerticalAlignValue {
+    #[default]
+    Baseline,
+    Top,
+    Middle,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
     pub(crate) white_space: WhiteSpaceValue,
@@ -216,6 +225,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
     pub(crate) word_break: WordBreakValue,
+    pub(crate) vertical_align: VerticalAlignValue,
     pub(crate) word_spacing: u32,
     pub(crate) letter_spacing: u32,
 }
@@ -277,6 +287,7 @@ pub(crate) struct NativeComputedStyle {
     font_style: FontStyleValue,
     word_break: WordBreakValue,
     text_overflow: TextOverflowValue,
+    vertical_align: VerticalAlignValue,
     text_indent: u32,
     word_spacing: u32,
     letter_spacing: u32,
@@ -344,6 +355,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_overflow(self) -> TextOverflowValue {
         self.text_overflow
+    }
+
+    pub(crate) const fn vertical_align(self) -> VerticalAlignValue {
+        self.vertical_align
     }
 
     pub(crate) const fn text_indent(self) -> u32 {
@@ -509,6 +524,7 @@ impl NativeStylesheet {
         let mut font_style = None;
         let mut word_break = None;
         let mut text_overflow = None;
+        let mut vertical_align = None;
         let mut text_indent = None;
         let mut word_spacing = None;
         let mut letter_spacing = None;
@@ -641,6 +657,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, text_overflow)
             {
                 text_overflow = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.vertical_align
+                && wins(rule.selector.specificity, rule.order, false, vertical_align)
+            {
+                vertical_align = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -947,6 +973,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.vertical_align
+                && wins(u16::MAX, usize::MAX, true, vertical_align)
+            {
+                vertical_align = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.text_indent
                 && wins(u16::MAX, usize::MAX, true, text_indent)
             {
@@ -1143,6 +1179,7 @@ impl NativeStylesheet {
             font_style: font_style.map_or(inherited.font_style, |value| value.value),
             word_break: word_break.map_or(inherited.word_break, |value| value.value),
             text_overflow: text_overflow.map_or(TextOverflowValue::Clip, |value| value.value),
+            vertical_align: vertical_align.map_or(inherited.vertical_align, |value| value.value),
             text_indent: text_indent.map_or(0, |value| value.value),
             word_spacing: word_spacing.map_or(inherited.word_spacing, |value| value.value),
             letter_spacing: letter_spacing.map_or(inherited.letter_spacing, |value| value.value),
@@ -1254,6 +1291,7 @@ struct NativeDeclarations {
     font_style: Option<FontStyleValue>,
     word_break: Option<WordBreakValue>,
     text_overflow: Option<TextOverflowValue>,
+    vertical_align: Option<VerticalAlignValue>,
     text_indent: Option<u32>,
     word_spacing: Option<u32>,
     letter_spacing: Option<u32>,
@@ -1424,6 +1462,7 @@ fn parse_source(
             || declarations.font_style.is_some()
             || declarations.word_break.is_some()
             || declarations.text_overflow.is_some()
+            || declarations.vertical_align.is_some()
             || declarations.text_indent.is_some()
             || declarations.word_spacing.is_some()
             || declarations.letter_spacing.is_some()
@@ -1554,6 +1593,7 @@ fn parse_declarations_with_diagnostics(
             "font-style" => parse_font_style(value).is_some(),
             "word-break" => parse_word_break(value).is_some(),
             "text-overflow" => parse_text_overflow(value).is_some(),
+            "vertical-align" => parse_vertical_align(value).is_some(),
             "text-indent" => parse_dimension(value).is_some(),
             "word-spacing" => parse_dimension(value).is_some(),
             "letter-spacing" => parse_dimension(value).is_some(),
@@ -1618,6 +1658,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "font-style"
             | "word-break"
             | "text-overflow"
+            | "vertical-align"
             | "text-indent"
             | "width"
             | "height"
@@ -1715,6 +1756,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-overflow" => {
                 declarations.text_overflow = parse_text_overflow(value);
+            }
+            "vertical-align" => {
+                declarations.vertical_align = parse_vertical_align(value);
             }
             "text-indent" => {
                 declarations.text_indent = parse_dimension(value);
@@ -2165,6 +2209,16 @@ fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
     }
 }
 
+fn parse_vertical_align(value: &str) -> Option<VerticalAlignValue> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "baseline" => Some(VerticalAlignValue::Baseline),
+        "top" => Some(VerticalAlignValue::Top),
+        "middle" => Some(VerticalAlignValue::Middle),
+        "bottom" => Some(VerticalAlignValue::Bottom),
+        _ => None,
+    }
+}
+
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(VisibilityValue::Hidden),
@@ -2459,7 +2513,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2479,6 +2533,10 @@ mod tests {
         assert_eq!(
             declarations.text_overflow,
             Some(TextOverflowValue::Ellipsis)
+        );
+        assert_eq!(
+            declarations.vertical_align,
+            Some(VerticalAlignValue::Bottom)
         );
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
@@ -3002,6 +3060,27 @@ mod tests {
     }
 
     #[test]
+    fn vertical_align_parser_accepts_only_bounded_keywords() {
+        assert_eq!(
+            parse_vertical_align("BASELINE"),
+            Some(VerticalAlignValue::Baseline)
+        );
+        assert_eq!(parse_vertical_align("top"), Some(VerticalAlignValue::Top));
+        assert_eq!(
+            parse_vertical_align("middle"),
+            Some(VerticalAlignValue::Middle)
+        );
+        assert_eq!(
+            parse_vertical_align("BOTTOM"),
+            Some(VerticalAlignValue::Bottom)
+        );
+        assert_eq!(parse_vertical_align("text-top"), None);
+        assert_eq!(parse_vertical_align("sub"), None);
+        assert_eq!(parse_vertical_align("1px"), None);
+        assert_eq!(parse_vertical_align("initial"), None);
+    }
+
+    #[test]
     fn opacity_is_cascaded_locally_without_inheriting_to_children() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { opacity: 25%; } #target { opacity: 75%; }".into(),
@@ -3298,6 +3377,53 @@ mod tests {
                 .computed_style_for_layout(default_node)
                 .text_overflow(),
             TextOverflowValue::Clip
+        );
+    }
+
+    #[test]
+    fn vertical_align_is_inherited_and_child_override_replaces_it() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { vertical-align: top; } #target { vertical-align: bottom; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='target'>Target</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).vertical_align(),
+            VerticalAlignValue::Bottom
+        );
+
+        let document = NativeDocument::parse(
+            "<style>#parent { vertical-align: middle; } #explicit { vertical-align: bottom; } #clear { vertical-align: baseline; } #invalid { vertical-align: sub; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let clear = document.resolve_target("id=clear").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).vertical_align(),
+            VerticalAlignValue::Middle
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).vertical_align(),
+            VerticalAlignValue::Middle
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .vertical_align(),
+            VerticalAlignValue::Bottom
+        );
+        assert_eq!(
+            document.computed_style_for_layout(clear).vertical_align(),
+            VerticalAlignValue::Baseline
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).vertical_align(),
+            VerticalAlignValue::Middle
         );
     }
 

@@ -9,7 +9,7 @@ use super::raster::NativeSurface;
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
-        NativeColor, NativeComputedStyle, NativeInheritedStyle, TextAlignValue,
+        FontWeightValue, NativeColor, NativeComputedStyle, NativeInheritedStyle, TextAlignValue,
         TextDecorationValue, TextTransformValue, WhiteSpaceValue,
     },
 };
@@ -852,6 +852,7 @@ impl NativeDocument {
         let mut inherited_text_align = TextAlignValue::Left;
         let mut inherited_text_decoration = TextDecorationValue::None;
         let mut inherited_text_transform = TextTransformValue::None;
+        let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_word_spacing = 0;
         let mut inherited_letter_spacing = 0;
         for current_id in chain.into_iter().rev() {
@@ -868,6 +869,7 @@ impl NativeDocument {
                     text_align: inherited_text_align,
                     text_decoration: inherited_text_decoration,
                     text_transform: inherited_text_transform,
+                    font_weight: inherited_font_weight,
                     word_spacing: inherited_word_spacing,
                     letter_spacing: inherited_letter_spacing,
                 },
@@ -878,6 +880,7 @@ impl NativeDocument {
             inherited_text_align = style.text_align();
             inherited_text_decoration = style.text_decoration();
             inherited_text_transform = style.text_transform();
+            inherited_font_weight = style.font_weight();
             inherited_word_spacing = style.word_spacing();
             inherited_letter_spacing = style.letter_spacing();
             if current_id == id {

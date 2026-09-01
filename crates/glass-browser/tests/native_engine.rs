@@ -1042,6 +1042,62 @@ fn native_letter_spacing_composes_with_word_spacing_across_consumers() {
 }
 
 #[test]
+fn native_font_weight_inherits_and_changes_only_fixed_cell_raster() {
+    let document = NativeDocument::parse(
+        "<style>#normal { display:block; width:16px; font-weight:400; } #bold { display:block; width:16px; font-weight:700; } #parent { display:block; width:48px; font-weight:bold; } #clear { font-weight:normal; } #numeric { font-weight:700; } #invalid { font-weight:500; }</style><div id='normal'>A</div><div id='bold'>A</div><div id='parent'>A<span id='clear'>B</span><span id='numeric'>C</span><span id='invalid'>D</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 80,
+        device_scale_factor_milli: 1000,
+    };
+    let normal = document.resolve_target("id=normal").unwrap();
+    let bold = document.resolve_target("id=bold").unwrap();
+    let parent = document.resolve_target("id=parent").unwrap();
+    let clear = document.resolve_target("id=clear").unwrap();
+    let numeric = document.resolve_target("id=numeric").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(normal).unwrap().width, 16);
+    assert_eq!(layout.box_for(bold).unwrap().width, 16);
+    assert_eq!(layout.box_for(normal).unwrap().height, 20);
+    assert_eq!(layout.box_for(bold).unwrap().height, 20);
+    assert_eq!(layout.box_for(normal).unwrap().y, 0);
+    assert_eq!(layout.box_for(bold).unwrap().y, 20);
+    assert_eq!(layout.box_for(parent).unwrap().y, 40);
+
+    let list = document.display_list(viewport).unwrap();
+    let weight_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                bold,
+                ..
+            } if *command_node == node_id => Some(*bold),
+            _ => None,
+        })
+    };
+    assert_eq!(weight_for(normal), Some(false));
+    assert_eq!(weight_for(bold), Some(true));
+    assert_eq!(weight_for(parent), Some(true));
+    assert_eq!(weight_for(clear), Some(false));
+    assert_eq!(weight_for(numeric), Some(true));
+    assert_eq!(weight_for(invalid), Some(true));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(1, 21), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 21), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(6, 21), Some([255, 255, 255, 255]));
+    assert_eq!(layout.max_scroll_offset().x, 0);
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(normal));
+    assert_eq!(layout.hit_test(1, 21).unwrap(), Some(bold));
+}
+
+#[test]
 fn native_functional_alpha_colors_reach_display_list_and_raster() {
     let document = NativeDocument::parse(
         "<div id='background' style='display:block;width:8px;height:8px;background-color:rgba(255, 0, 0, 0.5)'></div><div id='border' style='display:block;width:8px;height:8px;border:1px solid rgba(0, 0, 255, 50%)'></div><div id='text' style='display:block;width:8px;height:8px;color:rgba(0, 128, 0, 0.5)'>A</div>",
@@ -4648,7 +4704,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -4692,6 +4748,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-transform"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "font-weight"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

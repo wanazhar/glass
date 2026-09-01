@@ -17,6 +17,7 @@ const GLYPH_HEIGHT: u32 = 7;
 struct TextPaint {
     color: super::css::NativeColor,
     underline: bool,
+    bold: bool,
     word_spacing: u32,
     letter_spacing: u32,
 }
@@ -153,6 +154,7 @@ impl NativeSurface {
                     text,
                     color,
                     underline,
+                    bold,
                     word_spacing,
                     letter_spacing,
                     clip,
@@ -174,6 +176,7 @@ impl NativeSurface {
                         TextPaint {
                             color: *color,
                             underline: *underline,
+                            bold: *bold,
                             word_spacing: *word_spacing,
                             letter_spacing: *letter_spacing,
                         },
@@ -494,8 +497,17 @@ impl NativeSurface {
                     if y < 0 || y >= i64::from(self.height) {
                         continue;
                     }
-                    for column in 0..GLYPH_WIDTH {
-                        if bits & (1 << (GLYPH_WIDTH - 1 - column)) == 0 {
+                    let last_column = if paint.bold {
+                        GLYPH_WIDTH
+                    } else {
+                        GLYPH_WIDTH.saturating_sub(1)
+                    };
+                    for column in 0..=last_column {
+                        let source_pixel =
+                            column < GLYPH_WIDTH && bits & (1 << (GLYPH_WIDTH - 1 - column)) != 0;
+                        let bold_neighbor =
+                            paint.bold && column > 0 && bits & (1 << (GLYPH_WIDTH - column)) != 0;
+                        if !source_pixel && !bold_neighbor {
                             continue;
                         }
                         let x = glyph_origin_x.saturating_add(i64::from(column));
@@ -976,6 +988,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::RED,
                     underline: false,
+                    bold: false,
                     word_spacing: 0,
                     letter_spacing: 0,
                     clip: None,
@@ -990,6 +1003,49 @@ mod tests {
         assert_eq!(surface.pixel(4, 2), Some([255, 0, 0, 255]));
         assert_eq!(surface.pixel(7, 2), Some([255, 255, 255, 255]));
         assert_eq!(surface.pixel(7, 7), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn surface_bold_glyph_dilation_preserves_fixed_cell_advance() {
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: NativeDocument::empty().root(),
+                    origin: NativePoint { x: 0, y: 0 },
+                    text: "A".into(),
+                    truncated: false,
+                    color: NativeColor::BLACK,
+                    underline: false,
+                    bold: false,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    clip: None,
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: NativeDocument::empty().root(),
+                    origin: NativePoint { x: 0, y: 10 },
+                    text: "A".into(),
+                    truncated: false,
+                    color: NativeColor::BLACK,
+                    underline: false,
+                    bold: true,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    clip: None,
+                },
+            ],
+            8,
+            18,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(1, 1), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(1, 11), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(5, 11), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(6, 11), Some([255, 255, 255, 255]));
     }
 
     #[test]
@@ -1011,6 +1067,7 @@ mod tests {
                         alpha: 128,
                     },
                     underline: true,
+                    bold: false,
                     word_spacing: 0,
                     letter_spacing: 0,
                     clip: Some(NativeRect {
@@ -1345,6 +1402,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     underline: false,
+                    bold: false,
                     word_spacing: 0,
                     letter_spacing: 0,
                     clip: None,

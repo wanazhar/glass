@@ -128,8 +128,9 @@ gaps and does not introduce a separate cross-axis gap property.
 
 ## Completion evidence
 
-The design checkpoint is `71bd380` and the implementation checkpoint is
-`cc1d602`. Local verification completed on 2026-09-01 UTC:
+The design checkpoint is `71bd380`, the implementation checkpoint is
+`cc1d602`, and the final single-line coverage test checkpoint is `050d41b`.
+Local verification completed on 2026-09-01 UTC:
 
 - `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine native_flex_align_content --locked -- --nocapture`: 2 passed (latest clean-target run completed in 14m23s; test runtime 0.20s);
 - `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --lib align_content --locked -- --nocapture`: 2 passed;

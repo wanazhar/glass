@@ -1,7 +1,7 @@
 ---
 id: native-engine-073
 scope: glass-browser/native-engine/flex-align-content-space-evenly
-status: active
+status: complete
 depends-on: [native-engine-072]
 ---
 
@@ -97,21 +97,48 @@ parser value selects the `space-evenly` formula.
 
 ## Verification
 
-- [ ] CSS unit tests cover accepted `space-evenly`, defaulting, rejected
+- [x] CSS unit tests cover accepted `space-evenly`, defaulting, rejected
   values, non-inheritance, selector cascade, and inline precedence;
-- [ ] integration tests cover the saturating offset formula for one and
+- [x] integration tests cover the saturating offset formula for one and
   multiple lines, explicit/auto/smaller heights, `nowrap` equivalence,
   descendants, root overflow, hit testing, paint, and semantic/source-order
   fallback;
-- [ ] the full native integration suite, strict default/native Clippy,
+- [x] the full native integration suite, strict default/native Clippy,
   formatting, whitespace, and documentation validators pass;
-- [ ] implementation, documentation, and issue #40 checkpoints are committed
+- [x] implementation, documentation, and issue #40 checkpoints are committed
   locally; remote CI is not claimed until this branch is pushed;
-- [ ] exact regenerable Cargo outputs are reclaimed after all validation
+- [x] exact regenerable Cargo outputs are reclaimed after all validation
   without terminating long-lived Glass processes.
 
 ## Completion evidence
 
-Implementation and validation evidence will be recorded here after the
-documented slice is implemented. The branch is local-only until a separately
-authorized push, so remote CI and release status must not be inferred.
+The design checkpoint is `23b62a3` and the implementation checkpoint is
+`b4833a9`. Local verification completed on 2026-09-01 UTC:
+
+- `cargo fmt --all -- --check` and `git diff --check`: passed;
+- `cargo test -p glass-browser --features native-engine --test native_engine native_flex_align_content --locked -- --nocapture`: 2 passed (12m44s cold compile; 0.18s test runtime; 765.14s elapsed, peak RSS 2,099,564 KiB);
+- `cargo test -p glass-browser --features native-engine --test native_engine --locked -- --nocapture`: 94 passed (3.30s elapsed, peak RSS 82,056 KiB);
+- `RUST_MIN_STACK=8388608 cargo test -p glass-browser --features native-engine --lib --locked -- --nocapture`: 869 passed, 1 ignored (5.77s warm elapsed, peak RSS 81,924 KiB);
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`: passed in 13m44s (824.51s elapsed, peak RSS 1,877,336 KiB);
+- `cargo clippy --all-targets --no-default-features --locked -- -D warnings`: passed in 7m00s (420.79s elapsed, peak RSS 1,795,232 KiB);
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`: passed in 3m16s (196.56s elapsed, peak RSS 1,633,852 KiB);
+- `cargo build -p glass-dev --locked`: passed in 11m09s (670.10s elapsed, peak RSS 1,991,508 KiB);
+- repository validators passed: version sync, feature parity, release documentation
+  (487 Markdown documents; 83 current documents; 0 current-claim failures), TUI
+  shortcuts, documentation depth, documentation coverage (487 Markdown files,
+  345 full-product MCP tools, 100 browser-only, 17 examples, 22 public
+  modules), reliability matrix, public read-only adapters, and the web-IR
+  corpus (8 fixtures, 8 scenarios, 11 categories).
+
+The direct default-stack invocation of the full library tests and the broad
+`scripts/check-rust-workspace.sh` all-target test reproduced the pre-existing
+`cli::args::tests::agent_readiness_commands_are_explicit` stack overflow. The
+same native library suite passed with the explicit 8 MiB test-thread stack
+above; no 073 test failed. This test-harness issue is retained as a visible
+follow-up rather than treated as a native-engine pass.
+
+The exact regenerable Glass Cargo target was reclaimed after validation from
+7.4 GB to 4.0 KB. The separate ForgeBuild target remains at 4.0 KB, and the
+filesystem reports 66 GB free. No long-lived Glass process was terminated.
+The branch remains local-only until a separately authorized push, so remote CI
+and release status are not inferred.

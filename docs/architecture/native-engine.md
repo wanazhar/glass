@@ -18,7 +18,8 @@ bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
-bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-wrap,
+bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-wrap/
+bounded-flex-wrap-reverse,
 bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
 bounded-flex-cross-line-space-evenly,
 bounded-base64-data-url/bounded-fragment-navigation-history/
@@ -145,6 +146,14 @@ semantic owners. The contract is recorded in
 file. The default-stack overflow in one existing large-Clap parser test is
 documented there; the full native library suite passes with an explicit 8 MiB
 test-thread stack. Remote CI remains pending because the branch is local-only.
+The active 074 boundary adds bounded non-inherited
+`flex-wrap:wrap-reverse` to eligible fixed-width rows. It keeps source-order
+line formation, reflects physical line origins from the cross-axis end, reuses
+all bounded `align-content` offsets, and translates each complete line artifact
+range with a signed document-pixel delta. The contract is recorded in
+`docs/plan/tasks/native-engine-074.md`; implementation and local validation
+evidence are pending. Remote CI remains pending because the branch is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1086,6 +1095,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded non-inherited `align-content:space-evenly` for wrapped rows, with
   equal leading, inter-line, and trailing integer slots and complete line
   artifact translation.
+- bounded non-inherited `flex-wrap:wrap-reverse` for eligible fixed-width
+  rows, preserving source-order line formation while reversing physical line
+  stacking with signed complete-artifact translation.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

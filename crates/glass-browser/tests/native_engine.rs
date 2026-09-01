@@ -3005,6 +3005,7 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
         ("center", (20, 18, 28)),
         ("flex-end", (38, 36, 46)),
         ("space-between", (2, 0, 46)),
+        ("space-around", (11, 9, 37)),
     ] {
         let document =
             NativeDocument::parse(&source(align_content), &NativeEngineLimits::default()).unwrap();
@@ -3052,7 +3053,7 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
             })
             .unwrap();
         let one_line_y = match align_content {
-            "center" => 27,
+            "center" | "space-around" => 27,
             "flex-end" => 54,
             "flex-start" | "space-between" => 0,
             _ => unreachable!(),

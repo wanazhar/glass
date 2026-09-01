@@ -78,7 +78,9 @@ source-behavior reference.
   bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
   bounded non-negative fixed-pixel first-line `text-indent` for block flow,
   bounded inherited non-negative fixed-pixel `word-spacing` across collapsed
-  and supported preformatted ASCII spaces,
+  and supported preformatted ASCII spaces, bounded inherited non-negative
+  fixed-pixel `letter-spacing` after every rendered fixed-cell character in
+  each emitted fragment, composed with word spacing,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
@@ -279,7 +281,9 @@ projection, and point hit-testing,
   bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
   bounded non-negative fixed-pixel first-line `text-indent` for block flow,
   bounded inherited non-negative fixed-pixel `word-spacing` across collapsed
-  and supported preformatted ASCII spaces,
+  and supported preformatted ASCII spaces, bounded inherited non-negative
+  fixed-pixel `letter-spacing` after every rendered fixed-cell character in
+  each emitted fragment, composed with word spacing,
   native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible

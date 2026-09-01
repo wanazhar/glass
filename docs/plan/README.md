@@ -372,14 +372,16 @@ advance is shared by wrapping, text fragments, alignment, display-list
 projection, raster replay, hit testing, and root-overflow measurement; the
 implementation and validation evidence are recorded in the task file and
 issue #40. Remote CI remains pending until this branch is pushed.
-The active follow-on [native-engine-058](tasks/native-engine-058.md) task
+The completed follow-on [native-engine-058](tasks/native-engine-058.md) task
 defines bounded inherited non-negative fixed-pixel `letter-spacing` after every
 rendered fixed-cell character in each emitted fragment, composed with
-`word-spacing` on ASCII spaces. Its measured advance will be shared by
-wrapping, preformatted chunking, text fragments, alignment, display-list
-projection, raster replay, hit testing, and root-overflow measurement; browser
+`word-spacing` on ASCII spaces. Its measured advance is shared by wrapping,
+preformatted chunking, text fragments, alignment, display-list projection,
+raster replay, hit testing, and root-overflow measurement; browser
 pair-boundary, Unicode, font-metric, negative, relative, percentage, and
-`normal` semantics remain outside the boundary.
+`normal` semantics remain outside the boundary. Implementation and local
+validation evidence are recorded in the task file and issue #40; remote CI
+remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

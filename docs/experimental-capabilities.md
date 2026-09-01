@@ -151,7 +151,9 @@ capture, and bounded inherited ASCII
 `text-transform:none|uppercase|lowercase` layout,
 bounded non-negative fixed-pixel first-line `text-indent` for block flow,
 bounded inherited non-negative fixed-pixel `word-spacing` across collapsed and
-supported preformatted ASCII spaces,
+supported preformatted ASCII spaces, bounded inherited non-negative fixed-pixel
+`letter-spacing` after every rendered fixed-cell character in each emitted
+fragment, composed with word spacing,
 and
 Rust-only
 display-list/software-surface artifacts;

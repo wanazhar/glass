@@ -1,7 +1,7 @@
 ---
 id: native-engine-058
 scope: glass-browser/native-engine/inherited-letter-spacing
-status: active
+status: complete
 depends-on: [native-engine-057]
 ---
 
@@ -99,6 +99,18 @@ or browser CSS conformance.
 
 ## Completion evidence
 
-To be filled after implementation and validation. Remote CI remains pending
-until this local branch is pushed; no push, tag, publication, or release is
-part of this epic checkpoint.
+- Implementation is committed locally as `cb191a3` (`feat(native-engine):
+  add bounded letter spacing`); the change stays inside `glass-browser` and
+  adds no dependency or third crate.
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  --locked -- --nocapture`: 73 passed.
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser
+  --features native-engine --lib --locked -- --nocapture`: 843 passed, 1
+  ignored.
+- `cargo clippy -p glass-browser --all-targets --all-features --locked --
+  -D warnings` and the corresponding `--no-default-features` gate passed.
+- `cargo fmt --all -- --check` and `git diff --check` passed. Public
+  capability docs and the architecture/analysis/plan records are synchronized
+  with this completed boundary.
+- Remote CI remains pending until this local branch is pushed; no push, tag,
+  publication, or release is part of this epic checkpoint.

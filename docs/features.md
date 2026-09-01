@@ -99,6 +99,9 @@ source-behavior reference.
   free-space placement for eligible fixed-width flex rows,
   bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
   source-order ties,
+  bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
+  placement using explicit content height or the auto row's maximum item outer
+  height,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
@@ -320,6 +323,9 @@ projection, and point hit-testing,
   free-space placement for eligible fixed-width flex rows,
   bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
   source-order ties,
+  bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
+  placement using explicit content height or the auto row's maximum item outer
+  height,
   native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible

@@ -142,6 +142,9 @@ bounded `justify-content:flex-start|center|flex-end|space-between` free-space
 placement for eligible fixed-width flex rows,
 bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
 source-order ties,
+bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
+placement using explicit content height or the auto row's maximum item outer
+height,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
 Rust diagnostics for unsupported CSS. It does not yet provide
 general CSS/nested/horizontal/stacking layout, logical writing-mode sides,

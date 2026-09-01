@@ -18,7 +18,7 @@ bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
-bounded-flex-cross-axis-alignment design,
+bounded-flex-cross-axis-alignment,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -79,6 +79,9 @@ items, and bounded `justify-content` free-space placement for eligible
 fixed-width flex rows,
 bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
 source-order ties,
+bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
+placement using explicit content height or the auto row's maximum item outer
+height,
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -94,7 +97,9 @@ intrinsic and percentage sizing remain outside the boundary. The later 064
 boundary adds only bounded fixed-width single-row `display:flex` placement;
 the 065 boundary adds a bounded fixed-pixel `gap`; and the 066 boundary
 adds bounded fixed-width row free-space placement. General flex/grid sizing
-remains outside the claim.
+remains outside the claim. The 068 boundary adds bounded non-inherited
+cross-axis alignment for eligible rows without changing their horizontal or
+semantic/source order.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -778,14 +783,15 @@ unchanged. The contract is recorded in
 `a713b6e`, and current-source documentation closeout is recorded in this
 checkpoint. Remote CI remains pending because the branch is local-only.
 
-The active 068 design adds bounded non-inherited
+The completed 068 boundary adds bounded non-inherited
 `align-items:flex-start|center|flex-end` to eligible fixed-width single-row
 flex rows. It aligns complete visual item subtrees within an explicit content
 height or the auto row's maximum item outer height using deterministic integer
 offsets, while preserving horizontal and semantic/source order. The contract
 and exclusions are recorded in
-`docs/plan/tasks/native-engine-068.md`; implementation has not started, so
-this paragraph is a design boundary rather than a current capability claim.
+`docs/plan/tasks/native-engine-068.md`; design is `a0488ef`, implementation is
+`6b55b9c`, and current-source documentation closeout is recorded in this
+checkpoint. Remote CI remains pending because the branch is local-only.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -1001,6 +1007,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded non-inherited signed flex-item `order` in `-1024..=1024` parsing and
   cascade, stable visual `(order, source_index)` sorting, source-order semantic
   preservation, and shared layout/paint/scroll/hit-test coordinates.
+- bounded non-inherited `align-items:flex-start|center|flex-end` parsing and
+  cascade, explicit/auto cross-axis line sizing, complete item artifact
+  translation, overflow preservation, and shared layout/paint/scroll/
+  hit-test coordinates.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

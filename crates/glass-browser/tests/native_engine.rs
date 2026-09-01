@@ -2474,6 +2474,141 @@ fn native_flex_item_order_filters_hidden_items_and_ignores_fallback_rows() {
 }
 
 #[test]
+fn native_flex_align_items_moves_complete_subtrees_and_paint_artifacts() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:40px;height:31px;gap:2px;align-items:center'><button id='short' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></button><button id='tall' style='width:6px;height:20px;background-color:blue'>B</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let short = document.resolve_target("id=short").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let tall = document.resolve_target("id=tall").unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let row_rect = layout.box_for(row).unwrap();
+    let short_rect = layout.box_for(short).unwrap();
+    let nested_rect = layout.box_for(nested).unwrap();
+    let tall_rect = layout.box_for(tall).unwrap();
+
+    assert_eq!(row_rect.height, 31);
+    assert_eq!(short_rect.x, 0);
+    assert_eq!(short_rect.y, 11);
+    assert_eq!(tall_rect.x, 8);
+    assert_eq!(tall_rect.y, 5);
+    assert_eq!(nested_rect.y, short_rect.y);
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.text == "A")
+            .map(|run| run.origin.y),
+        Some(short_rect.y)
+    );
+    assert_eq!(
+        layout.hit_test(1, short_rect.y as i64).unwrap(),
+        Some(nested)
+    );
+    assert_eq!(layout.hit_test(9, tall_rect.y as i64).unwrap(), Some(tall));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == short && rect.y == short_rect.y
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == tall && rect.y == tall_rect.y
+        )
+    }));
+}
+
+#[test]
+fn native_flex_align_items_handles_auto_lines_box_sizing_overflow_and_fallback() {
+    let auto = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:32px;align-items:center'><div id='short' style='width:8px;height:8px'>A</div><div id='tall' style='width:8px;height:24px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let auto_row = auto.resolve_target("id=row").unwrap();
+    let auto_short = auto.resolve_target("id=short").unwrap();
+    let auto_tall = auto.resolve_target("id=tall").unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let auto_layout = auto.layout(viewport).unwrap();
+    assert_eq!(auto_layout.box_for(auto_row).unwrap().height, 24);
+    assert_eq!(auto_layout.box_for(auto_short).unwrap().y, 8);
+    assert_eq!(auto_layout.box_for(auto_tall).unwrap().y, 0);
+
+    let bordered = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:32px;height:30px;box-sizing:border-box;padding:2px;border:1px solid black;align-items:flex-end'><div id='short' style='width:8px;height:8px'>A</div><div id='tall' style='width:8px;height:20px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let bordered_row = bordered.resolve_target("id=row").unwrap();
+    let bordered_short = bordered.resolve_target("id=short").unwrap();
+    let bordered_tall = bordered.resolve_target("id=tall").unwrap();
+    let bordered_layout = bordered.layout(viewport).unwrap();
+    assert_eq!(bordered_layout.box_for(bordered_row).unwrap().height, 30);
+    assert_eq!(bordered_layout.box_for(bordered_short).unwrap().y, 19);
+    assert_eq!(bordered_layout.box_for(bordered_tall).unwrap().y, 7);
+
+    let overflow = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:12px;height:8px;align-items:flex-end'><div id='item' style='width:10px;height:20px'>A</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let overflow_item = overflow.resolve_target("id=item").unwrap();
+    let overflow_layout = overflow
+        .layout(Viewport {
+            width: 12,
+            height: 8,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(overflow_layout.box_for(overflow_item).unwrap().y, 0);
+    assert_eq!(overflow_layout.max_scroll_offset().y, 12);
+
+    let with_alignment = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px;align-items:flex-end'><span id='first' style='display:block;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let without_alignment = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px'><span id='first' style='display:block;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let with_first = with_alignment.resolve_target("id=first").unwrap();
+    let with_second = with_alignment.resolve_target("id=second").unwrap();
+    let without_first = without_alignment.resolve_target("id=first").unwrap();
+    let without_second = without_alignment.resolve_target("id=second").unwrap();
+    let with_layout = with_alignment.layout(viewport).unwrap();
+    let without_layout = without_alignment.layout(viewport).unwrap();
+    assert_eq!(
+        with_layout.box_for(with_first),
+        without_layout.box_for(without_first)
+    );
+    assert_eq!(
+        with_layout.box_for(with_second),
+        without_layout.box_for(without_second)
+    );
+    assert_eq!(with_layout.text_runs, without_layout.text_runs);
+}
+
+#[test]
 fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
     let adjacent = NativeDocument::parse(
         "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",
@@ -5433,7 +5568,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: center; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: stretch; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -5513,7 +5648,7 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "order"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "align-items"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {

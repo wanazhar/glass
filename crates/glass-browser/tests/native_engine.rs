@@ -3006,6 +3006,7 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
         ("flex-end", (38, 36, 46)),
         ("space-between", (2, 0, 46)),
         ("space-around", (11, 9, 37)),
+        ("space-evenly", (14, 12, 34)),
     ] {
         let document =
             NativeDocument::parse(&source(align_content), &NativeEngineLimits::default()).unwrap();
@@ -3053,7 +3054,7 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
             })
             .unwrap();
         let one_line_y = match align_content {
-            "center" | "space-around" => 27,
+            "center" | "space-around" | "space-evenly" => 27,
             "flex-end" => 54,
             "flex-start" | "space-between" => 0,
             _ => unreachable!(),
@@ -3068,7 +3069,7 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
 #[test]
 fn native_flex_align_content_preserves_auto_small_and_nowrap_geometry() {
     let auto = NativeDocument::parse(
-        "<div id='row' style='display:flex;width:20px;gap:2px;flex-wrap:wrap;align-content:flex-end'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:10px'>B</div><div id='third' style='width:8px;height:14px'>C</div></div>",
+        "<div id='row' style='display:flex;width:20px;gap:2px;flex-wrap:wrap;align-content:space-evenly'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:10px'>B</div><div id='third' style='width:8px;height:14px'>C</div></div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -3085,7 +3086,7 @@ fn native_flex_align_content_preserves_auto_small_and_nowrap_geometry() {
     assert_eq!(auto_layout.box_for(auto_row).unwrap().height, 24);
 
     let small = NativeDocument::parse(
-        "<div id='row' style='display:flex;width:20px;height:12px;gap:2px;flex-wrap:wrap;align-content:center'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:10px'>B</div><div id='third' style='width:8px;height:14px'>C</div></div>",
+        "<div id='row' style='display:flex;width:20px;height:12px;gap:2px;flex-wrap:wrap;align-content:space-evenly'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:10px'>B</div><div id='third' style='width:8px;height:14px'>C</div></div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -3106,7 +3107,7 @@ fn native_flex_align_content_preserves_auto_small_and_nowrap_geometry() {
     );
 
     let nowrap = NativeDocument::parse(
-        "<div id='row' style='display:flex;width:20px;height:60px;gap:2px;flex-wrap:nowrap;align-content:flex-end'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:10px'>B</div><div id='third' style='width:8px;height:14px'>C</div></div>",
+        "<div id='row' style='display:flex;width:20px;height:60px;gap:2px;flex-wrap:nowrap;align-content:space-evenly'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:10px'>B</div><div id='third' style='width:8px;height:14px'>C</div></div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

@@ -508,6 +508,15 @@ fn flex_space_around_line_offset(free_space: u32, line_index: u32, line_count: u
     u32::try_from(numerator / denominator).unwrap_or(u32::MAX)
 }
 
+fn flex_space_evenly_line_offset(free_space: u32, line_index: u32, line_count: usize) -> u32 {
+    let numerator = u64::from(free_space).saturating_mul(u64::from(line_index).saturating_add(1));
+    let denominator = u64::try_from(line_count)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
+        .max(1);
+    u32::try_from(numerator / denominator).unwrap_or(u32::MAX)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FlowStyle {
     minimum_line_height: u32,
@@ -1455,7 +1464,8 @@ impl<'a> LayoutBuilder<'a> {
                 AlignContentValue::FlexEnd => free_space,
                 AlignContentValue::FlexStart
                 | AlignContentValue::SpaceBetween
-                | AlignContentValue::SpaceAround => 0,
+                | AlignContentValue::SpaceAround
+                | AlignContentValue::SpaceEvenly => 0,
             }
         } else {
             0
@@ -1463,14 +1473,17 @@ impl<'a> LayoutBuilder<'a> {
         let mut max_bottom = y;
         for (line_index, line) in line_records.into_iter().enumerate() {
             let line_index = u32::try_from(line_index).unwrap_or(u32::MAX);
-            let line_offset =
-                if wrapped && parent_style.align_content() == AlignContentValue::SpaceAround {
-                    flex_space_around_line_offset(free_space, line_index, line_count)
-                } else {
-                    leading_line_offset
-                        .saturating_add(distributed_line_gap.saturating_mul(line_index))
-                        .saturating_add(line_index.min(distributed_remainder))
-                };
+            let line_offset = if wrapped
+                && parent_style.align_content() == AlignContentValue::SpaceAround
+            {
+                flex_space_around_line_offset(free_space, line_index, line_count)
+            } else if wrapped && parent_style.align_content() == AlignContentValue::SpaceEvenly {
+                flex_space_evenly_line_offset(free_space, line_index, line_count)
+            } else {
+                leading_line_offset
+                    .saturating_add(distributed_line_gap.saturating_mul(line_index))
+                    .saturating_add(line_index.min(distributed_remainder))
+            };
             let final_line_y = line.y.saturating_add(line_offset);
             max_bottom = max_bottom.max(final_line_y.saturating_add(line.height));
             for placement in line.layout.placements {

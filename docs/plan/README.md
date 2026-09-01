@@ -427,6 +427,15 @@ conformance remain outside the boundary. The design is `7e488aa`, the
 implementation is `e4c5bb1`, and local validation evidence is recorded in the
 task file; remote CI remains pending until this branch is pushed.
 
+The active follow-on [native-engine-063](tasks/native-engine-063.md) design
+adds inherited `vertical-align: baseline|top|middle|bottom` to the existing
+fixed-cell inline-flow line-item owner. `baseline` preserves the current
+top-origin behavior; `top`, `middle`, and `bottom` apply bounded integer
+offsets within the existing line box and move an inline item's boxes and text
+artifacts together. Font metrics, typographic baselines, lengths, percentages,
+bidi, writing modes, ruby, table-cell alignment, and browser conformance remain
+outside the boundary; implementation has not started.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

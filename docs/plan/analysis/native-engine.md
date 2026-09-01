@@ -245,6 +245,16 @@ conformance remain outside the boundary. The design is `7e488aa`, the
 implementation is `e4c5bb1`, and local validation evidence is recorded in the
 task file; remote CI remains pending until this branch is pushed.
 
+The active dependency-ordered `native-engine-063` design adds inherited
+`vertical-align: baseline|top|middle|bottom` to the existing fixed-cell
+inline-flow line-item owner. `baseline` preserves the current top-origin
+behavior; `top`, `middle`, and `bottom` apply bounded integer offsets within
+the existing line box and move an inline item's boxes and text artifacts
+together. Font metrics, typographic baselines, lengths, percentages, bidi,
+writing modes, ruby, table-cell alignment, and browser conformance remain
+outside the boundary. The contract is recorded in
+`docs/plan/tasks/native-engine-063.md`; implementation has not started.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -416,6 +426,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-060` | bounded inherited `font-style:normal|italic` with deterministic fixed-cell normal/italic raster replay composed with bold | `native-engine-059` | oblique angles, font selection/loading/metrics, real italic faces, variable fonts, Unicode shaping, anti-aliasing, and browser text-rendering parity |
 | `native-engine-061` | bounded inherited `word-break:normal|break-all` with deterministic fixed-cell word-aware or character-boundary wrapping in collapsed flow | `native-engine-060` | `keep-all`, `break-word`, `overflow-wrap`, Unicode/CJK line breaking, grapheme policy, hyphenation, bidi, writing modes, font metrics, and browser CSS parity |
 | `native-engine-062` | bounded local `text-overflow:clip|ellipsis` for eligible single-line clipped direct text with fixed-cell ASCII marker presentation | `native-engine-061` | multi-line ellipsis/line-clamp, nested inline formatting, multiple text nodes, visible overflow, vertical/RTL behavior, Unicode ellipsis, grapheme policy, font metrics, shaping, and browser CSS parity |
+| `native-engine-063` | bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for fixed-cell inline/inline-block line items | `native-engine-062` | font baselines/metrics, `text-top`/`text-bottom`, sub/super, lengths, percentages, bidi, writing modes, ruby, table-cell/replaced-element alignment, and browser CSS parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -726,11 +737,13 @@ visual stacking.
 | bounded inherited font style | makes normal and italic fixed-cell text presentation observable without changing geometry | oblique angles, real italic faces, font selection/loading/metrics, variable fonts, Unicode shaping, anti-aliasing, and browser text-rendering parity | inherit one normal/italic value, keep fixed-cell advances unchanged, carry it on immutable text commands, and apply a bounded row-dependent shear through the existing clipped software replay |
 | bounded inherited word break | makes explicit character-boundary wrapping available for collapsed fixed-cell words | `keep-all`, `break-word`, `overflow-wrap`, Unicode/CJK line breaking, grapheme policy, hyphenation, bidi, writing modes, font metrics, and browser parity | inherit one normal/`break-all` value, retain the current separator policy, and reuse fixed-cell capacity to split every collapsed word without changing semantic source text |
 | bounded text overflow | makes clipped single-line fixture text visibly indicate an omitted suffix without changing semantic source text | multi-line truncation, line-clamp, nested inline formatting, multiple text nodes, visible overflow, RTL/vertical writing, Unicode ellipsis, grapheme policy, font metrics, shaping, and browser parity | resolve local `clip`/`ellipsis`, require a rendered nowrap block with one direct text child and horizontal clipping, then reuse fixed-cell prefix measurement and immutable text commands for a bounded ASCII marker |
+| bounded vertical alignment | makes fixed-cell inline items visibly align within the existing line box without adding a typographic baseline engine | font ascent/descent, real baselines, `text-top`/`text-bottom`, sub/super, lengths, percentages, bidi, writing modes, ruby, table-cell/replaced-element alignment, and browser parity | inherit four bounded keywords, keep the current line-box height and horizontal flow, and shift each recorded inline item's box/text artifact range by a clamped top/middle/bottom offset during line flush |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-063.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-062.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-061.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-060.md` is the preceding completed checkpoint;

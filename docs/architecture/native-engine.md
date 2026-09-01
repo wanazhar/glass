@@ -17,6 +17,7 @@ bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow,
+bounded-vertical-align design,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -709,6 +710,15 @@ behavior, and browser conformance remain outside the boundary. Its design is
 `7e488aa`, its implementation is `e4c5bb1`, and the 062 task file records the
 local validation evidence; remote CI remains pending until this branch is
 pushed.
+
+The active 063 design adds inherited `vertical-align: baseline|top|middle|bottom`
+to the existing fixed-cell inline-flow line-item owner. `baseline` preserves
+the current top-origin behavior; `top`, `middle`, and `bottom` apply bounded
+integer offsets within the existing line box and move an inline item's boxes
+and text artifacts together. Font metrics, typographic baselines, lengths,
+percentages, bidi, writing modes, ruby, table-cell alignment, and browser
+conformance remain outside the boundary. The contract is recorded in
+`docs/plan/tasks/native-engine-063.md`; implementation has not started.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

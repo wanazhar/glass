@@ -135,13 +135,16 @@ contract is recorded in `docs/plan/tasks/native-engine-072.md`; design is
 `c8e5170`, implementation is `a1c8b56`, and local validation and cleanup
 evidence are recorded in the task file. Remote CI remains pending because the
 branch is local-only.
-The active 073 design adds bounded non-inherited
-`align-content:space-evenly` to wrapped rows. It will use equal leading,
+The completed 073 boundary adds bounded non-inherited
+`align-content:space-evenly` to wrapped rows. It uses equal leading,
 inter-line, and trailing integer slots from positive explicit-content-height
 remainder while preserving the 072 line-record, artifact, overflow, and
 semantic owners. The contract is recorded in
-`docs/plan/tasks/native-engine-073.md`; implementation and validation have not
-started. Remote CI remains pending because the branch is local-only.
+`docs/plan/tasks/native-engine-073.md`; design is `23b62a3`, implementation is
+`b4833a9`, and local validation and cleanup evidence are recorded in the task
+file. The default-stack overflow in one existing large-Clap parser test is
+documented there; the full native library suite passes with an explicit 8 MiB
+test-thread stack. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1080,9 +1083,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   complete line artifact translation.
 - bounded non-inherited `align-content:space-around` for wrapped rows, with
   saturating integer slot-center offsets and complete line artifact translation.
-- active bounded non-inherited `align-content:space-evenly` design for wrapped
-  rows, with equal leading, inter-line, and trailing integer slots and complete
-  line artifact translation.
+- bounded non-inherited `align-content:space-evenly` for wrapped rows, with
+  equal leading, inter-line, and trailing integer slots and complete line
+  artifact translation.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

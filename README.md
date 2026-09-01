@@ -373,6 +373,10 @@ bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
 source-order ties, and bounded non-inherited
 `align-items:flex-start|center|flex-end` cross-axis placement using an
 explicit content height or the auto row's maximum item outer height,
+bounded non-inherited `flex-direction:row|row-reverse` physical placement of
+the order-sorted visual sequence with item-attached margins, existing
+gap/justification/alignment, shared subtree artifacts, bounded overflow
+translation, root horizontal scrolling, and unchanged semantic/source order,
 plus bounded revisioned Rust
 diagnostics for unsupported CSS without raw stylesheet echo. A
 `native-engine` feature build exposes the explicit local
@@ -699,7 +703,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts, including root horizontal and vertical viewport scrolling, bounded physical min/max dimensions, bounded inherited fixed-pixel letter spacing composed with word spacing, bounded inherited vertical-align offsets for fixed-cell inline items, bounded block-level `display:flex` single-row placement for eligible direct element children with fixed widths/margins, one non-negative fixed-pixel flex-row gap between visible items, bounded `justify-content:flex-start|center|flex-end|space-between` free-space placement for eligible fixed-width rows, bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable source-order ties, and bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis placement using explicit content height or the auto row's maximum item outer height; explicit Rust or feature-gated local CLI path |
+| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts, including root horizontal and vertical viewport scrolling, bounded physical min/max dimensions, bounded inherited fixed-pixel letter spacing composed with word spacing, bounded inherited vertical-align offsets for fixed-cell inline items, bounded block-level `display:flex` single-row placement for eligible direct element children with fixed widths/margins, one non-negative fixed-pixel flex-row gap between visible items, bounded `justify-content:flex-start|center|flex-end|space-between` free-space placement for eligible fixed-width rows, bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable source-order ties, and bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis placement using explicit content height or the auto row's maximum item outer height, bounded non-inherited `flex-direction:row|row-reverse` physical placement with item-attached margins, existing gap/justification/alignment, bounded overflow translation, root horizontal scrolling, and unchanged semantic/source order; explicit Rust or feature-gated local CLI path |
 | WebKit / iPhone Safari | No direct Glass browser backend; iPhone Safari is a forwarded viewing client |
 | `glass-browser 0.3.14`, `glass-dev 0.3.14` | Current release source; public registry state is recorded in release evidence |
 | `0.3.13` | Previous published stable release |

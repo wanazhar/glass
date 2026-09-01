@@ -309,16 +309,16 @@ implementation is `6b55b9c`, and current-source documentation closeout is
 recorded in this checkpoint. Remote CI remains pending because the branch is
 local-only.
 
-The active dependency-ordered `native-engine-069` design adds bounded
+The completed dependency-ordered `native-engine-069` slice adds bounded
 non-inherited `flex-direction:row|row-reverse` to eligible fixed-width
 single-row flex rows. `row` remains equivalent to 068; `row-reverse` performs a
 margin-aware physical right-to-left walk of the order-sorted visual sequence,
 maps bounded justification to the physical edges, and preserves cross-axis
 alignment, shared subtree artifacts, non-negative coordinates, root scrolling,
 and semantic/source order. The contract is recorded in
-`docs/plan/tasks/native-engine-069.md`; implementation has not started and
-public capability claims remain at 068. Remote CI remains pending because the
-branch is local-only.
+`docs/plan/tasks/native-engine-069.md`; design is `7fea901`, implementation is
+`be11f49`, and local validation evidence is recorded in the task file. Remote
+CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -834,7 +834,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-068.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-069.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-068.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-067.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-066.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-065.md` is the earlier completed checkpoint;

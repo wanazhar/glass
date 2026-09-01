@@ -1,7 +1,7 @@
 ---
 id: native-engine-069
 scope: glass-browser/native-engine/flex-direction
-status: in-progress
+status: complete
 depends-on: [native-engine-068]
 ---
 
@@ -116,3 +116,31 @@ layout visible through diagnostics.
   locally; remote CI is not claimed until this branch is pushed;
 - exact regenerable Cargo outputs are reclaimed after all validation without
   terminating long-lived Glass processes.
+
+## Completion evidence
+
+- Design checkpoint: `7fea901`.
+- Implementation checkpoint: `be11f49`.
+- Focused direction integration run:
+  `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine native_flex_direction --locked -- --nocapture`
+  — 2 passed, 0 failed.
+- Full native integration run:
+  `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine --locked`
+  — 89 passed, 0 failed.
+- Full native library run:
+  `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --lib --locked`
+  — 865 passed, 1 ignored, 0 failed.
+- Strict native Clippy passed in 8m14s:
+  `cargo clippy -p glass-browser --features native-engine --all-targets --locked -- -D warnings`.
+- Strict no-default-features Clippy passed in 5m22s:
+  `cargo clippy -p glass-browser --all-targets --no-default-features --locked -- -D warnings`.
+- `cargo fmt --all` and `git diff --check` passed for the implementation
+  checkpoint.
+- Documentation validators all passed: version sync, feature parity, release
+  documentation, documentation depth, TUI shortcuts, reliability matrix,
+  public read-only adapters, and the Web IR corpus. Documentation coverage
+  passed with 483 Markdown files, 345 full-product MCP tools, 17 examples, and
+  22 public modules.
+- Final regenerable-output cleanup and disk verification are recorded in the
+  issue #40 checkpoint after this documentation closeout; remote CI remains
+  unclaimed while the branch is local-only.

@@ -174,6 +174,10 @@ source-order ties,
 bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
 placement using explicit content height or the auto row's maximum item outer
 height,
+bounded non-inherited `flex-direction:row|row-reverse` physical placement of
+the order-sorted visual sequence with item-attached margins, existing
+gap/justification/alignment, shared subtree artifacts, bounded overflow
+translation, root horizontal scrolling, and unchanged semantic/source order,
 and
 Rust-only
 display-list/software-surface artifacts;

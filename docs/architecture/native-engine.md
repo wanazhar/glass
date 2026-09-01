@@ -18,8 +18,7 @@ bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
-bounded-flex-cross-axis-alignment,
-bounded-flex-direction design,
+bounded-flex-cross-axis-alignment/bounded-flex-direction,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -100,7 +99,13 @@ the 065 boundary adds a bounded fixed-pixel `gap`; and the 066 boundary
 adds bounded fixed-width row free-space placement. General flex/grid sizing
 remains outside the claim. The 068 boundary adds bounded non-inherited
 cross-axis alignment for eligible rows without changing their horizontal or
-semantic/source order.
+semantic/source order. The 069 boundary adds bounded non-inherited
+`flex-direction:row|row-reverse` to those rows: reverse placement walks the
+order-sorted sequence from the physical right edge, keeps physical margins
+attached, maps existing gap and justification to physical edges, shifts
+overflow as one bounded row, and reuses shared subtree artifacts, root
+scrolling, hit testing, and paint while leaving semantic/source order
+unchanged.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -794,15 +799,16 @@ and exclusions are recorded in
 `6b55b9c`, and current-source documentation closeout is recorded in this
 checkpoint. Remote CI remains pending because the branch is local-only.
 
-The active 069 design adds bounded non-inherited `flex-direction:row|row-reverse`
-to the same eligible single-row flex rows. `row` remains coordinate-equivalent
-to 068; `row-reverse` walks the order-sorted visual sequence from the physical
-right edge while preserving margins, gap, justification, cross-axis alignment,
-shared subtree artifacts, non-negative coordinates, root horizontal scrolling,
-and semantic/source order. The contract and exclusions are recorded in
-`docs/plan/tasks/native-engine-069.md`; implementation has not started, so
-public capability claims remain at 068. Remote CI remains pending because the
-branch is local-only.
+The completed 069 boundary adds bounded non-inherited
+`flex-direction:row|row-reverse` to the same eligible single-row flex rows.
+`row` remains coordinate-equivalent to 068; `row-reverse` walks the
+order-sorted visual sequence from the physical right edge while preserving
+margins, gap, justification, cross-axis alignment, shared subtree artifacts,
+non-negative coordinates, root horizontal scrolling, and semantic/source
+order. The contract and exclusions are recorded in
+`docs/plan/tasks/native-engine-069.md`; design is `7fea901`, implementation is
+`be11f49`, and local validation evidence is recorded in the task file. Remote
+CI remains pending because the branch is local-only.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

@@ -183,6 +183,15 @@ pub(crate) enum AlignItemsValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum AlignContentValue {
+    #[default]
+    FlexStart,
+    Center,
+    FlexEnd,
+    SpaceBetween,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum FlexDirectionValue {
     #[default]
     Row,
@@ -326,6 +335,7 @@ pub(crate) struct NativeComputedStyle {
     text_align: TextAlignValue,
     justify_content: JustifyContentValue,
     align_items: AlignItemsValue,
+    align_content: AlignContentValue,
     flex_direction: FlexDirectionValue,
     flex_wrap: FlexWrapValue,
     flex_item_order: NativeOrderValue,
@@ -388,6 +398,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn align_items(self) -> AlignItemsValue {
         self.align_items
+    }
+
+    pub(crate) const fn align_content(self) -> AlignContentValue {
+        self.align_content
     }
 
     pub(crate) const fn flex_direction(self) -> FlexDirectionValue {
@@ -593,6 +607,7 @@ impl NativeStylesheet {
         let mut text_align = None;
         let mut justify_content = None;
         let mut align_items = None;
+        let mut align_content = None;
         let mut flex_direction = None;
         let mut flex_wrap = None;
         let mut flex_item_order = None;
@@ -826,6 +841,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, align_items)
             {
                 align_items = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.align_content
+                && wins(rule.selector.specificity, rule.order, false, align_content)
+            {
+                align_content = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1202,6 +1227,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.align_content
+                && wins(u16::MAX, usize::MAX, true, align_content)
+            {
+                align_content = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.flex_direction
                 && wins(u16::MAX, usize::MAX, true, flex_direction)
             {
@@ -1385,6 +1420,7 @@ impl NativeStylesheet {
             justify_content: justify_content
                 .map_or(JustifyContentValue::FlexStart, |value| value.value),
             align_items: align_items.map_or(AlignItemsValue::FlexStart, |value| value.value),
+            align_content: align_content.map_or(AlignContentValue::FlexStart, |value| value.value),
             flex_direction: flex_direction.map_or(FlexDirectionValue::Row, |value| value.value),
             flex_wrap: flex_wrap.map_or(FlexWrapValue::NoWrap, |value| value.value),
             flex_item_order: flex_item_order
@@ -1504,6 +1540,7 @@ struct NativeDeclarations {
     text_align: Option<TextAlignValue>,
     justify_content: Option<JustifyContentValue>,
     align_items: Option<AlignItemsValue>,
+    align_content: Option<AlignContentValue>,
     flex_direction: Option<FlexDirectionValue>,
     flex_wrap: Option<FlexWrapValue>,
     order: Option<NativeOrderValue>,
@@ -1681,6 +1718,7 @@ fn parse_source(
             || declarations.text_align.is_some()
             || declarations.justify_content.is_some()
             || declarations.align_items.is_some()
+            || declarations.align_content.is_some()
             || declarations.flex_direction.is_some()
             || declarations.flex_wrap.is_some()
             || declarations.order.is_some()
@@ -1819,6 +1857,7 @@ fn parse_declarations_with_diagnostics(
             "text-align" => parse_text_align(value).is_some(),
             "justify-content" => parse_justify_content(value).is_some(),
             "align-items" => parse_align_items(value).is_some(),
+            "align-content" => parse_align_content(value).is_some(),
             "flex-direction" => parse_flex_direction(value).is_some(),
             "flex-wrap" => parse_flex_wrap(value).is_some(),
             "order" => parse_flex_item_order(value).is_some(),
@@ -1890,6 +1929,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-align"
             | "justify-content"
             | "align-items"
+            | "align-content"
             | "flex-direction"
             | "flex-wrap"
             | "order"
@@ -1986,6 +2026,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "align-items" => {
                 declarations.align_items = parse_align_items(value);
+            }
+            "align-content" => {
+                declarations.align_content = parse_align_content(value);
             }
             "flex-direction" => {
                 declarations.flex_direction = parse_flex_direction(value);
@@ -2440,6 +2483,16 @@ fn parse_align_items(value: &str) -> Option<AlignItemsValue> {
     }
 }
 
+fn parse_align_content(value: &str) -> Option<AlignContentValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "flex-start" => Some(AlignContentValue::FlexStart),
+        "center" => Some(AlignContentValue::Center),
+        "flex-end" => Some(AlignContentValue::FlexEnd),
+        "space-between" => Some(AlignContentValue::SpaceBetween),
+        _ => None,
+    }
+}
+
 fn parse_flex_direction(value: &str) -> Option<FlexDirectionValue> {
     match value.to_ascii_lowercase().as_str() {
         "row" => Some(FlexDirectionValue::Row),
@@ -2824,7 +2877,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; flex-direction: row-reverse; flex-wrap: wrap; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: space-between; flex-direction: row-reverse; flex-wrap: wrap; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2836,6 +2889,10 @@ mod tests {
             Some(JustifyContentValue::SpaceBetween)
         );
         assert_eq!(declarations.align_items, Some(AlignItemsValue::FlexEnd));
+        assert_eq!(
+            declarations.align_content,
+            Some(AlignContentValue::SpaceBetween)
+        );
         assert_eq!(
             declarations.flex_direction,
             Some(FlexDirectionValue::RowReverse)
@@ -3361,6 +3418,32 @@ mod tests {
         assert_eq!(parse_align_items("normal"), None);
         assert_eq!(parse_align_items("start"), None);
         assert_eq!(parse_align_items("end"), None);
+    }
+
+    #[test]
+    fn align_content_parser_accepts_only_bounded_line_distribution_values() {
+        assert_eq!(
+            parse_align_content("flex-start"),
+            Some(AlignContentValue::FlexStart)
+        );
+        assert_eq!(
+            parse_align_content("CENTER"),
+            Some(AlignContentValue::Center)
+        );
+        assert_eq!(
+            parse_align_content("flex-end"),
+            Some(AlignContentValue::FlexEnd)
+        );
+        assert_eq!(
+            parse_align_content("space-between"),
+            Some(AlignContentValue::SpaceBetween)
+        );
+        assert_eq!(parse_align_content("stretch"), None);
+        assert_eq!(parse_align_content("space-around"), None);
+        assert_eq!(parse_align_content("space-evenly"), None);
+        assert_eq!(parse_align_content("normal"), None);
+        assert_eq!(parse_align_content("start"), None);
+        assert_eq!(parse_align_content("safe center"), None);
     }
 
     #[test]
@@ -4068,6 +4151,36 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).flex_wrap(),
             FlexWrapValue::NoWrap
+        );
+    }
+
+    #[test]
+    fn align_content_is_cascaded_without_inheriting_to_children() {
+        let document = NativeDocument::parse(
+            "<style>#parent { align-content: center; } #explicit { align-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='align-content: space-between'>Explicit</span><span id='invalid' style='align-content: stretch'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).align_content(),
+            AlignContentValue::Center
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).align_content(),
+            AlignContentValue::FlexStart
+        );
+        assert_eq!(
+            document.computed_style_for_layout(explicit).align_content(),
+            AlignContentValue::SpaceBetween
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).align_content(),
+            AlignContentValue::FlexStart
         );
     }
 

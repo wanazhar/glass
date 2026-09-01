@@ -1,8 +1,8 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
-    AlignItemsValue, DisplayValue, FlexDirectionValue, FlexWrapValue, JustifyContentValue,
-    NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, TextAlignValue, TextOverflowValue,
-    TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+    AlignContentValue, AlignItemsValue, DisplayValue, FlexDirectionValue, FlexWrapValue,
+    JustifyContentValue, NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, TextAlignValue,
+    TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -480,6 +480,12 @@ struct FlexItem {
 struct FlexLineLayout {
     width: u32,
     placements: Vec<FlexItemPlacement>,
+}
+
+struct FlexLineRecord {
+    y: u32,
+    height: u32,
+    layout: FlexLineLayout,
 }
 
 struct FlexLineContext {
@@ -1375,7 +1381,7 @@ impl<'a> LayoutBuilder<'a> {
         let reverse = parent_style.flex_direction() == FlexDirectionValue::RowReverse;
         let mut row_width = 0u32;
         let mut line_y = y;
-        let mut max_bottom = y;
+        let mut line_records = Vec::with_capacity(line_count);
         for line_items in lines {
             let line_layout = self.layout_flex_line(
                 line_items,
@@ -1401,11 +1407,59 @@ impl<'a> LayoutBuilder<'a> {
             } else {
                 explicit_line_height.unwrap_or(auto_line_height)
             };
-            max_bottom = max_bottom.max(line_y.saturating_add(line_height));
-            for placement in line_layout.placements {
+            line_records.push(FlexLineRecord {
+                y: line_y,
+                height: line_height,
+                layout: line_layout,
+            });
+            if wrapped {
+                line_y = line_y.saturating_add(line_height);
+            }
+        }
+
+        let total_line_height = line_records
+            .iter()
+            .fold(0u32, |total, line| total.saturating_add(line.height));
+        let line_content_height = if wrapped {
+            explicit_line_height.unwrap_or(total_line_height)
+        } else {
+            total_line_height
+        };
+        let free_space = line_content_height.saturating_sub(total_line_height);
+        let line_gap_count = u32::try_from(line_count.saturating_sub(1)).unwrap_or(u32::MAX);
+        let distributed_line_gap =
+            if wrapped && parent_style.align_content() == AlignContentValue::SpaceBetween {
+                free_space.checked_div(line_gap_count).unwrap_or(0)
+            } else {
+                0
+            };
+        let distributed_remainder =
+            if wrapped && parent_style.align_content() == AlignContentValue::SpaceBetween {
+                free_space.checked_rem(line_gap_count).unwrap_or(0)
+            } else {
+                0
+            };
+        let leading_line_offset = if wrapped {
+            match parent_style.align_content() {
+                AlignContentValue::Center => free_space / 2,
+                AlignContentValue::FlexEnd => free_space,
+                AlignContentValue::FlexStart | AlignContentValue::SpaceBetween => 0,
+            }
+        } else {
+            0
+        };
+        let mut max_bottom = y;
+        for (line_index, line) in line_records.into_iter().enumerate() {
+            let line_index = u32::try_from(line_index).unwrap_or(u32::MAX);
+            let line_offset = leading_line_offset
+                .saturating_add(distributed_line_gap.saturating_mul(line_index))
+                .saturating_add(line_index.min(distributed_remainder));
+            let final_line_y = line.y.saturating_add(line_offset);
+            max_bottom = max_bottom.max(final_line_y.saturating_add(line.height));
+            for placement in line.layout.placements {
                 let item_outer_height =
                     placement.height.saturating_add(placement.margin.vertical());
-                let remaining = line_height.saturating_sub(item_outer_height);
+                let remaining = line.height.saturating_sub(item_outer_height);
                 let offset = match align_items {
                     AlignItemsValue::FlexStart => 0,
                     AlignItemsValue::Center => remaining / 2,
@@ -1416,18 +1470,15 @@ impl<'a> LayoutBuilder<'a> {
                     placement.box_end,
                     placement.text_start,
                     placement.text_end,
-                    offset,
+                    line_offset.saturating_add(offset),
                 );
                 max_bottom = max_bottom.max(
-                    line_y
+                    final_line_y
                         .saturating_add(placement.margin.top())
                         .saturating_add(offset)
                         .saturating_add(placement.height)
                         .saturating_add(placement.margin.bottom()),
                 );
-            }
-            if wrapped {
-                line_y = line_y.saturating_add(line_height);
             }
         }
 

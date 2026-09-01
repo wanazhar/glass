@@ -2182,6 +2182,81 @@ fn native_flex_row_preserves_fixed_width_overflow_and_fallback_content() {
 }
 
 #[test]
+fn native_flex_row_applies_gap_between_rendered_items_and_ignores_fallback_rows() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:16px;gap:4px'><div id='first' style='width:8px;height:8px'>A</div><div id='hidden' style='display:none;width:8px;height:8px'>H</div><div id='second' style='width:8px;height:8px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 16,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let first = document.resolve_target("id=first").unwrap();
+    let hidden = document.resolve_target("id=hidden").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(first).unwrap().x, 0);
+    assert_eq!(layout.box_for(second).unwrap().x, 12);
+    assert_eq!(layout.box_for(hidden), None);
+    assert_eq!(layout.content_width, 20);
+    assert_eq!(layout.max_scroll_offset().x, 4);
+    assert_eq!(layout.hit_test(13, 1).unwrap(), Some(second));
+
+    let with_gap = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px;gap:8px'><span id='first' style='display:block;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let without_gap = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px;gap:0px'><span id='first' style='display:block;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let with_gap_first = with_gap.resolve_target("id=first").unwrap();
+    let with_gap_second = with_gap.resolve_target("id=second").unwrap();
+    let without_gap_first = without_gap.resolve_target("id=first").unwrap();
+    let without_gap_second = without_gap.resolve_target("id=second").unwrap();
+    let with_gap_layout = with_gap
+        .layout(Viewport {
+            width: 48,
+            height: 64,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let without_gap_layout = without_gap
+        .layout(Viewport {
+            width: 48,
+            height: 64,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+
+    assert_eq!(
+        with_gap_layout.box_for(with_gap_first),
+        without_gap_layout.box_for(without_gap_first)
+    );
+    assert_eq!(
+        with_gap_layout.box_for(with_gap_second),
+        without_gap_layout.box_for(without_gap_second)
+    );
+    assert!(
+        with_gap_layout
+            .text_runs
+            .iter()
+            .any(|run| run.text.contains("mean"))
+    );
+    assert!(
+        with_gap_layout
+            .text_runs
+            .iter()
+            .any(|run| run.text.contains("text"))
+    );
+}
+
+#[test]
 fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
     let adjacent = NativeDocument::parse(
         "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",
@@ -5141,7 +5216,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -5209,6 +5284,17 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "overflow"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "gap"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+            && diagnostic.detail == "row-gap"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+            && diagnostic.detail == "column-gap"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

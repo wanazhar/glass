@@ -2076,6 +2076,112 @@ fn native_vertical_align_moves_inline_items_and_text_within_fixed_line_box() {
 }
 
 #[test]
+fn native_flex_row_places_eligible_element_children_in_source_order() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:40px;height:20px'> \n<div id='first' style='display:block;width:8px;height:6px;margin:1px;background-color:red'>A</div> \n<button id='second' style='display:block;width:12px;height:10px;margin:2px;background-color:blue'>B</button> \n<span id='third' style='display:inline-block;width:8px;height:8px;margin:1px;background-color:green'>C</span> \n</div><div id='below' style='height:8px'>Below</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let row = document.resolve_target("id=row").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let third = document.resolve_target("id=third").unwrap();
+    let below = document.resolve_target("id=below").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(row).unwrap().height, 20);
+    assert_eq!(
+        layout.box_for(first),
+        Some(NativeRect {
+            x: 1,
+            y: 1,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(
+        layout.box_for(second),
+        Some(NativeRect {
+            x: 12,
+            y: 2,
+            width: 12,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.box_for(third),
+        Some(NativeRect {
+            x: 27,
+            y: 1,
+            width: 8,
+            height: 8,
+        })
+    );
+    assert_eq!(layout.box_for(below).unwrap().y, 20);
+    assert_eq!(layout.hit_test(13, 3).unwrap(), Some(second));
+
+    let text_origins = layout
+        .text_runs
+        .iter()
+        .map(|run| (run.node_id, run.origin, run.text.as_str()))
+        .collect::<Vec<_>>();
+    assert!(text_origins.contains(&(first, NativePoint { x: 1, y: 1 }, "A")));
+    assert!(text_origins.contains(&(second, NativePoint { x: 12, y: 2 }, "B")));
+    assert!(text_origins.contains(&(third, NativePoint { x: 27, y: 1 }, "C")));
+}
+
+#[test]
+fn native_flex_row_preserves_fixed_width_overflow_and_fallback_content() {
+    let overflow = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:16px'><div id='first' style='width:12px;height:8px'>A</div><div id='second' style='width:12px;height:8px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 16,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let second = overflow.resolve_target("id=second").unwrap();
+    let layout = overflow.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(second).unwrap().x, 12);
+    assert_eq!(layout.content_width, 24);
+    assert_eq!(layout.max_scroll_offset().x, 8);
+
+    let fallback = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px'><span id='item' style='display:block;width:8px;height:8px'>A</span> meaningful text</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let fallback_layout = fallback
+        .layout(Viewport {
+            width: 48,
+            height: 64,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let item = fallback.resolve_target("id=item").unwrap();
+    assert_eq!(fallback_layout.box_for(item).unwrap().y, 0);
+    assert!(
+        fallback_layout
+            .text_runs
+            .iter()
+            .any(|run| run.text.contains("mean"))
+    );
+    assert!(
+        fallback_layout
+            .text_runs
+            .iter()
+            .any(|run| run.text.contains("text"))
+    );
+}
+
+#[test]
 fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
     let adjacent = NativeDocument::parse(
         "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",
@@ -5035,7 +5141,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

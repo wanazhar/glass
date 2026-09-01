@@ -141,6 +141,7 @@ pub(crate) enum DisplayValue {
     Block,
     Inline,
     Contents,
+    Flex,
     Other,
 }
 
@@ -1580,6 +1581,7 @@ fn parse_declarations_with_diagnostics(
                         | "inline-block"
                         | "inline-flex"
                         | "inline-grid"
+                        | "flex"
                         | "contents"
                 )
             }
@@ -2073,7 +2075,8 @@ fn parse_display(value: &str) -> Option<DisplayValue> {
         "block" | "flow-root" | "list-item" | "table" => Some(DisplayValue::Block),
         "inline" | "inline-block" | "inline-flex" | "inline-grid" => Some(DisplayValue::Inline),
         "contents" => Some(DisplayValue::Contents),
-        "flex" | "grid" => Some(DisplayValue::Other),
+        "flex" => Some(DisplayValue::Flex),
+        "grid" => Some(DisplayValue::Other),
         _ => None,
     }
 }
@@ -2579,6 +2582,9 @@ mod tests {
             Some(WhiteSpaceValue::PreWrap)
         );
         assert_eq!(parse_white_space("nowrap"), Some(WhiteSpaceValue::NoWrap));
+        assert_eq!(parse_display("flex"), Some(DisplayValue::Flex));
+        assert_eq!(parse_display("FLEX"), Some(DisplayValue::Flex));
+        assert_eq!(parse_display("grid"), Some(DisplayValue::Other));
         assert_eq!(parse_overflow("scroll"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("visible"), Some(OverflowValue::Other));
         assert_eq!(parse_overflow("auto"), Some(OverflowValue::Other));

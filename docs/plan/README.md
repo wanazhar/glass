@@ -528,6 +528,15 @@ cleanup evidence are recorded in the task file. `space-evenly`, `stretch`,
 cross-axis gaps, column directions, `wrap-reverse`, and general Flexbox remain
 outside the contract. Remote CI remains pending until this branch is pushed.
 
+The next dependency-ordered [native-engine-073](tasks/native-engine-073.md)
+slice is the active design for bounded non-inherited
+`align-content:space-evenly` on wrapped flex rows. It will place equal integer
+slots before, between, and after formed lines using only positive explicit
+content-box remainder, preserving 072 line membership, item alignment, shared
+artifact coordinates, and semantic/source order. `stretch`, `place-content`,
+cross-axis gaps, column directions, `wrap-reverse`, and general Flexbox remain
+outside the contract until separately designed.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

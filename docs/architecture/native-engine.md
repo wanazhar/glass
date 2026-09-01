@@ -19,7 +19,8 @@ bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
 bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-wrap,
-bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around,
+bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
+bounded-flex-cross-line-space-evenly,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -134,6 +135,13 @@ contract is recorded in `docs/plan/tasks/native-engine-072.md`; design is
 `c8e5170`, implementation is `a1c8b56`, and local validation and cleanup
 evidence are recorded in the task file. Remote CI remains pending because the
 branch is local-only.
+The active 073 design adds bounded non-inherited
+`align-content:space-evenly` to wrapped rows. It will use equal leading,
+inter-line, and trailing integer slots from positive explicit-content-height
+remainder while preserving the 072 line-record, artifact, overflow, and
+semantic owners. The contract is recorded in
+`docs/plan/tasks/native-engine-073.md`; implementation and validation have not
+started. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1072,6 +1080,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   complete line artifact translation.
 - bounded non-inherited `align-content:space-around` for wrapped rows, with
   saturating integer slot-center offsets and complete line artifact translation.
+- active bounded non-inherited `align-content:space-evenly` design for wrapped
+  rows, with equal leading, inter-line, and trailing integer slots and complete
+  line artifact translation.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

@@ -496,6 +496,15 @@ scrolling, and semantic/source order. The design is `7fea901`, the
 implementation is `be11f49`, and local validation evidence is recorded in the
 task file. Remote CI remains pending until this branch is pushed.
 
+The active follow-on [native-engine-070](tasks/native-engine-070.md) design adds
+bounded non-inherited `flex-wrap:nowrap|wrap` to the same eligible fixed-width
+flex rows. `nowrap` remains equivalent to 069; `wrap` forms deterministic
+physical lines from measured item outer widths and the existing gap, reuses
+per-line justification, row/reverse direction, and cross-axis alignment, and
+preserves complete subtree artifacts, root overflow, and semantic/source
+order. Implementation has not started; public capability claims remain at
+069 and remote CI remains pending until this branch is pushed.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

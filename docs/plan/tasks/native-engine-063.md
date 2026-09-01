@@ -1,7 +1,7 @@
 ---
 id: native-engine-063
 scope: glass-browser/native-engine/vertical-align
-status: active
+status: complete
 depends-on: [native-engine-062]
 ---
 
@@ -79,7 +79,7 @@ and root limits; no second layout tree or renderer dependency is introduced.
 ## Verification
 
 - parser, initial value, stylesheet/inline cascade, inheritance, child
-  override, and invalid-value diagnostics are covered by unit tests;
+  override, and invalid-value fallback are covered by unit tests;
 - baseline preserves existing coordinates, while top/middle/bottom move
   inline/inline-block boxes and all contained text/display artifacts by the
   documented fixed offsets;
@@ -87,12 +87,29 @@ and root limits; no second layout tree or renderer dependency is introduced.
   ownership, scrolling, capture, and semantic text remain consistent;
 - block items and direct block-flow text remain on the baseline path, and
   unsupported keyword/length/percentage forms remain diagnosed;
-- native integration/unit, strict lint, formatting, whitespace, and the
-  documentation validators pass;
-- the checkpoint is committed locally before issue #40 is updated and exact
-  regenerable Cargo outputs are reclaimed.
+- focused integration and CSS unit tests, the full native integration suite,
+  the native browser library suite, strict native/default lint, the `glass-dev`
+  build, rustdoc, formatting, whitespace, and documentation validators pass;
+- the implementation and documentation checkpoints are committed locally,
+  issue #40 is updated with the evidence, and exact regenerable Cargo outputs
+  are reclaimed after validation.
 
 ## Completion evidence
 
-This design checkpoint is active. Implementation and validation evidence will
-be added here before the task is marked complete.
+The design checkpoint is `7721df2`; implementation is `facd2f6`. The focused
+vertical-alignment integration test passed (1/1), the focused CSS unit tests
+passed (2/2), and the full native integration suite passed (78/78). With
+`RUST_MIN_STACK=4194304`, the native `glass-browser` library suite passed
+(855 passed, 1 ignored, 0 failed). The raw unbounded `--nocapture` form hit
+the pre-existing `cli::args::tests::agent_readiness_commands_are_explicit`
+stack overflow, so the repository's bounded stack setting is required for
+that full suite.
+
+Native strict validation passed: feature-enabled clippy (all targets, 8m40s),
+default/no-feature clippy (all targets, 4m37s), `glass-dev` locked build
+(13m09s), and warnings-denied rustdoc (6m22s). Formatting, whitespace,
+release-documentation, documentation-depth, feature/version parity, coverage,
+TUI shortcut, reliability-matrix, read-only-adapter, and Web IR validators
+also passed. The implementation checkpoint is committed locally before this
+documentation closeout; issue #40 records the final local hashes and remote CI
+remains pending until the branch is pushed.

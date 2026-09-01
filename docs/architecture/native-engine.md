@@ -16,8 +16,7 @@ bounded-inherited-text-transform/bounded-first-line-text-indent/
 bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
-bounded-text-overflow,
-bounded-vertical-align design,
+bounded-text-overflow/bounded-vertical-align slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -69,6 +68,8 @@ fixed-cell characters in each emitted fragment, bounded inherited
 `font-weight:normal|bold|400|700` fixed-cell raster presentation, bounded
 inherited `font-style:normal|italic` fixed-cell raster presentation, and
 bounded inherited `word-break:normal|break-all` fixed-cell wrapping, and
+bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
+fixed-cell inline and inline-block line items, and
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -711,14 +712,16 @@ behavior, and browser conformance remain outside the boundary. Its design is
 local validation evidence; remote CI remains pending until this branch is
 pushed.
 
-The active 063 design adds inherited `vertical-align: baseline|top|middle|bottom`
-to the existing fixed-cell inline-flow line-item owner. `baseline` preserves
-the current top-origin behavior; `top`, `middle`, and `bottom` apply bounded
-integer offsets within the existing line box and move an inline item's boxes
-and text artifacts together. Font metrics, typographic baselines, lengths,
-percentages, bidi, writing modes, ruby, table-cell alignment, and browser
-conformance remain outside the boundary. The contract is recorded in
-`docs/plan/tasks/native-engine-063.md`; implementation has not started.
+The completed 063 boundary adds inherited
+`vertical-align: baseline|top|middle|bottom` to the existing fixed-cell
+inline-flow line-item owner. `baseline` preserves the current top-origin
+behavior; `top`, `middle`, and `bottom` apply bounded integer offsets within
+the existing line box and move an inline item's boxes and text artifacts
+together. Font metrics, typographic baselines, lengths, percentages, bidi,
+writing modes, ruby, table-cell alignment, and browser conformance remain
+outside the boundary. Its design is `7721df2`, its implementation is
+`facd2f6`, and the task file records the local validation evidence; remote CI
+remains pending until this branch is pushed.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -924,6 +927,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited ASCII `text-transform:none|uppercase|lowercase` parsing and
   cascade, transformed fixed-cell layout fragments, and consistent wrapping,
   text-fragment, display-list, and root-overflow consumers.
+- bounded inherited `vertical-align:baseline|top|middle|bottom` parsing and
+  cascade, with clamped fixed-cell top/middle/bottom offsets applied to
+  complete inline-item box and text artifact ranges during line flush.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

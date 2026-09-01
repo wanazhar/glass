@@ -186,6 +186,15 @@ keyword, Unicode-whitespace, and browser word-boundary behavior remain
 outside the boundary. Its implementation and local validation evidence are
 recorded in the task file and issue #40; remote CI remains pending until this
 branch is pushed.
+The active dependency-ordered `native-engine-058` task adds bounded inherited
+non-negative fixed-pixel `letter-spacing` to every rendered fixed-cell
+character in each emitted fragment. Its measured advance composes with
+`word-spacing` on ASCII spaces before wrapping, preformatted chunking,
+fragment projection, alignment, display-list generation, raster replay, hit
+testing, and root-overflow measurement. Fragment and line boundaries remain
+hard boundaries; browser pair-boundary, Unicode, font-metric, negative,
+relative, percentage, `normal`, and conformance semantics remain outside the
+boundary.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -353,6 +362,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-055` | bounded inherited ASCII `text-transform:none|uppercase|lowercase` applied during fixed-cell text layout and consumed by wrapping, text fragments, paint, and overflow measurement | `native-engine-054` | Unicode case mapping/expansion, locale behavior, `capitalize`/other transforms, font shaping/metrics, and browser text-rendering parity |
 | `native-engine-056` | bounded non-negative fixed-pixel `text-indent` applied to the first line of block containers, with one-cell clamping and shared flow consumers | `native-engine-055` | negative/hanging indentation, each-line/hanging keywords, percentages and font-relative units, bidi/logical writing modes, inline-formatting parity, and browser CSS conformance |
 | `native-engine-057` | bounded inherited non-negative fixed-pixel `word-spacing` applied to rendered ASCII spaces across collapsed and supported preformatted flow | `native-engine-056` | negative spacing, `letter-spacing`, relative/percentage units, Unicode whitespace and word-boundary policy, browser tab stops, font metrics, bidi, and browser CSS parity |
+| `native-engine-058` | bounded inherited non-negative fixed-pixel `letter-spacing` applied after every rendered fixed-cell character in each emitted fragment, composed with word spacing | `native-engine-057` | negative/relative/percentage values, `normal`, pair-boundary and cross-fragment semantics, Unicode shaping/metrics, grapheme clusters, bidi, and browser CSS parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -564,6 +574,12 @@ Phase 2 integration chains added by these slices are:
     chunking; the same measured result reaches text fragments, alignment,
     display-list metadata, raster glyph positions, hit testing, and root
     overflow while source text and whitespace ownership remain unchanged.
+61. Native inherited non-negative fixed-pixel `letter-spacing` adds a bounded
+    advance after every rendered fixed-cell character in each emitted text
+    fragment, including the final character; it composes with word spacing on
+    ASCII spaces and reaches wrapping, fragments, alignment, display-list
+    metadata, raster glyph positions, hit testing, and root overflow without
+    changing source text or joining fragment/line/flow boundaries.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -633,13 +649,15 @@ visual stacking.
 | bounded inherited text transform | makes common ASCII case presentation available across the existing fixed-cell text-flow path | no Unicode case mapping or expansion, locale-sensitive casing, `capitalize`/other transforms, font shaping/metrics, or browser text-rendering parity | inherit one bounded `none`/`uppercase`/`lowercase` value, transform ASCII letters during layout, preserve source semantic text, and keep fixed-cell width invariant |
 | bounded first-line text indent | makes common block first-line indentation observable without a second formatting context | no negative/hanging indentation, keyword/percentage/font-relative units, bidi/logical writing modes, or browser CSS parity | keep one non-negative fixed-pixel value in computed style, clamp it to leave one fixed cell, and switch the existing flow cursor to full width after the first line |
 | bounded inherited word spacing | makes common fixed-pixel separator spacing observable across the existing text-flow and paint owners | no negative spacing, `letter-spacing`, relative/percentage units, Unicode whitespace or word-boundary policy, browser tab stops, font metrics, bidi, or browser parity | inherit one bounded non-negative pixel value, add it only after rendered ASCII spaces, and carry the measured advance through wrapping, fragments, alignment, display, raster, hit testing, and overflow |
+| bounded inherited letter spacing | makes a bounded per-character fixed-cell advance observable across the existing text-flow and paint owners | no negative/relative/percentage values, `normal`, pair-boundary or cross-fragment semantics, Unicode shaping/metrics, grapheme clusters, bidi, or browser parity | inherit one bounded non-negative pixel value, add it after every rendered character in each emitted fragment, compose it with word spacing, and carry the measured advance through wrapping, fragments, alignment, display, raster, hit testing, and overflow |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-057.md` is the active checkpoint;
-`docs/plan/tasks/native-engine-056.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-058.md` is the active checkpoint;
+`docs/plan/tasks/native-engine-057.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-056.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-055.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-054.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-053.md` is the preceding completed checkpoint;

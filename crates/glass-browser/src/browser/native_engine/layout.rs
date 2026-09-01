@@ -1,8 +1,8 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
-    AlignItemsValue, DisplayValue, FlexDirectionValue, JustifyContentValue, NativeBorderRadius,
-    NativeBoxEdges, NativeComputedStyle, TextAlignValue, TextOverflowValue, TextTransformValue,
-    VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+    AlignItemsValue, DisplayValue, FlexDirectionValue, FlexWrapValue, JustifyContentValue,
+    NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, TextAlignValue, TextOverflowValue,
+    TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -469,6 +469,29 @@ struct FlexItemPlacement {
     height: u32,
 }
 
+struct FlexItem {
+    child: NativeNodeId,
+    margin: NativeBoxEdges,
+    width: u32,
+    order: i32,
+    source_index: usize,
+}
+
+struct FlexLineLayout {
+    width: u32,
+    placements: Vec<FlexItemPlacement>,
+}
+
+struct FlexLineContext {
+    x: u32,
+    y: u32,
+    available_width: u32,
+    gap: u32,
+    justify_content: JustifyContentValue,
+    reverse: bool,
+    depth: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FlowStyle {
     minimum_line_height: u32,
@@ -872,7 +895,7 @@ impl<'a> LayoutBuilder<'a> {
                             let available_width =
                                 flow.available_width.saturating_sub(margin.horizontal());
                             let candidate_width =
-                                self.outer_width(child, style, false, available_width);
+                                self.outer_width(child, style, false, available_width, true);
                             let candidate_width =
                                 candidate_width.saturating_add(margin.horizontal());
                             let separator_width =
@@ -978,7 +1001,7 @@ impl<'a> LayoutBuilder<'a> {
         let bottom_inset = border_bottom.saturating_add(padding.bottom());
         let horizontal_inset = left_inset.saturating_add(right_inset);
         let vertical_inset = top_inset.saturating_add(bottom_inset);
-        let width = self.outer_width(id, style, is_block, available_width);
+        let width = self.outer_width(id, style, is_block, available_width, true);
         let minimum_line_height = style.line_height().unwrap_or(DEFAULT_LINE_HEIGHT);
         let default_content_height = if is_block {
             minimum_line_height
@@ -1141,6 +1164,128 @@ impl<'a> LayoutBuilder<'a> {
         })
     }
 
+    fn layout_flex_line(
+        &mut self,
+        items: Vec<FlexItem>,
+        context: FlexLineContext,
+    ) -> FlexLineLayout {
+        let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        let item_width = items.iter().fold(0u32, |total, item| {
+            total
+                .saturating_add(item.margin.horizontal())
+                .saturating_add(item.width)
+        });
+        let occupied_width = item_width.saturating_add(context.gap.saturating_mul(gap_count));
+        let free_space = context.available_width.saturating_sub(occupied_width);
+        let leading_offset = if items.is_empty() {
+            0
+        } else {
+            match context.justify_content {
+                JustifyContentValue::Center => free_space / 2,
+                JustifyContentValue::FlexEnd => free_space,
+                JustifyContentValue::FlexStart | JustifyContentValue::SpaceBetween => 0,
+            }
+        };
+        let distributed_gap = if context.justify_content == JustifyContentValue::SpaceBetween {
+            free_space.checked_div(gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let distributed_remainder = if context.justify_content == JustifyContentValue::SpaceBetween
+        {
+            free_space.checked_rem(gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let item_count = items.len();
+        let mut placements = Vec::with_capacity(item_count);
+        let width = if context.reverse {
+            let reverse_shift = occupied_width.saturating_sub(context.available_width);
+            let mut cursor_right = context
+                .x
+                .saturating_add(context.available_width)
+                .saturating_sub(leading_offset)
+                .saturating_add(reverse_shift);
+            for (index, item) in items.into_iter().enumerate() {
+                if index > 0 {
+                    cursor_right = cursor_right.saturating_sub(context.gap);
+                    if context.justify_content == JustifyContentValue::SpaceBetween {
+                        cursor_right = cursor_right.saturating_sub(distributed_gap);
+                        if u32::try_from(index - 1)
+                            .is_ok_and(|gap_index| gap_index < distributed_remainder)
+                        {
+                            cursor_right = cursor_right.saturating_sub(1);
+                        }
+                    }
+                }
+                let item_x = cursor_right
+                    .saturating_sub(item.margin.right())
+                    .saturating_sub(item.width);
+                let item_y = context.y.saturating_add(item.margin.top());
+                let box_start = self.boxes.len();
+                let text_start = self.text_runs.len();
+                let size =
+                    self.layout_element(item.child, item_x, item_y, item.width, context.depth);
+                placements.push(FlexItemPlacement {
+                    box_start,
+                    box_end: self.boxes.len(),
+                    text_start,
+                    text_end: self.text_runs.len(),
+                    margin: item.margin,
+                    height: size.height,
+                });
+                cursor_right = item_x.saturating_sub(item.margin.left());
+            }
+            if item_count == 0 {
+                0
+            } else {
+                occupied_width.saturating_add(
+                    if context.justify_content == JustifyContentValue::SpaceBetween {
+                        free_space
+                    } else {
+                        leading_offset
+                    },
+                )
+            }
+        } else {
+            let mut cursor_x = context.x.saturating_add(leading_offset);
+            for (index, item) in items.into_iter().enumerate() {
+                if index > 0 {
+                    cursor_x = cursor_x.saturating_add(context.gap);
+                    if context.justify_content == JustifyContentValue::SpaceBetween {
+                        cursor_x = cursor_x.saturating_add(distributed_gap);
+                        if u32::try_from(index - 1)
+                            .is_ok_and(|gap_index| gap_index < distributed_remainder)
+                        {
+                            cursor_x = cursor_x.saturating_add(1);
+                        }
+                    }
+                }
+                let item_x = cursor_x.saturating_add(item.margin.left());
+                let item_y = context.y.saturating_add(item.margin.top());
+                let box_start = self.boxes.len();
+                let text_start = self.text_runs.len();
+                let size =
+                    self.layout_element(item.child, item_x, item_y, item.width, context.depth);
+                placements.push(FlexItemPlacement {
+                    box_start,
+                    box_end: self.boxes.len(),
+                    text_start,
+                    text_end: self.text_runs.len(),
+                    margin: item.margin,
+                    height: size.height,
+                });
+                cursor_x = cursor_x
+                    .saturating_add(item.margin.left())
+                    .saturating_add(size.width)
+                    .saturating_add(item.margin.right());
+            }
+            cursor_x.saturating_sub(context.x)
+        };
+
+        FlexLineLayout { width, placements }
+    }
+
     fn layout_flex_children(
         &mut self,
         parent: NativeNodeId,
@@ -1156,6 +1301,8 @@ impl<'a> LayoutBuilder<'a> {
         let gap = parent_style.gap();
         let justify_content = parent_style.justify_content();
         let align_items = parent_style.align_items();
+        let flex_wrap = parent_style.flex_wrap();
+        let wrapped = flex_wrap == FlexWrapValue::Wrap;
         let explicit_line_height = Self::explicit_content_height(parent_style);
         let children = self
             .document
@@ -1181,161 +1328,116 @@ impl<'a> LayoutBuilder<'a> {
                         continue;
                     }
                     let margin = style.margin();
-                    let item_width = self.outer_width(child, style, false, available_width);
-                    items.push((
+                    let width = self.outer_width(child, style, false, available_width, !wrapped);
+                    items.push(FlexItem {
                         child,
                         margin,
-                        item_width,
-                        style.flex_item_order().value(),
+                        width,
+                        order: style.flex_item_order().value(),
                         source_index,
-                    ));
+                    });
                 }
             }
         }
 
-        items.sort_by_key(|(_, _, _, order, source_index)| (*order, *source_index));
+        items.sort_by_key(|item| (item.order, item.source_index));
+        let mut lines = Vec::new();
+        if wrapped {
+            let mut current = Vec::new();
+            let mut current_width = 0u32;
+            for item in items {
+                let item_outer_width = item.margin.horizontal().saturating_add(item.width);
+                let separator_width = if current.is_empty() { 0 } else { gap };
+                if !current.is_empty()
+                    && current_width
+                        .saturating_add(separator_width)
+                        .saturating_add(item_outer_width)
+                        > available_width
+                {
+                    lines.push(current);
+                    current = Vec::new();
+                    current_width = 0;
+                }
+                if !current.is_empty() {
+                    current_width = current_width.saturating_add(gap);
+                }
+                current_width = current_width.saturating_add(item_outer_width);
+                current.push(item);
+            }
+            if !current.is_empty() {
+                lines.push(current);
+            }
+        } else {
+            lines.push(items);
+        }
+
+        let line_count = lines.len();
         let reverse = parent_style.flex_direction() == FlexDirectionValue::RowReverse;
-        let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
-        let item_width = items.iter().fold(0u32, |total, (_, margin, width, _, _)| {
-            total
-                .saturating_add(margin.horizontal())
-                .saturating_add(*width)
-        });
-        let occupied_width = item_width.saturating_add(gap.saturating_mul(gap_count));
-        let free_space = available_width.saturating_sub(occupied_width);
-        let leading_offset = if items.is_empty() {
-            0
-        } else {
-            match justify_content {
-                JustifyContentValue::Center => free_space / 2,
-                JustifyContentValue::FlexEnd => free_space,
-                JustifyContentValue::FlexStart | JustifyContentValue::SpaceBetween => 0,
-            }
-        };
-        let distributed_gap = if justify_content == JustifyContentValue::SpaceBetween {
-            free_space.checked_div(gap_count).unwrap_or(0)
-        } else {
-            0
-        };
-        let distributed_remainder = if justify_content == JustifyContentValue::SpaceBetween {
-            free_space.checked_rem(gap_count).unwrap_or(0)
-        } else {
-            0
-        };
-        let item_count = items.len();
-        let mut placements = Vec::with_capacity(items.len());
-        let row_width = if reverse {
-            let reverse_shift = occupied_width.saturating_sub(available_width);
-            let mut cursor_right = x
-                .saturating_add(available_width)
-                .saturating_sub(leading_offset)
-                .saturating_add(reverse_shift);
-            for (index, (child, margin, item_width, _, _)) in items.into_iter().enumerate() {
-                if index > 0 {
-                    cursor_right = cursor_right.saturating_sub(gap);
-                    if justify_content == JustifyContentValue::SpaceBetween {
-                        cursor_right = cursor_right.saturating_sub(distributed_gap);
-                        if u32::try_from(index - 1)
-                            .is_ok_and(|gap_index| gap_index < distributed_remainder)
-                        {
-                            cursor_right = cursor_right.saturating_sub(1);
-                        }
-                    }
-                }
-                let item_x = cursor_right
-                    .saturating_sub(margin.right())
-                    .saturating_sub(item_width);
-                let item_y = y.saturating_add(margin.top());
-                let box_start = self.boxes.len();
-                let text_start = self.text_runs.len();
-                let size = self.layout_element(child, item_x, item_y, item_width, depth);
-                placements.push(FlexItemPlacement {
-                    box_start,
-                    box_end: self.boxes.len(),
-                    text_start,
-                    text_end: self.text_runs.len(),
-                    margin,
-                    height: size.height,
-                });
-                cursor_right = item_x.saturating_sub(margin.left());
-            }
-            if item_count == 0 {
-                0
+        let mut row_width = 0u32;
+        let mut line_y = y;
+        let mut max_bottom = y;
+        for line_items in lines {
+            let line_layout = self.layout_flex_line(
+                line_items,
+                FlexLineContext {
+                    x,
+                    y: line_y,
+                    available_width,
+                    gap,
+                    justify_content,
+                    reverse,
+                    depth,
+                },
+            );
+            row_width = row_width.max(line_layout.width);
+            let auto_line_height = line_layout
+                .placements
+                .iter()
+                .map(|placement| placement.height.saturating_add(placement.margin.vertical()))
+                .max()
+                .unwrap_or(0);
+            let line_height = if wrapped {
+                auto_line_height
             } else {
-                occupied_width.saturating_add(
-                    if justify_content == JustifyContentValue::SpaceBetween {
-                        free_space
-                    } else {
-                        leading_offset
-                    },
-                )
-            }
-        } else {
-            let mut cursor_x = x.saturating_add(leading_offset);
-            for (index, (child, margin, item_width, _, _)) in items.into_iter().enumerate() {
-                if index > 0 {
-                    cursor_x = cursor_x.saturating_add(gap);
-                    if justify_content == JustifyContentValue::SpaceBetween {
-                        cursor_x = cursor_x.saturating_add(distributed_gap);
-                        if u32::try_from(index - 1)
-                            .is_ok_and(|gap_index| gap_index < distributed_remainder)
-                        {
-                            cursor_x = cursor_x.saturating_add(1);
-                        }
-                    }
-                }
-                let item_x = cursor_x.saturating_add(margin.left());
-                let item_y = y.saturating_add(margin.top());
-                let box_start = self.boxes.len();
-                let text_start = self.text_runs.len();
-                let size = self.layout_element(child, item_x, item_y, item_width, depth);
-                placements.push(FlexItemPlacement {
-                    box_start,
-                    box_end: self.boxes.len(),
-                    text_start,
-                    text_end: self.text_runs.len(),
-                    margin,
-                    height: size.height,
-                });
-                cursor_x = cursor_x
-                    .saturating_add(margin.left())
-                    .saturating_add(size.width)
-                    .saturating_add(margin.right());
-            }
-            cursor_x.saturating_sub(x)
-        };
-
-        let auto_line_height = placements
-            .iter()
-            .map(|placement| placement.height.saturating_add(placement.margin.vertical()))
-            .max()
-            .unwrap_or(0);
-        let line_height = explicit_line_height.unwrap_or(auto_line_height);
-        let mut max_bottom = y.saturating_add(line_height);
-        for placement in placements {
-            let item_outer_height = placement.height.saturating_add(placement.margin.vertical());
-            let remaining = line_height.saturating_sub(item_outer_height);
-            let offset = match align_items {
-                AlignItemsValue::FlexStart => 0,
-                AlignItemsValue::Center => remaining / 2,
-                AlignItemsValue::FlexEnd => remaining,
+                explicit_line_height.unwrap_or(auto_line_height)
             };
-            self.shift_layout_y(
-                placement.box_start,
-                placement.box_end,
-                placement.text_start,
-                placement.text_end,
-                offset,
-            );
-            max_bottom = max_bottom.max(
-                y.saturating_add(placement.margin.top())
-                    .saturating_add(offset)
-                    .saturating_add(placement.height)
-                    .saturating_add(placement.margin.bottom()),
-            );
+            max_bottom = max_bottom.max(line_y.saturating_add(line_height));
+            for placement in line_layout.placements {
+                let item_outer_height =
+                    placement.height.saturating_add(placement.margin.vertical());
+                let remaining = line_height.saturating_sub(item_outer_height);
+                let offset = match align_items {
+                    AlignItemsValue::FlexStart => 0,
+                    AlignItemsValue::Center => remaining / 2,
+                    AlignItemsValue::FlexEnd => remaining,
+                };
+                self.shift_layout_y(
+                    placement.box_start,
+                    placement.box_end,
+                    placement.text_start,
+                    placement.text_end,
+                    offset,
+                );
+                max_bottom = max_bottom.max(
+                    line_y
+                        .saturating_add(placement.margin.top())
+                        .saturating_add(offset)
+                        .saturating_add(placement.height)
+                        .saturating_add(placement.margin.bottom()),
+                );
+            }
+            if wrapped {
+                line_y = line_y.saturating_add(line_height);
+            }
         }
+
+        let width = if wrapped && line_count > 0 {
+            available_width
+        } else {
+            row_width
+        };
         FlowSize {
-            width: row_width,
+            width,
             height: max_bottom.saturating_sub(y),
         }
     }
@@ -1346,6 +1448,7 @@ impl<'a> LayoutBuilder<'a> {
         style: NativeComputedStyle,
         is_block: bool,
         available_width: u32,
+        constrain_to_available: bool,
     ) -> u32 {
         let padding = style.padding();
         let (border_left, border_right) = style.border().map_or((0, 0), |border| {
@@ -1382,8 +1485,12 @@ impl<'a> LayoutBuilder<'a> {
                 declared.saturating_add(horizontal_inset)
             }
         });
-        constrain_dimension(width, min_width, max_width)
-            .min(available_width.max(min_width.unwrap_or_default()))
+        let width = constrain_dimension(width, min_width, max_width);
+        if constrain_to_available {
+            width.min(available_width.max(min_width.unwrap_or_default()))
+        } else {
+            width
+        }
     }
 
     fn place_text(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {

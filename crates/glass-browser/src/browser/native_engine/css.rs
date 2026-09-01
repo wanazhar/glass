@@ -190,6 +190,13 @@ pub(crate) enum FlexDirectionValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum FlexWrapValue {
+    #[default]
+    NoWrap,
+    Wrap,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeOrderValue(i32);
 
 impl NativeOrderValue {
@@ -320,6 +327,7 @@ pub(crate) struct NativeComputedStyle {
     justify_content: JustifyContentValue,
     align_items: AlignItemsValue,
     flex_direction: FlexDirectionValue,
+    flex_wrap: FlexWrapValue,
     flex_item_order: NativeOrderValue,
     text_decoration: TextDecorationValue,
     text_transform: TextTransformValue,
@@ -384,6 +392,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn flex_direction(self) -> FlexDirectionValue {
         self.flex_direction
+    }
+
+    pub(crate) const fn flex_wrap(self) -> FlexWrapValue {
+        self.flex_wrap
     }
 
     pub(crate) const fn flex_item_order(self) -> NativeOrderValue {
@@ -582,6 +594,7 @@ impl NativeStylesheet {
         let mut justify_content = None;
         let mut align_items = None;
         let mut flex_direction = None;
+        let mut flex_wrap = None;
         let mut flex_item_order = None;
         let mut text_decoration = None;
         let mut text_transform = None;
@@ -823,6 +836,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, flex_direction)
             {
                 flex_direction = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.flex_wrap
+                && wins(rule.selector.specificity, rule.order, false, flex_wrap)
+            {
+                flex_wrap = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1189,6 +1212,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.flex_wrap
+                && wins(u16::MAX, usize::MAX, true, flex_wrap)
+            {
+                flex_wrap = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -1353,6 +1386,7 @@ impl NativeStylesheet {
                 .map_or(JustifyContentValue::FlexStart, |value| value.value),
             align_items: align_items.map_or(AlignItemsValue::FlexStart, |value| value.value),
             flex_direction: flex_direction.map_or(FlexDirectionValue::Row, |value| value.value),
+            flex_wrap: flex_wrap.map_or(FlexWrapValue::NoWrap, |value| value.value),
             flex_item_order: flex_item_order
                 .map_or(NativeOrderValue::default(), |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
@@ -1471,6 +1505,7 @@ struct NativeDeclarations {
     justify_content: Option<JustifyContentValue>,
     align_items: Option<AlignItemsValue>,
     flex_direction: Option<FlexDirectionValue>,
+    flex_wrap: Option<FlexWrapValue>,
     order: Option<NativeOrderValue>,
     text_decoration: Option<TextDecorationValue>,
     text_transform: Option<TextTransformValue>,
@@ -1647,6 +1682,7 @@ fn parse_source(
             || declarations.justify_content.is_some()
             || declarations.align_items.is_some()
             || declarations.flex_direction.is_some()
+            || declarations.flex_wrap.is_some()
             || declarations.order.is_some()
             || declarations.text_decoration.is_some()
             || declarations.text_transform.is_some()
@@ -1784,6 +1820,7 @@ fn parse_declarations_with_diagnostics(
             "justify-content" => parse_justify_content(value).is_some(),
             "align-items" => parse_align_items(value).is_some(),
             "flex-direction" => parse_flex_direction(value).is_some(),
+            "flex-wrap" => parse_flex_wrap(value).is_some(),
             "order" => parse_flex_item_order(value).is_some(),
             "text-decoration" => parse_text_decoration(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
@@ -1854,6 +1891,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "justify-content"
             | "align-items"
             | "flex-direction"
+            | "flex-wrap"
             | "order"
             | "text-decoration"
             | "text-transform"
@@ -1951,6 +1989,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "flex-direction" => {
                 declarations.flex_direction = parse_flex_direction(value);
+            }
+            "flex-wrap" => {
+                declarations.flex_wrap = parse_flex_wrap(value);
             }
             "order" => {
                 declarations.order = parse_flex_item_order(value);
@@ -2407,6 +2448,14 @@ fn parse_flex_direction(value: &str) -> Option<FlexDirectionValue> {
     }
 }
 
+fn parse_flex_wrap(value: &str) -> Option<FlexWrapValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "nowrap" => Some(FlexWrapValue::NoWrap),
+        "wrap" => Some(FlexWrapValue::Wrap),
+        _ => None,
+    }
+}
+
 fn parse_flex_item_order(value: &str) -> Option<NativeOrderValue> {
     let value = value.trim();
     let digits = match value.as_bytes().first() {
@@ -2775,7 +2824,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; flex-direction: row-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; flex-direction: row-reverse; flex-wrap: wrap; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2791,6 +2840,7 @@ mod tests {
             declarations.flex_direction,
             Some(FlexDirectionValue::RowReverse)
         );
+        assert_eq!(declarations.flex_wrap, Some(FlexWrapValue::Wrap));
         assert_eq!(declarations.order, Some(NativeOrderValue(-12)));
         assert_eq!(
             declarations.text_decoration,
@@ -3324,6 +3374,15 @@ mod tests {
         assert_eq!(parse_flex_direction("column-reverse"), None);
         assert_eq!(parse_flex_direction("start"), None);
         assert_eq!(parse_flex_direction("row reverse"), None);
+    }
+
+    #[test]
+    fn flex_wrap_parser_accepts_only_bounded_line_values() {
+        assert_eq!(parse_flex_wrap("nowrap"), Some(FlexWrapValue::NoWrap));
+        assert_eq!(parse_flex_wrap("WRAP"), Some(FlexWrapValue::Wrap));
+        assert_eq!(parse_flex_wrap("wrap-reverse"), None);
+        assert_eq!(parse_flex_wrap("row"), None);
+        assert_eq!(parse_flex_wrap("normal"), None);
     }
 
     #[test]
@@ -3979,6 +4038,36 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).flex_direction(),
             FlexDirectionValue::Row
+        );
+    }
+
+    #[test]
+    fn flex_wrap_is_cascaded_without_inheriting_to_children() {
+        let document = NativeDocument::parse(
+            "<style>#parent { flex-wrap: wrap; } #explicit { flex-wrap: nowrap; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='flex-wrap: nowrap'>Explicit</span><span id='invalid' style='flex-wrap: wrap-reverse'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).flex_wrap(),
+            FlexWrapValue::Wrap
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).flex_wrap(),
+            FlexWrapValue::NoWrap
+        );
+        assert_eq!(
+            document.computed_style_for_layout(explicit).flex_wrap(),
+            FlexWrapValue::NoWrap
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).flex_wrap(),
+            FlexWrapValue::NoWrap
         );
     }
 

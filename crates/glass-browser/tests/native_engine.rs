@@ -2362,6 +2362,118 @@ fn native_flex_row_justification_preserves_overflow_and_ignores_fallback_rows() 
 }
 
 #[test]
+fn native_flex_item_order_reorders_visual_items_and_preserves_source_ties() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:40px;gap:2px'><button id='source-first' style='order:2;width:6px;height:8px;background-color:red'>A</button><button id='tied-first' style='order:-1;width:6px;height:8px;background-color:green'>B</button><button id='tied-second' style='order:-1;width:6px;height:8px;background-color:blue'>C</button><button id='default' style='width:6px;height:8px;background-color:black'>D</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let source_first = document.resolve_target("id=source-first").unwrap();
+    let tied_first = document.resolve_target("id=tied-first").unwrap();
+    let tied_second = document.resolve_target("id=tied-second").unwrap();
+    let default_item = document.resolve_target("id=default").unwrap();
+    let layout = document
+        .layout(Viewport {
+            width: 40,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+
+    assert_eq!(layout.box_for(tied_first).unwrap().x, 0);
+    assert_eq!(layout.box_for(tied_second).unwrap().x, 8);
+    assert_eq!(layout.box_for(default_item).unwrap().x, 16);
+    assert_eq!(layout.box_for(source_first).unwrap().x, 24);
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        semantic_ids,
+        vec![source_first, tied_first, tied_second, default_item]
+    );
+
+    let painted_ids = document
+        .display_list(Viewport {
+            width: 40,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap()
+        .commands
+        .into_iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::FillRect { node_id, .. } => Some(node_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        painted_ids,
+        vec![tied_first, tied_second, default_item, source_first]
+    );
+}
+
+#[test]
+fn native_flex_item_order_filters_hidden_items_and_ignores_fallback_rows() {
+    let ordered = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:24px;gap:2px'><div id='first' style='order:2;width:8px;height:8px'>A</div><div id='hidden' style='display:none;order:-1024;width:8px;height:8px'>Hidden</div><div id='second' style='order:-1;width:8px;height:8px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = ordered.resolve_target("id=first").unwrap();
+    let hidden = ordered.resolve_target("id=hidden").unwrap();
+    let second = ordered.resolve_target("id=second").unwrap();
+    let layout = ordered
+        .layout(Viewport {
+            width: 24,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(layout.box_for(second).unwrap().x, 0);
+    assert_eq!(layout.box_for(first).unwrap().x, 10);
+    assert_eq!(layout.box_for(hidden), None);
+
+    let with_order = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px'><span id='first' style='display:block;order:2;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;order:-2;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let without_order = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px'><span id='first' style='display:block;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let with_first = with_order.resolve_target("id=first").unwrap();
+    let with_second = with_order.resolve_target("id=second").unwrap();
+    let without_first = without_order.resolve_target("id=first").unwrap();
+    let without_second = without_order.resolve_target("id=second").unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let with_layout = with_order.layout(viewport).unwrap();
+    let without_layout = without_order.layout(viewport).unwrap();
+    assert_eq!(
+        with_layout.box_for(with_first),
+        without_layout.box_for(without_first)
+    );
+    assert_eq!(
+        with_layout.box_for(with_second),
+        without_layout.box_for(without_second)
+    );
+    assert!(
+        with_layout
+            .text_runs
+            .iter()
+            .any(|run| run.text.contains("mean"))
+    );
+}
+
+#[test]
 fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
     let adjacent = NativeDocument::parse(
         "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",
@@ -5321,7 +5433,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; align-items: center; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: center; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -5396,6 +5508,9 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "justify-content"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "order"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty

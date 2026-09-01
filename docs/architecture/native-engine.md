@@ -15,6 +15,7 @@ bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
 bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style slices,
+bounded-inherited-word-break design,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -65,6 +66,7 @@ bounded inherited non-negative fixed-pixel `letter-spacing` after rendered
 fixed-cell characters in each emitted fragment, bounded inherited
 `font-weight:normal|bold|400|700` fixed-cell raster presentation, bounded
 inherited `font-style:normal|italic` fixed-cell raster presentation, and
+bounded inherited `word-break:normal|break-all` fixed-cell wrapping, and
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -682,6 +684,16 @@ angles, font selection/loading/metrics, shaping, anti-aliasing, and browser
 text-rendering parity remain unsupported. Its implementation is committed
 locally as `2992eb8`; the 060 task file records the local validation evidence,
 and remote CI remains pending until this branch is pushed.
+
+The active 061 design adds inherited `word-break: normal|break-all` to the
+bounded collapsed fixed-cell flow path. `normal` retains word-aware wrapping;
+`break-all` permits deterministic character-boundary splitting for every
+collapsed word while preserving the existing separator, spacing, fragment,
+overflow, and semantic owners. `pre`, `pre-wrap`, and `nowrap` retain their
+existing whitespace behavior. Unicode line-breaking, grapheme policy,
+hyphenation, `overflow-wrap`, bidi, writing modes, font metrics, and browser
+conformance remain outside the boundary. The contract is recorded in
+`docs/plan/tasks/native-engine-061.md`; implementation has not started.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

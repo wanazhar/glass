@@ -83,6 +83,8 @@ source-behavior reference.
   each emitted fragment, composed with word spacing,
   bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster
   presentation with unchanged advances and clipped one-pixel bold dilation,
+  bounded inherited `font-style:normal|italic` fixed-cell raster presentation
+  with unchanged advances and clipped row-dependent italic shear,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
@@ -288,6 +290,8 @@ projection, and point hit-testing,
   each emitted fragment, composed with word spacing,
   bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster
   presentation with unchanged advances and clipped one-pixel bold dilation,
+  bounded inherited `font-style:normal|italic` fixed-cell raster presentation
+  with unchanged advances and clipped row-dependent italic shear,
   native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible

@@ -208,7 +208,7 @@ rendering parity remain outside the boundary. The implementation is committed
 locally as `21fcff5`; the task file records the local validation evidence, and
 remote CI remains pending until this branch is pushed.
 
-The active dependency-ordered `native-engine-060` design adds inherited
+The completed dependency-ordered `native-engine-060` slice adds inherited
 `font-style: normal|italic` to the fixed-cell text presentation path.
 `normal` retains the current glyph replay and `italic` applies a deterministic
 bounded row-dependent horizontal shear through the existing clipped software
@@ -216,9 +216,10 @@ rasterizer. Bold dilation, underline, spacing, opacity, scrolling, and capture
 compose through the same immutable text command; advances, layout, semantic
 text, hit testing, overflow, and text-fragment coordinates remain unchanged.
 Oblique forms, angles, font selection/loading/metrics, shaping, anti-aliasing,
-and browser text-rendering parity remain outside the boundary. The design
-contract is recorded in `docs/plan/tasks/native-engine-060.md`; implementation
-has not started.
+and browser text-rendering parity remain outside the boundary. The
+implementation is committed locally as `2992eb8`; the task file records the
+local validation evidence, and remote CI remains pending until this branch is
+pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -273,9 +274,9 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, inherited physical text alignment, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, and local opacity alpha | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, inherited physical text alignment, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, and inherited `font-style:normal|italic` | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
 | `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges, opacity group boundaries, root scroll projection, and rounded point hit testing | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
-| `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
+| `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity/font presentation, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, nested opacity layers, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
 | `native_engine::interaction` | action/effect types and bounded effect records | semantic action and event kind | revisioned interaction metadata | native DOM IDs |
@@ -695,8 +696,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-059.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-060.md` is the active design checkpoint;
+`docs/plan/tasks/native-engine-060.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-059.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-058.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-057.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-056.md` is the preceding completed checkpoint;

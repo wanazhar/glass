@@ -448,6 +448,14 @@ dropped. The design is `a05bdd6`, the implementation is `7c38354`, and local
 validation evidence is recorded in the task file. Remote CI remains pending
 until this branch is pushed.
 
+The active follow-on [native-engine-065](tasks/native-engine-065.md) design
+adds one non-negative fixed-pixel `gap` between visible direct element items in
+an eligible bounded flex row. Hidden and `display:none` items do not consume a
+gap position; ineligible containers retain normal-flow fallback. Multi-value
+and percentage gap grammar, `row-gap`, `column-gap`, flex distribution,
+wrapping, and general Flexbox remain outside the boundary. The contract is
+recorded in the task file; implementation has not started.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

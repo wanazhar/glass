@@ -268,6 +268,14 @@ normal flow so content is not dropped. The contract is recorded in
 implementation is `7c38354`, and local validation evidence is recorded there.
 Remote CI remains pending until this branch is pushed.
 
+The active dependency-ordered `native-engine-065` design adds one non-negative
+fixed-pixel `gap` between visible direct element items in an eligible bounded
+flex row. Hidden and `display:none` items do not consume a gap position, while
+ineligible containers retain the existing normal-flow fallback. Multi-value or
+percentage gap grammar, `row-gap`, `column-gap`, flex distribution, wrapping,
+and general Flexbox remain outside the boundary. The contract is recorded in
+`docs/plan/tasks/native-engine-065.md`; implementation has not started.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -773,6 +781,7 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-065.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-064.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-063.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-062.md` is the preceding completed checkpoint;

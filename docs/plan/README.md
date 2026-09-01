@@ -438,14 +438,15 @@ outside the boundary. The design is `7721df2` and the implementation is
 `facd2f6`; local validation evidence is recorded in the task file and remote
 CI remains pending until this branch is pushed.
 
-The active follow-on [native-engine-064](tasks/native-engine-064.md) design
+The completed follow-on [native-engine-064](tasks/native-engine-064.md) slice
 adds bounded block-level `display: flex` single-row placement for eligible
 direct element children. Items retain source order, fixed explicit/intrinsic
 widths, and margins without grow, shrink, wrap, reverse, gap, or cross-axis
 distribution. Containers with meaningful direct text, `display: contents`, or
 visible `<br>` children use the existing normal-flow fallback so content is not
-dropped. The contract is recorded in the task file; implementation has not
-started.
+dropped. The design is `a05bdd6`, the implementation is `7c38354`, and local
+validation evidence is recorded in the task file. Remote CI remains pending
+until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

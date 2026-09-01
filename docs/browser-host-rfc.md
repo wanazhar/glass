@@ -134,10 +134,14 @@ bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
 direct text,
 bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
 fixed-cell inline and inline-block line items within the existing line box,
+bounded block-level `display:flex` single-row placement for eligible direct
+element children with fixed widths and margins, with normal-flow fallback for
+unsupported child shapes,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
 Rust diagnostics for unsupported CSS. It does not yet provide
 general CSS/nested/horizontal/stacking layout, logical writing-mode sides,
-negative/percentage/auto box-model values, positioned/flex/grid layout,
+negative/percentage/auto box-model values, positioned layout or general
+flex/grid layout beyond the bounded single-row `display:flex` subset,
 screen-shot-containing evidence, JPEG/PDF capture, or physical-pixel capture,
 font/image fidelity, JavaScript, network/security policy, cookies/storage,
 downloads, or platform windowing.

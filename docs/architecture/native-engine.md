@@ -83,7 +83,9 @@ The 049 boundary adds independent bounded `overflow-x:hidden`/`clip` and
 not add nested scrolling, scrollbars, or visible-overflow propagation.
 The 050 boundary adds bounded physical `min-width`/`max-width` and
 `min-height`/`max-height` constraints through the same box-model owner;
-intrinsic, percentage, and flex/grid sizing remain outside the boundary.
+intrinsic and percentage sizing remain outside the boundary. The later 064
+boundary adds only bounded fixed-width single-row `display:flex` placement;
+general flex/grid sizing remains outside the claim.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -725,7 +727,7 @@ outside the boundary. Its design is `7721df2`, its implementation is
 `facd2f6`, and the task file records the local validation evidence; remote CI
 remains pending until this branch is pushed.
 
-The active 064 boundary adds block-level `display: flex` for eligible
+The completed 064 boundary adds block-level `display: flex` for eligible
 containers with direct element children. Each item is laid out once in source
 order at its explicit or intrinsic fixed width, including physical margins,
 against the existing content-box origin. Items do not grow, shrink, wrap,
@@ -733,7 +735,9 @@ reverse, reorder, distribute free space, or stretch across the cross axis.
 Meaningful direct text, `display: contents`, and visible `<br>` children use
 the established normal-flow fallback so the bounded mode never drops source
 content. The contract is recorded in
-`docs/plan/tasks/native-engine-064.md`; implementation has not started.
+`docs/plan/tasks/native-engine-064.md`; implementation `7c38354` and local
+validation evidence are recorded in that task file. Remote CI remains pending
+until this branch is pushed.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

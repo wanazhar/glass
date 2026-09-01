@@ -1,7 +1,7 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
     DisplayValue, NativeBorderRadius, NativeComputedStyle, TextAlignValue, TextTransformValue,
-    WhiteSpaceValue,
+    WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -601,6 +601,10 @@ impl FlowCursor {
 
     fn text_width(&self, value: &str) -> u32 {
         LayoutBuilder::text_width_with_spacing(value, self.letter_spacing, self.word_spacing)
+    }
+
+    fn character_advance(&self, character: char) -> u32 {
+        LayoutBuilder::character_advance(character, self.letter_spacing, self.word_spacing)
     }
 
     fn place_inline(&mut self, width: u32, height: u32) -> Option<NativePoint> {
@@ -1245,6 +1249,21 @@ impl<'a> LayoutBuilder<'a> {
             }
             return;
         }
+        if self.document.computed_style_for_layout(parent).word_break() == WordBreakValue::BreakAll
+        {
+            self.place_break_all_text(
+                parent,
+                flow,
+                &text,
+                leading_whitespace,
+                pending_whitespace,
+                truncated,
+            );
+            if trailing_whitespace {
+                flow.mark_pending_whitespace();
+            }
+            return;
+        }
         let words = text
             .split(' ')
             .filter(|word| !word.is_empty())
@@ -1277,6 +1296,89 @@ impl<'a> LayoutBuilder<'a> {
         }
         if trailing_whitespace {
             flow.mark_pending_whitespace();
+        }
+    }
+
+    fn place_break_all_text(
+        &mut self,
+        parent: NativeNodeId,
+        flow: &mut FlowCursor,
+        text: &str,
+        leading_whitespace: bool,
+        pending_whitespace: bool,
+        truncated: bool,
+    ) {
+        let words = text
+            .split(' ')
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+        for (word_index, word) in words.iter().enumerate() {
+            let separator = if word_index == 0 {
+                leading_whitespace || pending_whitespace
+            } else {
+                true
+            };
+            let is_last_word = word_index + 1 == words.len();
+            self.place_break_all_word(parent, flow, word, separator, truncated && is_last_word);
+        }
+    }
+
+    fn place_break_all_word(
+        &mut self,
+        parent: NativeNodeId,
+        flow: &mut FlowCursor,
+        word: &str,
+        separator: bool,
+        truncated: bool,
+    ) {
+        let characters = word.chars().collect::<Vec<_>>();
+        let mut offset = 0;
+        while offset < characters.len() {
+            let include_separator = offset == 0 && separator && flow.line_has_content;
+            let separator_width = if include_separator {
+                flow.text_width(" ")
+            } else {
+                0
+            };
+            let remaining_width = flow
+                .available_width
+                .saturating_sub(flow.x.saturating_sub(flow.start_x));
+            let first_advance = flow.character_advance(characters[offset]);
+            if include_separator && separator_width.saturating_add(first_advance) > remaining_width
+            {
+                self.flush_line(flow);
+                continue;
+            }
+
+            let mut width = separator_width;
+            let mut count = 0;
+            for &character in &characters[offset..] {
+                let advance = flow.character_advance(character);
+                if width.saturating_add(advance) > remaining_width {
+                    break;
+                }
+                width = width.saturating_add(advance);
+                count += 1;
+            }
+            if count == 0 {
+                if flow.line_has_content {
+                    self.flush_line(flow);
+                    continue;
+                }
+                count = 1;
+            }
+
+            let mut fragment = String::new();
+            if include_separator {
+                fragment.push(' ');
+            }
+            fragment.extend(characters[offset..offset + count].iter().copied());
+            let fragment_is_last = offset + count == characters.len();
+            self.place_text_fragment(parent, flow, &fragment, truncated && fragment_is_last);
+            offset += count;
+            if !fragment_is_last {
+                self.flush_line(flow);
+            }
         }
     }
 

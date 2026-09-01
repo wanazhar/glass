@@ -144,6 +144,8 @@ presentation with unchanged advances and clipped one-pixel bold dilation,
 bounded inherited `font-style:normal|italic` fixed-cell raster presentation
 with unchanged advances and clipped row-dependent italic shear,
 bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
+bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
+direct text,
 deterministic display list, bounded logical RGBA software surface, and bounded PNG capture
 through the native backend directly. Rust callers can also inspect bounded
 revisioned diagnostics for unsupported CSS; screenshot-containing evidence, JPEG/PDF,

@@ -159,6 +159,8 @@ presentation with unchanged advances and clipped one-pixel bold dilation,
 bounded inherited `font-style:normal|italic` fixed-cell raster presentation
 with unchanged advances and clipped row-dependent italic shear,
 bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
+bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
+direct text,
 and
 Rust-only
 display-list/software-surface artifacts;

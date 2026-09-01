@@ -86,6 +86,8 @@ source-behavior reference.
   bounded inherited `font-style:normal|italic` fixed-cell raster presentation
   with unchanged advances and clipped row-dependent italic shear,
   bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
+  bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
+  direct text,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
@@ -294,6 +296,8 @@ projection, and point hit-testing,
   bounded inherited `font-style:normal|italic` fixed-cell raster presentation
   with unchanged advances and clipped row-dependent italic shear,
   bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
+  bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
+  direct text,
   native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible

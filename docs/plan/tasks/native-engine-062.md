@@ -1,7 +1,7 @@
 ---
 id: native-engine-062
 scope: glass-browser/native-engine/text-overflow
-status: active
+status: complete
 depends-on: [native-engine-061]
 ---
 
@@ -103,5 +103,37 @@ behavior in this slice.
 
 ## Completion evidence
 
-This design checkpoint is active. Implementation and validation evidence will
-be added here before the task is marked complete.
+Implementation is committed locally as `e4c5bb1` (`feat(native-engine): add
+bounded text overflow`). The native CSS parser accepts local `clip` and
+`ellipsis`, the eligible clipped single-line path emits a fixed-cell ASCII
+`...` marker, and semantic source text remains complete.
+
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  --locked`: 77 passed, 0 failed;
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine
+  --lib --locked`: 853 passed, 1 ignored, 0 failed; the isolated port-launch
+  child check also passed 1/1;
+- focused parser tests passed 2/2, and the focused ellipsis integration test
+  passed 1/1;
+- `cargo clippy -p glass-browser --all-targets --all-features --locked --
+  -D warnings`: passed in 8m03s;
+- `cargo clippy -p glass-browser --no-default-features --all-targets --locked
+  -- -D warnings`: passed in 4m38s;
+- `cargo build -p glass-dev --locked`: passed in 12m40s, confirming the
+  feature-gated implementation links through the existing two-crate workspace;
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`:
+  passed in 5m16s;
+- version sync, feature parity, release-documentation/current-claim,
+  documentation-depth, TUI shortcut, reliability, public-readonly-adapter,
+  and Web IR validators passed; the release-documentation validator found 0
+  current-claim failures;
+- documentation coverage passed for 476 Markdown files, 345 full-product MCP
+  tools, 100 browser-only tools, 17 examples, and 22 public modules;
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+
+The full workspace test wrapper was not rerun because this is a feature-gated
+`glass-browser` native-engine slice; the browser library, feature integration
+suite, both lint configurations, and `glass-dev` linkage were exercised
+directly. No dependency or third crate was added. Remote CI remains pending
+until this branch is pushed. Exact regenerable Cargo outputs are reclaimed
+after the documentation closeout gates and recorded on issue #40.

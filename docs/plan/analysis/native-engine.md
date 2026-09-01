@@ -233,16 +233,17 @@ design is `14d7fc4`, the implementation is `479f3a3`, and the documentation
 closeout is `433d6fd`; local validation evidence is recorded in the task file
 and remote CI remains pending until this branch is pushed.
 
-The active dependency-ordered `native-engine-062` design adds local
+The completed dependency-ordered `native-engine-062` slice adds local
 `text-overflow: clip|ellipsis` to the bounded single-line fixed-cell path.
 `clip` retains the existing full visual run under a horizontal overflow clip;
 eligible `ellipsis` blocks replace an overflowing suffix with a
 spacing-aware fixed-cell ASCII `...` marker while preserving the full semantic
-source text. The design is restricted to one direct text child in a rendered
-`nowrap` block with finite horizontal clipping; multi-line truncation, nested
-inline formatting, Unicode ellipsis behavior, and browser conformance remain
-outside the boundary. The contract is recorded in
-`docs/plan/tasks/native-engine-062.md`; implementation has not started.
+source text. The implementation is restricted to one direct text child in a
+rendered `nowrap` block with finite horizontal clipping; multi-line
+truncation, nested inline formatting, Unicode ellipsis behavior, and browser
+conformance remain outside the boundary. The design is `7e488aa`, the
+implementation is `e4c5bb1`, and local validation evidence is recorded in the
+task file; remote CI remains pending until this branch is pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -730,8 +731,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-062.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-061.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-062.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-061.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-060.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-059.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-058.md` is the preceding completed checkpoint;

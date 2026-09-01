@@ -16,6 +16,7 @@ bounded-inherited-text-transform/bounded-first-line-text-indent/
 bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
+bounded-text-overflow design,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -696,6 +697,16 @@ browser conformance remain outside the boundary. Its design is `14d7fc4`, its
 implementation is `479f3a3`, and its documentation closeout is `433d6fd`;
 the 061 task file records the local validation evidence, and remote CI remains
 pending until this branch is pushed.
+
+The active 062 design adds local `text-overflow: clip|ellipsis` to the bounded
+single-line fixed-cell path. `clip` retains the existing full visual run under
+the horizontal overflow clip; eligible `ellipsis` blocks replace an
+overflowing suffix with a spacing-aware fixed-cell ASCII `...` marker while
+retaining the full semantic source text. The design is restricted to one
+direct text child in a rendered `nowrap` block with a finite horizontal clip;
+multi-line truncation, nested inline formatting, Unicode ellipsis behavior,
+and browser conformance remain outside the boundary. The contract is recorded
+in `docs/plan/tasks/native-engine-062.md`; implementation has not started.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

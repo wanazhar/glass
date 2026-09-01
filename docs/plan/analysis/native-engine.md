@@ -198,6 +198,15 @@ boundary. Its implementation is committed locally as `cb191a3`; the task file
 records the local validation evidence, and remote CI remains pending until this
 branch is pushed.
 
+The active dependency-ordered `native-engine-059` design adds inherited
+`font-weight: normal|bold|400|700` to the fixed-cell text presentation path.
+`normal`/`400` retain the current glyph replay and `bold`/`700` apply a
+deterministic one-pixel horizontal glyph dilation without changing advances,
+layout, semantics, hit testing, overflow, or text-fragment coordinates.
+Real font selection, metrics, shaping, variable weights, and browser text
+rendering parity remain outside the boundary. The design contract is recorded
+in `docs/plan/tasks/native-engine-059.md`; implementation has not started.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -652,12 +661,14 @@ visual stacking.
 | bounded first-line text indent | makes common block first-line indentation observable without a second formatting context | no negative/hanging indentation, keyword/percentage/font-relative units, bidi/logical writing modes, or browser CSS parity | keep one non-negative fixed-pixel value in computed style, clamp it to leave one fixed cell, and switch the existing flow cursor to full width after the first line |
 | bounded inherited word spacing | makes common fixed-pixel separator spacing observable across the existing text-flow and paint owners | no negative spacing, `letter-spacing`, relative/percentage units, Unicode whitespace or word-boundary policy, browser tab stops, font metrics, bidi, or browser parity | inherit one bounded non-negative pixel value, add it only after rendered ASCII spaces, and carry the measured advance through wrapping, fragments, alignment, display, raster, hit testing, and overflow |
 | bounded inherited letter spacing | makes a bounded per-character fixed-cell advance observable across the existing text-flow and paint owners | no negative/relative/percentage values, `normal`, pair-boundary or cross-fragment semantics, Unicode shaping/metrics, grapheme clusters, bidi, or browser parity | inherit one bounded non-negative pixel value, add it after every rendered character in each emitted fragment, compose it with word spacing, and carry the measured advance through wrapping, fragments, alignment, display, raster, hit testing, and overflow |
+| bounded inherited font weight | makes normal and bold fixed-cell text presentation observable without changing geometry | real font selection/loading/metrics, numeric interpolation, variable fonts, synthetic-bold policy, Unicode shaping, anti-aliasing, and browser text-rendering parity | inherit one normalizable two-state value, keep fixed-cell advances unchanged, carry it on immutable text commands, and dilate bold glyph pixels through the existing clipped software replay |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-058.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-059.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-057.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-056.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-055.md` is the preceding completed checkpoint;

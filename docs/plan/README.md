@@ -403,7 +403,7 @@ and browser text-rendering parity remain outside the boundary. Implementation
 and local validation evidence are recorded in the task file and issue #40;
 remote CI remains pending until this branch is pushed.
 
-The active follow-on [native-engine-061](tasks/native-engine-061.md) design
+The completed follow-on [native-engine-061](tasks/native-engine-061.md) slice
 adds inherited `word-break: normal|break-all` to the bounded collapsed
 fixed-cell flow path. `normal` retains word-aware wrapping; `break-all` allows
 deterministic character-boundary splitting for every collapsed word while
@@ -411,7 +411,9 @@ preserving the existing separator, spacing, fragment, overflow, and semantic
 owners. `pre`, `pre-wrap`, and `nowrap` retain their established behavior.
 Unicode line-breaking, grapheme policy, hyphenation, `overflow-wrap`, bidi,
 writing modes, font metrics, and browser conformance remain outside the
-boundary; implementation has not started.
+boundary. The design is `14d7fc4`, the implementation is `479f3a3`, and the
+documentation closeout is `433d6fd`; local validation evidence is recorded in
+the task file and remote CI remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

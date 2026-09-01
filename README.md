@@ -360,6 +360,7 @@ bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster
 presentation with unchanged advances and clipped one-pixel bold dilation,
 bounded inherited `font-style:normal|italic` fixed-cell raster presentation
 with unchanged advances and clipped row-dependent italic shear,
+bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
 plus bounded revisioned Rust
 diagnostics for unsupported CSS without raw stylesheet echo. A
 `native-engine` feature build exposes the explicit local

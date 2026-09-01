@@ -1,7 +1,7 @@
 ---
 id: native-engine-070
 scope: glass-browser/native-engine/flex-wrap
-status: in-progress
+status: complete
 depends-on: [native-engine-069]
 ---
 
@@ -121,16 +121,45 @@ the existing horizontal-scroll behavior.
 
 ## Verification
 
-- CSS unit tests cover accepted values, defaulting, rejected values,
+- [x] CSS unit tests cover accepted values, defaulting, rejected values,
   non-inheritance, selector cascade, and inline precedence;
-- integration tests cover `nowrap` equivalence, deterministic line breaks,
+- [x] Integration tests cover `nowrap` equivalence, deterministic line breaks,
   wide-item handling, row and row-reverse line placement, stable order ties,
   hidden-item filtering, per-line gap/justification/alignment, complete
   descendant artifact ranges, vertical and horizontal root overflow, hit
   testing, paint, and normal-flow fallback;
-- the full native integration suite, strict default/native Clippy, formatting,
-  whitespace, and documentation validators pass;
-- implementation, documentation, and issue #40 checkpoints are committed
+- [x] The full native integration suite, strict default/native Clippy,
+  formatting, whitespace, and documentation validators pass;
+- [x] Implementation, documentation, and issue #40 checkpoints are committed
   locally; remote CI is not claimed until this branch is pushed;
-- exact regenerable Cargo outputs are reclaimed after all validation without
-  terminating long-lived Glass processes.
+- [x] Exact regenerable Cargo outputs are reclaimed after all validation
+  without terminating long-lived Glass processes.
+
+## Completion evidence
+
+- Design checkpoint: `8772a6a`.
+- Implementation checkpoint: `5c16185` (`feat(native-engine): add bounded flex wrapping`).
+- Focused wrap integration run:
+  `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine native_flex_wrap --locked -- --nocapture`
+  — 3 passed, 0 failed.
+- Full native integration run:
+  `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine --locked -- --nocapture`
+  — 92 passed, 0 failed.
+- Full native library run:
+  `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --lib --locked`
+  — 867 passed, 1 ignored, 0 failed.
+- Strict native/all-features Clippy passed in 5m14s:
+  `RUST_MIN_STACK=4194304 cargo clippy -p glass-browser --all-targets --all-features --locked -- -D warnings`.
+- Strict no-default-features Clippy passed in 4m36s:
+  `RUST_MIN_STACK=4194304 cargo clippy -p glass-browser --no-default-features --all-targets --locked -- -D warnings`.
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- Documentation validators passed after this closeout: version sync, feature
+  parity, release documentation, documentation depth, TUI shortcuts,
+  reliability matrix, public read-only adapters, and the Web IR corpus.
+  Documentation coverage passed with 484 Markdown files, 345 full-product MCP
+  tools (100 browser-only), 17 examples, and 22 public modules.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps`
+  passed for both workspace crates.
+- Final exact regenerable-output cleanup and disk verification are recorded in
+  the issue #40 checkpoint; remote CI remains unclaimed while the branch is
+  local-only.

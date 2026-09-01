@@ -1,7 +1,7 @@
 ---
 id: native-engine-065
 scope: glass-browser/native-engine/flex-row-gap
-status: active
+status: complete
 depends-on: [native-engine-064]
 ---
 
@@ -89,5 +89,25 @@ space, cross-axis alignment, or nested scrolling.
 
 ## Completion evidence
 
-This design checkpoint is active. Implementation and validation evidence will
-be added here before the task is marked complete.
+- Design checkpoint: `062998c`.
+- Implementation checkpoint: `28735c4` (`feat(native-engine): add flex row gap`).
+- Focused flex-gap integration test: 1 passed, 0 failed.
+- Focused CSS parser/cascade tests: 2 passed, 0 failed.
+- Supported-declaration parser test: 1 passed, 0 failed.
+- Unsupported `gap`/`row-gap`/`column-gap` diagnostic integration test: 1
+  passed, 0 failed.
+- Full `native_engine` integration suite: 81 passed, 0 failed.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Strict `cargo clippy -p glass-browser --features native-engine --all-targets
+  --locked -- -D warnings`: passed.
+- Strict `cargo clippy -p glass-browser --no-default-features --all-targets
+  --locked -- -D warnings`: passed.
+- Locked `glass-dev` build and all-feature rustdoc with `-D warnings`: passed.
+- Documentation coverage: 479 Markdown files, 345 full-product MCP tools (100
+  browser-only), 17 examples, and 22 public modules validated.
+- Release-sync, feature-parity, release-documentation, documentation-depth,
+  TUI, reliability, public-read-only-adapter, and Web IR validators: passed.
+- Remote CI: pending because this branch remains local-only; no remote-green
+  claim is made.
+- Exact regenerable Cargo outputs will be reclaimed after this documentation
+  closeout and final verification.

@@ -151,6 +151,7 @@ fixed-cell inline and inline-block line items within the existing line box,
 bounded block-level `display:flex` single-row placement for eligible direct
 element children with fixed widths and margins, with normal-flow fallback for
 unsupported child shapes,
+one non-negative fixed-pixel `gap` between visible items in eligible flex rows,
 deterministic display list, bounded logical RGBA software surface, and bounded PNG capture
 through the native backend directly. Rust callers can also inspect bounded
 revisioned diagnostics for unsupported CSS; screenshot-containing evidence, JPEG/PDF,

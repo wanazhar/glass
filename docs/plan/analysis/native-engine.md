@@ -257,14 +257,16 @@ outside the boundary. The design is `7721df2`, the implementation is
 `docs/plan/tasks/native-engine-063.md`; remote CI remains pending until this
 branch is pushed.
 
-The active dependency-ordered `native-engine-064` design adds bounded
+The completed dependency-ordered `native-engine-064` slice adds bounded
 `display: flex` single-row placement for eligible direct element children. The
 container keeps the existing block box model; items use explicit or intrinsic
 fixed widths, retain source order and margins, and do not grow, shrink, wrap,
 reverse, or distribute free space. Containers with meaningful direct text,
 `display: contents`, or visible `<br>` children fall back to the existing
 normal flow so content is not dropped. The contract is recorded in
-`docs/plan/tasks/native-engine-064.md`; implementation has not started.
+`docs/plan/tasks/native-engine-064.md`; the design is `a05bdd6`, the
+implementation is `7c38354`, and local validation evidence is recorded there.
+Remote CI remains pending until this branch is pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -771,8 +773,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-064.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-063.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-064.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-063.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-062.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-061.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-060.md` is the preceding completed checkpoint;

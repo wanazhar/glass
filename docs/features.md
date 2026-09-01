@@ -90,6 +90,9 @@ source-behavior reference.
   direct text,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
+  bounded block-level `display:flex` single-row placement for eligible direct
+  element children with fixed widths and margins, with normal-flow fallback
+  for unsupported child shapes,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
@@ -302,6 +305,9 @@ projection, and point hit-testing,
   direct text,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
+  bounded block-level `display:flex` single-row placement for eligible direct
+  element children with fixed widths and margins, with normal-flow fallback
+  for unsupported child shapes,
   native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible

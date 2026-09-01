@@ -365,13 +365,13 @@ containers, clamps it to retain one fixed cell, and leaves inline and
 `display:contents` elements on their containing block's flow. Its local
 implementation and validation evidence are recorded in the task file and
 issue #40; remote CI remains pending until this branch is pushed.
-The active follow-on [native-engine-057](tasks/native-engine-057.md) task
-defines bounded inherited non-negative fixed-pixel `word-spacing` across the
+The completed follow-on [native-engine-057](tasks/native-engine-057.md) task
+adds bounded inherited non-negative fixed-pixel `word-spacing` across the
 existing collapsed and supported preformatted ASCII-space flow. Its measured
-advance will be shared by wrapping, text fragments, alignment, display-list
+advance is shared by wrapping, text fragments, alignment, display-list
 projection, raster replay, hit testing, and root-overflow measurement; the
-implementation and validation evidence will be recorded in the task file and
-issue #40.
+implementation and validation evidence are recorded in the task file and
+issue #40. Remote CI remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

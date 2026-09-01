@@ -1,7 +1,7 @@
 ---
 id: native-engine-057
 scope: glass-browser/native-engine/inherited-word-spacing
-status: active
+status: complete
 depends-on: [native-engine-056]
 ---
 
@@ -95,6 +95,31 @@ introduced.
 
 ## Completion evidence
 
-To be filled after implementation and validation. Remote CI remains pending
-until this local branch is pushed; no push, tag, publication, or release is
-part of this epic checkpoint.
+Implemented locally in `7421bdd` (`feat(native-engine): add bounded word
+spacing`). The implementation carries inherited non-negative fixed-pixel
+spacing through CSS cascade, collapsed and preformatted fixed-cell flow,
+wrapping/chunking, fragments, alignment, display commands, raster replay,
+hit-testing, and root-overflow measurement without changing semantic source
+text.
+
+Local validation completed:
+
+- focused 057 integration test: 1 passed;
+- full native-engine integration suite: 72 passed;
+- full `glass-browser` library suite with `RUST_MIN_STACK=4194304`: 842
+  passed, 1 ignored;
+- exact workspace test wrapper: browser package 843 library tests, 18
+  browser-smoke tests, 72 native-engine tests, protocol/reliability/workspace
+  suites, and PTY smoke passed; glass-dev passed 364/365 on the first run,
+  with its environment-sensitive Rust Analyzer probe passing on an unchanged
+  confirmation rerun (1/1);
+- exact workspace clippy wrapper and package strict clippy variants passed
+  with `-D warnings`;
+- `cargo doc --all-features --locked --no-deps` passed with
+  `RUSTDOCFLAGS=-D warnings`;
+- formatting, diff, live documentation coverage, release-documentation,
+  version, feature-parity, documentation-depth, shortcut, reliability,
+  read-only-adapter, and web-IR validators passed.
+
+Remote CI remains pending until this local branch is pushed; no push, tag,
+publication, or release is part of this epic checkpoint.

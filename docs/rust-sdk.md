@@ -135,6 +135,8 @@ border, and text paint, bounded inherited fixed-cell
 `text-decoration:none|underline` paint,
 bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
 bounded non-negative fixed-pixel first-line `text-indent` for block flow,
+bounded inherited non-negative fixed-pixel `word-spacing` across collapsed and
+supported preformatted ASCII spaces,
 deterministic display list, bounded logical RGBA software surface, and bounded PNG capture
 through the native backend directly. Rust callers can also inspect bounded
 revisioned diagnostics for unsupported CSS; screenshot-containing evidence, JPEG/PDF,

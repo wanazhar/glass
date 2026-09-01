@@ -176,14 +176,16 @@ effective value to retain one fixed cell, and keeps inline/`display:contents`
 text on the containing block's flow. Its implementation and local validation
 evidence are recorded in the task file and issue #40; remote CI remains
 pending until this branch is pushed.
-The active dependency-ordered `native-engine-057` task adds bounded inherited
+The completed dependency-ordered `native-engine-057` task adds bounded inherited
 non-negative fixed-pixel `word-spacing` to the existing fixed-cell text-flow
 owner. Collapsed ASCII separator spaces and literal ASCII spaces in the
 supported preformatted modes receive the extra advance before wrapping,
 fragment projection, alignment, display-list generation, raster replay, hit
 testing, and root-overflow measurement. Negative, relative, percentage,
 keyword, Unicode-whitespace, and browser word-boundary behavior remain
-outside the boundary.
+outside the boundary. Its implementation and local validation evidence are
+recorded in the task file and issue #40; remote CI remains pending until this
+branch is pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

@@ -352,6 +352,8 @@ text paint, bounded inherited fixed-cell `text-decoration:none|underline`
 paint, and bounded inherited ASCII `text-transform:none|uppercase|lowercase`
 layout,
 bounded non-negative fixed-pixel first-line `text-indent` for block flow,
+bounded inherited non-negative fixed-pixel `word-spacing` across collapsed
+and supported preformatted ASCII spaces,
 plus bounded revisioned Rust
 diagnostics for unsupported CSS without raw stylesheet echo. A
 `native-engine` feature build exposes the explicit local

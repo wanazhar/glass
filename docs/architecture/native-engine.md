@@ -633,7 +633,7 @@ indent is clamped to retain one fixed cell; negative, percentage, and
 font-relative forms remain outside the boundary. Implementation and local
 validation evidence are recorded in the 056 task file and issue #40; remote
 CI remains pending until this branch is pushed.
-The active 057 boundary adds bounded inherited non-negative fixed-pixel
+The completed 057 boundary adds bounded inherited non-negative fixed-pixel
 `word-spacing` to the existing fixed-cell text-flow owner. Collapsed ASCII
 separator spaces receive the extra advance in `normal`, `nowrap`, and
 `pre-line`; literal ASCII spaces receive it in `pre` and `pre-wrap`. The
@@ -641,7 +641,8 @@ measured advance is shared by wrapping, preformatted chunking, text fragments,
 alignment, display commands, raster replay, hit testing, and root overflow;
 negative, relative, percentage, keyword, Unicode-whitespace, and browser
 word-boundary behavior remain outside the boundary. Implementation and local
-validation evidence will be recorded in the 057 task file and issue #40.
+validation evidence are recorded in the 057 task file and issue #40; remote
+CI remains pending until this branch is pushed.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

@@ -1,7 +1,7 @@
 ---
 id: native-engine-066
 scope: glass-browser/native-engine/flex-row-justification
-status: active
+status: complete
 depends-on: [native-engine-065]
 ---
 
@@ -102,3 +102,25 @@ reverse or column direction, anonymous items, `align-items`/`align-content`,
   #40 is updated, remote CI status is not claimed until this branch is pushed,
   and exact regenerable Cargo outputs are reclaimed after all validation.
 
+## Completion evidence
+
+- Design checkpoint: `a53b10f`.
+- Implementation checkpoint: `3fe5306` (`feat(native-engine): add flex row justification`).
+- Focused CSS parser/cascade tests: 2 passed, 0 failed.
+- Focused justification integration tests: 2 passed, 0 failed.
+- Unsupported alignment diagnostics integration test: 1 passed, 0 failed.
+- Supported-declaration parser test: 1 passed, 0 failed.
+- Full `native_engine` integration suite: 83 passed, 0 failed.
+- Full `glass-browser` library suite: 859 passed, 0 failed, 1 ignored, using
+  `RUST_MIN_STACK=4194304` after the default test-thread stack overflowed in
+  the environment-sensitive readiness test.
+- Strict feature-enabled Clippy passed in 6m10s; strict no-default-feature
+  Clippy passed in 6m14s.
+- Locked `glass-dev` build passed in 14m13s; all-feature rustdoc with
+  `RUSTDOCFLAGS='-D warnings'` passed in 6m33s.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Documentation validators pass after the current-source capability update.
+- Remote CI: pending because this branch remains local-only; no remote-green
+  claim is made.
+- Exact regenerable Cargo outputs are reclaimed after the final validation
+  command; no long-lived Glass process is terminated.

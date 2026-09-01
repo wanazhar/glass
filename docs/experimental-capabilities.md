@@ -167,6 +167,8 @@ bounded block-level `display:flex` single-row placement for eligible direct
 element children with fixed widths and margins, with normal-flow fallback for
 unsupported child shapes,
 one non-negative fixed-pixel `gap` between visible items in eligible flex rows,
+bounded `justify-content:flex-start|center|flex-end|space-between` free-space
+placement for eligible fixed-width flex rows,
 and
 Rust-only
 display-list/software-surface artifacts;

@@ -17,7 +17,7 @@ bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
-bounded-flex-row-gap slice, with bounded-flex-row-justification design active,
+bounded-flex-row-gap/bounded-flex-row-justification slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -74,8 +74,8 @@ fixed-cell inline and inline-block line items, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
-items, and an active bounded `justify-content` design for deterministic
-fixed-width flex-row free-space placement,
+items, and bounded `justify-content` free-space placement for eligible
+fixed-width flex rows,
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -89,7 +89,9 @@ The 050 boundary adds bounded physical `min-width`/`max-width` and
 `min-height`/`max-height` constraints through the same box-model owner;
 intrinsic and percentage sizing remain outside the boundary. The later 064
 boundary adds only bounded fixed-width single-row `display:flex` placement;
-general flex/grid sizing remains outside the claim.
+the 065 boundary adds a bounded fixed-pixel `gap`; and the 066 boundary
+adds bounded fixed-width row free-space placement. General flex/grid sizing
+remains outside the claim.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -753,13 +755,16 @@ remain outside the claim. The contract is recorded in
 validation evidence are recorded in that task file. Remote CI remains pending
 until this branch is pushed.
 
-The active 066 design adds bounded
+The completed 066 boundary adds bounded
 `justify-content:flex-start|center|flex-end|space-between` to eligible
 fixed-width flex rows. Positive free space is placed before the row or
 distributed across the existing gaps with deterministic integer rounding;
 overflowing rows retain a zero leading offset and the existing root-scroll
-path. The design contract is recorded in
-`docs/plan/tasks/native-engine-066.md`; implementation has not started.
+path. The contract is recorded in
+`docs/plan/tasks/native-engine-066.md`; design is `a53b10f`,
+implementation is `3fe5306`, and the current-source documentation closeout
+is recorded in this checkpoint. Remote CI remains pending because the branch
+is local-only.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -968,6 +973,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited `vertical-align:baseline|top|middle|bottom` parsing and
   cascade, with clamped fixed-cell top/middle/bottom offsets applied to
   complete inline-item box and text artifact ranges during line flush.
+- bounded non-inherited `justify-content:flex-start|center|flex-end|space-between`
+  parsing and cascade, fixed-width flex-row free-space placement, deterministic
+  gap distribution, overflow preservation, and shared layout/paint/scroll/
+  hit-test coordinates.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

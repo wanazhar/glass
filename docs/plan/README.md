@@ -458,13 +458,15 @@ recorded in the task file. The design is `062998c`, the implementation is
 `28735c4`, and local validation evidence is recorded there. Remote CI remains
 pending until this branch is pushed.
 
-The active follow-on [native-engine-066](tasks/native-engine-066.md) design
+The completed follow-on [native-engine-066](tasks/native-engine-066.md) slice
 adds bounded `justify-content:flex-start|center|flex-end|space-between` to
 eligible fixed-width flex rows. Positive free space is placed before the row
 or distributed across its existing gaps with deterministic integer rounding;
 overflow is never moved to a negative coordinate. Flex growth/shrink, wrapping,
 direction, cross-axis alignment, `space-around`, `space-evenly`, and general
-Flexbox remain outside the boundary. Implementation has not started.
+Flexbox remain outside the boundary. The design is `a53b10f`, the implementation
+is `3fe5306`, and local validation evidence is recorded in the task file. Remote
+CI remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

@@ -1,7 +1,7 @@
 ---
 id: native-engine-060
 scope: glass-browser/native-engine/inherited-font-style
-status: active
+status: complete
 depends-on: [native-engine-059]
 ---
 
@@ -100,5 +100,36 @@ remains unchanged.
 
 ## Completion evidence
 
-This design checkpoint is active. Implementation and validation evidence will
-be added here before the task is marked complete.
+Implementation is committed locally as `2992eb8` (`feat(native-engine): add
+bounded font style`). The native CSS parser accepts and inherits `normal` and
+`italic`, immutable text commands carry the resolved italic flag, and the
+software rasterizer applies the bounded row-dependent shear without changing
+fixed-cell advances or geometry.
+
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  --locked -- --nocapture`: 75 passed;
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine
+  --lib --locked -- --nocapture`: 849 passed, 1 ignored;
+- focused parser, raster, diagnostic, and integration tests passed, including
+  invalid-value diagnostics, inheritance/override, command metadata, normal
+  versus italic geometry, clipping, bold+italic composition, and alpha
+  single-paint coverage;
+- `cargo clippy -p glass-browser --all-targets --all-features --locked --
+  -D warnings` and the corresponding `--no-default-features` gate passed;
+- `cargo fmt --all -- --check` and `git diff --check` passed;
+- the synchronized architecture, analysis, plan, and public capability docs
+  record the same bounded rule and its exclusions;
+- documentation gates passed: version sync, feature parity, release
+  documentation/current claims (474 Markdown documents, 0 current-claim
+  failures), documentation depth, TUI shortcuts, reliability matrix,
+  public read-only adapters, Web IR corpus, and documentation coverage (474
+  Markdown documents, 345 full-product MCP tools, 100 browser-only tools, 17
+  examples, 22 public modules);
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`
+  passed, and the debug `glass-dev` binary required by coverage rebuilt
+  successfully;
+- no dependency or third crate was added; remote CI remains pending until this
+  local branch is pushed separately.
+
+Exact regenerable Cargo outputs are reclaimed after the documentation and
+Rustdoc gates.

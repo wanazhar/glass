@@ -127,6 +127,8 @@ supported preformatted ASCII spaces, bounded inherited non-negative fixed-pixel
 fragment, composed with word spacing,
 bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster
 presentation with unchanged advances and clipped one-pixel bold dilation,
+bounded inherited `font-style:normal|italic` fixed-cell raster presentation
+with unchanged advances and clipped row-dependent italic shear,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
 Rust diagnostics for unsupported CSS. It does not yet provide
 general CSS/nested/horizontal/stacking layout, logical writing-mode sides,

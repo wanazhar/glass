@@ -140,6 +140,8 @@ unsupported child shapes,
 one non-negative fixed-pixel `gap` between visible items in eligible flex rows,
 bounded `justify-content:flex-start|center|flex-end|space-between` free-space
 placement for eligible fixed-width flex rows,
+bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
+source-order ties,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
 Rust diagnostics for unsupported CSS. It does not yet provide
 general CSS/nested/horizontal/stacking layout, logical writing-mode sides,

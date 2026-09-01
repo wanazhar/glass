@@ -468,13 +468,14 @@ Flexbox remain outside the boundary. The design is `a53b10f`, the implementation
 is `3fe5306`, and local validation evidence is recorded in the task file. Remote
 CI remains pending until this branch is pushed.
 
-The active follow-on [native-engine-067](tasks/native-engine-067.md) design adds
-bounded non-inherited signed `order` values to eligible fixed-width flex rows.
-Items sort by ascending order with stable source-order ties before the existing
-gap and `justify-content` distribution; semantic DOM/source order remains
-unchanged. The `-1024..=1024` integer bound, visual-only behavior, normal-flow
-fallback, and exclusions are recorded in the task file. Implementation has not
-started.
+The completed follow-on [native-engine-067](tasks/native-engine-067.md) slice
+adds bounded non-inherited signed `order` values to eligible fixed-width flex
+rows. Items sort by ascending order with stable source-order ties before the
+existing gap and `justify-content` distribution; semantic DOM/source order
+remains unchanged. The `-1024..=1024` integer bound, visual-only behavior,
+normal-flow fallback, and exclusions are recorded in the task file. The design
+is `09f3b00`, the implementation is `a713b6e`, and local validation evidence is
+recorded there. Remote CI remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

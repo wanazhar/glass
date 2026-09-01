@@ -17,8 +17,7 @@ bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
-bounded-flex-row-gap/bounded-flex-row-justification slices,
-bounded-flex-item-order design,
+bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -77,6 +76,8 @@ element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
 items, and bounded `justify-content` free-space placement for eligible
 fixed-width flex rows,
+bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
+source-order ties,
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -767,13 +768,14 @@ implementation is `3fe5306`, and the current-source documentation closeout
 is recorded in this checkpoint. Remote CI remains pending because the branch
 is local-only.
 
-The active 067 design proposes bounded non-inherited signed `order` values in
+The completed 067 boundary adds bounded non-inherited signed `order` values in
 the inclusive range `-1024..=1024` for eligible fixed-width flex rows. Visual
-items would sort by `(order, source_index)` before the existing gap and
-`justify-content` distribution, while semantic DOM/source order would remain
+items sort by `(order, source_index)` before the existing gap and
+`justify-content` distribution, while semantic DOM/source order remains
 unchanged. The contract is recorded in
-`docs/plan/tasks/native-engine-067.md`; implementation has not started, so
-this paragraph is a design boundary rather than a current capability claim.
+`docs/plan/tasks/native-engine-067.md`; design is `09f3b00`, implementation is
+`a713b6e`, and current-source documentation closeout is recorded in this
+checkpoint. Remote CI remains pending because the branch is local-only.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text
@@ -986,6 +988,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   parsing and cascade, fixed-width flex-row free-space placement, deterministic
   gap distribution, overflow preservation, and shared layout/paint/scroll/
   hit-test coordinates.
+- bounded non-inherited signed flex-item `order` in `-1024..=1024` parsing and
+  cascade, stable visual `(order, source_index)` sorting, source-order semantic
+  preservation, and shared layout/paint/scroll/hit-test coordinates.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

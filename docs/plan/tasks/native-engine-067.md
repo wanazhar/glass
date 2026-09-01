@@ -1,7 +1,7 @@
 ---
 id: native-engine-067
 scope: glass-browser/native-engine/flex-item-order
-status: active
+status: complete
 depends-on: [native-engine-066]
 ---
 
@@ -88,17 +88,34 @@ Expected implementation ownership:
 
 ## Acceptance evidence
 
-- [ ] Design record is committed before implementation.
-- [ ] CSS unit tests cover accepted bounds, rejected syntax, cascade, inline
+- [x] Design record is committed before implementation.
+- [x] CSS unit tests cover accepted bounds, rejected syntax, cascade, inline
   precedence, defaulting, and non-inheritance.
-- [ ] Integration tests prove negative/positive sorting, stable ties, hidden
+- [x] Integration tests prove negative/positive sorting, stable ties, hidden
   filtering, gap/justification composition, overflow preservation, and
   normal-flow fallback.
-- [ ] Layout boxes, descendant geometry, display-list order, hit testing, and
+- [x] Layout boxes, descendant geometry, display-list order, hit testing, and
   root overflow consume the same sorted coordinates.
-- [ ] Native integration suite, strict lint, formatting, whitespace, and
+- [x] Native integration suite, strict lint, formatting, whitespace, and
   documentation validators pass.
-- [ ] Implementation and documentation checkpoints are committed locally and
+- [x] Implementation and documentation checkpoints are committed locally and
   issue #40 is updated; remote CI is not claimed until this branch is pushed.
-- [ ] Exact regenerable Cargo outputs are reclaimed after all validation,
+- [x] Exact regenerable Cargo outputs are reclaimed after all validation,
   without terminating long-lived Glass processes.
+
+## Completion evidence
+
+- Design checkpoint: `09f3b00` (`docs(native-engine): define flex item order slice`).
+- Implementation checkpoint: `a713b6e` (`feat(native-engine): add bounded flex item order`).
+- CSS parser/cascade tests: 2 passed, 0 failed.
+- Focused flex-item-order integration tests: 2 passed, 0 failed.
+- Full native integration suite: 85 passed, 0 failed.
+- Feature-enabled strict Clippy passed in 10m33s; no-default strict Clippy
+  passed in 5m01s.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Runtime-backed documentation coverage, release-truth, documentation-depth,
+  version, feature-parity, and the other documentation validators passed with
+  zero current-claim failures after the current-source update.
+- Exact regenerable Cargo outputs were reclaimed after validation; no
+  long-lived Glass process was terminated.
+- Remote CI remains pending because this branch is local-only.

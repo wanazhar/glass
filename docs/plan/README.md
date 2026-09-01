@@ -518,14 +518,15 @@ the task file. `stretch`, around-line distribution,
 cross-axis gaps, column directions, `wrap-reverse`, and general Flexbox remain
 outside the contract. Remote CI remains pending until this branch is pushed.
 
-The next dependency-ordered [native-engine-072](tasks/native-engine-072.md)
-slice is the active design for bounded non-inherited
-`align-content:space-around` on wrapped flex rows. It will place each formed
-line at a deterministic integer slot center using only positive explicit
-content-box remainder, preserving 071 line membership, item alignment, shared
-artifact coordinates, and semantic/source order. `space-evenly`, `stretch`,
+The completed dependency-ordered [native-engine-072](tasks/native-engine-072.md)
+slice adds bounded non-inherited `align-content:space-around` to wrapped flex
+rows. It places each formed line at a deterministic integer slot center using
+only positive explicit content-box remainder, preserving 071 line membership,
+item alignment, shared artifact coordinates, and semantic/source order. The
+design is `c8e5170`, the implementation is `a1c8b56`, and local validation and
+cleanup evidence are recorded in the task file. `space-evenly`, `stretch`,
 cross-axis gaps, column directions, `wrap-reverse`, and general Flexbox remain
-outside the contract until separately designed.
+outside the contract. Remote CI remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

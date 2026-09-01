@@ -1,7 +1,7 @@
 ---
 id: native-engine-072
 scope: glass-browser/native-engine/flex-align-content-space-around
-status: active
+status: complete
 depends-on: [native-engine-071]
 ---
 
@@ -41,7 +41,7 @@ direct-element gate and uses `flex-wrap:wrap`:
 - when explicit resolved content-box height has positive remainder after the
   formed line heights, `space-around` places each line at the center of one
   equal integer slot. The line-start offset for line `i` is
-  `floor(remainder * (2*i + 1) / (2*line_count))`, with checked bounded
+  `floor(remainder * (2*i + 1) / (2*line_count))`, with saturating bounded
   arithmetic; this gives half a slot before the first line, one slot between
   neighboring lines, and half a slot after the last line under deterministic
   integer rounding;
@@ -76,7 +76,7 @@ package topology.
 
 The formula uses integer document pixels and floors each line's ideal offset.
 That makes the result reproducible and bounded, but it cannot represent
-fractional half-slots or subpixel Flexbox distribution. Checked `u64`
+fractional half-slots or subpixel Flexbox distribution. Saturating `u64`
 intermediate arithmetic prevents a large free-space/line-index product from
 wrapping before it is converted back to the engine's bounded `u32` geometry.
 The default and all previously supported values retain their existing paths;
@@ -97,20 +97,39 @@ only the new parser value selects the additional offset formula.
 
 ## Verification
 
-- [ ] CSS unit tests cover accepted `space-around`, defaulting, rejected
+- [x] CSS unit tests cover accepted `space-around`, defaulting, rejected
   values, non-inheritance, selector cascade, and inline precedence;
-- [ ] integration tests cover the checked offset formula for one and multiple
+- [x] integration tests cover the saturating offset formula for one and multiple
   lines, explicit/auto/smaller heights, `nowrap` equivalence, descendants,
   root overflow, hit testing, paint, and semantic/source-order fallback;
-- [ ] the full native integration suite, strict default/native Clippy,
+- [x] the full native integration suite, strict default/native Clippy,
   formatting, whitespace, and documentation validators pass;
-- [ ] implementation, documentation, and issue #40 checkpoints are committed
+- [x] implementation, documentation, and issue #40 checkpoints are committed
   locally; remote CI is not claimed until this branch is pushed;
-- [ ] exact regenerable Cargo outputs are reclaimed after all validation
+- [x] exact regenerable Cargo outputs are reclaimed after all validation
   without terminating long-lived Glass processes.
 
 ## Completion evidence
 
-Implementation and validation evidence will be recorded here after the
-documented slice is implemented. The branch is local-only until a separately
-authorized push, so remote CI and release status must not be inferred.
+The design checkpoint is `c8e5170` and the implementation checkpoint is
+`a1c8b56`. Local verification completed on 2026-09-01 UTC:
+
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine native_flex_align_content --locked -- --nocapture`: 2 passed (6m00s compile; 0.20s test runtime);
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --test native_engine --locked -- --nocapture`: 94 passed (2.20s warm run);
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine --lib --locked`: 869 passed, 1 ignored (6m58s compile; 4.50s test runtime);
+- `RUST_MIN_STACK=4194304 cargo clippy -p glass-browser --all-targets --all-features --locked -- -D warnings`: passed in 4m57s;
+- `RUST_MIN_STACK=4194304 cargo clippy -p glass-browser --no-default-features --all-targets --locked -- -D warnings`: passed in 4m52s;
+- `cargo fmt --all -- --check` and `git diff --check`: passed;
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`: passed in 6m57s;
+- `cargo build -p glass-dev --locked`: passed in 11m24s;
+- repository validators passed: version sync, feature parity, release documentation
+  (486 Markdown documents; 83 current documents; 0 current-claim failures), TUI
+  shortcuts, documentation depth, documentation coverage (486 Markdown files,
+  345 full-product MCP tools, 17 examples, 22 public modules), reliability
+  matrix, public read-only adapters, and the web-IR corpus (8 fixtures, 8
+  scenarios, 11 categories).
+
+The exact regenerable Glass Cargo target was reclaimed after validation from
+4.1 GB to 4.0 KB. The separate ForgeBuild target remains at 4.0 KB. No
+long-lived Glass process was terminated. The branch remains local-only until a
+separately authorized push, so remote CI and release status are not inferred.

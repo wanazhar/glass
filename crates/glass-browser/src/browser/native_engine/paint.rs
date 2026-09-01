@@ -76,6 +76,7 @@ pub enum NativeDisplayCommand {
         color: NativeColor,
         underline: bool,
         word_spacing: u32,
+        letter_spacing: u32,
         clip: Option<NativeRect>,
     },
     EndOpacityGroup {
@@ -184,6 +185,7 @@ impl NativeDisplayList {
                             color: style.color().unwrap_or(NativeColor::BLACK),
                             underline: style.text_decoration() == TextDecorationValue::Underline,
                             word_spacing: style.word_spacing(),
+                            letter_spacing: style.letter_spacing(),
                             clip,
                         },
                     )?;

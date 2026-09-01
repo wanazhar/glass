@@ -18,6 +18,7 @@ struct TextPaint {
     color: super::css::NativeColor,
     underline: bool,
     word_spacing: u32,
+    letter_spacing: u32,
 }
 
 /// Immutable logical RGBA output from the native display-list seed.
@@ -153,6 +154,7 @@ impl NativeSurface {
                     color,
                     underline,
                     word_spacing,
+                    letter_spacing,
                     clip,
                     ..
                 } => {
@@ -173,6 +175,7 @@ impl NativeSurface {
                             color: *color,
                             underline: *underline,
                             word_spacing: *word_spacing,
+                            letter_spacing: *letter_spacing,
                         },
                         clip,
                         scroll_offset,
@@ -514,12 +517,14 @@ impl NativeSurface {
                     }
                 }
             }
-            run_width =
-                run_width.saturating_add(GLYPH_ADVANCE.saturating_add(if character == ' ' {
+            run_width = run_width
+                .saturating_add(GLYPH_ADVANCE)
+                .saturating_add(paint.letter_spacing)
+                .saturating_add(if character == ' ' {
                     paint.word_spacing
                 } else {
                     0
-                }));
+                });
         }
         if paint.underline {
             let underline_y = origin_y.saturating_add(i64::from(GLYPH_HEIGHT));
@@ -972,6 +977,7 @@ mod tests {
                     color: NativeColor::RED,
                     underline: false,
                     word_spacing: 0,
+                    letter_spacing: 0,
                     clip: None,
                 },
             ],
@@ -1006,6 +1012,7 @@ mod tests {
                     },
                     underline: true,
                     word_spacing: 0,
+                    letter_spacing: 0,
                     clip: Some(NativeRect {
                         x: 2,
                         y: 7,
@@ -1339,6 +1346,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     underline: false,
                     word_spacing: 0,
+                    letter_spacing: 0,
                     clip: None,
                 },
             ],

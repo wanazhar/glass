@@ -945,6 +945,103 @@ fn native_word_spacing_shares_width_across_flow_paint_and_overflow() {
 }
 
 #[test]
+fn native_letter_spacing_composes_with_word_spacing_across_consumers() {
+    let document = NativeDocument::parse(
+        "<style>#normal { display:block; width:48px; letter-spacing:2px; word-spacing:4px; } #pre { display:block; width:36px; letter-spacing:2px; word-spacing:4px; white-space:pre-wrap; } #wide { display:block; width:32px; letter-spacing:2px; word-spacing:4px; white-space:nowrap; } #align { display:block; width:48px; letter-spacing:2px; word-spacing:4px; text-align:right; white-space:nowrap; } #parent { display:block; width:80px; letter-spacing:2px; word-spacing:4px; } #override { letter-spacing:4px; }</style><div id='normal'>A B</div><div id='pre'>A  B</div><div id='wide'>A B C D E F G H</div><div id='align'>A B</div><div id='parent'>A <span id='override'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 80,
+        height: 160,
+        device_scale_factor_milli: 1000,
+    };
+    let normal = document.resolve_target("id=normal").unwrap();
+    let pre = document.resolve_target("id=pre").unwrap();
+    let wide = document.resolve_target("id=wide").unwrap();
+    let align = document.resolve_target("id=align").unwrap();
+    let parent = document.resolve_target("id=parent").unwrap();
+    let override_id = document.resolve_target("id=override").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    let runs_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        runs_for(normal),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "A"),
+            (NativePoint { x: 10, y: 0 }, " B")
+        ]
+    );
+    assert_eq!(
+        runs_for(pre),
+        vec![
+            (NativePoint { x: 0, y: 20 }, "A "),
+            (NativePoint { x: 0, y: 40 }, " B")
+        ]
+    );
+
+    let wide_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == wide)
+        .unwrap();
+    assert_eq!(wide_run.origin, NativePoint { x: 0, y: 60 });
+    assert_eq!(wide_run.text, "A B C D E F G H");
+    assert_eq!(layout.content_width, 178);
+    assert_eq!(layout.max_scroll_offset().x, 98);
+
+    let align_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == align)
+        .unwrap();
+    assert_eq!(align_run.origin, NativePoint { x: 14, y: 80 });
+    assert_eq!(align_run.text, "A B");
+
+    let parent_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == parent)
+        .unwrap();
+    let override_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == override_id)
+        .unwrap();
+    assert_eq!(parent_run.origin, NativePoint { x: 0, y: 100 });
+    assert_eq!(parent_run.text, "A");
+    assert_eq!(override_run.origin, NativePoint { x: 24, y: 100 });
+    assert_eq!(override_run.text, "B");
+
+    let list = document.display_list(viewport).unwrap();
+    let spacing_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                letter_spacing,
+                word_spacing,
+                ..
+            } if *command_node == node_id => Some((*letter_spacing, *word_spacing)),
+            _ => None,
+        })
+    };
+    assert_eq!(spacing_for(normal), Some((2, 4)));
+    assert_eq!(spacing_for(wide), Some((2, 4)));
+    assert_eq!(spacing_for(override_id), Some((4, 4)));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(24, 0), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(10, 0), Some([255, 255, 255, 255]));
+}
+
+#[test]
 fn native_functional_alpha_colors_reach_display_list_and_raster() {
     let document = NativeDocument::parse(
         "<div id='background' style='display:block;width:8px;height:8px;background-color:rgba(255, 0, 0, 0.5)'></div><div id='border' style='display:block;width:8px;height:8px;border:1px solid rgba(0, 0, 255, 50%)'></div><div id='text' style='display:block;width:8px;height:8px;color:rgba(0, 128, 0, 0.5)'>A</div>",

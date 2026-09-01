@@ -853,6 +853,7 @@ impl NativeDocument {
         let mut inherited_text_decoration = TextDecorationValue::None;
         let mut inherited_text_transform = TextTransformValue::None;
         let mut inherited_word_spacing = 0;
+        let mut inherited_letter_spacing = 0;
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
@@ -868,6 +869,7 @@ impl NativeDocument {
                     text_decoration: inherited_text_decoration,
                     text_transform: inherited_text_transform,
                     word_spacing: inherited_word_spacing,
+                    letter_spacing: inherited_letter_spacing,
                 },
             );
             inherited_color = style.color().or(inherited_color);
@@ -877,6 +879,7 @@ impl NativeDocument {
             inherited_text_decoration = style.text_decoration();
             inherited_text_transform = style.text_transform();
             inherited_word_spacing = style.word_spacing();
+            inherited_letter_spacing = style.letter_spacing();
             if current_id == id {
                 return style;
             }

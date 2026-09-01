@@ -506,6 +506,16 @@ semantic/source order. The design is `8772a6a`, the implementation is
 `5c16185`, and local validation evidence is recorded in the task file. Remote
 CI remains pending until this branch is pushed.
 
+The next dependency-ordered [native-engine-071](tasks/native-engine-071.md)
+slice is the active design for bounded non-inherited
+`align-content:flex-start|center|flex-end|space-between` on wrapped flex
+rows. It will distribute only positive cross-axis free space in an explicit
+content box after 070 line formation, preserving line membership, per-line
+item alignment, shared artifact coordinates, and the default `flex-start`
+fallback. Implementation has not started; `stretch`, around-line distribution,
+cross-axis gaps, column directions, `wrap-reverse`, and general Flexbox remain
+outside the contract.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -1003,6 +1003,7 @@ impl<'a> LayoutBuilder<'a> {
                 x.saturating_add(left_inset),
                 y.saturating_add(top_inset),
                 content_width,
+                style.gap(),
                 depth + 1,
             )
         } else {
@@ -1083,6 +1084,7 @@ impl<'a> LayoutBuilder<'a> {
         x: u32,
         y: u32,
         available_width: u32,
+        gap: u32,
         depth: usize,
     ) -> FlowSize {
         if !self.can_use_flex_layout(parent) {
@@ -1095,6 +1097,7 @@ impl<'a> LayoutBuilder<'a> {
             .unwrap_or_default();
         let mut cursor_x = x;
         let mut max_bottom = y;
+        let mut placed_item = false;
         for child in children {
             let Some(node) = self.document.node(child) else {
                 continue;
@@ -1113,6 +1116,9 @@ impl<'a> LayoutBuilder<'a> {
                         continue;
                     }
                     let margin = style.margin();
+                    if placed_item {
+                        cursor_x = cursor_x.saturating_add(gap);
+                    }
                     let item_width = self.outer_width(child, style, false, available_width);
                     let item_x = cursor_x.saturating_add(margin.left());
                     let item_y = y.saturating_add(margin.top());
@@ -1126,6 +1132,7 @@ impl<'a> LayoutBuilder<'a> {
                             .saturating_add(size.height)
                             .saturating_add(margin.bottom()),
                     );
+                    placed_item = true;
                 }
             }
         }

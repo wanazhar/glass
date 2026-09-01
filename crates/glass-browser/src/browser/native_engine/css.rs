@@ -185,6 +185,13 @@ pub(crate) enum FontWeightValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum FontStyleValue {
+    #[default]
+    Normal,
+    Italic,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
     pub(crate) white_space: WhiteSpaceValue,
@@ -193,6 +200,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_decoration: TextDecorationValue,
     pub(crate) text_transform: TextTransformValue,
     pub(crate) font_weight: FontWeightValue,
+    pub(crate) font_style: FontStyleValue,
     pub(crate) word_spacing: u32,
     pub(crate) letter_spacing: u32,
 }
@@ -251,6 +259,7 @@ pub(crate) struct NativeComputedStyle {
     text_decoration: TextDecorationValue,
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
+    font_style: FontStyleValue,
     text_indent: u32,
     word_spacing: u32,
     letter_spacing: u32,
@@ -306,6 +315,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn font_weight(self) -> FontWeightValue {
         self.font_weight
+    }
+
+    pub(crate) const fn font_style(self) -> FontStyleValue {
+        self.font_style
     }
 
     pub(crate) const fn text_indent(self) -> u32 {
@@ -468,6 +481,7 @@ impl NativeStylesheet {
         let mut text_decoration = None;
         let mut text_transform = None;
         let mut font_weight = None;
+        let mut font_style = None;
         let mut text_indent = None;
         let mut word_spacing = None;
         let mut letter_spacing = None;
@@ -570,6 +584,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, font_weight)
             {
                 font_weight = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.font_style
+                && wins(rule.selector.specificity, rule.order, false, font_style)
+            {
+                font_style = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -846,6 +870,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.font_style
+                && wins(u16::MAX, usize::MAX, true, font_style)
+            {
+                font_style = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.text_indent
                 && wins(u16::MAX, usize::MAX, true, text_indent)
             {
@@ -1039,6 +1073,7 @@ impl NativeStylesheet {
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
+            font_style: font_style.map_or(inherited.font_style, |value| value.value),
             text_indent: text_indent.map_or(0, |value| value.value),
             word_spacing: word_spacing.map_or(inherited.word_spacing, |value| value.value),
             letter_spacing: letter_spacing.map_or(inherited.letter_spacing, |value| value.value),
@@ -1147,6 +1182,7 @@ struct NativeDeclarations {
     text_decoration: Option<TextDecorationValue>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
+    font_style: Option<FontStyleValue>,
     text_indent: Option<u32>,
     word_spacing: Option<u32>,
     letter_spacing: Option<u32>,
@@ -1314,6 +1350,7 @@ fn parse_source(
             || declarations.text_decoration.is_some()
             || declarations.text_transform.is_some()
             || declarations.font_weight.is_some()
+            || declarations.font_style.is_some()
             || declarations.text_indent.is_some()
             || declarations.word_spacing.is_some()
             || declarations.letter_spacing.is_some()
@@ -1441,6 +1478,7 @@ fn parse_declarations_with_diagnostics(
             "text-decoration" => parse_text_decoration(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
+            "font-style" => parse_font_style(value).is_some(),
             "text-indent" => parse_dimension(value).is_some(),
             "word-spacing" => parse_dimension(value).is_some(),
             "letter-spacing" => parse_dimension(value).is_some(),
@@ -1502,6 +1540,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-decoration"
             | "text-transform"
             | "font-weight"
+            | "font-style"
             | "text-indent"
             | "width"
             | "height"
@@ -1590,6 +1629,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "font-weight" => {
                 declarations.font_weight = parse_font_weight(value);
+            }
+            "font-style" => {
+                declarations.font_style = parse_font_style(value);
             }
             "text-indent" => {
                 declarations.text_indent = parse_dimension(value);
@@ -2016,6 +2058,14 @@ fn parse_font_weight(value: &str) -> Option<FontWeightValue> {
     }
 }
 
+fn parse_font_style(value: &str) -> Option<FontStyleValue> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(FontStyleValue::Normal),
+        "italic" => Some(FontStyleValue::Italic),
+        _ => None,
+    }
+}
+
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(VisibilityValue::Hidden),
@@ -2310,7 +2360,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; font-weight: bold; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; font-weight: bold; font-style: italic; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2325,6 +2375,7 @@ mod tests {
         assert_eq!(declarations.word_spacing, Some(12));
         assert_eq!(declarations.letter_spacing, Some(12));
         assert_eq!(declarations.font_weight, Some(FontWeightValue::Bold));
+        assert_eq!(declarations.font_style, Some(FontStyleValue::Italic));
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
         assert_eq!(declarations.min_width, Some(12));
@@ -2814,6 +2865,15 @@ mod tests {
     }
 
     #[test]
+    fn font_style_parser_accepts_only_normal_and_italic() {
+        assert_eq!(parse_font_style("normal"), Some(FontStyleValue::Normal));
+        assert_eq!(parse_font_style("ITALIC"), Some(FontStyleValue::Italic));
+        assert_eq!(parse_font_style("oblique"), None);
+        assert_eq!(parse_font_style("12deg"), None);
+        assert_eq!(parse_font_style("initial"), None);
+    }
+
+    #[test]
     fn opacity_is_cascaded_locally_without_inheriting_to_children() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { opacity: 25%; } #target { opacity: 75%; }".into(),
@@ -2992,6 +3052,46 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).font_weight(),
             FontWeightValue::Bold
+        );
+    }
+
+    #[test]
+    fn font_style_is_inherited_and_child_normal_clears_it() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { font-style: italic; } #target { font-style: normal; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='target'>Target</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).font_style(),
+            FontStyleValue::Normal
+        );
+
+        let document = NativeDocument::parse(
+            "<style>#parent { font-style: italic; } #clear { font-style: normal; } #invalid { font-style: oblique; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let clear = document.resolve_target("id=clear").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).font_style(),
+            FontStyleValue::Italic
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).font_style(),
+            FontStyleValue::Italic
+        );
+        assert_eq!(
+            document.computed_style_for_layout(clear).font_style(),
+            FontStyleValue::Normal
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).font_style(),
+            FontStyleValue::Italic
         );
     }
 

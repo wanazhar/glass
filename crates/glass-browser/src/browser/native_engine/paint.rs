@@ -1,6 +1,7 @@
 use super::config::MAX_NATIVE_NODES;
 use super::css::{
-    FontWeightValue, NativeBorderRadius, NativeBorderStyle, NativeColor, TextDecorationValue,
+    FontStyleValue, FontWeightValue, NativeBorderRadius, NativeBorderStyle, NativeColor,
+    TextDecorationValue,
 };
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
@@ -78,6 +79,7 @@ pub enum NativeDisplayCommand {
         color: NativeColor,
         underline: bool,
         bold: bool,
+        italic: bool,
         word_spacing: u32,
         letter_spacing: u32,
         clip: Option<NativeRect>,
@@ -188,6 +190,7 @@ impl NativeDisplayList {
                             color: style.color().unwrap_or(NativeColor::BLACK),
                             underline: style.text_decoration() == TextDecorationValue::Underline,
                             bold: style.font_weight() == FontWeightValue::Bold,
+                            italic: style.font_style() == FontStyleValue::Italic,
                             word_spacing: style.word_spacing(),
                             letter_spacing: style.letter_spacing(),
                             clip,

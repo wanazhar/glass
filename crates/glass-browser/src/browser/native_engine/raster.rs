@@ -12,12 +12,14 @@ pub const MAX_NATIVE_OPACITY_LAYER_PIXELS: usize = MAX_NATIVE_SURFACE_PIXELS * 4
 const GLYPH_WIDTH: u32 = 5;
 const GLYPH_ADVANCE: u32 = 6;
 const GLYPH_HEIGHT: u32 = 7;
+const ITALIC_ROW_SHIFTS: [u32; GLYPH_HEIGHT as usize] = [2, 2, 1, 1, 1, 0, 0];
 
 #[derive(Debug, Clone, Copy)]
 struct TextPaint {
     color: super::css::NativeColor,
     underline: bool,
     bold: bool,
+    italic: bool,
     word_spacing: u32,
     letter_spacing: u32,
 }
@@ -155,6 +157,7 @@ impl NativeSurface {
                     color,
                     underline,
                     bold,
+                    italic,
                     word_spacing,
                     letter_spacing,
                     clip,
@@ -177,6 +180,7 @@ impl NativeSurface {
                             color: *color,
                             underline: *underline,
                             bold: *bold,
+                            italic: *italic,
                             word_spacing: *word_spacing,
                             letter_spacing: *letter_spacing,
                         },
@@ -502,6 +506,11 @@ impl NativeSurface {
                     } else {
                         GLYPH_WIDTH.saturating_sub(1)
                     };
+                    let italic_shift = if paint.italic {
+                        ITALIC_ROW_SHIFTS.get(row).copied().unwrap_or_default()
+                    } else {
+                        0
+                    };
                     for column in 0..=last_column {
                         let source_pixel =
                             column < GLYPH_WIDTH && bits & (1 << (GLYPH_WIDTH - 1 - column)) != 0;
@@ -510,7 +519,9 @@ impl NativeSurface {
                         if !source_pixel && !bold_neighbor {
                             continue;
                         }
-                        let x = glyph_origin_x.saturating_add(i64::from(column));
+                        let x = glyph_origin_x
+                            .saturating_add(i64::from(column))
+                            .saturating_add(i64::from(italic_shift));
                         if x >= 0
                             && x < i64::from(self.width)
                             && clip.is_none_or(|clip| {
@@ -989,6 +1000,7 @@ mod tests {
                     color: NativeColor::RED,
                     underline: false,
                     bold: false,
+                    italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
                     clip: None,
@@ -1020,6 +1032,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     underline: false,
                     bold: false,
+                    italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
                     clip: None,
@@ -1032,6 +1045,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     underline: false,
                     bold: true,
+                    italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
                     clip: None,
@@ -1046,6 +1060,72 @@ mod tests {
         assert_eq!(surface.pixel(1, 11), Some([0, 0, 0, 255]));
         assert_eq!(surface.pixel(5, 11), Some([0, 0, 0, 255]));
         assert_eq!(surface.pixel(6, 11), Some([255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn surface_italic_glyph_shear_preserves_fixed_cell_advance() {
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: NativeDocument::empty().root(),
+                    origin: NativePoint { x: 0, y: 0 },
+                    text: "A".into(),
+                    truncated: false,
+                    color: NativeColor::BLACK,
+                    underline: false,
+                    bold: false,
+                    italic: false,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    clip: None,
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: NativeDocument::empty().root(),
+                    origin: NativePoint { x: 0, y: 10 },
+                    text: "A".into(),
+                    truncated: false,
+                    color: NativeColor::BLACK,
+                    underline: false,
+                    bold: false,
+                    italic: true,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    clip: None,
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: NativeDocument::empty().root(),
+                    origin: NativePoint { x: 0, y: 20 },
+                    text: "A".into(),
+                    truncated: false,
+                    color: NativeColor {
+                        red: 0,
+                        green: 0,
+                        blue: 0,
+                        alpha: 128,
+                    },
+                    underline: false,
+                    bold: true,
+                    italic: true,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    clip: None,
+                },
+            ],
+            10,
+            28,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(1, 0), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(1, 10), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(3, 10), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(0, 16), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(3, 20), Some([127, 127, 127, 255]));
+        assert_eq!(surface.pixel(6, 20), Some([127, 127, 127, 255]));
+        assert_eq!(surface.pixel(7, 20), Some([255, 255, 255, 255]));
     }
 
     #[test]
@@ -1068,6 +1148,7 @@ mod tests {
                     },
                     underline: true,
                     bold: false,
+                    italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
                     clip: Some(NativeRect {
@@ -1403,6 +1484,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     underline: false,
                     bold: false,
+                    italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
                     clip: None,

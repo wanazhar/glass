@@ -486,6 +486,15 @@ semantic/source order. The design is `a0488ef`, the implementation is
 `6b55b9c`, and local validation evidence is recorded in the task file. Remote
 CI remains pending until this branch is pushed.
 
+The active follow-on [native-engine-069](tasks/native-engine-069.md) design adds
+bounded non-inherited `flex-direction:row|row-reverse` to eligible fixed-width
+single-row flex rows. `row` remains equivalent to 068; `row-reverse` lays the
+order-sorted visual sequence from the physical right edge while preserving
+physical margins, gap, justification, cross-axis alignment, shared subtree
+artifacts, non-negative coordinates, root horizontal scrolling, and
+semantic/source order. Implementation has not started; public capability
+claims remain at 068 and remote CI remains pending until this branch is pushed.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

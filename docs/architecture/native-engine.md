@@ -19,6 +19,7 @@ bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
 bounded-flex-cross-axis-alignment,
+bounded-flex-direction design,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -792,6 +793,16 @@ and exclusions are recorded in
 `docs/plan/tasks/native-engine-068.md`; design is `a0488ef`, implementation is
 `6b55b9c`, and current-source documentation closeout is recorded in this
 checkpoint. Remote CI remains pending because the branch is local-only.
+
+The active 069 design adds bounded non-inherited `flex-direction:row|row-reverse`
+to the same eligible single-row flex rows. `row` remains coordinate-equivalent
+to 068; `row-reverse` walks the order-sorted visual sequence from the physical
+right edge while preserving margins, gap, justification, cross-axis alignment,
+shared subtree artifacts, non-negative coordinates, root horizontal scrolling,
+and semantic/source order. The contract and exclusions are recorded in
+`docs/plan/tasks/native-engine-069.md`; implementation has not started, so
+public capability claims remain at 068. Remote CI remains pending because the
+branch is local-only.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

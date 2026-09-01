@@ -13,8 +13,8 @@ bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
-bounded-inherited-word-spacing/bounded-inherited-letter-spacing slices,
-bounded-inherited-font-weight design,
+bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
+bounded-inherited-font-weight slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -658,15 +658,16 @@ Its implementation is committed locally as `cb191a3`; the task file records
 the local validation evidence, and remote CI remains pending until this branch
 is pushed.
 
-The active 059 design adds inherited `font-weight: normal|bold|400|700` to the
-fixed-cell text path. `normal`/`400` retain the existing glyph replay and
-`bold`/`700` apply a one-pixel horizontal dilation of set glyph pixels through
-the existing clipped software rasterizer. Fixed-cell advances, wrapping,
-origins, overflow, hit testing, semantics, and capture coordinates do not
-change. Font selection/loading, metrics, numeric interpolation, variable
-fonts, shaping, anti-aliasing, and browser text-rendering parity remain
-unsupported. The contract is recorded in
-`docs/plan/tasks/native-engine-059.md`; implementation is not yet started.
+The completed 059 boundary adds inherited `font-weight: normal|bold|400|700`
+to the fixed-cell text path. `normal`/`400` retain the existing glyph replay
+and `bold`/`700` apply a one-pixel horizontal dilation of set glyph pixels
+through the existing clipped software rasterizer. Fixed-cell advances,
+wrapping, origins, overflow, hit testing, semantics, and capture coordinates
+do not change. Font selection/loading, metrics, numeric interpolation,
+variable fonts, shaping, anti-aliasing, and browser text-rendering parity
+remain unsupported. Its implementation is committed locally as `21fcff5`; the
+059 task file records the local validation evidence, and remote CI remains
+pending until this branch is pushed.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

@@ -1,7 +1,7 @@
 ---
 id: native-engine-059
 scope: glass-browser/native-engine/inherited-font-weight
-status: active
+status: complete
 depends-on: [native-engine-058]
 ---
 
@@ -92,5 +92,24 @@ remains unchanged.
 
 ## Completion evidence
 
-This design checkpoint is active. Implementation and validation evidence will
-be added here before the task is marked complete.
+Implementation is committed locally as `21fcff5` (`feat(native-engine): add
+bounded font weight`). The native CSS parser accepts and inherits the two
+normalizable weight pairs, immutable text commands carry the resolved bold
+flag, and the software rasterizer applies clipped one-pixel horizontal
+dilation without changing fixed-cell advances or geometry.
+
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  --locked -- --nocapture`: 74 passed;
+- `RUST_MIN_STACK=4194304 cargo test -p glass-browser --features native-engine
+  --lib --locked -- --nocapture`: 846 passed, 1 ignored;
+- focused parser, raster, and integration tests passed, including invalid
+  diagnostic, inheritance/override, geometry invariance, command metadata,
+  clipping, and normal-versus-bold pixel checks;
+- `cargo fmt --all -- --check` and `git diff --check` passed before the
+  implementation checkpoint;
+- no dependency or third crate was added; remote CI remains pending until this
+  local branch is pushed separately.
+
+The synchronized architecture, analysis, plan, and public capability
+documents record the same bounded rule and its exclusions. Exact regenerable
+Cargo outputs are reclaimed after the remaining lint/documentation gates.

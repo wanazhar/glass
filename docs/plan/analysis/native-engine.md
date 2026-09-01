@@ -198,14 +198,15 @@ boundary. Its implementation is committed locally as `cb191a3`; the task file
 records the local validation evidence, and remote CI remains pending until this
 branch is pushed.
 
-The active dependency-ordered `native-engine-059` design adds inherited
+The completed dependency-ordered `native-engine-059` slice adds inherited
 `font-weight: normal|bold|400|700` to the fixed-cell text presentation path.
 `normal`/`400` retain the current glyph replay and `bold`/`700` apply a
 deterministic one-pixel horizontal glyph dilation without changing advances,
 layout, semantics, hit testing, overflow, or text-fragment coordinates.
 Real font selection, metrics, shaping, variable weights, and browser text
-rendering parity remain outside the boundary. The design contract is recorded
-in `docs/plan/tasks/native-engine-059.md`; implementation has not started.
+rendering parity remain outside the boundary. The implementation is committed
+locally as `21fcff5`; the task file records the local validation evidence, and
+remote CI remains pending until this branch is pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -374,6 +375,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-056` | bounded non-negative fixed-pixel `text-indent` applied to the first line of block containers, with one-cell clamping and shared flow consumers | `native-engine-055` | negative/hanging indentation, each-line/hanging keywords, percentages and font-relative units, bidi/logical writing modes, inline-formatting parity, and browser CSS conformance |
 | `native-engine-057` | bounded inherited non-negative fixed-pixel `word-spacing` applied to rendered ASCII spaces across collapsed and supported preformatted flow | `native-engine-056` | negative spacing, `letter-spacing`, relative/percentage units, Unicode whitespace and word-boundary policy, browser tab stops, font metrics, bidi, and browser CSS parity |
 | `native-engine-058` | bounded inherited non-negative fixed-pixel `letter-spacing` applied after every rendered fixed-cell character in each emitted fragment, composed with word spacing | `native-engine-057` | negative/relative/percentage values, `normal`, pair-boundary and cross-fragment semantics, Unicode shaping/metrics, grapheme clusters, bidi, and browser CSS parity |
+| `native-engine-059` | bounded inherited `font-weight: normal|bold|400|700` with deterministic fixed-cell normal/bold raster replay | `native-engine-058` | real font selection/loading/metrics, numeric interpolation, variable fonts, synthetic-bold policy, Unicode shaping, anti-aliasing, and browser text-rendering parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -591,6 +593,12 @@ Phase 2 integration chains added by these slices are:
     ASCII spaces and reaches wrapping, fragments, alignment, display-list
     metadata, raster glyph positions, hit testing, and root overflow without
     changing source text or joining fragment/line/flow boundaries.
+62. Native inherited `font-weight: normal|bold|400|700` changes only the
+    fixed-cell glyph replay: normal/400 retain existing pixels and bold/700
+    dilate set pixels one column to the right. The advance, layout, semantic
+    text, clipping, hit testing, overflow, and capture coordinates remain
+    unchanged, keeping this presentation rule inside the existing display-list
+    and software-raster owners without a font dependency.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -667,8 +675,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-058.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-059.md` is the active design checkpoint;
+`docs/plan/tasks/native-engine-059.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-058.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-057.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-056.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-055.md` is the preceding completed checkpoint;

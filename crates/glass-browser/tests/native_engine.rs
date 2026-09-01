@@ -3035,6 +3035,32 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
             layout.hit_test(1, (expected.0 + 1).into()).unwrap(),
             Some(nested)
         );
+
+        let one_line = NativeDocument::parse(
+            &format!(
+                "<div id='row' style='display:flex;width:20px;height:60px;flex-wrap:wrap;align-content:{align_content}'><div id='item' style='width:8px;height:6px'>I</div></div>"
+            ),
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let one_line_item = one_line.resolve_target("id=item").unwrap();
+        let one_line_layout = one_line
+            .layout(Viewport {
+                width: 24,
+                height: 64,
+                device_scale_factor_milli: 1000,
+            })
+            .unwrap();
+        let one_line_y = match align_content {
+            "center" => 27,
+            "flex-end" => 54,
+            "flex-start" | "space-between" => 0,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            one_line_layout.box_for(one_line_item).unwrap().y,
+            one_line_y
+        );
     }
 }
 

@@ -183,6 +183,13 @@ pub(crate) enum AlignItemsValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum FlexDirectionValue {
+    #[default]
+    Row,
+    RowReverse,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeOrderValue(i32);
 
 impl NativeOrderValue {
@@ -312,6 +319,7 @@ pub(crate) struct NativeComputedStyle {
     text_align: TextAlignValue,
     justify_content: JustifyContentValue,
     align_items: AlignItemsValue,
+    flex_direction: FlexDirectionValue,
     flex_item_order: NativeOrderValue,
     text_decoration: TextDecorationValue,
     text_transform: TextTransformValue,
@@ -372,6 +380,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn align_items(self) -> AlignItemsValue {
         self.align_items
+    }
+
+    pub(crate) const fn flex_direction(self) -> FlexDirectionValue {
+        self.flex_direction
     }
 
     pub(crate) const fn flex_item_order(self) -> NativeOrderValue {
@@ -569,6 +581,7 @@ impl NativeStylesheet {
         let mut text_align = None;
         let mut justify_content = None;
         let mut align_items = None;
+        let mut flex_direction = None;
         let mut flex_item_order = None;
         let mut text_decoration = None;
         let mut text_transform = None;
@@ -800,6 +813,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, align_items)
             {
                 align_items = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.flex_direction
+                && wins(rule.selector.specificity, rule.order, false, flex_direction)
+            {
+                flex_direction = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1156,6 +1179,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.flex_direction
+                && wins(u16::MAX, usize::MAX, true, flex_direction)
+            {
+                flex_direction = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.width
                 && wins(u16::MAX, usize::MAX, true, width)
             {
@@ -1319,6 +1352,7 @@ impl NativeStylesheet {
             justify_content: justify_content
                 .map_or(JustifyContentValue::FlexStart, |value| value.value),
             align_items: align_items.map_or(AlignItemsValue::FlexStart, |value| value.value),
+            flex_direction: flex_direction.map_or(FlexDirectionValue::Row, |value| value.value),
             flex_item_order: flex_item_order
                 .map_or(NativeOrderValue::default(), |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
@@ -1436,6 +1470,7 @@ struct NativeDeclarations {
     text_align: Option<TextAlignValue>,
     justify_content: Option<JustifyContentValue>,
     align_items: Option<AlignItemsValue>,
+    flex_direction: Option<FlexDirectionValue>,
     order: Option<NativeOrderValue>,
     text_decoration: Option<TextDecorationValue>,
     text_transform: Option<TextTransformValue>,
@@ -1611,6 +1646,7 @@ fn parse_source(
             || declarations.text_align.is_some()
             || declarations.justify_content.is_some()
             || declarations.align_items.is_some()
+            || declarations.flex_direction.is_some()
             || declarations.order.is_some()
             || declarations.text_decoration.is_some()
             || declarations.text_transform.is_some()
@@ -1747,6 +1783,7 @@ fn parse_declarations_with_diagnostics(
             "text-align" => parse_text_align(value).is_some(),
             "justify-content" => parse_justify_content(value).is_some(),
             "align-items" => parse_align_items(value).is_some(),
+            "flex-direction" => parse_flex_direction(value).is_some(),
             "order" => parse_flex_item_order(value).is_some(),
             "text-decoration" => parse_text_decoration(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
@@ -1816,6 +1853,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-align"
             | "justify-content"
             | "align-items"
+            | "flex-direction"
             | "order"
             | "text-decoration"
             | "text-transform"
@@ -1910,6 +1948,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "align-items" => {
                 declarations.align_items = parse_align_items(value);
+            }
+            "flex-direction" => {
+                declarations.flex_direction = parse_flex_direction(value);
             }
             "order" => {
                 declarations.order = parse_flex_item_order(value);
@@ -2358,6 +2399,14 @@ fn parse_align_items(value: &str) -> Option<AlignItemsValue> {
     }
 }
 
+fn parse_flex_direction(value: &str) -> Option<FlexDirectionValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "row" => Some(FlexDirectionValue::Row),
+        "row-reverse" => Some(FlexDirectionValue::RowReverse),
+        _ => None,
+    }
+}
+
 fn parse_flex_item_order(value: &str) -> Option<NativeOrderValue> {
     let value = value.trim();
     let digits = match value.as_bytes().first() {
@@ -2726,7 +2775,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; flex-direction: row-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2738,6 +2787,10 @@ mod tests {
             Some(JustifyContentValue::SpaceBetween)
         );
         assert_eq!(declarations.align_items, Some(AlignItemsValue::FlexEnd));
+        assert_eq!(
+            declarations.flex_direction,
+            Some(FlexDirectionValue::RowReverse)
+        );
         assert_eq!(declarations.order, Some(NativeOrderValue(-12)));
         assert_eq!(
             declarations.text_decoration,
@@ -3258,6 +3311,19 @@ mod tests {
         assert_eq!(parse_align_items("normal"), None);
         assert_eq!(parse_align_items("start"), None);
         assert_eq!(parse_align_items("end"), None);
+    }
+
+    #[test]
+    fn flex_direction_parser_accepts_only_bounded_row_values() {
+        assert_eq!(parse_flex_direction("row"), Some(FlexDirectionValue::Row));
+        assert_eq!(
+            parse_flex_direction("ROW-REVERSE"),
+            Some(FlexDirectionValue::RowReverse)
+        );
+        assert_eq!(parse_flex_direction("column"), None);
+        assert_eq!(parse_flex_direction("column-reverse"), None);
+        assert_eq!(parse_flex_direction("start"), None);
+        assert_eq!(parse_flex_direction("row reverse"), None);
     }
 
     #[test]
@@ -3881,6 +3947,38 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).align_items(),
             AlignItemsValue::FlexStart
+        );
+    }
+
+    #[test]
+    fn flex_direction_is_cascaded_without_inheriting_to_children() {
+        let document = NativeDocument::parse(
+            "<style>#parent { flex-direction: row-reverse; } #explicit { flex-direction: row; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='flex-direction: row'>Explicit</span><span id='invalid' style='flex-direction: column'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).flex_direction(),
+            FlexDirectionValue::RowReverse
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).flex_direction(),
+            FlexDirectionValue::Row
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .flex_direction(),
+            FlexDirectionValue::Row
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).flex_direction(),
+            FlexDirectionValue::Row
         );
     }
 

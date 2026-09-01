@@ -415,15 +415,17 @@ boundary. The design is `14d7fc4`, the implementation is `479f3a3`, and the
 documentation closeout is `433d6fd`; local validation evidence is recorded in
 the task file and remote CI remains pending until this branch is pushed.
 
-The active follow-on [native-engine-062](tasks/native-engine-062.md) design
+The completed follow-on [native-engine-062](tasks/native-engine-062.md) slice
 adds local `text-overflow: clip|ellipsis` to the bounded single-line
 fixed-cell path. `clip` retains the existing full visual run under a horizontal
 overflow clip; eligible `ellipsis` blocks replace an overflowing suffix with a
 spacing-aware fixed-cell ASCII `...` marker while preserving the full semantic
-source text. The design is restricted to one direct text child in a rendered
-`nowrap` block with finite horizontal clipping; multi-line truncation, nested
-inline formatting, Unicode ellipsis behavior, and browser conformance remain
-outside the boundary; implementation has not started.
+source text. The implementation is restricted to one direct text child in a
+rendered `nowrap` block with finite horizontal clipping; multi-line
+truncation, nested inline formatting, Unicode ellipsis behavior, and browser
+conformance remain outside the boundary. The design is `7e488aa`, the
+implementation is `e4c5bb1`, and local validation evidence is recorded in the
+task file; remote CI remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

@@ -13,6 +13,13 @@ const GLYPH_WIDTH: u32 = 5;
 const GLYPH_ADVANCE: u32 = 6;
 const GLYPH_HEIGHT: u32 = 7;
 
+#[derive(Debug, Clone, Copy)]
+struct TextPaint {
+    color: super::css::NativeColor,
+    underline: bool,
+    word_spacing: u32,
+}
+
 /// Immutable logical RGBA output from the native display-list seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeSurface {
@@ -145,6 +152,7 @@ impl NativeSurface {
                     text,
                     color,
                     underline,
+                    word_spacing,
                     clip,
                     ..
                 } => {
@@ -161,8 +169,11 @@ impl NativeSurface {
                     Self::current_surface_mut(&mut surfaces)?.draw_text(
                         *origin,
                         text,
-                        *color,
-                        *underline,
+                        TextPaint {
+                            color: *color,
+                            underline: *underline,
+                            word_spacing: *word_spacing,
+                        },
                         clip,
                         scroll_offset,
                     );
@@ -464,17 +475,15 @@ impl NativeSurface {
         &mut self,
         origin: super::layout::NativePoint,
         text: &str,
-        color: super::css::NativeColor,
-        underline: bool,
+        paint: TextPaint,
         clip: Option<NativeRect>,
         scroll_offset: NativePoint,
     ) {
         let origin_x = i64::from(origin.x) - i64::from(scroll_offset.x);
         let origin_y = i64::from(origin.y) - i64::from(scroll_offset.y);
-        for (index, character) in text.chars().enumerate() {
-            let offset = i64::try_from(index)
-                .unwrap_or(i64::MAX)
-                .saturating_mul(i64::from(GLYPH_ADVANCE));
+        let mut run_width = 0u32;
+        for character in text.chars() {
+            let offset = i64::from(run_width);
             let glyph_origin_x = origin_x.saturating_add(offset);
             if let Some(rows) = glyph_rows(character) {
                 for (row, bits) in rows.into_iter().enumerate() {
@@ -499,19 +508,22 @@ impl NativeSurface {
                             self.blend_pixel(
                                 u32::try_from(x).unwrap_or(u32::MAX),
                                 u32::try_from(y).unwrap_or(u32::MAX),
-                                color,
+                                paint.color,
                             );
                         }
                     }
                 }
             }
+            run_width =
+                run_width.saturating_add(GLYPH_ADVANCE.saturating_add(if character == ' ' {
+                    paint.word_spacing
+                } else {
+                    0
+                }));
         }
-        if underline {
+        if paint.underline {
             let underline_y = origin_y.saturating_add(i64::from(GLYPH_HEIGHT));
             if underline_y >= 0 && underline_y < i64::from(self.height) {
-                let run_width = u32::try_from(text.chars().count())
-                    .unwrap_or(u32::MAX)
-                    .saturating_mul(GLYPH_ADVANCE);
                 for offset in 0..run_width {
                     let x = origin_x.saturating_add(i64::from(offset));
                     if x >= 0
@@ -526,7 +538,7 @@ impl NativeSurface {
                         self.blend_pixel(
                             u32::try_from(x).unwrap_or(u32::MAX),
                             u32::try_from(underline_y).unwrap_or(u32::MAX),
-                            color,
+                            paint.color,
                         );
                     }
                 }
@@ -959,6 +971,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::RED,
                     underline: false,
+                    word_spacing: 0,
                     clip: None,
                 },
             ],
@@ -992,6 +1005,7 @@ mod tests {
                         alpha: 128,
                     },
                     underline: true,
+                    word_spacing: 0,
                     clip: Some(NativeRect {
                         x: 2,
                         y: 7,
@@ -1324,6 +1338,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     underline: false,
+                    word_spacing: 0,
                     clip: None,
                 },
             ],

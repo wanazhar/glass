@@ -221,7 +221,7 @@ implementation is committed locally as `2992eb8`; the task file records the
 local validation evidence, and remote CI remains pending until this branch is
 pushed.
 
-The active dependency-ordered `native-engine-061` design adds inherited
+The completed dependency-ordered `native-engine-061` slice adds inherited
 `word-break: normal|break-all` to the bounded collapsed fixed-cell flow path.
 `normal` retains word-aware wrapping; `break-all` permits deterministic
 character-boundary splitting for every collapsed word while preserving the
@@ -229,8 +229,9 @@ existing separator, spacing, fragment, overflow, and semantic owners. `pre`,
 `pre-wrap`, and `nowrap` retain their established behavior. Unicode
 line-breaking, grapheme policy, hyphenation, `overflow-wrap`, bidi, writing
 modes, font metrics, and browser conformance remain outside the boundary. The
-design contract is recorded in `docs/plan/tasks/native-engine-061.md`;
-implementation has not started.
+design is `14d7fc4`, the implementation is `479f3a3`, and the documentation
+closeout is `433d6fd`; local validation evidence is recorded in the task file
+and remote CI remains pending until this branch is pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -716,8 +717,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-061.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-060.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-061.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-060.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-059.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-058.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-057.md` is the preceding completed checkpoint;

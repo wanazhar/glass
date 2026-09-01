@@ -14,8 +14,8 @@ bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
 bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
-bounded-inherited-font-weight/bounded-inherited-font-style slices,
-bounded-inherited-word-break design,
+bounded-inherited-font-weight/bounded-inherited-font-style/
+bounded-inherited-word-break slices,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -685,15 +685,17 @@ text-rendering parity remain unsupported. Its implementation is committed
 locally as `2992eb8`; the 060 task file records the local validation evidence,
 and remote CI remains pending until this branch is pushed.
 
-The active 061 design adds inherited `word-break: normal|break-all` to the
-bounded collapsed fixed-cell flow path. `normal` retains word-aware wrapping;
-`break-all` permits deterministic character-boundary splitting for every
-collapsed word while preserving the existing separator, spacing, fragment,
-overflow, and semantic owners. `pre`, `pre-wrap`, and `nowrap` retain their
-existing whitespace behavior. Unicode line-breaking, grapheme policy,
-hyphenation, `overflow-wrap`, bidi, writing modes, font metrics, and browser
-conformance remain outside the boundary. The contract is recorded in
-`docs/plan/tasks/native-engine-061.md`; implementation has not started.
+The completed 061 boundary adds inherited `word-break: normal|break-all` to
+the bounded collapsed fixed-cell flow path. `normal` retains word-aware
+wrapping; `break-all` permits deterministic character-boundary splitting for
+every collapsed word while preserving the existing separator, spacing,
+fragment, overflow, and semantic owners. `pre`, `pre-wrap`, and `nowrap`
+retain their existing whitespace behavior. Unicode line-breaking, grapheme
+policy, hyphenation, `overflow-wrap`, bidi, writing modes, font metrics, and
+browser conformance remain outside the boundary. Its design is `14d7fc4`, its
+implementation is `479f3a3`, and its documentation closeout is `433d6fd`;
+the 061 task file records the local validation evidence, and remote CI remains
+pending until this branch is pushed.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

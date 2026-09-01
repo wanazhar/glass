@@ -95,6 +95,8 @@ source-behavior reference.
   for unsupported child shapes,
   one non-negative fixed-pixel `gap` between visible items in eligible flex
   rows,
+  bounded `justify-content:flex-start|center|flex-end|space-between`
+  free-space placement for eligible fixed-width flex rows,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
@@ -312,6 +314,8 @@ projection, and point hit-testing,
   for unsupported child shapes,
   one non-negative fixed-pixel `gap` between visible items in eligible flex
   rows,
+  bounded `justify-content:flex-start|center|flex-end|space-between`
+  free-space placement for eligible fixed-width flex rows,
   native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible

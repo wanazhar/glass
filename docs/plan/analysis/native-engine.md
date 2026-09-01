@@ -278,15 +278,17 @@ and general Flexbox remain outside the boundary. The contract is recorded in
 implementation is `28735c4`, and local validation evidence is recorded there.
 Remote CI remains pending until this branch is pushed.
 
-The active dependency-ordered `native-engine-066` design adds bounded
+The completed dependency-ordered `native-engine-066` slice adds bounded
 `justify-content:flex-start|center|flex-end|space-between` to eligible
 fixed-width flex rows. Positive free space is placed before the row or
 distributed across existing gaps with deterministic integer rounding; an
 overflowing row keeps a zero leading offset and remains root-scrollable.
 Flex growth/shrink, wrapping, direction, cross-axis alignment, `space-around`,
 `space-evenly`, and general Flexbox remain outside the boundary. The contract
-is recorded in `docs/plan/tasks/native-engine-066.md`; implementation has not
-started.
+is recorded in `docs/plan/tasks/native-engine-066.md`; the design is
+`a53b10f`, the implementation is `3fe5306`, and local validation evidence is
+recorded in the task file. Remote CI remains pending until this branch is
+pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -341,8 +343,8 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, inherited physical text alignment, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, and active bounded flex-row `justify-content` design | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
-| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, and active bounded flex-row free-space placement design | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, inherited physical text alignment, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, and bounded non-inherited flex-row `justify-content` | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, and bounded fixed-width flex-row free-space placement | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity/font presentation, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, nested opacity layers, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
@@ -796,8 +798,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-066.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-065.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-066.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-065.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-064.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-063.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-062.md` is the preceding completed checkpoint;

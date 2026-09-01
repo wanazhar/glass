@@ -257,6 +257,15 @@ outside the boundary. The design is `7721df2`, the implementation is
 `docs/plan/tasks/native-engine-063.md`; remote CI remains pending until this
 branch is pushed.
 
+The active dependency-ordered `native-engine-064` design adds bounded
+`display: flex` single-row placement for eligible direct element children. The
+container keeps the existing block box model; items use explicit or intrinsic
+fixed widths, retain source order and margins, and do not grow, shrink, wrap,
+reverse, or distribute free space. Containers with meaningful direct text,
+`display: contents`, or visible `<br>` children fall back to the existing
+normal flow so content is not dropped. The contract is recorded in
+`docs/plan/tasks/native-engine-064.md`; implementation has not started.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -429,6 +438,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-061` | bounded inherited `word-break:normal|break-all` with deterministic fixed-cell word-aware or character-boundary wrapping in collapsed flow | `native-engine-060` | `keep-all`, `break-word`, `overflow-wrap`, Unicode/CJK line breaking, grapheme policy, hyphenation, bidi, writing modes, font metrics, and browser CSS parity |
 | `native-engine-062` | bounded local `text-overflow:clip|ellipsis` for eligible single-line clipped direct text with fixed-cell ASCII marker presentation | `native-engine-061` | multi-line ellipsis/line-clamp, nested inline formatting, multiple text nodes, visible overflow, vertical/RTL behavior, Unicode ellipsis, grapheme policy, font metrics, shaping, and browser CSS parity |
 | `native-engine-063` | bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for fixed-cell inline/inline-block line items | `native-engine-062` | font baselines/metrics, `text-top`/`text-bottom`, sub/super, lengths, percentages, bidi, writing modes, ruby, table-cell/replaced-element alignment, and browser CSS parity |
+| `native-engine-064` | bounded block-level `display:flex` single-row placement for eligible direct element children with fixed item widths and existing box-model consumers | `native-engine-063` | flex grow/shrink/basis/order, columns/reverse directions, wrapping, gaps, justify/align distribution, anonymous text items, `display:contents` flattening, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -672,6 +682,14 @@ Phase 2 integration chains added by these slices are:
     breaks, wrapping, semantics, paint order, clipping, hit-test ownership,
     scrolling, and capture remain unchanged; direct block-flow text stays on
     the baseline path.
+66. Native `display: flex` creates one bounded forward row only when direct
+    children are eligible element items (whitespace-only text is ignored).
+    Items retain source order, fixed explicit/intrinsic widths, and margins;
+    nested layout, paint, clips, semantics, hit testing, overflow, scrolling,
+    and capture consume their actual item origins. Meaningful direct text,
+    `display: contents`, and visible `<br>` preserve the existing normal-flow
+    fallback; no flex grow/shrink, wrapping, gaps, reverse/column direction,
+    or cross-axis distribution is implied.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -747,11 +765,13 @@ visual stacking.
 | bounded inherited word break | makes explicit character-boundary wrapping available for collapsed fixed-cell words | `keep-all`, `break-word`, `overflow-wrap`, Unicode/CJK line breaking, grapheme policy, hyphenation, bidi, writing modes, font metrics, and browser parity | inherit one normal/`break-all` value, retain the current separator policy, and reuse fixed-cell capacity to split every collapsed word without changing semantic source text |
 | bounded text overflow | makes clipped single-line fixture text visibly indicate an omitted suffix without changing semantic source text | multi-line truncation, line-clamp, nested inline formatting, multiple text nodes, visible overflow, RTL/vertical writing, Unicode ellipsis, grapheme policy, font metrics, shaping, and browser parity | resolve local `clip`/`ellipsis`, require a rendered nowrap block with one direct text child and horizontal clipping, then reuse fixed-cell prefix measurement and immutable text commands for a bounded ASCII marker |
 | bounded vertical alignment | makes fixed-cell inline items visibly align within the existing line box without adding a typographic baseline engine | font ascent/descent, real baselines, `text-top`/`text-bottom`, sub/super, lengths, percentages, bidi, writing modes, ruby, table-cell/replaced-element alignment, and browser parity | inherit four bounded keywords, keep the current line-box height and horizontal flow, and shift each recorded inline item's box/text artifact range by a clamped top/middle/bottom offset during line flush |
+| bounded flex row | makes common horizontal card/control groups observable without replacing the existing box-model, paint, or hit-test owners | flex grow/shrink/basis/order, columns/reverse directions, wrapping, gaps, justify/align distribution, anonymous text items, `display:contents` flattening, and browser Flexbox parity | accept block-level `display:flex`, lay eligible direct element children once in source order at fixed explicit/intrinsic widths, preserve normal-flow fallback for unsupported child shapes, and reuse document overflow/projection consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-064.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-063.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-062.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-061.md` is the preceding completed checkpoint;

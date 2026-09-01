@@ -1098,6 +1098,59 @@ fn native_font_weight_inherits_and_changes_only_fixed_cell_raster() {
 }
 
 #[test]
+fn native_font_style_inherits_and_shears_only_fixed_cell_raster() {
+    let document = NativeDocument::parse(
+        "<style>#normal { display:block; width:16px; font-style:normal; } #italic { display:block; width:16px; font-style:italic; } #parent { display:block; width:48px; font-style:italic; } #clear { font-style:normal; } #invalid { font-style:oblique; }</style><div id='normal'>A</div><div id='italic'>A</div><div id='parent'>A<span id='clear'>B</span><span id='invalid'>C</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 80,
+        device_scale_factor_milli: 1000,
+    };
+    let normal = document.resolve_target("id=normal").unwrap();
+    let italic = document.resolve_target("id=italic").unwrap();
+    let parent = document.resolve_target("id=parent").unwrap();
+    let clear = document.resolve_target("id=clear").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    let normal_box = layout.box_for(normal).unwrap();
+    let italic_box = layout.box_for(italic).unwrap();
+    assert_eq!(normal_box.width, italic_box.width);
+    assert_eq!(normal_box.height, italic_box.height);
+    assert_eq!(normal_box.x, italic_box.x);
+    assert_eq!(layout.max_scroll_offset().x, 0);
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(normal));
+    assert_eq!(layout.hit_test(1, 21).unwrap(), Some(italic));
+
+    let list = document.display_list(viewport).unwrap();
+    let style_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                bold,
+                italic,
+                ..
+            } if *command_node == node_id => Some((*bold, *italic)),
+            _ => None,
+        })
+    };
+    assert_eq!(style_for(normal), Some((false, false)));
+    assert_eq!(style_for(italic), Some((false, true)));
+    assert_eq!(style_for(parent), Some((false, true)));
+    assert_eq!(style_for(clear), Some((false, false)));
+    assert_eq!(style_for(invalid), Some((false, true)));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 0), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(1, 20), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(3, 20), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(0, 26), Some([0, 0, 0, 255]));
+}
+
+#[test]
 fn native_functional_alpha_colors_reach_display_list_and_raster() {
     let document = NativeDocument::parse(
         "<div id='background' style='display:block;width:8px;height:8px;background-color:rgba(255, 0, 0, 0.5)'></div><div id='border' style='display:block;width:8px;height:8px;border:1px solid rgba(0, 0, 255, 50%)'></div><div id='text' style='display:block;width:8px;height:8px;color:rgba(0, 128, 0, 0.5)'>A</div>",
@@ -4704,7 +4757,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -4752,6 +4805,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "font-weight"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "font-style"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

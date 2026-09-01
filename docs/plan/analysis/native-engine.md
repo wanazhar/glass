@@ -208,6 +208,18 @@ rendering parity remain outside the boundary. The implementation is committed
 locally as `21fcff5`; the task file records the local validation evidence, and
 remote CI remains pending until this branch is pushed.
 
+The active dependency-ordered `native-engine-060` design adds inherited
+`font-style: normal|italic` to the fixed-cell text presentation path.
+`normal` retains the current glyph replay and `italic` applies a deterministic
+bounded row-dependent horizontal shear through the existing clipped software
+rasterizer. Bold dilation, underline, spacing, opacity, scrolling, and capture
+compose through the same immutable text command; advances, layout, semantic
+text, hit testing, overflow, and text-fragment coordinates remain unchanged.
+Oblique forms, angles, font selection/loading/metrics, shaping, anti-aliasing,
+and browser text-rendering parity remain outside the boundary. The design
+contract is recorded in `docs/plan/tasks/native-engine-060.md`; implementation
+has not started.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -376,6 +388,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-057` | bounded inherited non-negative fixed-pixel `word-spacing` applied to rendered ASCII spaces across collapsed and supported preformatted flow | `native-engine-056` | negative spacing, `letter-spacing`, relative/percentage units, Unicode whitespace and word-boundary policy, browser tab stops, font metrics, bidi, and browser CSS parity |
 | `native-engine-058` | bounded inherited non-negative fixed-pixel `letter-spacing` applied after every rendered fixed-cell character in each emitted fragment, composed with word spacing | `native-engine-057` | negative/relative/percentage values, `normal`, pair-boundary and cross-fragment semantics, Unicode shaping/metrics, grapheme clusters, bidi, and browser CSS parity |
 | `native-engine-059` | bounded inherited `font-weight: normal|bold|400|700` with deterministic fixed-cell normal/bold raster replay | `native-engine-058` | real font selection/loading/metrics, numeric interpolation, variable fonts, synthetic-bold policy, Unicode shaping, anti-aliasing, and browser text-rendering parity |
+| `native-engine-060` | bounded inherited `font-style:normal|italic` with deterministic fixed-cell normal/italic raster replay composed with bold | `native-engine-059` | oblique angles, font selection/loading/metrics, real italic faces, variable fonts, Unicode shaping, anti-aliasing, and browser text-rendering parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -599,6 +612,12 @@ Phase 2 integration chains added by these slices are:
     text, clipping, hit testing, overflow, and capture coordinates remain
     unchanged, keeping this presentation rule inside the existing display-list
     and software-raster owners without a font dependency.
+63. Native inherited `font-style: normal|italic` changes only the fixed-cell
+    glyph replay: normal retains existing pixels and italic shifts each glyph
+    row through a bounded deterministic shear. Advances, layout, semantic
+    text, clipping, hit testing, overflow, and capture coordinates remain
+    unchanged, while bold dilation and other existing text presentation bits
+    compose in the same display-list and software-raster owners.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -670,12 +689,14 @@ visual stacking.
 | bounded inherited word spacing | makes common fixed-pixel separator spacing observable across the existing text-flow and paint owners | no negative spacing, `letter-spacing`, relative/percentage units, Unicode whitespace or word-boundary policy, browser tab stops, font metrics, bidi, or browser parity | inherit one bounded non-negative pixel value, add it only after rendered ASCII spaces, and carry the measured advance through wrapping, fragments, alignment, display, raster, hit testing, and overflow |
 | bounded inherited letter spacing | makes a bounded per-character fixed-cell advance observable across the existing text-flow and paint owners | no negative/relative/percentage values, `normal`, pair-boundary or cross-fragment semantics, Unicode shaping/metrics, grapheme clusters, bidi, or browser parity | inherit one bounded non-negative pixel value, add it after every rendered character in each emitted fragment, compose it with word spacing, and carry the measured advance through wrapping, fragments, alignment, display, raster, hit testing, and overflow |
 | bounded inherited font weight | makes normal and bold fixed-cell text presentation observable without changing geometry | real font selection/loading/metrics, numeric interpolation, variable fonts, synthetic-bold policy, Unicode shaping, anti-aliasing, and browser text-rendering parity | inherit one normalizable two-state value, keep fixed-cell advances unchanged, carry it on immutable text commands, and dilate bold glyph pixels through the existing clipped software replay |
+| bounded inherited font style | makes normal and italic fixed-cell text presentation observable without changing geometry | oblique angles, real italic faces, font selection/loading/metrics, variable fonts, Unicode shaping, anti-aliasing, and browser text-rendering parity | inherit one normal/italic value, keep fixed-cell advances unchanged, carry it on immutable text commands, and apply a bounded row-dependent shear through the existing clipped software replay |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-059.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-060.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-058.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-057.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-056.md` is the preceding completed checkpoint;

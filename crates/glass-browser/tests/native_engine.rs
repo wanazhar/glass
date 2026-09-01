@@ -1798,6 +1798,75 @@ fn native_text_fragments_wrap_words_and_split_only_wide_words() {
 }
 
 #[test]
+fn native_word_break_break_all_splits_collapsed_words_without_changing_semantics() {
+    let document = NativeDocument::parse(
+        "<div id='normal' style='display:block;width:40px;word-break:normal'>ABC DEFG</div><div id='break' style='display:block;width:40px;word-break:break-all'>ABC DEFG</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 96,
+        device_scale_factor_milli: 1000,
+    };
+    let normal = document.resolve_target("id=normal").unwrap();
+    let break_all = document.resolve_target("id=break").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(normal).unwrap().height, 40);
+    assert_eq!(layout.box_for(break_all).unwrap().height, 40);
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == normal)
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "ABC"),
+            (NativePoint { x: 0, y: 20 }, "DEFG"),
+        ]
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == break_all)
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativePoint { x: 0, y: 40 }, "ABC"),
+            (NativePoint { x: 24, y: 40 }, " D"),
+            (NativePoint { x: 0, y: 60 }, "EFG"),
+        ]
+    );
+
+    let (visible_text, truncated) = document.visible_text(1024);
+    assert!(!truncated);
+    assert!(visible_text.contains("ABC DEFG"));
+
+    let modes = NativeDocument::parse(
+        "<div id='pre' style='display:block;width:24px;white-space:pre;word-break:break-all'>ABC DEFG</div><div id='nowrap' style='display:block;width:24px;white-space:nowrap;word-break:break-all'>ABC DEFG</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let mode_layout = modes.layout(viewport).unwrap();
+    for (id, y) in [("pre", 0), ("nowrap", 20)] {
+        let node_id = modes.resolve_target(&format!("id={id}")).unwrap();
+        assert_eq!(mode_layout.box_for(node_id).unwrap().height, 20);
+        assert_eq!(
+            mode_layout
+                .text_runs
+                .iter()
+                .filter(|run| run.node_id == node_id)
+                .map(|run| (run.origin, run.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(NativePoint { x: 0, y }, "ABC DEFG")]
+        );
+    }
+}
+
+#[test]
 fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
     let adjacent = NativeDocument::parse(
         "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",
@@ -4757,7 +4826,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: flex; opacity: 1.1; text-align: justify; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; overflow: visible; white-space: break-spaces; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -4809,6 +4878,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "font-style"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "word-break"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

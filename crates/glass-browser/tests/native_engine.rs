@@ -2609,6 +2609,151 @@ fn native_flex_align_items_handles_auto_lines_box_sizing_overflow_and_fallback()
 }
 
 #[test]
+fn native_flex_direction_row_is_equivalent_and_row_reverse_maps_justification() {
+    let source = |direction: &str, justify: &str| {
+        format!(
+            "<div id='row' style='display:flex;width:40px;height:20px;gap:2px;flex-direction:{direction};justify-content:{justify};align-items:center'><button id='low' style='order:-1;width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>L</span></button><button id='middle' style='order:0;width:8px;height:12px;background-color:green'>M</button><button id='high' style='order:2;width:4px;height:4px;background-color:blue'>H</button></div>"
+        )
+    };
+    let viewport = Viewport {
+        width: 48,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+
+    let default_source = source("row", "flex-start").replace("flex-direction:row;", "");
+    let default_document =
+        NativeDocument::parse(&default_source, &NativeEngineLimits::default()).unwrap();
+    let explicit_row =
+        NativeDocument::parse(&source("row", "flex-start"), &NativeEngineLimits::default())
+            .unwrap();
+    let default_layout = default_document.layout(viewport).unwrap();
+    let explicit_row_layout = explicit_row.layout(viewport).unwrap();
+    assert_eq!(default_layout.boxes, explicit_row_layout.boxes);
+    assert_eq!(default_layout.text_runs, explicit_row_layout.text_runs);
+
+    for (justify, expected) in [
+        ("flex-start", (34, 24, 18)),
+        ("center", (25, 15, 9)),
+        ("flex-end", (16, 6, 0)),
+        ("space-between", (34, 15, 0)),
+    ] {
+        let document = NativeDocument::parse(
+            &source("row-reverse", justify),
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let low = document.resolve_target("id=low").unwrap();
+        let nested = document.resolve_target("id=nested").unwrap();
+        let middle = document.resolve_target("id=middle").unwrap();
+        let high = document.resolve_target("id=high").unwrap();
+        let layout = document.layout(viewport).unwrap();
+
+        assert_eq!(layout.box_for(low).unwrap().x, expected.0);
+        assert_eq!(layout.box_for(middle).unwrap().x, expected.1);
+        assert_eq!(layout.box_for(high).unwrap().x, expected.2);
+        assert_eq!(layout.box_for(nested).unwrap().x, expected.0);
+        assert_eq!(
+            layout.box_for(nested).unwrap().y,
+            layout.box_for(low).unwrap().y
+        );
+        assert_eq!(
+            layout.hit_test((expected.0 + 1).into(), 6).unwrap(),
+            Some(nested)
+        );
+        assert_eq!(
+            layout.hit_test((expected.2 + 1).into(), 8).unwrap(),
+            Some(high)
+        );
+
+        let painted_ids = document
+            .display_list(viewport)
+            .unwrap()
+            .commands
+            .into_iter()
+            .filter_map(|command| match command {
+                NativeDisplayCommand::FillRect { node_id, .. } => Some(node_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(painted_ids, vec![low, middle, high]);
+    }
+}
+
+#[test]
+fn native_flex_direction_row_reverse_keeps_margins_reachable_and_fallback_content() {
+    let html = "<div id='row' style='display:flex;width:16px;height:20px;gap:2px;flex-direction:row-reverse;justify-content:flex-start;align-items:center'><div id='low' style='order:-1;width:10px;height:8px;margin:1px;background-color:red'><span id='nested' style='display:block;height:4px'>L</span></div><div id='high' style='order:1;width:10px;height:12px;margin:2px;background-color:blue'>H</div><div id='hidden' style='display:none;order:-1024;width:10px;height:8px'>Hidden</div></div>";
+    let document = NativeDocument::parse(html, &NativeEngineLimits::default()).unwrap();
+    let low = document.resolve_target("id=low").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let high = document.resolve_target("id=high").unwrap();
+    let hidden = document.resolve_target("id=hidden").unwrap();
+    let viewport = Viewport {
+        width: 16,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(high).unwrap().x, 2);
+    assert_eq!(layout.box_for(low).unwrap().x, 17);
+    assert_eq!(layout.box_for(nested).unwrap().x, 17);
+    assert_eq!(layout.box_for(high).unwrap().y, 4);
+    assert_eq!(layout.box_for(low).unwrap().y, 6);
+    assert_eq!(layout.box_for(hidden), None);
+    assert_eq!(layout.max_scroll_offset().x, 11);
+    assert_eq!(layout.hit_test(3, 5).unwrap(), Some(high));
+
+    let config = NativeEngineConfig::default()
+        .with_viewport(viewport)
+        .with_fixture("fixture://row-reverse-overflow", html)
+        .unwrap()
+        .with_initial_url("fixture://row-reverse-overflow");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let scroll = engine
+        .action(NativeAction::Scroll {
+            delta_x: 11,
+            delta_y: 0,
+        })
+        .unwrap();
+    assert!(scroll.accepted);
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 11, y: 0 });
+    assert_eq!(engine.hit_test(7, 6).unwrap(), Some(nested));
+
+    let with_direction = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px;flex-direction:row-reverse'><span id='first' style='display:block;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let without_direction = NativeDocument::parse(
+        "<div id='fallback' style='display:flex;width:32px'><span id='first' style='display:block;width:8px;height:8px'>A</span> meaningful text <span id='second' style='display:block;width:8px;height:8px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let with_first = with_direction.resolve_target("id=first").unwrap();
+    let with_second = with_direction.resolve_target("id=second").unwrap();
+    let without_first = without_direction.resolve_target("id=first").unwrap();
+    let without_second = without_direction.resolve_target("id=second").unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let with_layout = with_direction.layout(viewport).unwrap();
+    let without_layout = without_direction.layout(viewport).unwrap();
+    assert_eq!(
+        with_layout.box_for(with_first),
+        without_layout.box_for(without_first)
+    );
+    assert_eq!(
+        with_layout.box_for(with_second),
+        without_layout.box_for(without_second)
+    );
+    assert_eq!(with_layout.text_runs, without_layout.text_runs);
+}
+
+#[test]
 fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
     let adjacent = NativeDocument::parse(
         "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",
@@ -5568,7 +5713,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: stretch; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: stretch; flex-direction: column; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -5650,6 +5795,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "align-items"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "flex-direction"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty

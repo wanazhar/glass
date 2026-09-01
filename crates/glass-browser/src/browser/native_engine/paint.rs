@@ -75,6 +75,7 @@ pub enum NativeDisplayCommand {
         truncated: bool,
         color: NativeColor,
         underline: bool,
+        word_spacing: u32,
         clip: Option<NativeRect>,
     },
     EndOpacityGroup {
@@ -182,6 +183,7 @@ impl NativeDisplayList {
                             truncated: text_run.truncated,
                             color: style.color().unwrap_or(NativeColor::BLACK),
                             underline: style.text_decoration() == TextDecorationValue::Underline,
+                            word_spacing: style.word_spacing(),
                             clip,
                         },
                     )?;

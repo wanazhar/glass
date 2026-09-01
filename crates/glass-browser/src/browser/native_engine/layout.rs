@@ -128,7 +128,12 @@ impl NativeLayoutSnapshot {
                 let text_rect = NativeRect {
                     x: text_run.origin.x,
                     y: text_run.origin.y,
-                    width: LayoutBuilder::text_width(&text_run.text),
+                    width: LayoutBuilder::text_width_with_spacing(
+                        &text_run.text,
+                        document
+                            .computed_style_for_layout(text_run.node_id)
+                            .word_spacing(),
+                    ),
                     height: DEFAULT_LINE_HEIGHT,
                 };
                 let visible_rect = overflow_clip_for(document, &builder.boxes, text_run.node_id)
@@ -452,6 +457,15 @@ struct FlowSize {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct FlowStyle {
+    minimum_line_height: u32,
+    text_align: TextAlignValue,
+    allow_soft_wrap: bool,
+    text_indent: u32,
+    word_spacing: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct FlowItem {
     box_start: usize,
     box_end: usize,
@@ -473,22 +487,17 @@ struct FlowCursor {
     line_height: u32,
     line_has_content: bool,
     pending_whitespace: bool,
+    word_spacing: u32,
     line_items: Vec<FlowItem>,
     max_right: u32,
     max_bottom: u32,
 }
 
 impl FlowCursor {
-    fn new(
-        x: u32,
-        y: u32,
-        available_width: u32,
-        minimum_line_height: u32,
-        text_align: TextAlignValue,
-        allow_soft_wrap: bool,
-        text_indent: u32,
-    ) -> Self {
-        let effective_indent = text_indent.min(available_width.saturating_sub(CHARACTER_WIDTH));
+    fn new(x: u32, y: u32, available_width: u32, style: FlowStyle) -> Self {
+        let effective_indent = style
+            .text_indent
+            .min(available_width.saturating_sub(CHARACTER_WIDTH));
         Self {
             base_start_x: x,
             base_available_width: available_width,
@@ -497,12 +506,13 @@ impl FlowCursor {
             available_width: available_width.saturating_sub(effective_indent),
             x: x.saturating_add(effective_indent),
             y,
-            minimum_line_height,
-            text_align,
-            allow_soft_wrap,
+            minimum_line_height: style.minimum_line_height,
+            text_align: style.text_align,
+            allow_soft_wrap: style.allow_soft_wrap,
             line_height: 0,
             line_has_content: false,
             pending_whitespace: false,
+            word_spacing: style.word_spacing,
             line_items: Vec::new(),
             max_right: x,
             max_bottom: y,
@@ -562,11 +572,28 @@ impl FlowCursor {
             && self.x.saturating_sub(self.start_x).saturating_add(width) > self.available_width
     }
 
-    fn line_capacity(&self) -> usize {
+    fn line_capacity_for_text(&self, value: &str) -> usize {
         let remaining_width = self
             .available_width
             .saturating_sub(self.x.saturating_sub(self.start_x));
-        usize::try_from(remaining_width / CHARACTER_WIDTH).unwrap_or(usize::MAX)
+        let mut width: u32 = 0;
+        let mut count: usize = 0;
+        for character in value.chars() {
+            let advance = LayoutBuilder::character_advance(character, self.word_spacing);
+            if width.saturating_add(advance) > remaining_width {
+                if count == 0 && !self.line_has_content {
+                    return 1;
+                }
+                break;
+            }
+            width = width.saturating_add(advance);
+            count += 1;
+        }
+        count
+    }
+
+    fn text_width(&self, value: &str) -> u32 {
+        LayoutBuilder::text_width_with_spacing(value, self.word_spacing)
     }
 
     fn place_inline(&mut self, width: u32, height: u32) -> Option<NativePoint> {
@@ -666,16 +693,20 @@ impl<'a> LayoutBuilder<'a> {
         } else {
             0
         };
+        let word_spacing = style.word_spacing();
         let allow_soft_wrap =
             !matches!(white_space, WhiteSpaceValue::Pre | WhiteSpaceValue::NoWrap);
         let mut flow = FlowCursor::new(
             x,
             y,
             available_width,
-            minimum_line_height,
-            text_align,
-            allow_soft_wrap,
-            text_indent,
+            FlowStyle {
+                minimum_line_height,
+                text_align,
+                allow_soft_wrap,
+                text_indent,
+                word_spacing,
+            },
         );
         self.process_children(parent, &mut flow, depth);
         self.flush_line(&mut flow);
@@ -804,7 +835,7 @@ impl<'a> LayoutBuilder<'a> {
                                 candidate_width.saturating_add(margin.horizontal());
                             let separator_width =
                                 if flow.has_pending_whitespace() && flow.line_has_content {
-                                    CHARACTER_WIDTH
+                                    CHARACTER_WIDTH.saturating_add(flow.word_spacing)
                                 } else {
                                     0
                                 };
@@ -998,7 +1029,7 @@ impl<'a> LayoutBuilder<'a> {
         let default_outer_width = if is_block {
             available_width
         } else {
-            self.intrinsic_inline_width(id)
+            self.intrinsic_inline_width(id, style)
                 .saturating_add(horizontal_inset)
         };
         let width = style.width().map_or(default_outer_width, |declared| {
@@ -1133,7 +1164,7 @@ impl<'a> LayoutBuilder<'a> {
             self.place_preformatted_wrapped_segment(parent, flow, &value);
             return;
         }
-        let width = Self::text_width(&value);
+        let width = flow.text_width(&value);
         let Some(origin) = flow.place_unwrapped_with_origin(width, DEFAULT_LINE_HEIGHT) else {
             return;
         };
@@ -1165,10 +1196,10 @@ impl<'a> LayoutBuilder<'a> {
         }
         let mut offset = 0;
         while offset < value.len() {
-            if flow.line_has_content && flow.line_capacity() == 0 {
+            if flow.line_has_content && flow.line_capacity_for_text(&value[offset..]) == 0 {
                 self.flush_line(flow);
             }
-            let chunk_length = flow.line_capacity().max(1);
+            let chunk_length = flow.line_capacity_for_text(&value[offset..]).max(1);
             let mut end = offset;
             for (relative_offset, character) in value[offset..].char_indices().take(chunk_length) {
                 end = offset + relative_offset + character.len_utf8();
@@ -1221,7 +1252,11 @@ impl<'a> LayoutBuilder<'a> {
                 let remaining_width = flow
                     .available_width
                     .saturating_sub(flow.x.saturating_sub(flow.start_x));
-                let separator_width = if separator { CHARACTER_WIDTH } else { 0 };
+                let separator_width = if separator {
+                    CHARACTER_WIDTH.saturating_add(flow.word_spacing)
+                } else {
+                    0
+                };
                 if separator_width.saturating_add(word_width) <= remaining_width {
                     let fragment = if separator {
                         format!(" {word}")
@@ -1247,7 +1282,8 @@ impl<'a> LayoutBuilder<'a> {
         let remaining_width = flow
             .available_width
             .saturating_sub(flow.x.saturating_sub(flow.start_x));
-        if CHARACTER_WIDTH > remaining_width {
+        let separator_width = CHARACTER_WIDTH.saturating_add(flow.word_spacing);
+        if separator_width > remaining_width {
             if !flow.allow_soft_wrap {
                 self.place_text_fragment(parent, flow, " ", false);
                 return;
@@ -1306,7 +1342,7 @@ impl<'a> LayoutBuilder<'a> {
         fragment: &str,
         truncated: bool,
     ) {
-        let width = Self::text_width(fragment);
+        let width = flow.text_width(fragment);
         let Some(origin) = flow.place_inline_with_origin(width, DEFAULT_LINE_HEIGHT) else {
             return;
         };
@@ -1333,28 +1369,58 @@ impl<'a> LayoutBuilder<'a> {
             .saturating_mul(CHARACTER_WIDTH)
     }
 
-    fn intrinsic_inline_width(&self, id: NativeNodeId) -> u32 {
+    fn character_advance(character: char, word_spacing: u32) -> u32 {
+        CHARACTER_WIDTH.saturating_add(if character == ' ' { word_spacing } else { 0 })
+    }
+
+    fn text_width_with_spacing(value: &str, word_spacing: u32) -> u32 {
+        value.chars().fold(0, |width, character| {
+            width.saturating_add(Self::character_advance(character, word_spacing))
+        })
+    }
+
+    fn intrinsic_inline_width(&self, id: NativeNodeId, style: NativeComputedStyle) -> u32 {
         let Some(node) = self.document.node(id) else {
             return 0;
         };
         match node.element_name() {
             Some("input" | "textarea" | "select") => DEFAULT_CONTROL_WIDTH,
             Some("button") => self
-                .document
-                .layout_text_width(id)
+                .intrinsic_text_width(id, style)
                 .saturating_add(24)
                 .max(DEFAULT_BUTTON_WIDTH),
             Some("option") => self
-                .document
-                .layout_text_width(id)
+                .intrinsic_text_width(id, style)
                 .saturating_add(16)
                 .max(DEFAULT_BUTTON_WIDTH),
-            Some(_) => self
-                .document
-                .layout_text_width(id)
-                .saturating_mul(CHARACTER_WIDTH)
-                .max(CHARACTER_WIDTH),
+            Some(_) => self.intrinsic_text_width(id, style).max(CHARACTER_WIDTH),
             None => 0,
+        }
+    }
+
+    fn intrinsic_text_width(&self, id: NativeNodeId, style: NativeComputedStyle) -> u32 {
+        let Some(value) = self.document.raw_text_for_layout(id) else {
+            return 0;
+        };
+        let value = self.transform_text(id, &value);
+        match style.white_space() {
+            WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => {
+                let (value, _) = NativeDocument::collapse_text_for_layout(&value);
+                Self::text_width_with_spacing(&value, style.word_spacing())
+            }
+            WhiteSpaceValue::PreLine => value
+                .split(['\n', '\r'])
+                .map(|line| {
+                    let (line, _) = NativeDocument::collapse_text_for_layout(line);
+                    Self::text_width_with_spacing(&line, style.word_spacing())
+                })
+                .max()
+                .unwrap_or(0),
+            WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap => value
+                .split(['\n', '\r'])
+                .map(|line| Self::text_width_with_spacing(line, style.word_spacing()))
+                .max()
+                .unwrap_or(0),
         }
     }
 

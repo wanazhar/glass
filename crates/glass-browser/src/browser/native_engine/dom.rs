@@ -852,6 +852,7 @@ impl NativeDocument {
         let mut inherited_text_align = TextAlignValue::Left;
         let mut inherited_text_decoration = TextDecorationValue::None;
         let mut inherited_text_transform = TextTransformValue::None;
+        let mut inherited_word_spacing = 0;
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
@@ -866,6 +867,7 @@ impl NativeDocument {
                     text_align: inherited_text_align,
                     text_decoration: inherited_text_decoration,
                     text_transform: inherited_text_transform,
+                    word_spacing: inherited_word_spacing,
                 },
             );
             inherited_color = style.color().or(inherited_color);
@@ -874,6 +876,7 @@ impl NativeDocument {
             inherited_text_align = style.text_align();
             inherited_text_decoration = style.text_decoration();
             inherited_text_transform = style.text_transform();
+            inherited_word_spacing = style.word_spacing();
             if current_id == id {
                 return style;
             }
@@ -885,10 +888,11 @@ impl NativeDocument {
         self.is_hidden(id)
     }
 
-    pub(crate) fn layout_text_width(&self, id: NativeNodeId) -> u32 {
-        self.element_text(id, MAX_LOCATOR_BYTES)
-            .map(|(text, _)| u32::try_from(text.chars().count()).unwrap_or(u32::MAX))
-            .unwrap_or_default()
+    pub(crate) fn raw_text_for_layout(&self, id: NativeNodeId) -> Option<String> {
+        self.node(id)?;
+        let mut text = String::new();
+        self.collect_raw_text(id, &mut text);
+        Some(text)
     }
 
     pub(crate) fn collapse_text_for_layout(value: &str) -> (String, bool) {

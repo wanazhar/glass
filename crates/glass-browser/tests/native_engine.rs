@@ -837,6 +837,114 @@ fn native_text_indent_shifts_only_block_first_lines_and_preserves_shared_consume
 }
 
 #[test]
+fn native_word_spacing_shares_width_across_flow_paint_and_overflow() {
+    let document = NativeDocument::parse(
+        "<style>#normal { display:block; width:40px; word-spacing:4px; } #pre { display:block; width:32px; word-spacing:4px; white-space:pre-wrap; } #wide { display:block; width:32px; word-spacing:4px; white-space:nowrap; } #align { display:block; width:40px; word-spacing:4px; text-align:right; white-space:nowrap; } #parent { display:block; width:72px; word-spacing:4px; } #override { word-spacing:8px; }</style><div id='normal'>A   B C</div><div id='pre'>A  B</div><div id='wide'>A B C D E F G H</div><div id='align'>A B</div><div id='parent'>A <span id='override'>B C</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 80,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let normal = document.resolve_target("id=normal").unwrap();
+    let pre = document.resolve_target("id=pre").unwrap();
+    let wide = document.resolve_target("id=wide").unwrap();
+    let align = document.resolve_target("id=align").unwrap();
+    let parent = document.resolve_target("id=parent").unwrap();
+    let override_id = document.resolve_target("id=override").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    let runs_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        runs_for(normal),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "A"),
+            (NativePoint { x: 8, y: 0 }, " B"),
+            (NativePoint { x: 0, y: 20 }, "C")
+        ]
+    );
+    assert_eq!(
+        runs_for(pre),
+        vec![
+            (NativePoint { x: 0, y: 40 }, "A  "),
+            (NativePoint { x: 0, y: 60 }, "B")
+        ]
+    );
+
+    let wide_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == wide)
+        .unwrap();
+    assert_eq!(wide_run.origin.x, 0);
+    assert_eq!(wide_run.text, "A B C D E F G H");
+    assert_eq!(layout.content_width, 148);
+    assert_eq!(layout.max_scroll_offset().x, 68);
+
+    let align_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == align)
+        .unwrap();
+    assert_eq!(align_run.origin.x, 12);
+    assert_eq!(align_run.text, "A B");
+
+    let parent_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == parent)
+        .unwrap();
+    let override_runs = layout
+        .text_runs
+        .iter()
+        .filter(|run| run.node_id == override_id)
+        .map(|run| (run.origin, run.text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(parent_run.text, "A");
+    assert_eq!(
+        override_runs,
+        vec![
+            (NativePoint { x: 20, y: 120 }, "B"),
+            (NativePoint { x: 28, y: 120 }, " C"),
+        ]
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let spacing_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                word_spacing,
+                ..
+            } if *command_node == node_id => Some(*word_spacing),
+            _ => None,
+        })
+    };
+    assert_eq!(spacing_for(normal), Some(4));
+    assert_eq!(spacing_for(wide), Some(4));
+    assert_eq!(spacing_for(override_id), Some(8));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(wide_run.origin.x + 16, wide_run.origin.y),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(wide_run.origin.x + 6, wide_run.origin.y),
+        Some([255, 255, 255, 255])
+    );
+}
+
+#[test]
 fn native_functional_alpha_colors_reach_display_list_and_raster() {
     let document = NativeDocument::parse(
         "<div id='background' style='display:block;width:8px;height:8px;background-color:rgba(255, 0, 0, 0.5)'></div><div id='border' style='display:block;width:8px;height:8px;border:1px solid rgba(0, 0, 255, 50%)'></div><div id='text' style='display:block;width:8px;height:8px;color:rgba(0, 128, 0, 0.5)'>A</div>",

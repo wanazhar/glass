@@ -2019,6 +2019,63 @@ fn native_text_overflow_ellipsis_truncates_only_eligible_clipped_nowrap_text() {
 }
 
 #[test]
+fn native_vertical_align_moves_inline_items_and_text_within_fixed_line_box() {
+    let document = NativeDocument::parse(
+        "<style>#flow { display:block; width:80px; line-height:40px; } .item { display:inline-block; width:8px; height:10px; } #base { vertical-align:baseline; } #top { vertical-align:top; } #middle { vertical-align:middle; } #bottom { vertical-align:bottom; } #text-bottom { vertical-align:bottom; }</style><div id='flow'><span id='base' class='item'></span><span id='top' class='item'></span><span id='middle' class='item'></span><span id='bottom' class='item'></span><span id='text-bottom' class='item'>B</span></div><div id='direct' style='line-height:40px'>D</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 96,
+        height: 96,
+        device_scale_factor_milli: 1000,
+    };
+    let flow = document.resolve_target("id=flow").unwrap();
+    let base = document.resolve_target("id=base").unwrap();
+    let top = document.resolve_target("id=top").unwrap();
+    let middle = document.resolve_target("id=middle").unwrap();
+    let bottom = document.resolve_target("id=bottom").unwrap();
+    let text_bottom = document.resolve_target("id=text-bottom").unwrap();
+    let direct = document.resolve_target("id=direct").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(flow).unwrap().height, 40);
+    for (node_id, x, y) in [
+        (base, 0, 0),
+        (top, 8, 0),
+        (middle, 16, 15),
+        (bottom, 24, 30),
+        (text_bottom, 32, 30),
+    ] {
+        assert_eq!(
+            layout
+                .box_for(node_id)
+                .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+            Some((x, y, 8, 10))
+        );
+    }
+    assert_eq!(layout.box_for(direct).unwrap().y, 40);
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == text_bottom)
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(NativePoint { x: 32, y: 30 }, "B")]
+    );
+    assert_eq!(
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == direct)
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(NativePoint { x: 0, y: 40 }, "D")]
+    );
+}
+
+#[test]
 fn native_text_fragments_preserve_only_source_whitespace_boundaries() {
     let adjacent = NativeDocument::parse(
         "<div id='container' style='width:16px'>A<span style='display:contents'></span>B</div>",

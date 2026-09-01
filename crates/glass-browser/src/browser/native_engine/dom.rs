@@ -10,7 +10,8 @@ use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
         FontStyleValue, FontWeightValue, NativeColor, NativeComputedStyle, NativeInheritedStyle,
-        TextAlignValue, TextDecorationValue, TextTransformValue, WhiteSpaceValue, WordBreakValue,
+        TextAlignValue, TextDecorationValue, TextTransformValue, VerticalAlignValue,
+        WhiteSpaceValue, WordBreakValue,
     },
 };
 use std::collections::BTreeMap;
@@ -855,6 +856,7 @@ impl NativeDocument {
         let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_font_style = FontStyleValue::Normal;
         let mut inherited_word_break = WordBreakValue::Normal;
+        let mut inherited_vertical_align = VerticalAlignValue::Baseline;
         let mut inherited_word_spacing = 0;
         let mut inherited_letter_spacing = 0;
         for current_id in chain.into_iter().rev() {
@@ -874,6 +876,7 @@ impl NativeDocument {
                     font_weight: inherited_font_weight,
                     font_style: inherited_font_style,
                     word_break: inherited_word_break,
+                    vertical_align: inherited_vertical_align,
                     word_spacing: inherited_word_spacing,
                     letter_spacing: inherited_letter_spacing,
                 },
@@ -887,6 +890,7 @@ impl NativeDocument {
             inherited_font_weight = style.font_weight();
             inherited_font_style = style.font_style();
             inherited_word_break = style.word_break();
+            inherited_vertical_align = style.vertical_align();
             inherited_word_spacing = style.word_spacing();
             inherited_letter_spacing = style.letter_spacing();
             if current_id == id {

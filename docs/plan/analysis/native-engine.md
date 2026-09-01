@@ -245,15 +245,17 @@ conformance remain outside the boundary. The design is `7e488aa`, the
 implementation is `e4c5bb1`, and local validation evidence is recorded in the
 task file; remote CI remains pending until this branch is pushed.
 
-The active dependency-ordered `native-engine-063` design adds inherited
+The completed dependency-ordered `native-engine-063` slice adds inherited
 `vertical-align: baseline|top|middle|bottom` to the existing fixed-cell
 inline-flow line-item owner. `baseline` preserves the current top-origin
 behavior; `top`, `middle`, and `bottom` apply bounded integer offsets within
 the existing line box and move an inline item's boxes and text artifacts
 together. Font metrics, typographic baselines, lengths, percentages, bidi,
 writing modes, ruby, table-cell alignment, and browser conformance remain
-outside the boundary. The contract is recorded in
-`docs/plan/tasks/native-engine-063.md`; implementation has not started.
+outside the boundary. The design is `7721df2`, the implementation is
+`facd2f6`, and local validation evidence is recorded in
+`docs/plan/tasks/native-engine-063.md`; remote CI remains pending until this
+branch is pushed.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -308,8 +310,8 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, inherited physical text alignment, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, and inherited `word-break:normal|break-all` | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
-| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges, opacity group boundaries, root scroll projection, rounded point hit testing, and bounded inherited word-break wrapping | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, inherited physical text alignment, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, and inherited `vertical-align:baseline|top|middle|bottom` | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, and bounded inherited word-break wrapping | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity/font presentation, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, nested opacity layers, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
@@ -663,6 +665,13 @@ Phase 2 integration chains added by these slices are:
     overflow, alignment, display projection, and semantics continue to consume
     the same measured path; `pre`, `pre-wrap`, and `nowrap` retain their
     existing behavior.
+65. Native inherited `vertical-align: baseline|top|middle|bottom` changes only
+    the y-origin of recorded inline and inline-block line-item artifact ranges:
+    baseline/top remain at the line origin, middle uses the clamped half-gap,
+    and bottom uses the clamped full gap. Line height, horizontal flow, line
+    breaks, wrapping, semantics, paint order, clipping, hit-test ownership,
+    scrolling, and capture remain unchanged; direct block-flow text stays on
+    the baseline path.
 
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
@@ -743,8 +752,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-063.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-062.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-063.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-062.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-061.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-060.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-059.md` is the preceding completed checkpoint;

@@ -161,6 +161,8 @@ with unchanged advances and clipped row-dependent italic shear,
 bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
 bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
 direct text,
+bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
+fixed-cell inline and inline-block line items within the existing line box,
 and
 Rust-only
 display-list/software-surface artifacts;

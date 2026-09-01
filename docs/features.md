@@ -88,6 +88,8 @@ source-behavior reference.
   bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
   bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
   direct text,
+  bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
+  fixed-cell inline and inline-block line items within the existing line box,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
@@ -298,6 +300,8 @@ projection, and point hit-testing,
   bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
   bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
   direct text,
+  bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
+  fixed-cell inline and inline-block line items within the existing line box,
   native point hit testing, local click/type actions, and a revision/changed
   effects signal; bounded text-fragment targets, including exact adjacent
   prefix/suffix affixes, are matched only within the first visible

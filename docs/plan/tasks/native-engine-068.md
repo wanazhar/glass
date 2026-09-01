@@ -1,7 +1,7 @@
 ---
 id: native-engine-068
 scope: glass-browser/native-engine/flex-cross-axis-alignment
-status: active
+status: complete
 depends-on: [native-engine-067]
 ---
 
@@ -101,15 +101,34 @@ bottom side. The limited keyword set is smaller than browser CSS and leaves
 
 ## Verification
 
-- CSS unit tests cover accepted keywords, defaulting, rejected keywords, and
+- [x] CSS unit tests cover accepted keywords, defaulting, rejected keywords, and
   non-inheritance/cascade precedence.
-- Integration tests cover flex-start equivalence, center/end placement,
+- [x] Integration tests cover flex-start equivalence, center/end placement,
   auto-height line sizing, explicit content-box/border-box height, margins,
   descendant geometry, display-list/text movement, hit testing, overflow, and
   normal-flow fallback.
-- The full native integration suite, strict default/native Clippy, formatting,
+- [x] The full native integration suite, strict default/native Clippy, formatting,
   whitespace, and documentation validators pass.
-- Implementation, documentation, and issue #40 checkpoints are committed
+- [x] Implementation, documentation, and issue #40 checkpoints are committed
   locally; remote CI is not claimed until this branch is pushed.
-- Exact regenerable Cargo outputs are reclaimed after all validation without
+- [x] Exact regenerable Cargo outputs are reclaimed after all validation without
   terminating long-lived Glass processes.
+
+## Completion evidence
+
+- Design checkpoint: `a0488ef` (`docs(native-engine): define flex alignment slice`).
+- Implementation checkpoint: `6b55b9c` (`feat(native-engine): add bounded flex alignment`).
+- Focused CSS parser/cascade tests: 2 passed, 0 failed.
+- Focused flex-alignment integration tests: 2 passed, 0 failed.
+- Full `native_engine` integration suite: 87 passed, 0 failed.
+- Full `glass-browser` native-feature library suite: 863 passed, 0 failed,
+  1 ignored.
+- Feature-enabled strict Clippy passed in 9m15s; no-default-feature strict
+  Clippy passed in 5m13s.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Documentation validators and current-source public capability audit are
+  recorded after the final documentation checkpoint.
+- Remote CI remains pending because this branch is local-only; no remote-green
+  claim is made.
+- Exact regenerable Cargo outputs are reclaimed after the final validation;
+  no long-lived Glass process is terminated.

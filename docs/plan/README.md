@@ -477,12 +477,14 @@ normal-flow fallback, and exclusions are recorded in the task file. The design
 is `09f3b00`, the implementation is `a713b6e`, and local validation evidence is
 recorded there. Remote CI remains pending until this branch is pushed.
 
-The active follow-on [native-engine-068](tasks/native-engine-068.md) design adds
-bounded non-inherited `align-items:flex-start|center|flex-end` to eligible
+The completed follow-on [native-engine-068](tasks/native-engine-068.md) slice
+adds bounded non-inherited `align-items:flex-start|center|flex-end` to eligible
 fixed-width single-row flex rows. It aligns complete visual item subtrees
 within an explicit content height or the auto row's maximum item outer height
 using deterministic integer offsets, while preserving horizontal and
-semantic/source order. Implementation has not started.
+semantic/source order. The design is `a0488ef`, the implementation is
+`6b55b9c`, and local validation evidence is recorded in the task file. Remote
+CI remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

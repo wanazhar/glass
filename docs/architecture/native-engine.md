@@ -17,7 +17,8 @@ bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
-bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order slices,
+bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
+bounded-flex-cross-axis-alignment design,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -776,6 +777,15 @@ unchanged. The contract is recorded in
 `docs/plan/tasks/native-engine-067.md`; design is `09f3b00`, implementation is
 `a713b6e`, and current-source documentation closeout is recorded in this
 checkpoint. Remote CI remains pending because the branch is local-only.
+
+The active 068 design adds bounded non-inherited
+`align-items:flex-start|center|flex-end` to eligible fixed-width single-row
+flex rows. It aligns complete visual item subtrees within an explicit content
+height or the auto row's maximum item outer height using deterministic integer
+offsets, while preserving horizontal and semantic/source order. The contract
+and exclusions are recorded in
+`docs/plan/tasks/native-engine-068.md`; implementation has not started, so
+this paragraph is a design boundary rather than a current capability claim.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

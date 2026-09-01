@@ -18,6 +18,7 @@ bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-flex-row-gap/bounded-flex-row-justification slices,
+bounded-flex-item-order design,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -765,6 +766,14 @@ path. The contract is recorded in
 implementation is `3fe5306`, and the current-source documentation closeout
 is recorded in this checkpoint. Remote CI remains pending because the branch
 is local-only.
+
+The active 067 design proposes bounded non-inherited signed `order` values in
+the inclusive range `-1024..=1024` for eligible fixed-width flex rows. Visual
+items would sort by `(order, source_index)` before the existing gap and
+`justify-content` distribution, while semantic DOM/source order would remain
+unchanged. The contract is recorded in
+`docs/plan/tasks/native-engine-067.md`; implementation has not started, so
+this paragraph is a design boundary rather than a current capability claim.
 
 The 010 paint boundary derives a matching immutable display list with a white
 viewport clear, explicit bounded solid backgrounds, and direct visible text

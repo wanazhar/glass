@@ -23,6 +23,7 @@ bounded-flex-wrap-reverse,
 bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
 bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
 bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
+bounded-flex-gap-family,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -183,6 +184,13 @@ behavior. The contract is recorded in
 `docs/plan/tasks/native-engine-077.md`; design is `99d70ef`, implementation is
 `4b27b15`, and local validation and cleanup evidence are recorded in that task
 file. Remote CI remains pending because the branch is local-only.
+The active 078 boundary completes the bounded flex gap family with one- and
+two-value integer-pixel `gap`, explicit `row-gap`/`column-gap` longhands, and
+source-order-aware shorthand/longhand cascade. One-value `gap` intentionally
+supplies both axes, superseding the 077 compatibility behavior where it only
+supplied the main axis. Its contract is recorded in
+`docs/plan/tasks/native-engine-078.md`; implementation, validation, and remote
+CI evidence are pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

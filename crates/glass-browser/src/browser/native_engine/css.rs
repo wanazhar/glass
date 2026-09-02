@@ -2840,12 +2840,11 @@ fn parse_flex_flow(value: &str) -> Option<(FlexDirectionValue, FlexWrapValue)> {
             if direction.replace(parsed).is_some() {
                 return None;
             }
-        } else if let Some(parsed) = parse_flex_wrap(value) {
+        } else {
+            let parsed = parse_flex_wrap(value)?;
             if wrap.replace(parsed).is_some() {
                 return None;
             }
-        } else {
-            return None;
         }
     }
     Some((direction.unwrap_or_default(), wrap.unwrap_or_default()))

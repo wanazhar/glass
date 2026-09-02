@@ -514,13 +514,13 @@ first all-in-one certification run exposed one environment-sensitive Rust
 Analyzer probe; its exact retry passed. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered `native-engine-088` slice adds explicit parent
+The completed dependency-ordered `native-engine-088` slice adds explicit parent
 `align-items:normal`. In the supported row/row-reverse flex context, `normal`
 resolves `align-self:auto` through the completed stretch used-size owner while
 the computed keyword remains distinct and the omitted native fallback stays
 `flex-start`. The complete contract and tradeoffs are in
-`docs/plan/tasks/native-engine-088.md`; design is pending. Remote CI remains
-pending because the branch is local-only.
+`docs/plan/tasks/native-engine-088.md`; design is `162543f1` and implementation
+is `19d8d3f6`. Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

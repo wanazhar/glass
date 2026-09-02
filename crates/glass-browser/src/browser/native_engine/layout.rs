@@ -1787,18 +1787,17 @@ impl<'a> LayoutBuilder<'a> {
             max_bottom = max_bottom.max(final_line_y.saturating_add(line.height));
             for mut placement in line.layout.placements {
                 let style = self.document.computed_style_for_layout(placement.child);
-                if placement.align_self == AlignSelfValue::Stretch {
-                    if let Some(stretched_height) = stretched_outer_height(
+                if placement.align_self == AlignSelfValue::Stretch
+                    && let Some(stretched_height) = stretched_outer_height(
                         style,
                         line.height,
                         placement.margin,
                         placement.height,
-                    ) {
-                        if stretched_height > placement.height {
-                            self.stretch_flex_item_box(&placement, style, stretched_height);
-                            placement.height = stretched_height;
-                        }
-                    }
+                    )
+                    && stretched_height > placement.height
+                {
+                    self.stretch_flex_item_box(&placement, style, stretched_height);
+                    placement.height = stretched_height;
                 }
                 let item_outer_height =
                     placement.height.saturating_add(placement.margin.vertical());

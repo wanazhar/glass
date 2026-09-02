@@ -630,6 +630,15 @@ diagnosed. The design is `71d1060d`, implementation is `40f6fb1c`, and local
 validation and exact target-cleanup evidence are recorded in the task file.
 Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-083](tasks/native-engine-083.md)
+slice defines bounded `flex-flow` shorthand expansion into the existing
+direction and wrap components. It covers row/reverse-row and nowrap/wrap/
+wrap-reverse tokens in either order, with omitted components reset to their
+initial values; unsupported columns, duplicates, CSS-wide, logical-direction,
+and ambiguous forms remain diagnosed. The complete contract and tradeoffs are
+recorded in the task file; implementation and validation are pending. Remote
+CI remains pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

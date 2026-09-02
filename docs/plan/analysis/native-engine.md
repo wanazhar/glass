@@ -461,6 +461,15 @@ diagnostics. The complete contract and tradeoffs are in
 `40f6fb1c`, and local validation and cleanup evidence are recorded there.
 Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-083` slice defines bounded
+`flex-flow` shorthand expansion into the existing direction and wrap
+components. It accepts one direction token, one wrap token, or one of each in
+either order; omitted components reset to their initial row or nowrap value.
+Unsupported columns, duplicates, CSS-wide, logical-direction, and ambiguous
+forms remain typed diagnostics. The complete contract and tradeoffs are in
+`docs/plan/tasks/native-engine-083.md`; implementation and validation are
+pending. Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -653,6 +662,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-080` | bounded non-inherited integer `flex-shrink` weights for eligible fixed-width row-flex items, weighted by original base width with min-width freeze/redistribution | `native-engine-079` | flex basis/shorthand, fractional factors, base-size reflow, auto margins, columns, percentage/intrinsic sizing, and browser Flexbox parity |
 | `native-engine-081` | bounded non-inherited `flex-basis:auto|Npx` for eligible row-flex items, with explicit bases overriding width before the shared grow/shrink and line-formation owners | `native-engine-080` | flex shorthand, percentages, fractional lengths, `calc()`, `content`, intrinsic sizing changes, auto margins, columns, and browser Flexbox parity |
 | `native-engine-082` | bounded `flex` shorthand expansion into non-inherited grow, shrink, and basis components with declaration-order-aware longhand overrides | `native-engine-081` | CSS-wide reset keywords, percentage/fractional bases, fractional factors, ambiguous or unsupported token forms, auto margins, columns, and browser Flexbox parity |
+| `native-engine-083` | bounded `flex-flow` shorthand expansion into non-inherited direction and wrap components with omitted-component reset and declaration-order-aware longhand overrides | `native-engine-082` | columns, column-reverse, logical direction/RTL, duplicate tokens, CSS-wide reset keywords, ambiguous forms, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1046,6 +1056,7 @@ visual stacking.
 | bounded flex shrink | makes negative fixed-width row free space observable through weighted item reduction while preserving one line/coordinate owner | flex basis, flex shorthand, fractional factors, base-size reflow, auto margins, column directions, percentage/intrinsic sizing, and browser Flexbox parity | resolve bounded integer shrink factors, weight them by original flex base widths, allocate deficit with prefix-floor shares, freeze effective min-width floors and redistribute remainder, then pass final outer widths through existing flex/justify/paint/hit/scroll consumers |
 | bounded flex basis | makes explicit fixed-pixel or `auto` flex bases override item width before the shared line-formation, grow, and shrink owners | flex shorthand, percentages, fractional lengths, `calc()`, `content`, intrinsic sizing changes, auto margins, columns, and browser Flexbox parity | resolve non-inherited `auto|Npx`, reuse box-sizing and min/max conversion, leave explicit bases unclamped before line formation, and pass final widths through the existing geometry consumers |
 | bounded flex shorthand | makes common `flex` presets and compact grow/shrink/basis declarations feed the completed component owners with CSS-like declaration-order precedence | CSS-wide reset keywords, percentage/fractional bases, fractional factors, ambiguous token forms, auto margins, columns, and browser Flexbox parity | expand bounded `none`, `auto`, integer-factor, and pixel/`auto` basis forms directly into the existing component fields, preserve valid source-order longhand overrides, and reuse the existing flex sizing and artifact consumers |
+| bounded flex-flow shorthand | makes common row/reverse-row and nowrap/wrap/wrap-reverse combinations feed the completed direction and wrapping owners with shorthand reset and source-order precedence | columns, column-reverse, logical direction/RTL, duplicate tokens, CSS-wide reset keywords, ambiguous forms, and browser Flexbox parity | classify one or two bounded direction/wrap tokens, expand omitted components to row/nowrap, preserve valid longhand overrides, and reuse the existing physical placement, line formation, artifact, overflow, and hit-test consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence

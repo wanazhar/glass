@@ -1,7 +1,7 @@
 ---
 id: native-engine-074
 scope: glass-browser/native-engine/flex-wrap-reverse
-status: active
+status: complete
 depends-on: [native-engine-073]
 ---
 
@@ -109,19 +109,41 @@ physical cross-axis operation, it is intentionally independent from
 
 ## Verification
 
-- [ ] CSS unit tests cover accepted `wrap-reverse`, defaulting, rejected
+- [x] CSS unit tests cover accepted `wrap-reverse`, defaulting, rejected
   values, non-inheritance, selector cascade, and inline precedence;
-- [ ] integration tests cover reversed line membership geometry, all bounded
+- [x] integration tests cover reversed line membership geometry, all bounded
   `align-content` values, signed artifact translation, explicit/auto/smaller
   heights, `nowrap` equivalence, descendants, root overflow, scrolling,
   hit testing, paint, and semantic/source-order preservation;
-- [ ] the full native integration suite, strict default/native Clippy,
+- [x] the full native integration suite, strict default/native Clippy,
   formatting, whitespace, and documentation validators pass;
-- [ ] implementation, documentation, and issue #40 checkpoints are committed
+- [x] implementation, documentation, and issue #40 checkpoints are committed
   locally; remote CI is not claimed until this branch is pushed;
-- [ ] exact regenerable Cargo outputs are reclaimed after all validation
+- [x] exact regenerable Cargo outputs are reclaimed after all validation
   without terminating long-lived Glass processes.
 
 ## Completion evidence
 
-Pending implementation and validation.
+The design checkpoint is `5f6c61a` and the implementation checkpoint is
+`96fd15c`. Local verification completed on 2026-09-02 UTC:
+
+- `cargo fmt --all -- --check` and `git diff --check`: passed;
+- `cargo test -p glass-browser --features native-engine --test native_engine native_flex_wrap_reverse --locked -- --nocapture`: 1 passed;
+- `cargo test -p glass-browser --features native-engine --test native_engine --locked -- --nocapture`: 95 passed, 0 failed;
+- `RUST_MIN_STACK=8388608 cargo test -p glass-browser --features native-engine --lib --locked -- --nocapture`: 869 passed, 1 ignored;
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`: passed in 13m20s (peak RSS 1,865,988 KiB);
+- `cargo clippy --all-targets --no-default-features --locked -- -D warnings`: passed in 6m45s (peak RSS 1,795,572 KiB);
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`: passed in 3m16s (peak RSS 1,632,612 KiB);
+- `cargo build -p glass-dev --bin glass --locked`: passed in 11m10s (peak RSS 1,997,136 KiB), enabling the live documentation inventory;
+- repository validators passed: version sync, feature parity, release documentation (488 Markdown documents; 83 current documents; 57 previous-version hits; 0 current-claim failures), TUI shortcuts, documentation depth, documentation coverage (488 Markdown files, 345 full-product MCP tools, 100 browser-only, 17 examples, 22 public modules), reliability matrix, public read-only adapters, and the web-IR corpus (8 fixtures, 8 scenarios, 11 categories).
+
+The direct full native library run used an explicit 8 MiB test-thread stack
+because the previously documented `cli::args::tests::agent_readiness_commands_are_explicit`
+test overflows the default stack; all 869 native library tests passed and no
+074 test failed. Remote CI remains pending because this branch is local-only.
+
+After validation, the exact regenerable Glass Cargo target contents
+(`/home/ubuntu/work/glass/target/debug`, `doc`, `tmp`, and Rust metadata files)
+were reclaimed from 5.2 GB to 4.0 KB. The separate ForgeBuild target remains
+4.0 KB; the filesystem reports 65 GB free. No long-lived Glass process was
+terminated.

@@ -274,12 +274,13 @@ documentation, and exact-target evidence are recorded in the task file. The
 first all-in-one certification run exposed one environment-sensitive Rust
 Analyzer probe; its exact retry passed. Remote CI remains pending because the
 branch is local-only.
-The active 088 boundary adds explicit parent `align-items:normal`. In the
+The completed 088 boundary adds explicit parent `align-items:normal`. In the
 supported row/row-reverse flex context, `normal` resolves `align-self:auto`
 through the completed stretch used-size owner while retaining a distinct
 computed keyword; the omitted native fallback remains `flex-start`. The
-contract is recorded in `docs/plan/tasks/native-engine-088.md`; design is
-pending. Remote CI remains pending because the branch is local-only.
+contract and evidence are recorded in `docs/plan/tasks/native-engine-088.md`;
+design is `162543f1` and implementation is `19d8d3f6`. Remote CI remains
+pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

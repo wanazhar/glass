@@ -1,7 +1,7 @@
 ---
 id: native-engine-088
 scope: glass-browser/native-engine/align-items-normal
-status: active
+status: complete
 depends-on: [native-engine-087]
 ---
 
@@ -100,8 +100,39 @@ cross-axis geometry representation.
 
 ## Verification
 
-Design is recorded in this task. Implementation, focused parser/cascade and
-shared-layout tests, full native suites, strict feature/documentation gates,
-issue #40 status, and exact regenerable-target cleanup will be recorded here
-when the slice closes. Remote CI is not claimed until the local branch is
-pushed.
+- Design checkpoint: `162543f1`.
+- Implementation checkpoint: `19d8d3f6`. The parser/cascade coverage passed
+  2/2 tests; the clean isolated build and test measurement was 813.31 seconds
+  with 2,498,732 KiB peak RSS. The focused shared-layout integration case
+  passed 1/1 in 363.48 seconds with 2,117,948 KiB peak RSS. It covers the
+  normal-to-stretch used-size equivalence, explicit child overrides,
+  descendants, paint, and hit testing.
+- The full native integration suite passed 115/115 in 3.70 seconds. The full
+  native library suite passed 887 tests with 1 ignored in 7.66 seconds.
+- Strict all-feature Clippy passed with warnings denied in 832.70 seconds with
+  1,886,332 KiB peak RSS. The strict no-default-feature matrix passed in
+  406.58 seconds with 1,794,844 KiB peak RSS. Workspace rustdoc with
+  `RUSTDOCFLAGS="-D warnings"` passed in 194.88 seconds with 1,631,880 KiB
+  peak RSS. The locked `glass-dev` binary build passed in 675.73 seconds with
+  1,997,464 KiB peak RSS.
+- Formatting, `git diff --check`, version synchronization at `0.3.14`,
+  feature parity (14 capabilities across 4 targets), release documentation
+  (502 Markdown files and zero current-claim failures), TUI shortcut inventory
+  (15 implementation keys and 63 documentation markers), documentation depth
+  (93 current guides and 19 substantive contracts), reliability (6 scenarios
+  across 4 targets), public read-only adapters (5), and Web IR (8 fixtures,
+  8 scenarios, and 11 categories with runtime goldens) all passed. Live
+  documentation coverage passed in 4.34 seconds with 38,180 KiB peak RSS:
+  502 Markdown files, 345 full-product MCP tools (100 browser-only),
+  17 examples, and 22 public modules.
+- The exact temporary `/tmp/glass-088-target` tree reached 5.3G during the
+  isolated binary inventory build. It was inspected after all processes
+  exited, had no open files, and was removed in full. The project
+  `/home/ubuntu/work/glass/target` remains only its root directory at 4.0K;
+  `/dev/sda1` is 129G used, 64G available, and 67% full. Shared Cargo
+  registries and toolchains were retained. Long-lived Glass processes were
+  not terminated.
+- Issue [#40](https://github.com/wanazhar/glass/issues/40) was updated with
+  the design, implementation, evidence, and cleanup state. Remote CI is not
+  claimed because this branch remains local-only; no push, release, tag,
+  registry publication, or browser-parity certification is claimed.

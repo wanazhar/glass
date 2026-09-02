@@ -5949,6 +5949,111 @@ fn native_flex_shrink_freezes_minimums_and_preserves_wrap_and_zero_overflow() {
     assert_eq!(zero_layout.box_for(zero_second).unwrap().x, 0);
 }
 
+#[test]
+fn native_flex_basis_overrides_width_and_feeds_growth_and_descendants() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:30px;gap:2px;justify-content:space-between'><div id='first' style='width:4px;flex-basis:10px;flex-grow:1;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></div><div id='second' style='width:20px;flex-basis:6px;flex-grow:2;height:8px;background-color:blue'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(row).unwrap().width, 30);
+    assert_eq!(layout.box_for(first).unwrap().width, 14);
+    assert_eq!(layout.box_for(nested).unwrap().width, 14);
+    assert_eq!(layout.box_for(second).unwrap().x, 16);
+    assert_eq!(layout.box_for(second).unwrap().width, 14);
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == first && rect.width == 14 && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(layout.hit_test(13, 6).unwrap(), Some(first));
+    assert_eq!(layout.hit_test(16, 1).unwrap(), Some(second));
+}
+
+#[test]
+fn native_flex_basis_controls_wrap_constraints_and_explicit_overflow() {
+    let wrapped = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:12px;gap:2px;flex-wrap:wrap'><div id='first' style='width:8px;flex-basis:4px;height:8px'>A</div><div id='second' style='width:8px;flex-basis:4px;height:8px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let wrapped_first = wrapped.resolve_target("id=first").unwrap();
+    let wrapped_second = wrapped.resolve_target("id=second").unwrap();
+    let wrapped_layout = wrapped
+        .layout(Viewport {
+            width: 16,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(wrapped_layout.box_for(wrapped_first).unwrap().width, 4);
+    assert_eq!(wrapped_layout.box_for(wrapped_first).unwrap().x, 0);
+    assert_eq!(wrapped_layout.box_for(wrapped_second).unwrap().width, 4);
+    assert_eq!(wrapped_layout.box_for(wrapped_second).unwrap().x, 6);
+    assert_eq!(wrapped_layout.box_for(wrapped_second).unwrap().y, 0);
+
+    let constrained = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:20px;gap:2px'><div id='bordered' style='width:2px;flex-basis:4px;min-width:10px;padding:1px;border:1px solid red;flex-shrink:0;height:8px'>A</div><div id='receiver' style='width:40px;flex-basis:4px;flex-shrink:0;height:8px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let bordered = constrained.resolve_target("id=bordered").unwrap();
+    let receiver = constrained.resolve_target("id=receiver").unwrap();
+    let constrained_layout = constrained
+        .layout(Viewport {
+            width: 20,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(constrained_layout.box_for(bordered).unwrap().width, 14);
+    assert_eq!(constrained_layout.box_for(receiver).unwrap().x, 16);
+    assert_eq!(constrained_layout.box_for(receiver).unwrap().width, 4);
+    assert_eq!(
+        constrained_layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == bordered)
+            .map(|layout_box| layout_box.content_rect.width),
+        Some(10)
+    );
+
+    let overflow = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:16px;gap:2px'><div id='first' style='width:4px;flex-basis:12px;flex-shrink:0;height:8px'>A</div><div id='second' style='width:4px;flex-basis:12px;flex-shrink:0;height:8px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let overflow_first = overflow.resolve_target("id=first").unwrap();
+    let overflow_second = overflow.resolve_target("id=second").unwrap();
+    let overflow_layout = overflow
+        .layout(Viewport {
+            width: 16,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(overflow_layout.box_for(overflow_first).unwrap().width, 12);
+    assert_eq!(overflow_layout.box_for(overflow_second).unwrap().x, 14);
+    assert_eq!(overflow_layout.box_for(overflow_second).unwrap().width, 12);
+    assert_eq!(overflow_layout.content_width, 26);
+    assert_eq!(overflow_layout.max_scroll_offset().x, 10);
+}
+
 #[tokio::test]
 async fn legacy_name_fragments_use_decoded_fallback_and_preserve_scroll_safety() {
     let html = "<a id='jump' href='#legacy%20plan'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><a name='legacy plan'>Legacy target</a><a name='café'>UTF-8 legacy target</a><a name='same'>Name should lose</a><a name='hidden' style='display:none'>Hidden legacy target</a><a name='zero' style='display:contents'></a><a name='duplicate'>First duplicate</a><a name='duplicate'>Second duplicate</a><div name='not-anchor'>Not a target</div><p id='same'>ID target</p>";
@@ -6749,7 +6854,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex-grow: 1.5; flex-shrink: 1.5; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -6793,6 +6898,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "flex-shrink"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "flex-basis"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

@@ -1,8 +1,9 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
-    AlignContentValue, AlignItemsValue, DisplayValue, FlexDirectionValue, FlexWrapValue,
-    JustifyContentValue, NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, TextAlignValue,
-    TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+    AlignContentValue, AlignItemsValue, DisplayValue, FlexBasisValue, FlexDirectionValue,
+    FlexWrapValue, JustifyContentValue, NativeBorderRadius, NativeBoxEdges, NativeComputedStyle,
+    TextAlignValue, TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue,
+    WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -1544,7 +1545,7 @@ impl<'a> LayoutBuilder<'a> {
                         continue;
                     }
                     let margin = style.margin();
-                    let width = self.outer_width(child, style, false, available_width, !wrapped);
+                    let width = self.flex_item_base_width(child, style, available_width, wrapped);
                     let flex_base_width = width;
                     let min_width = style
                         .min_width()
@@ -1790,6 +1791,28 @@ impl<'a> LayoutBuilder<'a> {
             width.min(available_width.max(min_width.unwrap_or_default()))
         } else {
             width
+        }
+    }
+
+    fn flex_item_base_width(
+        &self,
+        id: NativeNodeId,
+        style: NativeComputedStyle,
+        available_width: u32,
+        wrapped: bool,
+    ) -> u32 {
+        match style.flex_basis() {
+            FlexBasisValue::Auto => self.outer_width(id, style, false, available_width, !wrapped),
+            FlexBasisValue::Length(declared) => {
+                let width = outer_width_from_declared(style, declared);
+                let min_width = style
+                    .min_width()
+                    .map(|value| outer_width_from_declared(style, value));
+                let max_width = style
+                    .max_width()
+                    .map(|value| outer_width_from_declared(style, value));
+                constrain_dimension(width, min_width, max_width)
+            }
         }
     }
 

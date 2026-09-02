@@ -1,7 +1,7 @@
 ---
 id: native-engine-087
 scope: glass-browser/native-engine/align-items-stretch
-status: active
+status: complete
 depends-on: [native-engine-086]
 ---
 
@@ -99,8 +99,36 @@ allowed.
 
 ## Verification
 
-Design is recorded in this task. Implementation, focused parser/cascade and
-shared-layout tests, full native suites, strict feature/documentation gates,
-issue #40 status, and exact regenerable-target cleanup will be recorded here
-when the slice closes. Remote CI is not claimed until the local branch is
-pushed.
+- Design checkpoint: `4708f663`.
+- Implementation checkpoint: `e0d051ce`.
+- `cargo test --locked -p glass-browser --features native-engine --lib
+  align_items -- --nocapture`: 2 passed; the clean-build measurement was
+  810.31 seconds with 2,478,956 KiB peak RSS.
+- Focused native integration: 2 passed in the final cached run (23.87
+  seconds); the full `native_engine` integration suite passed 114/114 in
+  3.72 seconds.
+- The full native library suite passed 888 tests with 1 ignored in 7.56
+  seconds under `RUST_MIN_STACK=8388608`.
+- Strict all-feature Clippy passed in 819.30 seconds with 1,880,040 KiB peak
+  RSS; strict no-default-features Clippy passed in 408.80 seconds with
+  1,790,364 KiB peak RSS.
+- Workspace rustdoc with `-D warnings` passed in 201.73 seconds with
+  1,631,976 KiB peak RSS. The locked `glass-dev` binary build passed in
+  672.05 seconds with 1,999,548 KiB peak RSS.
+- Release certification reached the complete browser suite and the
+  `glass-dev` suite. The first run reported 364 passed and one failure in the
+  environment-sensitive Rust Analyzer diagnostics probe; the exact isolated
+  retry passed 1/1 in 5.90 seconds. The other reached gates reported feature
+  parity 14/4, release documentation 501 Markdown files with zero current
+  claim failures, TUI 15/63, and documentation depth 93/19. Because the
+  first run exited at that test failure, later certification commands were
+  rerun as the focused/static gates above rather than represented as a clean
+  single-script exit.
+- The exact regenerable `/home/ubuntu/work/glass/target` tree was inventoried
+  at 8.4G after validation and removed only after all build processes exited;
+  it now contains only its root directory (4.0K). No remote CI result is
+  claimed because this branch remains local-only.
+
+Issue #40 was updated with the design, implementation, evidence, and cleanup
+state. The source of truth remains the issue and this task record; remote CI
+is still pending until the branch is intentionally pushed.

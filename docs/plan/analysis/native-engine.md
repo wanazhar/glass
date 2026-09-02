@@ -514,6 +514,14 @@ first all-in-one certification run exposed one environment-sensitive Rust
 Analyzer probe; its exact retry passed. Remote CI remains pending because the
 branch is local-only.
 
+The active dependency-ordered `native-engine-088` slice adds explicit parent
+`align-items:normal`. In the supported row/row-reverse flex context, `normal`
+resolves `align-self:auto` through the completed stretch used-size owner while
+the computed keyword remains distinct and the omitted native fallback stays
+`flex-start`. The complete contract and tradeoffs are in
+`docs/plan/tasks/native-engine-088.md`; design is pending. Remote CI remains
+pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -717,6 +725,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-085` | bounded `place-content` shorthand expansion into the existing `align-content` and `justify-content` components with one-token shared values and explicit two-token axis order | `native-engine-084` | full CSS shorthand grammar, unsupported justify values, logical direction/writing modes, safe/unsafe alignment, CSS-wide reset semantics, grid, fractional/intrinsic sizing, and browser Flexbox parity |
 | `native-engine-086` | bounded non-inherited `align-self:stretch` for eligible direct flex items, filling auto-height items from the existing line cross size while preserving explicit heights | `native-engine-085` | `align-items:stretch`, auto margins, baseline/normal/logical alignment, column directions, fractional/intrinsic sizing, and browser Flexbox parity |
 | `native-engine-087` | bounded explicit parent `align-items:stretch` resolving `align-self:auto` through the completed used-size path while preserving explicit child overrides and heights | `native-engine-086` | auto margins, baseline/normal/logical alignment, column directions, fractional/percentage/intrinsic sizing, changed omitted-value defaults, and browser Flexbox parity |
+| `native-engine-088` | bounded explicit parent `align-items:normal` resolving `align-self:auto` as the existing stretch path in row/row-reverse flex while retaining a distinct computed keyword | `native-engine-087` | `align-self:normal`, auto margins, baseline/logical alignment, block/grid/absolute layout modes, column directions, fractional/percentage/intrinsic sizing, changed omitted-value defaults, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

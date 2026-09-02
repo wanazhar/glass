@@ -1331,7 +1331,7 @@ impl<'a> LayoutBuilder<'a> {
             return self.layout_children(parent, x, y, available_width, depth);
         }
         let parent_style = self.document.computed_style_for_layout(parent);
-        let gap = parent_style.gap();
+        let gap = parent_style.column_gap();
         let row_gap = parent_style.row_gap();
         let justify_content = parent_style.justify_content();
         let align_items = parent_style.align_items();

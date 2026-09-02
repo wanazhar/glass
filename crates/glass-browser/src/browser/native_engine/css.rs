@@ -271,6 +271,12 @@ pub(crate) enum VerticalAlignValue {
     Bottom,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeGapValue {
+    row: u32,
+    column: u32,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
@@ -462,7 +468,7 @@ impl NativeComputedStyle {
         self.letter_spacing
     }
 
-    pub(crate) const fn gap(self) -> u32 {
+    pub(crate) const fn column_gap(self) -> u32 {
         self.gap
     }
 
@@ -633,6 +639,7 @@ impl NativeStylesheet {
         let mut letter_spacing = None;
         let mut gap = None;
         let mut row_gap = None;
+        let mut column_gap = None;
         let mut width = None;
         let mut height = None;
         let mut min_width = None;
@@ -808,26 +815,15 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.gap
-                && wins(rule.selector.specificity, rule.order, false, gap)
-            {
-                gap = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.row_gap
-                && wins(rule.selector.specificity, rule.order, false, row_gap)
-            {
-                row_gap = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_gap_declarations(
+                rule.declarations,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut gap,
+                &mut row_gap,
+                &mut column_gap,
+            );
             if let Some(value) = rule.declarations.justify_content
                 && wins(
                     rule.selector.specificity,
@@ -1208,26 +1204,15 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.gap
-                && wins(u16::MAX, usize::MAX, true, gap)
-            {
-                gap = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.row_gap
-                && wins(u16::MAX, usize::MAX, true, row_gap)
-            {
-                row_gap = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_gap_declarations(
+                declarations,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut gap,
+                &mut row_gap,
+                &mut column_gap,
+            );
             if let Some(value) = declarations.justify_content
                 && wins(u16::MAX, usize::MAX, true, justify_content)
             {
@@ -1466,8 +1451,8 @@ impl NativeStylesheet {
             text_indent: text_indent.map_or(0, |value| value.value),
             word_spacing: word_spacing.map_or(inherited.word_spacing, |value| value.value),
             letter_spacing: letter_spacing.map_or(inherited.letter_spacing, |value| value.value),
-            gap: gap.map_or(0, |value| value.value),
-            row_gap: row_gap.map_or(0, |value| value.value),
+            gap: resolve_gap_axis(gap, column_gap, GapAxis::Column),
+            row_gap: resolve_gap_axis(gap, row_gap, GapAxis::Row),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             min_width: min_width.map(|value| value.value),
@@ -1515,10 +1500,135 @@ struct CascadeValue<T> {
     inline: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GapCascadeValue<T> {
+    value: T,
+    specificity: u16,
+    order: usize,
+    declaration_order: usize,
+    inline: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GapAxis {
+    Row,
+    Column,
+}
+
 fn wins<T>(specificity: u16, order: usize, inline: bool, current: Option<CascadeValue<T>>) -> bool {
     current.is_none_or(|current| {
         (inline, specificity, order) > (current.inline, current.specificity, current.order)
     })
+}
+
+fn gap_precedes<T, U>(candidate: &GapCascadeValue<T>, current: &GapCascadeValue<U>) -> bool {
+    (
+        candidate.inline,
+        candidate.specificity,
+        candidate.order,
+        candidate.declaration_order,
+    ) > (
+        current.inline,
+        current.specificity,
+        current.order,
+        current.declaration_order,
+    )
+}
+
+fn gap_wins<T>(
+    specificity: u16,
+    order: usize,
+    declaration_order: usize,
+    inline: bool,
+    current: Option<GapCascadeValue<T>>,
+) -> bool {
+    current.is_none_or(|current| {
+        (inline, specificity, order, declaration_order)
+            > (
+                current.inline,
+                current.specificity,
+                current.order,
+                current.declaration_order,
+            )
+    })
+}
+
+fn resolve_gap_axis(
+    shorthand: Option<GapCascadeValue<NativeGapValue>>,
+    longhand: Option<GapCascadeValue<u32>>,
+    axis: GapAxis,
+) -> u32 {
+    match (shorthand, longhand) {
+        (Some(shorthand), Some(longhand)) if gap_precedes(&longhand, &shorthand) => longhand.value,
+        (Some(shorthand), _) => match axis {
+            GapAxis::Row => shorthand.value.row,
+            GapAxis::Column => shorthand.value.column,
+        },
+        (None, Some(longhand)) => longhand.value,
+        (None, None) => 0,
+    }
+}
+
+fn apply_gap_declarations(
+    declarations: NativeDeclarations,
+    specificity: u16,
+    order: usize,
+    inline: bool,
+    shorthand: &mut Option<GapCascadeValue<NativeGapValue>>,
+    row_gap: &mut Option<GapCascadeValue<u32>>,
+    column_gap: &mut Option<GapCascadeValue<u32>>,
+) {
+    if let Some(value) = declarations.gap
+        && gap_wins(
+            specificity,
+            order,
+            declarations.gap_order,
+            inline,
+            *shorthand,
+        )
+    {
+        *shorthand = Some(GapCascadeValue {
+            value,
+            specificity,
+            order,
+            declaration_order: declarations.gap_order,
+            inline,
+        });
+    }
+    if let Some(value) = declarations.row_gap
+        && gap_wins(
+            specificity,
+            order,
+            declarations.row_gap_order,
+            inline,
+            *row_gap,
+        )
+    {
+        *row_gap = Some(GapCascadeValue {
+            value,
+            specificity,
+            order,
+            declaration_order: declarations.row_gap_order,
+            inline,
+        });
+    }
+    if let Some(value) = declarations.column_gap
+        && gap_wins(
+            specificity,
+            order,
+            declarations.column_gap_order,
+            inline,
+            *column_gap,
+        )
+    {
+        *column_gap = Some(GapCascadeValue {
+            value,
+            specificity,
+            order,
+            declaration_order: declarations.column_gap_order,
+            inline,
+        });
+    }
 }
 
 fn apply_border_sides(
@@ -1586,8 +1696,12 @@ struct NativeDeclarations {
     text_indent: Option<u32>,
     word_spacing: Option<u32>,
     letter_spacing: Option<u32>,
-    gap: Option<u32>,
+    gap: Option<NativeGapValue>,
+    gap_order: usize,
     row_gap: Option<u32>,
+    row_gap_order: usize,
+    column_gap: Option<u32>,
+    column_gap_order: usize,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -1767,6 +1881,7 @@ fn parse_source(
             || declarations.letter_spacing.is_some()
             || declarations.gap.is_some()
             || declarations.row_gap.is_some()
+            || declarations.column_gap.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.min_width.is_some()
@@ -1905,8 +2020,8 @@ fn parse_declarations_with_diagnostics(
             "text-indent" => parse_dimension(value).is_some(),
             "word-spacing" => parse_dimension(value).is_some(),
             "letter-spacing" => parse_dimension(value).is_some(),
-            "gap" => parse_dimension(value).is_some(),
-            "row-gap" => parse_dimension(value).is_some(),
+            "gap" => parse_gap(value).is_some(),
+            "row-gap" | "column-gap" => parse_dimension(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
             }
@@ -1978,6 +2093,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-indent"
             | "gap"
             | "row-gap"
+            | "column-gap"
             | "width"
             | "height"
             | "min-width"
@@ -2031,7 +2147,7 @@ fn selector_diagnostic_detail(selector: &str) -> &'static str {
 
 fn parse_declarations(source: &str) -> NativeDeclarations {
     let mut declarations = NativeDeclarations::default();
-    for declaration in source.split(';') {
+    for (declaration_order, declaration) in source.split(';').enumerate() {
         let Some((property, value)) = declaration.split_once(':') else {
             continue;
         };
@@ -2106,10 +2222,22 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.letter_spacing = parse_dimension(value);
             }
             "gap" => {
-                declarations.gap = parse_dimension(value);
+                if let Some(parsed) = parse_gap(value) {
+                    declarations.gap = Some(parsed);
+                    declarations.gap_order = declaration_order;
+                }
             }
             "row-gap" => {
-                declarations.row_gap = parse_dimension(value);
+                if let Some(parsed) = parse_dimension(value) {
+                    declarations.row_gap = Some(parsed);
+                    declarations.row_gap_order = declaration_order;
+                }
+            }
+            "column-gap" => {
+                if let Some(parsed) = parse_dimension(value) {
+                    declarations.column_gap = Some(parsed);
+                    declarations.column_gap_order = declaration_order;
+                }
             }
             "width" => {
                 declarations.width = parse_dimension(value);
@@ -2429,6 +2557,19 @@ fn parse_dimension(value: &str) -> Option<u32> {
     }
     let value = value.parse::<u32>().ok()?;
     (value <= MAX_NATIVE_VIEWPORT_DIMENSION).then_some(value)
+}
+
+fn parse_gap(value: &str) -> Option<NativeGapValue> {
+    let mut values = value.split_ascii_whitespace();
+    let row = parse_dimension(values.next()?)?;
+    let column = match values.next() {
+        Some(value) => parse_dimension(value)?,
+        None => row,
+    };
+    values
+        .next()
+        .is_none()
+        .then_some(NativeGapValue { row, column })
 }
 
 fn parse_line_height(value: &str) -> Option<u32> {
@@ -2921,7 +3062,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: stretch; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; row-gap: 13px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: stretch; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2947,8 +3088,15 @@ mod tests {
         assert_eq!(declarations.text_indent, Some(12));
         assert_eq!(declarations.word_spacing, Some(12));
         assert_eq!(declarations.letter_spacing, Some(12));
-        assert_eq!(declarations.gap, Some(12));
+        assert_eq!(
+            declarations.gap,
+            Some(NativeGapValue {
+                row: 12,
+                column: 14,
+            })
+        );
         assert_eq!(declarations.row_gap, Some(13));
+        assert_eq!(declarations.column_gap, Some(15));
         assert_eq!(declarations.font_weight, Some(FontWeightValue::Bold));
         assert_eq!(declarations.font_style, Some(FontStyleValue::Italic));
         assert_eq!(declarations.word_break, Some(WordBreakValue::BreakAll));
@@ -3384,11 +3532,24 @@ mod tests {
     }
 
     #[test]
-    fn gap_parser_accepts_only_bounded_non_negative_single_pixels() {
-        assert_eq!(parse_declarations("gap: 16px").gap, Some(16));
-        assert_eq!(parse_declarations("gap: 0px").gap, Some(0));
+    fn gap_parser_accepts_one_or_two_bounded_non_negative_pixels() {
+        assert_eq!(
+            parse_declarations("gap: 16px").gap,
+            Some(NativeGapValue {
+                row: 16,
+                column: 16,
+            })
+        );
+        assert_eq!(
+            parse_declarations("gap: 8px 16px").gap,
+            Some(NativeGapValue { row: 8, column: 16 })
+        );
+        assert_eq!(
+            parse_declarations("gap: 0px").gap,
+            Some(NativeGapValue { row: 0, column: 0 })
+        );
         assert_eq!(parse_declarations("gap: -1px").gap, None);
-        assert_eq!(parse_declarations("gap: 1px 2px").gap, None);
+        assert_eq!(parse_declarations("gap: 1px 2px 3px").gap, None);
         assert_eq!(parse_declarations("gap: 1.5px").gap, None);
         assert_eq!(parse_declarations("gap: 2em").gap, None);
         assert_eq!(parse_declarations("gap: 50%").gap, None);
@@ -3405,6 +3566,18 @@ mod tests {
         assert_eq!(parse_declarations("row-gap: 2em").row_gap, None);
         assert_eq!(parse_declarations("row-gap: 50%").row_gap, None);
         assert_eq!(parse_declarations("row-gap: 20000px").row_gap, None);
+    }
+
+    #[test]
+    fn column_gap_parser_accepts_only_bounded_non_negative_single_pixels() {
+        assert_eq!(parse_declarations("column-gap: 16px").column_gap, Some(16));
+        assert_eq!(parse_declarations("column-gap: 0px").column_gap, Some(0));
+        assert_eq!(parse_declarations("column-gap: -1px").column_gap, None);
+        assert_eq!(parse_declarations("column-gap: 1px 2px").column_gap, None);
+        assert_eq!(parse_declarations("column-gap: 1.5px").column_gap, None);
+        assert_eq!(parse_declarations("column-gap: 2em").column_gap, None);
+        assert_eq!(parse_declarations("column-gap: 50%").column_gap, None);
+        assert_eq!(parse_declarations("column-gap: 20000px").column_gap, None);
     }
 
     #[test]
@@ -4082,7 +4255,7 @@ mod tests {
     #[test]
     fn gap_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { gap: 16px; } #explicit { gap: 24px; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='gap: 32px'>Explicit</span><span id='invalid' style='gap: -1px'>Invalid</span></div>",
+            "<style>#parent { gap: 16px 20px; } #explicit { gap: 24px; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='gap: 32px'>Explicit</span><span id='invalid' style='gap: -1px'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -4091,10 +4264,17 @@ mod tests {
         let explicit = document.resolve_target("id=explicit").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
-        assert_eq!(document.computed_style_for_layout(parent).gap(), 16);
-        assert_eq!(document.computed_style_for_layout(child).gap(), 0);
-        assert_eq!(document.computed_style_for_layout(explicit).gap(), 32);
-        assert_eq!(document.computed_style_for_layout(invalid).gap(), 0);
+        assert_eq!(document.computed_style_for_layout(parent).column_gap(), 20);
+        assert_eq!(document.computed_style_for_layout(parent).row_gap(), 16);
+        assert_eq!(document.computed_style_for_layout(child).column_gap(), 0);
+        assert_eq!(document.computed_style_for_layout(child).row_gap(), 0);
+        assert_eq!(
+            document.computed_style_for_layout(explicit).column_gap(),
+            32
+        );
+        assert_eq!(document.computed_style_for_layout(explicit).row_gap(), 32);
+        assert_eq!(document.computed_style_for_layout(invalid).column_gap(), 0);
+        assert_eq!(document.computed_style_for_layout(invalid).row_gap(), 0);
     }
 
     #[test]
@@ -4113,6 +4293,30 @@ mod tests {
         assert_eq!(document.computed_style_for_layout(child).row_gap(), 0);
         assert_eq!(document.computed_style_for_layout(explicit).row_gap(), 32);
         assert_eq!(document.computed_style_for_layout(invalid).row_gap(), 0);
+    }
+
+    #[test]
+    fn gap_longhands_follow_declaration_order_and_inline_precedence() {
+        let document = NativeDocument::parse(
+            "<style>#later-row { row-gap: 2px; gap: 4px 6px; row-gap: 8px; column-gap: 10px; } #earlier-row { gap: 4px 6px; row-gap: 8px; column-gap: 10px; } .specificity { gap: 2px 3px; row-gap: 9px; } #specificity { row-gap: 7px; column-gap: 11px; }</style><div id='later-row'>Later</div><div id='earlier-row' style='row-gap: 12px; gap: 14px 16px; column-gap: 18px'>Earlier</div><div id='specificity' class='specificity'>Specificity</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let later_row = document.resolve_target("id=later-row").unwrap();
+        let earlier_row = document.resolve_target("id=earlier-row").unwrap();
+        let specificity = document.resolve_target("id=specificity").unwrap();
+
+        let later_style = document.computed_style_for_layout(later_row);
+        assert_eq!(later_style.column_gap(), 10);
+        assert_eq!(later_style.row_gap(), 8);
+
+        let earlier_style = document.computed_style_for_layout(earlier_row);
+        assert_eq!(earlier_style.column_gap(), 18);
+        assert_eq!(earlier_style.row_gap(), 14);
+
+        let specificity_style = document.computed_style_for_layout(specificity);
+        assert_eq!(specificity_style.column_gap(), 11);
+        assert_eq!(specificity_style.row_gap(), 7);
     }
 
     #[test]

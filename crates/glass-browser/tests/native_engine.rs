@@ -6091,6 +6091,55 @@ fn native_flex_shorthand_expands_zero_basis_and_preserves_shared_consumers() {
     assert_eq!(layout.hit_test(11, 1).unwrap(), Some(second));
 }
 
+#[test]
+fn native_flex_flow_shorthand_reuses_reverse_and_wrap_consumers() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:12px;gap:2px;flex-flow:row-reverse wrap'><div id='first' style='width:8px;height:6px;margin:1px;flex-shrink:0;background-color:red'>A</div><div id='second' style='width:4px;height:6px;margin:1px;flex-shrink:0;background-color:blue'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let viewport = Viewport {
+        width: 16,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(row).unwrap().width, 12);
+    assert_eq!(
+        layout.box_for(first),
+        Some(NativeRect {
+            x: 3,
+            y: 1,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(
+        layout.box_for(second),
+        Some(NativeRect {
+            x: 7,
+            y: 11,
+            width: 4,
+            height: 6,
+        })
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == first && rect.x == 3 && rect.y == 1 && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(layout.hit_test(4, 2).unwrap(), Some(first));
+    assert_eq!(layout.hit_test(8, 12).unwrap(), Some(second));
+}
+
 #[tokio::test]
 async fn legacy_name_fragments_use_decoded_fallback_and_preserve_scroll_safety() {
     let html = "<a id='jump' href='#legacy%20plan'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><a name='legacy plan'>Legacy target</a><a name='café'>UTF-8 legacy target</a><a name='same'>Name should lose</a><a name='hidden' style='display:none'>Hidden legacy target</a><a name='zero' style='display:contents'></a><a name='duplicate'>First duplicate</a><a name='duplicate'>Second duplicate</a><div name='not-anchor'>Not a target</div><p id='same'>ID target</p>";
@@ -6891,7 +6940,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex: 1.5 1 8px; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -6934,6 +6983,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "flex"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "flex-flow"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

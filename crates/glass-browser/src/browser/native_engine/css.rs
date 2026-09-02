@@ -2105,6 +2105,7 @@ fn parse_declarations_with_diagnostics(
             "align-content" => parse_align_content(value).is_some(),
             "flex-direction" => parse_flex_direction(value).is_some(),
             "flex-wrap" => parse_flex_wrap(value).is_some(),
+            "flex-flow" => parse_flex_flow(value).is_some(),
             "order" => parse_flex_item_order(value).is_some(),
             "flex" => parse_flex_shorthand(value).is_some(),
             "flex-grow" => parse_flex_grow(value).is_some(),
@@ -2182,6 +2183,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "align-content"
             | "flex-direction"
             | "flex-wrap"
+            | "flex-flow"
             | "order"
             | "flex"
             | "flex-grow"
@@ -2291,6 +2293,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "flex-wrap" => {
                 declarations.flex_wrap = parse_flex_wrap(value);
+            }
+            "flex-flow" => {
+                if let Some((direction, wrap)) = parse_flex_flow(value) {
+                    declarations.flex_direction = Some(direction);
+                    declarations.flex_wrap = Some(wrap);
+                }
             }
             "order" => {
                 declarations.order = parse_flex_item_order(value);
@@ -2818,6 +2826,29 @@ fn parse_flex_wrap(value: &str) -> Option<FlexWrapValue> {
         "wrap-reverse" => Some(FlexWrapValue::WrapReverse),
         _ => None,
     }
+}
+
+fn parse_flex_flow(value: &str) -> Option<(FlexDirectionValue, FlexWrapValue)> {
+    let mut direction = None;
+    let mut wrap = None;
+    let values = value.split_ascii_whitespace().collect::<Vec<_>>();
+    if values.is_empty() || values.len() > 2 {
+        return None;
+    }
+    for value in values {
+        if let Some(parsed) = parse_flex_direction(value) {
+            if direction.replace(parsed).is_some() {
+                return None;
+            }
+        } else if let Some(parsed) = parse_flex_wrap(value) {
+            if wrap.replace(parsed).is_some() {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+    Some((direction.unwrap_or_default(), wrap.unwrap_or_default()))
 }
 
 fn parse_flex_item_order(value: &str) -> Option<NativeOrderValue> {
@@ -3863,6 +3894,54 @@ mod tests {
     }
 
     #[test]
+    fn flex_flow_parser_expands_bounded_direction_and_wrap_forms() {
+        assert_eq!(
+            parse_flex_flow("row"),
+            Some((FlexDirectionValue::Row, FlexWrapValue::NoWrap))
+        );
+        assert_eq!(
+            parse_flex_flow("row-reverse"),
+            Some((FlexDirectionValue::RowReverse, FlexWrapValue::NoWrap))
+        );
+        assert_eq!(
+            parse_flex_flow("wrap"),
+            Some((FlexDirectionValue::Row, FlexWrapValue::Wrap))
+        );
+        assert_eq!(
+            parse_flex_flow("wrap-reverse"),
+            Some((FlexDirectionValue::Row, FlexWrapValue::WrapReverse))
+        );
+        assert_eq!(
+            parse_flex_flow("row-reverse wrap"),
+            Some((FlexDirectionValue::RowReverse, FlexWrapValue::Wrap))
+        );
+        assert_eq!(
+            parse_flex_flow("WRAP ROW"),
+            Some((FlexDirectionValue::Row, FlexWrapValue::Wrap))
+        );
+        assert_eq!(
+            parse_flex_flow("wrap-reverse row-reverse"),
+            Some((FlexDirectionValue::RowReverse, FlexWrapValue::WrapReverse))
+        );
+        assert_eq!(parse_flex_flow(""), None);
+        assert_eq!(parse_flex_flow("column"), None);
+        assert_eq!(parse_flex_flow("row column"), None);
+        assert_eq!(parse_flex_flow("wrap wrap-reverse"), None);
+        assert_eq!(parse_flex_flow("row row-reverse"), None);
+        assert_eq!(parse_flex_flow("initial"), None);
+        assert_eq!(
+            parse_declarations(
+                "flex-flow: row-reverse wrap; flex-direction: row; flex-wrap: nowrap"
+            ),
+            NativeDeclarations {
+                flex_direction: Some(FlexDirectionValue::Row),
+                flex_wrap: Some(FlexWrapValue::NoWrap),
+                ..NativeDeclarations::default()
+            }
+        );
+    }
+
+    #[test]
     fn opacity_parser_quantizes_bounded_numbers_and_percentages() {
         assert_eq!(parse_opacity("0"), Some(0));
         assert_eq!(parse_opacity("0.5"), Some(128));
@@ -4713,6 +4792,43 @@ mod tests {
         assert_eq!(child_style.flex_grow(), 0);
         assert_eq!(child_style.flex_shrink(), 1);
         assert_eq!(child_style.flex_basis(), FlexBasisValue::Auto);
+    }
+
+    #[test]
+    fn flex_flow_is_cascaded_without_inheriting_and_longhands_override_components() {
+        let document = NativeDocument::parse(
+            "<style>.flow { flex-flow: row-reverse wrap; } #flow { flex-wrap: nowrap; } #either { flex-flow: wrap-reverse row; } #invalid { flex-flow: row-reverse wrap; flex-flow: column wrap; } #parent { flex-flow: wrap-reverse; }</style><div id='parent'><span id='flow' class='flow'>Flow</span><span id='either'>Either</span><span id='invalid'>Invalid</span><span id='child'>Child</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let flow = document.resolve_target("id=flow").unwrap();
+        let either = document.resolve_target("id=either").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+
+        let parent_style = document.computed_style_for_layout(parent);
+        assert_eq!(parent_style.flex_direction(), FlexDirectionValue::Row);
+        assert_eq!(parent_style.flex_wrap(), FlexWrapValue::WrapReverse);
+
+        let flow_style = document.computed_style_for_layout(flow);
+        assert_eq!(flow_style.flex_direction(), FlexDirectionValue::RowReverse);
+        assert_eq!(flow_style.flex_wrap(), FlexWrapValue::NoWrap);
+
+        let either_style = document.computed_style_for_layout(either);
+        assert_eq!(either_style.flex_direction(), FlexDirectionValue::Row);
+        assert_eq!(either_style.flex_wrap(), FlexWrapValue::WrapReverse);
+
+        let invalid_style = document.computed_style_for_layout(invalid);
+        assert_eq!(
+            invalid_style.flex_direction(),
+            FlexDirectionValue::RowReverse
+        );
+        assert_eq!(invalid_style.flex_wrap(), FlexWrapValue::Wrap);
+
+        let child_style = document.computed_style_for_layout(child);
+        assert_eq!(child_style.flex_direction(), FlexDirectionValue::Row);
+        assert_eq!(child_style.flex_wrap(), FlexWrapValue::NoWrap);
     }
 
     #[test]

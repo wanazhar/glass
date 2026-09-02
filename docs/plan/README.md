@@ -669,13 +669,16 @@ documentation, release-certification, and exact target-cleanup evidence are
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
-The active dependency-ordered [native-engine-087](tasks/native-engine-087.md)
+The completed dependency-ordered [native-engine-087](tasks/native-engine-087.md)
 slice extends parent `align-items` with explicit `stretch`. Children whose
 `align-self` remains `auto` reuse the completed 086 used-size path; explicit
 child overrides remain authoritative, explicit heights stay fixed, and the
-omitted native fallback remains `flex-start`. The complete contract and
-tradeoffs are recorded in the task file; design is pending. Remote CI remains
-pending because the branch is local-only.
+omitted native fallback remains `flex-start`. Design is `4708f663`,
+implementation is `e0d051ce`, and focused/full/strict/release-certificate,
+documentation, and exact-target evidence are recorded in the task file. The
+first all-in-one certification run exposed one environment-sensitive Rust
+Analyzer probe; its exact retry passed. Remote CI remains pending because the
+branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

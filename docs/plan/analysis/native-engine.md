@@ -502,13 +502,17 @@ Focused, full, strict, documentation, release-certification, and exact
 target-cleanup evidence are recorded in the task file. Remote CI remains
 pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-087` slice extends the parent
+The completed dependency-ordered `native-engine-087` slice extends the parent
 `align-items` grammar with explicit `stretch`. Children whose `align-self`
 remains `auto` reuse the 086 used-size and complete-artifact owner; explicit
 child overrides remain authoritative and explicit heights stay fixed under the
 bounded flex-start fallback. The complete contract and tradeoffs are in
-`docs/plan/tasks/native-engine-087.md`; design is pending. Remote CI remains
-pending because the branch is local-only.
+`docs/plan/tasks/native-engine-087.md`; design is `4708f663` and
+implementation is `e0d051ce`. Focused/full/strict/release-certificate,
+documentation, and exact-target evidence are recorded in the task file. The
+first all-in-one certification run exposed one environment-sensitive Rust
+Analyzer probe; its exact retry passed. Remote CI remains pending because the
+branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

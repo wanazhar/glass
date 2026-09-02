@@ -1,7 +1,7 @@
 ---
 id: native-engine-080
 scope: glass-browser/native-engine/flex-shrink
-status: active
+status: complete
 depends-on: [native-engine-079]
 ---
 
@@ -86,7 +86,37 @@ make native-engine selection implicit.
 
 ## Verification
 
-The implementation, focused tests, full native suites, strict feature and
-documentation gates, issue #40 status, and exact regenerable-target cleanup
-will be recorded here when the slice closes. Remote CI is not claimed until
-the local branch is pushed.
+Local evidence captured on 2026-09-02 UTC:
+
+- `cargo fmt --all -- --check` and `git diff --check` passed;
+- focused CSS coverage passed 2/2 tests, including bounded parsing, invalid
+  fallback, specificity, declaration order, inline precedence,
+  non-inheritance, and the default factor of 1;
+- focused flex-shrink integration coverage passed 2/2 tests in 6m06s,
+  including base-width weighting, minimum freezing and redistribution, wrapped
+  line stability, descendant geometry, and explicit zero-shrink overflow;
+- the full native integration suite passed 105/105 tests in 26s; six existing
+  fixed-overflow regression fixtures were made explicit with `flex-shrink:0`
+  so their stated reachability contracts remain stable under the new CSS
+  default;
+- the full native library suite passed 877 tests with 1 existing ignored test
+  under `RUST_MIN_STACK=8388608`;
+- strict `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  passed in 13m09s, and the no-default-feature variant passed in 6m57s;
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`
+  passed in 3m23s, and `cargo build -p glass-dev --bin glass --locked` passed
+  in 12m06s;
+- repository validators passed: version sync at 0.3.14; feature parity at 14
+  capabilities across 4 targets; release documentation at 494 Markdown files
+  with 0 current-claim failures; TUI at 15 implementation keys and 63
+  documentation markers; depth at 93 guides and 19 contracts; coverage at 494
+  Markdown files, 345 full-product MCP tools, 17 examples, and 22 public
+  modules; reliability at 6 scenarios across 4 targets; 5 read-only adapters;
+  and Web IR at 8 fixtures, 8 scenarios, and 11 categories;
+- implementation checkpoint `b1414931` and this documentation checkpoint are
+  committed locally before the next slice; remote CI remains unclaimed because
+  the branch is local-only.
+- after validation, the exact regenerable Glass target paths were checked for
+  active users and open files, then removed: `target` fell from 5.2G to 4.0K;
+  `/dev/sda1` moved from 133G used/60G available/70% to 128G used/65G
+  available/67%; no build process or target file handle was active.

@@ -429,6 +429,15 @@ design is `a45fb01`, implementation is `1a930a3`, and local validation and
 cleanup evidence are recorded in that task file. Remote CI remains pending
 because the branch is local-only.
 
+The active dependency-ordered `native-engine-080` slice adds bounded
+non-inherited integer `flex-shrink` weights to the same row-flex owner. Negative
+line free space will be allocated using original-base-width weighted
+prefix-floor shares; effective outer `min-width` floors freeze items and
+redistribute the remaining deficit. Zero factors and exhausted minimums retain
+explicit overflow, while wrapping remains a base-size line-formation decision.
+Its design contract is in `docs/plan/tasks/native-engine-080.md`; design and
+implementation validation are pending.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -1005,6 +1014,7 @@ visual stacking.
 | bounded flex row-gap | makes explicit cross-line spacing observable while preserving one line-record and artifact owner | full `gap` shorthand expansion, `column-gap`, percentage/fractional values, flex sizing, auto margins, column directions, logical direction/RTL, and browser Flexbox parity | insert one bounded integer-pixel gap between provisional wrapped lines, include it once before `align-content` distribution, and reuse the existing normal/reverse artifact, overflow, paint, and hit-test consumers |
 | bounded flex gap family | makes one- and two-axis gap spacing and shorthand/longhand precedence observable through one shared flex geometry owner | percentage/fractional lengths, negative values, column-direction flex, grid, flex sizing, auto margins, logical direction/RTL, and browser Flexbox parity | preserve per-rule valid declaration positions only for the interacting gap family, resolve row/column axes with specificity/order/inline precedence, then feed column spacing and cross-line spacing into the existing item/line records |
 | bounded flex grow | makes positive fixed-width row free space observable through weighted item sizing while preserving one line/coordinate owner | flex shrink, flex basis, flex shorthand, fractional factors, base-size reflow, auto margins, column directions, percentage/intrinsic sizing, and browser Flexbox parity | resolve bounded integer grow factors, allocate positive line remainder with prefix-floor shares, freeze max-width items and redistribute their remainder, then pass final outer widths through existing flex/justify/paint/hit/scroll consumers |
+| bounded flex shrink | makes negative fixed-width row free space observable through weighted item reduction while preserving one line/coordinate owner | flex basis, flex shorthand, fractional factors, base-size reflow, auto margins, column directions, percentage/intrinsic sizing, and browser Flexbox parity | resolve bounded integer shrink factors, weight them by original flex base widths, allocate deficit with prefix-floor shares, freeze effective min-width floors and redistribute remainder, then pass final outer widths through existing flex/justify/paint/hit/scroll consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence

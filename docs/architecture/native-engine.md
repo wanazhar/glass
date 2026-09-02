@@ -21,7 +21,7 @@ bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
 bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-wrap/
 bounded-flex-wrap-reverse,
 bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
-bounded-flex-cross-line-space-evenly,
+bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -157,6 +157,14 @@ file. The previously documented default-stack issue in one large-Clap parser
 test remains a harness follow-up; the full native library suite passes with an
 explicit 8 MiB test-thread stack. Remote CI remains pending because the branch
 is local-only.
+The active 075 boundary adds explicit bounded non-inherited
+`align-content:stretch` to wrapped fixed-width rows. Positive explicit
+cross-axis remainder expands formed line boxes by deterministic integer shares,
+then the existing `align-items` and complete-artifact passes place normal and
+wrap-reverse rows through one coordinate owner. The contract is recorded in
+`docs/plan/tasks/native-engine-075.md`; implementation and local validation
+evidence are pending. Remote CI remains pending because the branch is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1101,6 +1109,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded non-inherited `flex-wrap:wrap-reverse` for eligible fixed-width
   rows, preserving source-order line formation while reversing physical line
   stacking with signed complete-artifact translation.
+- bounded explicit non-inherited `align-content:stretch` for wrapped
+  fixed-width rows, expanding line heights by deterministic integer shares and
+  preserving the shared normal/wrap-reverse artifact consumers.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

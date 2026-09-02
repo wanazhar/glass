@@ -461,14 +461,16 @@ diagnostics. The complete contract and tradeoffs are in
 `40f6fb1c`, and local validation and cleanup evidence are recorded there.
 Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-083` slice defines bounded
+The completed dependency-ordered `native-engine-083` slice defines bounded
 `flex-flow` shorthand expansion into the existing direction and wrap
 components. It accepts one direction token, one wrap token, or one of each in
 either order; omitted components reset to their initial row or nowrap value.
 Unsupported columns, duplicates, CSS-wide, logical-direction, and ambiguous
 forms remain typed diagnostics. The complete contract and tradeoffs are in
-`docs/plan/tasks/native-engine-083.md`; implementation and validation are
-pending. Remote CI remains pending because the branch is local-only.
+`docs/plan/tasks/native-engine-083.md`; design is `80c6836e`, implementation is
+`0291bf90`, and the strict-Clippy fix is `16e6d9aa`. Focused/full validation and
+cleanup evidence are recorded there. Remote CI remains pending because the
+branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

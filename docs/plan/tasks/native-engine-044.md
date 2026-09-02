@@ -1,7 +1,7 @@
 ---
 id: native-engine-044
 scope: glass-browser/native-engine/text-fragment-affixes
-status: in_progress
+status: complete
 depends-on: [native-engine-043]
 ---
 

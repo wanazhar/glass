@@ -3093,6 +3093,60 @@ fn native_flex_align_items_normal_reuses_stretch_and_preserves_overrides() {
 }
 
 #[test]
+fn native_flex_align_self_normal_reuses_stretch_and_overrides_parent() {
+    let normal = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:48px;height:32px;gap:2px;align-items:center'><div id='normal' style='width:8px;align-self:normal;background-color:red'><span id='nested' style='display:block;height:2px'>N</span></div><div id='auto' style='width:8px;background-color:green'>A</div><div id='explicit' style='width:8px;height:8px;align-self:normal;background-color:blue'>E</div><div id='center' style='width:8px;height:8px;align-self:center;background-color:blue'>C</div><div id='inset' style='width:8px;box-sizing:border-box;padding:1px;border:1px solid blue;max-height:24px;align-self:normal;background-color:blue'>I</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let stretch = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:48px;height:32px;gap:2px;align-items:center'><div id='normal' style='width:8px;align-self:stretch;background-color:red'><span id='nested' style='display:block;height:2px'>N</span></div><div id='auto' style='width:8px;background-color:green'>A</div><div id='explicit' style='width:8px;height:8px;align-self:stretch;background-color:blue'>E</div><div id='center' style='width:8px;height:8px;align-self:center;background-color:blue'>C</div><div id='inset' style='width:8px;box-sizing:border-box;padding:1px;border:1px solid blue;max-height:24px;align-self:stretch;background-color:blue'>I</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let normal_item = normal.resolve_target("id=normal").unwrap();
+    let normal_nested = normal.resolve_target("id=nested").unwrap();
+    let normal_auto = normal.resolve_target("id=auto").unwrap();
+    let normal_explicit = normal.resolve_target("id=explicit").unwrap();
+    let normal_center = normal.resolve_target("id=center").unwrap();
+    let normal_inset = normal.resolve_target("id=inset").unwrap();
+    let viewport = Viewport {
+        width: 56,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let normal_layout = normal.layout(viewport).unwrap();
+    let stretch_layout = stretch.layout(viewport).unwrap();
+
+    assert_eq!(normal_layout.boxes, stretch_layout.boxes);
+    assert_eq!(normal_layout.text_runs, stretch_layout.text_runs);
+    assert_eq!(normal_layout.box_for(normal_item).unwrap().height, 32);
+    assert_eq!(normal_layout.box_for(normal_item).unwrap().y, 0);
+    assert_eq!(normal_layout.box_for(normal_nested).unwrap().y, 0);
+    assert_eq!(normal_layout.box_for(normal_auto).unwrap().y, 6);
+    assert_eq!(normal_layout.box_for(normal_explicit).unwrap().y, 0);
+    assert_eq!(normal_layout.box_for(normal_explicit).unwrap().height, 8);
+    assert_eq!(normal_layout.box_for(normal_center).unwrap().y, 12);
+    assert_eq!(normal_layout.box_for(normal_inset).unwrap().height, 24);
+    assert_eq!(normal_layout.box_for(normal_inset).unwrap().y, 0);
+
+    let list = normal.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == normal_item
+                    && rect.y == 0
+                    && rect.height == 32
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(normal_layout.hit_test(1, 1).unwrap(), Some(normal_nested));
+    assert_eq!(normal_layout.hit_test(11, 16).unwrap(), Some(normal_auto));
+    assert_eq!(normal_layout.hit_test(31, 13).unwrap(), Some(normal_center));
+}
+
+#[test]
 fn native_flex_align_items_handles_auto_lines_box_sizing_overflow_and_fallback() {
     let auto = NativeDocument::parse(
         "<div id='row' style='display:flex;width:32px;align-items:center'><div id='short' style='width:8px;height:8px'>A</div><div id='tall' style='width:8px;height:24px'>B</div></div>",

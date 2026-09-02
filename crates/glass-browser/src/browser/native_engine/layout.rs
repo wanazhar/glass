@@ -1793,6 +1793,7 @@ impl<'a> LayoutBuilder<'a> {
                     AlignSelfValue::Center => AlignItemsValue::Center,
                     AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
                     AlignSelfValue::Stretch => AlignItemsValue::Stretch,
+                    AlignSelfValue::Normal => AlignItemsValue::Normal,
                 };
                 if matches!(
                     alignment,

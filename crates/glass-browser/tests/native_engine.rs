@@ -2923,7 +2923,7 @@ fn native_flex_wrap_forms_lines_and_reuses_alignment_scroll_and_artifacts() {
     };
     let layout = document.layout(viewport).unwrap();
 
-    assert_eq!(layout.box_for(row).unwrap().height, 26);
+    assert_eq!(layout.box_for(row).unwrap().height, 28);
     assert_eq!(
         layout.box_for(second),
         Some(NativeRect {
@@ -2946,22 +2946,22 @@ fn native_flex_wrap_forms_lines_and_reuses_alignment_scroll_and_artifacts() {
         layout.box_for(first),
         Some(NativeRect {
             x: 0,
-            y: 14,
+            y: 16,
             width: 8,
             height: 12,
         })
     );
-    assert_eq!(layout.box_for(nested).unwrap().y, 14);
+    assert_eq!(layout.box_for(nested).unwrap().y, 16);
     assert_eq!(
         layout
             .text_runs
             .iter()
             .find(|run| run.node_id == nested)
             .map(|run| (run.origin, run.text.as_str())),
-        Some((NativePoint { x: 0, y: 14 }, "F"))
+        Some((NativePoint { x: 0, y: 16 }, "F"))
     );
-    assert_eq!(layout.content_height, 26);
-    assert_eq!(layout.max_scroll_offset(), NativePoint { x: 0, y: 10 });
+    assert_eq!(layout.content_height, 28);
+    assert_eq!(layout.max_scroll_offset(), NativePoint { x: 0, y: 12 });
     assert_eq!(layout.hit_test(13, 4).unwrap(), Some(third));
 
     let semantic_ids = document
@@ -2981,7 +2981,7 @@ fn native_flex_wrap_forms_lines_and_reuses_alignment_scroll_and_artifacts() {
         matches!(
             command,
             NativeDisplayCommand::FillRect { node_id, rect, color, .. }
-                if *node_id == first && rect.y == 14 && *color == NativeColor::RED
+                    if *node_id == first && rect.y == 16 && *color == NativeColor::RED
         )
     }));
     assert!(list.commands.iter().any(|command| {
@@ -3014,7 +3014,7 @@ fn native_flex_wrap_forms_lines_and_reuses_alignment_scroll_and_artifacts() {
         })
         .unwrap();
     assert!(scroll.accepted);
-    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 10 });
+    assert_eq!(engine.scroll_offset(), NativePoint { x: 0, y: 12 });
     assert_eq!(
         engine.layout().unwrap().viewport_rect_for(first),
         Some(NativeRect {
@@ -3025,6 +3025,70 @@ fn native_flex_wrap_forms_lines_and_reuses_alignment_scroll_and_artifacts() {
         })
     );
     assert_eq!(engine.hit_test(1, 6).unwrap(), Some(first));
+}
+
+#[test]
+fn native_flex_gap_shorthand_resolves_row_and_column_axes() {
+    let html = "<div id='row' style='display:flex;width:24px;gap:3px 4px;flex-wrap:wrap'><div id='first' style='width:8px;height:6px;background-color:red'>A</div><div id='second' style='width:8px;height:10px;background-color:green'>B</div><div id='third' style='width:8px;height:14px;background-color:blue'>C</div></div>";
+    let document = NativeDocument::parse(html, &NativeEngineLimits::default()).unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let third = document.resolve_target("id=third").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(row).unwrap().height, 27);
+    assert_eq!(
+        layout.box_for(first),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(
+        layout.box_for(second),
+        Some(NativeRect {
+            x: 12,
+            y: 0,
+            width: 8,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.box_for(third),
+        Some(NativeRect {
+            x: 0,
+            y: 13,
+            width: 8,
+            height: 14,
+        })
+    );
+    assert_eq!(layout.content_height, 32);
+    assert_eq!(layout.hit_test(1, 14).unwrap(), Some(third));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == third
+                    && rect.y == 13
+                    && *color
+                        == (NativeColor {
+                            red: 0,
+                            green: 0,
+                            blue: u8::MAX,
+                            alpha: u8::MAX,
+                        })
+        )
+    }));
 }
 
 #[test]
@@ -3054,7 +3118,7 @@ fn native_flex_wrap_applies_row_reverse_per_line_and_keeps_wide_items_non_negati
         layout.box_for(next),
         Some(NativeRect {
             x: 7,
-            y: 9,
+            y: 11,
             width: 4,
             height: 6,
         })
@@ -3155,14 +3219,14 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
     };
 
     for (align_content, expected) in [
-        ("flex-start", (2, 0, 10)),
-        ("center", (20, 18, 28)),
-        ("flex-end", (38, 36, 46)),
+        ("flex-start", (2, 0, 12)),
+        ("center", (19, 17, 29)),
+        ("flex-end", (36, 34, 46)),
         ("space-between", (2, 0, 46)),
-        ("space-around", (11, 9, 37)),
-        ("space-evenly", (14, 12, 34)),
-        ("stretch", (11, 9, 37)),
-        ("normal", (11, 9, 37)),
+        ("space-around", (10, 8, 37)),
+        ("space-evenly", (13, 11, 34)),
+        ("stretch", (10, 8, 37)),
+        ("normal", (10, 8, 37)),
     ] {
         let document =
             NativeDocument::parse(&source(align_content), &NativeEngineLimits::default()).unwrap();
@@ -3230,7 +3294,7 @@ fn native_flex_align_content_stretch_assigns_remainder_to_first_formed_line() {
         )
     };
 
-    for (wrap, expected) in [("wrap", (11, 9, 38)), ("wrap-reverse", (43, 41, 9))] {
+    for (wrap, expected) in [("wrap", (11, 9, 38)), ("wrap-reverse", (44, 42, 8))] {
         let document =
             NativeDocument::parse(&source(wrap), &NativeEngineLimits::default()).unwrap();
         let row = document.resolve_target("id=row").unwrap();
@@ -3289,7 +3353,7 @@ fn native_flex_align_content_normal_reuses_stretch_and_keeps_omitted_fallback() 
     let omitted_layout = omitted.layout(viewport).unwrap();
     assert_eq!(omitted_layout.box_for(omitted_first).unwrap().y, 2);
     assert_eq!(omitted_layout.box_for(omitted_second).unwrap().y, 0);
-    assert_eq!(omitted_layout.box_for(omitted_third).unwrap().y, 10);
+    assert_eq!(omitted_layout.box_for(omitted_third).unwrap().y, 12);
 }
 
 #[test]
@@ -3308,8 +3372,8 @@ fn native_flex_align_content_preserves_auto_small_and_nowrap_geometry() {
             device_scale_factor_milli: 1000,
         })
         .unwrap();
-    assert_eq!(auto_layout.box_for(auto_third).unwrap().y, 10);
-    assert_eq!(auto_layout.box_for(auto_row).unwrap().height, 24);
+    assert_eq!(auto_layout.box_for(auto_third).unwrap().y, 12);
+    assert_eq!(auto_layout.box_for(auto_row).unwrap().height, 26);
 
     let small = NativeDocument::parse(
         "<div id='row' style='display:flex;width:20px;height:12px;gap:2px;flex-wrap:wrap;align-content:space-evenly'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:10px'>B</div><div id='third' style='width:8px;height:14px'>C</div></div>",
@@ -3326,10 +3390,10 @@ fn native_flex_align_content_preserves_auto_small_and_nowrap_geometry() {
         })
         .unwrap();
     assert_eq!(small_layout.box_for(small_row).unwrap().height, 12);
-    assert_eq!(small_layout.box_for(small_third).unwrap().y, 10);
+    assert_eq!(small_layout.box_for(small_third).unwrap().y, 12);
     assert_eq!(
         small_layout.max_scroll_offset(),
-        NativePoint { x: 0, y: 12 }
+        NativePoint { x: 0, y: 14 }
     );
 
     let nowrap = NativeDocument::parse(
@@ -3367,13 +3431,13 @@ fn native_flex_wrap_reverse_reflects_lines_and_shared_artifacts() {
     };
 
     for (align_content, expected) in [
-        ("flex-start", (52, 50, 36)),
-        ("center", (34, 32, 18)),
-        ("flex-end", (16, 14, 0)),
+        ("flex-start", (52, 50, 34)),
+        ("center", (35, 33, 17)),
+        ("flex-end", (18, 16, 0)),
         ("space-between", (52, 50, 0)),
-        ("space-around", (43, 41, 9)),
-        ("space-evenly", (40, 38, 12)),
-        ("normal", (43, 41, 9)),
+        ("space-around", (44, 42, 9)),
+        ("space-evenly", (41, 39, 12)),
+        ("normal", (43, 41, 8)),
     ] {
         let html = source(align_content);
         let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
@@ -3419,7 +3483,7 @@ fn native_flex_wrap_reverse_reflects_lines_and_shared_artifacts() {
     let auto_row = auto.resolve_target("id=row").unwrap();
     let auto_third = auto.resolve_target("id=third").unwrap();
     let auto_layout = auto.layout(viewport).unwrap();
-    assert_eq!(auto_layout.box_for(auto_row).unwrap().height, 24);
+    assert_eq!(auto_layout.box_for(auto_row).unwrap().height, 26);
     assert_eq!(auto_layout.box_for(auto_third).unwrap().y, 0);
 
     let small = NativeDocument::parse(
@@ -3453,7 +3517,7 @@ fn native_flex_wrap_reverse_reflects_lines_and_shared_artifacts() {
             .box_for(stretch_auto_row)
             .unwrap()
             .height,
-        24
+        26
     );
     assert_eq!(
         stretch_auto_layout.box_for(stretch_auto_third).unwrap().y,
@@ -3521,7 +3585,7 @@ fn native_flex_wrap_reverse_reflects_lines_and_shared_artifacts() {
             x: 0,
             y: 0,
             width: 8,
-            height: 14,
+            height: 12,
         })
     );
 }
@@ -6486,7 +6550,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px 5px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -6586,7 +6650,7 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
             && diagnostic.detail == "row-gap"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "column-gap"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {

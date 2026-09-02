@@ -191,6 +191,7 @@ pub(crate) enum AlignContentValue {
     SpaceBetween,
     SpaceAround,
     SpaceEvenly,
+    Stretch,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2494,6 +2495,7 @@ fn parse_align_content(value: &str) -> Option<AlignContentValue> {
         "space-between" => Some(AlignContentValue::SpaceBetween),
         "space-around" => Some(AlignContentValue::SpaceAround),
         "space-evenly" => Some(AlignContentValue::SpaceEvenly),
+        "stretch" => Some(AlignContentValue::Stretch),
         _ => None,
     }
 }
@@ -2883,7 +2885,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: space-evenly; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: stretch; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2895,10 +2897,7 @@ mod tests {
             Some(JustifyContentValue::SpaceBetween)
         );
         assert_eq!(declarations.align_items, Some(AlignItemsValue::FlexEnd));
-        assert_eq!(
-            declarations.align_content,
-            Some(AlignContentValue::SpaceEvenly)
-        );
+        assert_eq!(declarations.align_content, Some(AlignContentValue::Stretch));
         assert_eq!(
             declarations.flex_direction,
             Some(FlexDirectionValue::RowReverse)
@@ -3452,7 +3451,10 @@ mod tests {
             parse_align_content("SPACE-EVENLY"),
             Some(AlignContentValue::SpaceEvenly)
         );
-        assert_eq!(parse_align_content("stretch"), None);
+        assert_eq!(
+            parse_align_content("STRETCH"),
+            Some(AlignContentValue::Stretch)
+        );
         assert_eq!(parse_align_content("normal"), None);
         assert_eq!(parse_align_content("start"), None);
         assert_eq!(parse_align_content("safe center"), None);
@@ -4172,7 +4174,7 @@ mod tests {
     #[test]
     fn align_content_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { align-content: center; } #explicit { align-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='align-content: space-evenly'>Explicit</span><span id='invalid' style='align-content: stretch'>Invalid</span></div>",
+            "<style>#parent { align-content: stretch; } #explicit { align-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='align-content: space-evenly'>Explicit</span><span id='invalid' style='align-content: normal'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -4183,7 +4185,7 @@ mod tests {
 
         assert_eq!(
             document.computed_style_for_layout(parent).align_content(),
-            AlignContentValue::Center
+            AlignContentValue::Stretch
         );
         assert_eq!(
             document.computed_style_for_layout(child).align_content(),

@@ -584,13 +584,14 @@ current main-axis-only `gap` behavior. The design is `99d70ef`, implementation
 is `4b27b15`, and local validation and cleanup evidence are recorded in the
 task file. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered [native-engine-078](tasks/native-engine-078.md)
+The completed dependency-ordered [native-engine-078](tasks/native-engine-078.md)
 slice completes the bounded flex gap family: one- and two-value integer-pixel
 `gap`, `row-gap`, and `column-gap` with declaration-order-aware shorthand and
-longhand cascade. One-value `gap` intentionally begins supplying both axes;
-affected wrapped-row goldens will move with the implementation. The design
-contract is recorded in the task file; implementation, validation, and remote
-CI evidence are pending.
+longhand cascade. One-value `gap` intentionally supplies both axes, and the
+affected wrapped-row goldens move with that implementation. The design is
+`c6ebecd`, implementation is `1bca33f`, and local validation and cleanup
+evidence are recorded in the task file. Remote CI remains pending because the
+branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

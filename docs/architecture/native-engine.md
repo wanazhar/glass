@@ -21,7 +21,8 @@ bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
 bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-wrap/
 bounded-flex-wrap-reverse,
 bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
-bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch,
+bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
+bounded-flex-cross-line-normal,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -166,6 +167,14 @@ wrap-reverse rows through one coordinate owner. The contract is recorded in
 `e26c0a4` with the diagnostics-fixture correction in `cc8b538`, and local
 validation and cleanup evidence are recorded in that task file. Remote CI
 remains pending because the branch is local-only.
+The active 076 boundary adds the explicit bounded non-inherited
+`align-content:normal` keyword to the same wrapped fixed-width rows. It routes
+positive explicit cross-axis remainder through the completed stretch line-box
+owner for normal and wrap-reverse stacking while preserving the established
+omitted-value `flex-start` fallback. Its contract is recorded in
+`docs/plan/tasks/native-engine-076.md`; implementation and local validation
+evidence are pending. Remote CI remains pending because the branch is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

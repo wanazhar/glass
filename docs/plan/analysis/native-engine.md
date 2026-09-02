@@ -386,6 +386,15 @@ existing large-Clap parser test remains a harness follow-up; the full native
 library suite passes with an explicit 8 MiB test-thread stack. Remote CI
 remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-076` slice adds explicit bounded
+non-inherited `align-content:normal` to wrapped fixed-width rows. It aliases
+the completed 075 line-box stretch owner for positive explicit cross-axis
+remainder, preserving normal and wrap-reverse artifact consumers while
+keeping the established omitted-value `flex-start` fallback unchanged. The
+contract is recorded in `docs/plan/tasks/native-engine-076.md`; implementation
+and local validation evidence are pending. Remote CI remains pending because
+the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -439,8 +448,8 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, inherited physical text alignment, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, and bounded non-inherited flex-row `justify-content`, flex-item `order`, flex cross-axis `align-items`, `flex-direction`, `flex-wrap`, and `align-content:flex-start|center|flex-end|space-between|space-around|space-evenly|stretch` | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
-| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, bounded fixed-width flex-row free-space placement, stable visual flex-item order sorting, complete flex cross-axis alignment with explicit/auto line sizing and subtree artifact translation, bounded physical flex wrapping and wrap-reverse line stacking, bounded cross-line alignment, `space-around`, `space-evenly`, and `stretch` line distribution | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, and bounded non-inherited flex-row `justify-content`, flex-item `order`, flex cross-axis `align-items`, `flex-direction`, `flex-wrap`, and `align-content:flex-start|center|flex-end|space-between|space-around|space-evenly|stretch|normal` | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, bounded fixed-width flex-row free-space placement, stable visual flex-item order sorting, complete flex cross-axis alignment with explicit/auto line sizing and subtree artifact translation, bounded physical flex wrapping and wrap-reverse line stacking, bounded cross-line alignment, `space-around`, `space-evenly`, `stretch`, and explicit `normal` line distribution | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity/font presentation, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, nested opacity layers, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
@@ -570,6 +579,8 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-073` | bounded non-inherited `align-content:space-evenly` for wrapped fixed-width flex rows, with equal leading/inter-line/trailing integer slots and complete line artifact translation | `native-engine-072` | `stretch`, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, `wrap-reverse`, logical direction/RTL, and browser Flexbox parity |
 | `native-engine-074` | bounded non-inherited `flex-wrap:wrap-reverse` for eligible fixed-width flex rows, preserving source-order line formation while reversing physical cross-axis stacking through signed complete-artifact translation | `native-engine-073` | `flex-flow`, cross-axis gaps, flex sizing, auto margins, `stretch`, `place-content`, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 | `native-engine-075` | bounded explicit non-inherited `align-content:stretch` for wrapped fixed-width flex rows, expanding line heights by deterministic integer shares and preserving normal/wrap-reverse artifact consumers | `native-engine-074` | implicit `normal`, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
+| `native-engine-076` | bounded explicit non-inherited `align-content:normal` aliasing the completed stretch line-box owner for wrapped fixed-width flex rows while preserving the omitted-value fallback | `native-engine-075` | implicit initial-value change, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
+| `native-engine-076` | bounded explicit non-inherited `align-content:normal` aliasing the completed stretch line-box owner for wrapped fixed-width flex rows while preserving the omitted-value fallback | `native-engine-075` | implicit initial-value change, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -863,6 +874,14 @@ complete artifacts, overflow, scrolling, hit testing, capture, and
 semantic/source order remain one shared path; auto, undersized, and `nowrap`
 geometry retain their existing behavior.
 
+72. Native eligible wrapped fixed-width flex rows accept explicit bounded
+`align-content:normal` as an alias for the completed stretch line-box owner.
+Positive explicit remainder expands formed lines by the same deterministic
+integer shares, then the normal and wrap-reverse artifact passes consume one
+set of final coordinates. Omitted `align-content` remains the existing bounded
+`flex-start` fallback; semantic/source order and all non-eligible geometry stay
+unchanged.
+
 The semantic action tradeoff is intentional: it provides a real backend path
 for deterministic local fixtures while leaving general geometry to Phase 3.
 The 009 seed now gives Phase 3 a bounded geometry owner and executable point
@@ -948,11 +967,15 @@ visual stacking.
 | bounded flex cross-line space-evenly | makes explicit-height wrapped rows distribute positive remainder into equal leading, inter-line, and trailing slots | `stretch`, `place-content`, row/column gaps, fractional distribution, flex sizing, auto margins, column directions, `wrap-reverse`, logical direction/RTL, and browser Flexbox parity | retain 072 line records, calculate saturating integer `floor(remainder * (i + 1) / (line_count + 1))` offsets, and translate complete line artifact ranges through the existing consumers |
 | bounded flex wrap-reverse | makes eligible wrapped rows stack formed lines from the physical cross-axis end without adding a second layout owner | `flex-flow`, cross-axis gaps, flex sizing, auto margins, `stretch`, `place-content`, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | retain source-order line formation and provisional records, reflect each line from the resolved cross-axis end using existing integer `align-content` offsets, and apply one signed coordinate delta to every line artifact range |
 | bounded flex cross-line stretch | makes explicit-height wrapped rows expand each formed line using the existing item-alignment owner | implicit `normal`, `place-content`, row/column gaps, fractional distribution, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | retain formed line records, distribute only positive remainder by integer quotient plus first-line remainder pixels, rebuild line origins, then reuse `align-items` and complete artifact translation for normal and wrap-reverse rows |
+| bounded flex cross-line normal | makes the explicit `normal` keyword select the proven stretch line-box behavior without duplicating layout ownership | omitted-value initial-value semantics, `place-content`, row/column gaps, fractional distribution, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | parse a separate non-inherited keyword, route it through the existing stretch branch for eligible wrapped rows, preserve the established omitted-value `flex-start` fallback, and reuse all complete artifact consumers |
+| bounded flex cross-line normal | makes the explicit `normal` keyword select the proven stretch line-box behavior without duplicating layout ownership | omitted-value initial-value semantics, `place-content`, row/column gaps, fractional distribution, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | parse a separate non-inherited keyword, route it through the existing stretch branch for eligible wrapped rows, preserve the established omitted-value `flex-start` fallback, and reuse all complete artifact consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-076.md` is the active checkpoint;
+`docs/plan/tasks/native-engine-075.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-074.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-069.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-068.md` is the preceding completed checkpoint;

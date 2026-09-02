@@ -532,6 +532,15 @@ contract and tradeoffs are in
 implementation is `1ee55c43`. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered `native-engine-090` slice adds explicit
+`justify-content:space-around` to the bounded fixed-width row/row-reverse
+flex-line owner. Positive main-axis free space is distributed with
+deterministic integer cumulative offsets around existing item/gap/margin and
+flex-sizing geometry, while row-reverse mirrors the offsets and all downstream
+artifacts remain shared. The complete contract and tradeoffs are in
+`docs/plan/tasks/native-engine-090.md`; design is pending. Remote CI remains
+pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -737,6 +746,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-087` | bounded explicit parent `align-items:stretch` resolving `align-self:auto` through the completed used-size path while preserving explicit child overrides and heights | `native-engine-086` | auto margins, baseline/normal/logical alignment, column directions, fractional/percentage/intrinsic sizing, changed omitted-value defaults, and browser Flexbox parity |
 | `native-engine-088` | bounded explicit parent `align-items:normal` resolving `align-self:auto` as the existing stretch path in row/row-reverse flex while retaining a distinct computed keyword | `native-engine-087` | `align-self:normal`, auto margins, baseline/logical alignment, block/grid/absolute layout modes, column directions, fractional/percentage/intrinsic sizing, changed omitted-value defaults, and browser Flexbox parity |
 | `native-engine-089` | bounded explicit non-inherited `align-self:normal` resolving as the existing stretch path for eligible row/row-reverse flex items while retaining a distinct computed keyword | `native-engine-088` | auto margins, baseline/logical alignment, block/grid/absolute layout modes, column directions, fractional/percentage/intrinsic sizing, changed omitted-value defaults, and browser Flexbox parity |
+| `native-engine-090` | bounded explicit non-inherited `justify-content:space-around` using deterministic cumulative integer main-axis offsets for eligible row/row-reverse flex lines | `native-engine-089` | auto margins, negative-free-space fallback, column directions, logical direction/RTL, percentage/fractional/intrinsic sizing, grid, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

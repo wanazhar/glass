@@ -2106,6 +2106,7 @@ fn parse_declarations_with_diagnostics(
             "flex-direction" => parse_flex_direction(value).is_some(),
             "flex-wrap" => parse_flex_wrap(value).is_some(),
             "order" => parse_flex_item_order(value).is_some(),
+            "flex" => parse_flex_shorthand(value).is_some(),
             "flex-grow" => parse_flex_grow(value).is_some(),
             "flex-shrink" => parse_flex_shrink(value).is_some(),
             "flex-basis" => parse_flex_basis(value).is_some(),
@@ -2182,6 +2183,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "flex-direction"
             | "flex-wrap"
             | "order"
+            | "flex"
             | "flex-grow"
             | "flex-shrink"
             | "flex-basis"
@@ -2292,6 +2294,13 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "order" => {
                 declarations.order = parse_flex_item_order(value);
+            }
+            "flex" => {
+                if let Some((grow, shrink, basis)) = parse_flex_shorthand(value) {
+                    declarations.flex_grow = Some(grow);
+                    declarations.flex_shrink = Some(shrink);
+                    declarations.flex_basis = Some(basis);
+                }
             }
             "flex-grow" => {
                 if let Some(parsed) = parse_flex_grow(value) {
@@ -2854,6 +2863,29 @@ fn parse_flex_basis(value: &str) -> Option<FlexBasisValue> {
         return Some(FlexBasisValue::Auto);
     }
     parse_dimension(value).map(FlexBasisValue::Length)
+}
+
+fn parse_flex_shorthand(value: &str) -> Option<(u32, u32, FlexBasisValue)> {
+    let values = value.split_ascii_whitespace().collect::<Vec<_>>();
+    match values.as_slice() {
+        [value] if value.eq_ignore_ascii_case("none") => Some((0, 0, FlexBasisValue::Auto)),
+        [value] if value.eq_ignore_ascii_case("auto") => Some((1, 1, FlexBasisValue::Auto)),
+        [grow] => Some((parse_flex_grow(grow)?, 1, FlexBasisValue::Length(0))),
+        [grow, second] => {
+            let grow = parse_flex_grow(grow)?;
+            if let Some(shrink) = parse_flex_shrink(second) {
+                Some((grow, shrink, FlexBasisValue::Length(0)))
+            } else {
+                Some((grow, 1, parse_flex_basis(second)?))
+            }
+        }
+        [grow, shrink, basis] => Some((
+            parse_flex_grow(grow)?,
+            parse_flex_shrink(shrink)?,
+            parse_flex_basis(basis)?,
+        )),
+        _ => None,
+    }
 }
 
 fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
@@ -3777,6 +3809,60 @@ mod tests {
     }
 
     #[test]
+    fn flex_shorthand_parser_expands_bounded_forms_and_rejects_unsupported() {
+        assert_eq!(
+            parse_flex_shorthand("none"),
+            Some((0, 0, FlexBasisValue::Auto))
+        );
+        assert_eq!(
+            parse_flex_shorthand("AUTO"),
+            Some((1, 1, FlexBasisValue::Auto))
+        );
+        assert_eq!(
+            parse_flex_shorthand("2"),
+            Some((2, 1, FlexBasisValue::Length(0)))
+        );
+        assert_eq!(
+            parse_flex_shorthand("2 3"),
+            Some((2, 3, FlexBasisValue::Length(0)))
+        );
+        assert_eq!(
+            parse_flex_shorthand("2 auto"),
+            Some((2, 1, FlexBasisValue::Auto))
+        );
+        assert_eq!(
+            parse_flex_shorthand("2 12px"),
+            Some((2, 1, FlexBasisValue::Length(12)))
+        );
+        assert_eq!(
+            parse_flex_shorthand("2 3 auto"),
+            Some((2, 3, FlexBasisValue::Auto))
+        );
+        assert_eq!(
+            parse_flex_shorthand("2 3 12px"),
+            Some((2, 3, FlexBasisValue::Length(12)))
+        );
+        assert_eq!(parse_flex_shorthand("initial"), None);
+        assert_eq!(parse_flex_shorthand("inherit"), None);
+        assert_eq!(parse_flex_shorthand("1.5"), None);
+        assert_eq!(parse_flex_shorthand("-1"), None);
+        assert_eq!(parse_flex_shorthand("1px"), None);
+        assert_eq!(parse_flex_shorthand("1 2 3"), None);
+        assert_eq!(parse_flex_shorthand("1 50%"), None);
+        assert_eq!(parse_flex_shorthand("1 2 3%"), None);
+        assert_eq!(parse_flex_shorthand("1 2 3 4px"), None);
+        assert_eq!(
+            parse_declarations("flex: 2 3 12px; flex-grow: 4; flex-basis: auto"),
+            NativeDeclarations {
+                flex_grow: Some(4),
+                flex_shrink: Some(3),
+                flex_basis: Some(FlexBasisValue::Auto),
+                ..NativeDeclarations::default()
+            }
+        );
+    }
+
+    #[test]
     fn opacity_parser_quantizes_bounded_numbers_and_percentages() {
         assert_eq!(parse_opacity("0"), Some(0));
         assert_eq!(parse_opacity("0.5"), Some(128));
@@ -4588,6 +4674,45 @@ mod tests {
             document.computed_style_for_layout(child).flex_basis(),
             FlexBasisValue::Auto
         );
+    }
+
+    #[test]
+    fn flex_shorthand_is_cascaded_without_inheriting_and_longhands_override_components() {
+        let document = NativeDocument::parse(
+            "<style>.preset { flex: 2 3 10px; } #preset { flex-grow: 4; } #later { flex: 1 0 8px; flex-shrink: 2; } #invalid { flex: 2 0 6px; flex: 1 2 3%; } #parent { flex: none; }</style><div id='parent'><span id='preset' class='preset' style='flex-basis: 16px'>Preset</span><span id='later'>Later</span><span id='invalid'>Invalid</span><span id='child'>Child</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let preset = document.resolve_target("id=preset").unwrap();
+        let later = document.resolve_target("id=later").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+
+        let parent_style = document.computed_style_for_layout(parent);
+        assert_eq!(parent_style.flex_grow(), 0);
+        assert_eq!(parent_style.flex_shrink(), 0);
+        assert_eq!(parent_style.flex_basis(), FlexBasisValue::Auto);
+
+        let preset_style = document.computed_style_for_layout(preset);
+        assert_eq!(preset_style.flex_grow(), 4);
+        assert_eq!(preset_style.flex_shrink(), 3);
+        assert_eq!(preset_style.flex_basis(), FlexBasisValue::Length(16));
+
+        let later_style = document.computed_style_for_layout(later);
+        assert_eq!(later_style.flex_grow(), 1);
+        assert_eq!(later_style.flex_shrink(), 2);
+        assert_eq!(later_style.flex_basis(), FlexBasisValue::Length(8));
+
+        let invalid_style = document.computed_style_for_layout(invalid);
+        assert_eq!(invalid_style.flex_grow(), 2);
+        assert_eq!(invalid_style.flex_shrink(), 0);
+        assert_eq!(invalid_style.flex_basis(), FlexBasisValue::Length(6));
+
+        let child_style = document.computed_style_for_layout(child);
+        assert_eq!(child_style.flex_grow(), 0);
+        assert_eq!(child_style.flex_shrink(), 1);
+        assert_eq!(child_style.flex_basis(), FlexBasisValue::Auto);
     }
 
     #[test]

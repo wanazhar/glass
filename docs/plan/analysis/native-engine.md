@@ -440,6 +440,16 @@ design contract is in `docs/plan/tasks/native-engine-080.md`; design is
 evidence are recorded in that task file. Remote CI remains pending because the
 branch is local-only.
 
+The active dependency-ordered `native-engine-081` slice defines bounded
+`flex-basis:auto|Npx` sizing for the same row-flex owner. Explicit pixel bases
+override item `width`, convert through the existing box-sizing and min/max
+helpers, remain unclamped before line formation, and feed the completed
+grow/shrink allocation with the original base width. `auto` delegates to the
+existing width/intrinsic compatibility path. The complete contract and
+tradeoffs are in `docs/plan/tasks/native-engine-081.md`; implementation and
+validation are pending. Remote CI remains pending because the branch is
+local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -626,6 +636,11 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-075` | bounded explicit non-inherited `align-content:stretch` for wrapped fixed-width flex rows, expanding line heights by deterministic integer shares and preserving normal/wrap-reverse artifact consumers | `native-engine-074` | implicit `normal`, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 | `native-engine-076` | bounded explicit non-inherited `align-content:normal` aliasing the completed stretch line-box owner for wrapped fixed-width flex rows while preserving the omitted-value fallback | `native-engine-075` | implicit initial-value change, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 | `native-engine-077` | bounded explicit non-inherited `row-gap` between adjacent formed lines in eligible wrapped fixed-width flex rows, included once before `align-content` free-space distribution | `native-engine-076` | `column-gap`, multi-value or percentage gap, implicit `gap` expansion, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
+
+| `native-engine-078` | bounded flex gap family with one- and two-value integer-pixel `gap`, explicit row/column longhands, declaration-order-aware cascade, and shared item/line geometry | `native-engine-077` | percentage/fractional lengths, negative values, column-direction flex, grid, flex sizing, auto margins, logical direction/RTL, and browser Flexbox parity |
+| `native-engine-079` | bounded non-inherited integer `flex-grow` weights for eligible fixed-width row-flex items, with deterministic prefix-floor allocation and max-width freeze/redistribution | `native-engine-078` | flex shrink/basis/shorthand, fractional factors, base-size reflow, auto margins, columns, percentage/intrinsic sizing, and browser Flexbox parity |
+| `native-engine-080` | bounded non-inherited integer `flex-shrink` weights for eligible fixed-width row-flex items, weighted by original base width with min-width freeze/redistribution | `native-engine-079` | flex basis/shorthand, fractional factors, base-size reflow, auto margins, columns, percentage/intrinsic sizing, and browser Flexbox parity |
+| `native-engine-081` | bounded non-inherited `flex-basis:auto|Npx` for eligible row-flex items, with explicit bases overriding width before the shared grow/shrink and line-formation owners | `native-engine-080` | flex shorthand, percentages, fractional lengths, `calc()`, `content`, intrinsic sizing changes, auto margins, columns, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

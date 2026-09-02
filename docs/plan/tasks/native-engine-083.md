@@ -1,7 +1,7 @@
 ---
 id: native-engine-083
 scope: glass-browser/native-engine/flex-flow-shorthand
-status: active
+status: complete
 depends-on: [native-engine-082]
 ---
 
@@ -80,7 +80,32 @@ semantic order or make native-engine selection implicit.
 
 ## Verification
 
-The implementation, focused tests, full native suites, strict feature and
-documentation gates, issue #40 status, and exact regenerable-target cleanup
-will be recorded here when the slice closes. Remote CI is not claimed until
-the local branch is pushed.
+The design checkpoint is `80c6836e`. The implementation checkpoint is
+`0291bf90`, followed by the strict-Clippy fix checkpoint `16e6d9aa`.
+
+- focused CSS parser/cascade coverage passed 2/2; focused flex-flow integration
+  coverage passed 1/1 after correcting the fixture to the shared margin/gap
+  geometry (`x=7`, `y=11` for the wrapped item);
+- the full native integration suite passed 109/109, and the full native
+  library suite passed 883 with 1 existing ignored test under
+  `RUST_MIN_STACK=8388608`;
+- strict all-feature Clippy passed with warnings denied after the
+  `question-mark` lint fix; no-default-feature Clippy also passed with
+  warnings denied; rustdoc passed with `-D warnings`; and the locked
+  `glass-dev` build passed;
+- repository validators passed: version sync at `0.3.14`; feature parity at
+  14 capabilities across 4 targets; release documentation at 497 Markdown
+  documents with 0 current-claim failures; TUI at 15 implementation help keys
+  and 63 documentation markers; depth at 93 guides and 19 contracts; coverage
+  at 497 Markdown files, 345 full-product MCP tools (100 browser-only), 17
+  examples, and 22 public modules; reliability at 6 scenarios across 4
+  targets; 5 public read-only adapters; and Web IR at 8 fixtures, 8 scenarios,
+  and 11 categories;
+- after validation, exact Glass regenerable target output was checked for
+  active Cargo/Rust writers and open files, then removed; shared Cargo
+  registries/toolchains and long-lived Glass processes were retained. Final
+  target size and filesystem headroom are recorded in the issue #40 closeout
+  comment;
+- issue #40 remains open for the next dependency-ordered slice. Remote CI is
+  not claimed because this branch is local-only; no push, release, tag,
+  registry publication, or browser-parity certification is implied.

@@ -182,6 +182,7 @@ pub(crate) enum AlignItemsValue {
     FlexStart,
     Center,
     FlexEnd,
+    Stretch,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2867,6 +2868,7 @@ fn parse_align_items(value: &str) -> Option<AlignItemsValue> {
         "flex-start" => Some(AlignItemsValue::FlexStart),
         "center" => Some(AlignItemsValue::Center),
         "flex-end" => Some(AlignItemsValue::FlexEnd),
+        "stretch" => Some(AlignItemsValue::Stretch),
         _ => None,
     }
 }
@@ -4117,7 +4119,7 @@ mod tests {
             parse_align_items("flex-end"),
             Some(AlignItemsValue::FlexEnd)
         );
-        assert_eq!(parse_align_items("stretch"), None);
+        assert_eq!(parse_align_items("stretch"), Some(AlignItemsValue::Stretch));
         assert_eq!(parse_align_items("baseline"), None);
         assert_eq!(parse_align_items("normal"), None);
         assert_eq!(parse_align_items("start"), None);
@@ -5000,7 +5002,7 @@ mod tests {
     #[test]
     fn align_items_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { align-items: center; } #explicit { align-items: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='align-items: flex-start'>Explicit</span><span id='invalid' style='align-items: stretch'>Invalid</span></div>",
+            "<style>#parent { align-items: center; } #explicit { align-items: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='align-items: flex-start'>Explicit</span><span id='invalid' style='align-items: baseline'>Invalid</span><span id='stretch' style='align-items: stretch'>Stretch</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5008,6 +5010,7 @@ mod tests {
         let child = document.resolve_target("id=child").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
+        let stretch = document.resolve_target("id=stretch").unwrap();
 
         assert_eq!(
             document.computed_style_for_layout(parent).align_items(),
@@ -5024,6 +5027,10 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).align_items(),
             AlignItemsValue::FlexStart
+        );
+        assert_eq!(
+            document.computed_style_for_layout(stretch).align_items(),
+            AlignItemsValue::Stretch
         );
     }
 

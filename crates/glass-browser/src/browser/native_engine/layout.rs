@@ -1787,7 +1787,14 @@ impl<'a> LayoutBuilder<'a> {
             max_bottom = max_bottom.max(final_line_y.saturating_add(line.height));
             for mut placement in line.layout.placements {
                 let style = self.document.computed_style_for_layout(placement.child);
-                if placement.align_self == AlignSelfValue::Stretch
+                let alignment = match placement.align_self {
+                    AlignSelfValue::Auto => align_items,
+                    AlignSelfValue::FlexStart => AlignItemsValue::FlexStart,
+                    AlignSelfValue::Center => AlignItemsValue::Center,
+                    AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
+                    AlignSelfValue::Stretch => AlignItemsValue::Stretch,
+                };
+                if alignment == AlignItemsValue::Stretch
                     && let Some(stretched_height) = stretched_outer_height(
                         style,
                         line.height,
@@ -1802,15 +1809,8 @@ impl<'a> LayoutBuilder<'a> {
                 let item_outer_height =
                     placement.height.saturating_add(placement.margin.vertical());
                 let remaining = line.height.saturating_sub(item_outer_height);
-                let alignment = match placement.align_self {
-                    AlignSelfValue::Auto => align_items,
-                    AlignSelfValue::FlexStart => AlignItemsValue::FlexStart,
-                    AlignSelfValue::Center => AlignItemsValue::Center,
-                    AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
-                    AlignSelfValue::Stretch => AlignItemsValue::FlexStart,
-                };
                 let offset = match alignment {
-                    AlignItemsValue::FlexStart => 0,
+                    AlignItemsValue::FlexStart | AlignItemsValue::Stretch => 0,
                     AlignItemsValue::Center => remaining / 2,
                     AlignItemsValue::FlexEnd => remaining,
                 };

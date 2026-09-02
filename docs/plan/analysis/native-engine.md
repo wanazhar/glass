@@ -429,14 +429,16 @@ design is `a45fb01`, implementation is `1a930a3`, and local validation and
 cleanup evidence are recorded in that task file. Remote CI remains pending
 because the branch is local-only.
 
-The active dependency-ordered `native-engine-080` slice adds bounded
+The completed dependency-ordered `native-engine-080` slice adds bounded
 non-inherited integer `flex-shrink` weights to the same row-flex owner. Negative
-line free space will be allocated using original-base-width weighted
-prefix-floor shares; effective outer `min-width` floors freeze items and
-redistribute the remaining deficit. Zero factors and exhausted minimums retain
-explicit overflow, while wrapping remains a base-size line-formation decision.
-Its design contract is in `docs/plan/tasks/native-engine-080.md`; design and
-implementation validation are pending.
+line free space is allocated using original-base-width weighted prefix-floor
+shares; effective outer `min-width` floors freeze items and redistribute the
+remaining deficit. Zero factors and exhausted minimums retain explicit
+overflow, while wrapping remains a base-size line-formation decision. Its
+design contract is in `docs/plan/tasks/native-engine-080.md`; design is
+`46227de5`, implementation is `b1414931`, and local validation and cleanup
+evidence are recorded in that task file. Remote CI remains pending because the
+branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1020,7 +1022,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-079.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-080.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-079.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-078.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-077.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-076.md` is the preceding completed checkpoint;

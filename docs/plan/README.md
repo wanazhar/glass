@@ -602,6 +602,14 @@ case. The design is `a45fb01`, implementation is `1a930a3`, and local
 validation and cleanup evidence are recorded in the task file. Remote CI
 remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-080](tasks/native-engine-080.md)
+slice adds bounded non-inherited integer `flex-shrink` weights to the same
+row-flex owner. Negative line free space is allocated by original-base-width
+weighted prefix-floor shares, effective `min-width` floors freeze and
+redistribute the deficit, and zero-factor or minimum-exhausted rows retain
+explicit overflow. The complete contract and tradeoffs are recorded in the
+task file; implementation and validation are pending.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -200,6 +200,13 @@ contract is recorded in `docs/plan/tasks/native-engine-079.md`; design is
 `a45fb01`, implementation is `1a930a3`, and local validation and cleanup
 evidence are recorded in that task file. Remote CI remains pending because the
 branch is local-only.
+The active 080 boundary adds bounded non-inherited integer `flex-shrink`
+weights to eligible row-flex items. Negative line free space will be allocated
+using original-base-width weighted prefix-floor shares, while effective
+outer `min-width` floors freeze and redistribute the remaining deficit through
+the same geometry owner. Its contract is recorded in
+`docs/plan/tasks/native-engine-080.md`; implementation and validation are
+pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

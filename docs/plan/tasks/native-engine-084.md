@@ -1,7 +1,7 @@
 ---
 id: native-engine-084
 scope: glass-browser/native-engine/align-self
-status: active
+status: complete
 depends-on: [native-engine-083]
 ---
 
@@ -77,7 +77,34 @@ growth/shrink/basis, or `align-content`.
 
 ## Verification
 
-The implementation, focused parser/cascade and shared-layout tests, full native
-suites, strict feature/documentation gates, issue #40 status, and exact
-regenerable-target cleanup will be recorded here when the slice closes. Remote
-CI is not claimed until the local branch is pushed.
+- Design checkpoint: `36085e9c`.
+- Implementation checkpoint: `f2f99f66`.
+- Focused CSS parser/cascade coverage passed 2/2 tests in 1m23s after the
+  invalid-later-declaration case was corrected to preserve the earlier valid
+  winner.
+- Focused shared-layout integration coverage passed 1/1 test in 22s for
+  cross-axis positions, nested subtree translation, paint, and hit testing.
+- Full native integration passed 110/110 tests in 3s; the full native library
+  suite passed 885 tests with 1 ignored under `RUST_MIN_STACK=8388608`.
+- Strict all-feature Clippy passed with warnings denied in 13m41s; no-default-
+  feature Clippy passed with warnings denied in 6m45s.
+- Rustdoc passed with `RUSTDOCFLAGS='-D warnings'` in 3m19s; the locked
+  `glass-dev` build passed in 11m36s.
+- Formatting, whitespace, version sync, feature parity, release-documentation,
+  TUI, documentation-depth, documentation-coverage, reliability, public
+  read-only adapter, and Web IR validators all passed. The live counts were:
+  version `0.3.14`; feature parity 14 capabilities across 4 targets; 498
+  Markdown documents with 0 current-claim failures; TUI 15 implementation
+  help keys and 63 documentation markers; depth 93 guides and 19 contracts;
+  coverage 498 Markdown files, 345 full-product MCP tools (100 browser-only),
+  17 examples, and 22 public modules; reliability 6 scenarios across 4
+  targets; 5 public read-only adapters; and Web IR 8 fixtures, 8 scenarios,
+  and 11 categories.
+- Issue #40 was updated with the implementation checkpoint, evidence, and
+  local-only boundary. Remote CI remains unclaimed because this branch is not
+  pushed.
+- After all validation, no Cargo/Rust writer, open target handle, or Git lock
+  remained. Exact regenerable `/home/ubuntu/work/glass/target` output fell
+  from 5.7G to 4.0K; `/dev/sda1` moved from 134G used/60G available/70% to
+  128G used/65G available/67%. Shared registries/toolchains and long-lived
+  Glass processes were retained.

@@ -522,14 +522,15 @@ the computed keyword remains distinct and the omitted native fallback stays
 `docs/plan/tasks/native-engine-088.md`; design is `162543f1` and implementation
 is `19d8d3f6`. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-089` slice adds explicit child
+The completed dependency-ordered `native-engine-089` slice adds explicit child
 `align-self:normal`. In the supported row/row-reverse flex context, explicit
 `normal` reuses the completed stretch used-size owner regardless of the
 parent's `align-items` value, while `align-self:auto` remains
 parent-controlled and the computed keyword remains distinct. The complete
 contract and tradeoffs are in
-`docs/plan/tasks/native-engine-089.md`; design is pending. Remote CI remains
-pending because the branch is local-only.
+`docs/plan/tasks/native-engine-089.md`; design is `95caf4a9` and
+implementation is `1ee55c43`. Remote CI remains pending because the branch is
+local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

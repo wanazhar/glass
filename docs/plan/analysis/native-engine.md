@@ -397,13 +397,14 @@ default-stack issue in one existing large-Clap parser test remains a harness
 follow-up; the full native library suite passes with an explicit 8 MiB
 test-thread stack. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-077` slice adds explicit bounded
-non-inherited `row-gap` spacing between adjacent formed lines in eligible
-wrapped fixed-width flex rows. It includes that spacing once in the existing
-cross-line occupied-size/free-space owner while preserving the current
-main-axis-only `gap` behavior. The design contract is recorded in
-`docs/plan/tasks/native-engine-077.md`; implementation, validation, and remote
-CI evidence are pending.
+The completed dependency-ordered `native-engine-077` slice adds explicit
+bounded non-inherited `row-gap` spacing between adjacent formed lines in
+eligible wrapped fixed-width flex rows. It includes that spacing once in the
+existing cross-line occupied-size/free-space owner while preserving the
+current main-axis-only `gap` behavior. The design is `99d70ef`, implementation
+is `4b27b15`, and local validation and cleanup evidence are recorded in
+`docs/plan/tasks/native-engine-077.md`. Remote CI remains pending because the
+branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -984,8 +985,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-077.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-076.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-077.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-076.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-075.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-074.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-069.md` is the latest completed checkpoint;

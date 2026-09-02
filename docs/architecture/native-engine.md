@@ -263,6 +263,13 @@ The contract is recorded in `docs/plan/tasks/native-engine-086.md`; design is
 `2c07c749`. Focused, full, strict, documentation, release-certification, and
 exact target-cleanup evidence are recorded in the task file. Remote CI remains
 pending because the branch is local-only.
+The active 087 boundary extends the parent `align-items` grammar with explicit
+`stretch`. Children whose `align-self` remains `auto` reuse the 086 used-size
+and complete-artifact owner; explicit child overrides remain authoritative and
+explicit heights stay fixed under the bounded flex-start fallback. The omitted
+native fallback remains `flex-start`. The contract is recorded in
+`docs/plan/tasks/native-engine-087.md`; design is pending. Remote CI remains
+pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

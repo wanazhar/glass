@@ -669,6 +669,14 @@ documentation, release-certification, and exact target-cleanup evidence are
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered [native-engine-087](tasks/native-engine-087.md)
+slice extends parent `align-items` with explicit `stretch`. Children whose
+`align-self` remains `auto` reuse the completed 086 used-size path; explicit
+child overrides remain authoritative, explicit heights stay fixed, and the
+omitted native fallback remains `flex-start`. The complete contract and
+tradeoffs are recorded in the task file; design is pending. Remote CI remains
+pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

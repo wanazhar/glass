@@ -2687,6 +2687,74 @@ fn native_flex_align_items_moves_complete_subtrees_and_paint_artifacts() {
 }
 
 #[test]
+fn native_flex_align_self_overrides_parent_and_moves_complete_subtrees() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:40px;height:31px;gap:2px;align-items:center'><button id='auto' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></button><button id='start' style='width:6px;height:8px;align-self:flex-start;background-color:green'>S</button><button id='end' style='width:6px;height:8px;align-self:flex-end;background-color:blue'>E</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let auto = document.resolve_target("id=auto").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let start = document.resolve_target("id=start").unwrap();
+    let end = document.resolve_target("id=end").unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(row).unwrap().height, 31);
+    assert_eq!(layout.box_for(auto).unwrap().y, 11);
+    assert_eq!(layout.box_for(nested).unwrap().y, 11);
+    assert_eq!(layout.box_for(start).unwrap().y, 0);
+    assert_eq!(layout.box_for(end).unwrap().y, 23);
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == auto && rect.y == 11 && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == start
+                    && rect.y == 0
+                    && *color
+                        == (NativeColor {
+                            red: 0,
+                            green: 128,
+                            blue: 0,
+                            alpha: u8::MAX,
+                        })
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == end
+                    && rect.y == 23
+                    && *color
+                        == (NativeColor {
+                            red: 0,
+                            green: 0,
+                            blue: u8::MAX,
+                            alpha: u8::MAX,
+                        })
+        )
+    }));
+    assert_eq!(layout.hit_test(1, 12).unwrap(), Some(nested));
+    assert_eq!(layout.hit_test(9, 1).unwrap(), Some(start));
+    assert_eq!(layout.hit_test(17, 24).unwrap(), Some(end));
+}
+
+#[test]
 fn native_flex_align_items_handles_auto_lines_box_sizing_overflow_and_fallback() {
     let auto = NativeDocument::parse(
         "<div id='row' style='display:flex;width:32px;align-items:center'><div id='short' style='width:8px;height:8px'>A</div><div id='tall' style='width:8px;height:24px'>B</div></div>",
@@ -6940,7 +7008,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: stretch; align-self: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -7041,6 +7109,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "align-items"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "align-self"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

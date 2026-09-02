@@ -1,9 +1,9 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
-    AlignContentValue, AlignItemsValue, DisplayValue, FlexBasisValue, FlexDirectionValue,
-    FlexWrapValue, JustifyContentValue, NativeBorderRadius, NativeBoxEdges, NativeComputedStyle,
-    TextAlignValue, TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue,
-    WordBreakValue,
+    AlignContentValue, AlignItemsValue, AlignSelfValue, DisplayValue, FlexBasisValue,
+    FlexDirectionValue, FlexWrapValue, JustifyContentValue, NativeBorderRadius, NativeBoxEdges,
+    NativeComputedStyle, TextAlignValue, TextOverflowValue, TextTransformValue, VerticalAlignValue,
+    WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -487,6 +487,7 @@ struct FlexItemPlacement {
     text_end: usize,
     margin: NativeBoxEdges,
     height: u32,
+    align_self: AlignSelfValue,
 }
 
 struct FlexItem {
@@ -500,6 +501,7 @@ struct FlexItem {
     flex_shrink: u32,
     order: i32,
     source_index: usize,
+    align_self: AlignSelfValue,
 }
 
 struct FlexLineLayout {
@@ -1442,6 +1444,7 @@ impl<'a> LayoutBuilder<'a> {
                     text_end: self.text_runs.len(),
                     margin: item.margin,
                     height: size.height,
+                    align_self: item.align_self,
                 });
                 cursor_right = item_x.saturating_sub(item.margin.left());
             }
@@ -1489,6 +1492,7 @@ impl<'a> LayoutBuilder<'a> {
                     text_end: self.text_runs.len(),
                     margin: item.margin,
                     height: size.height,
+                    align_self: item.align_self,
                 });
                 cursor_x = cursor_x
                     .saturating_add(item.margin.left())
@@ -1565,6 +1569,7 @@ impl<'a> LayoutBuilder<'a> {
                         flex_shrink: style.flex_shrink(),
                         order: style.flex_item_order().value(),
                         source_index,
+                        align_self: style.align_self(),
                     });
                 }
             }
@@ -1729,7 +1734,13 @@ impl<'a> LayoutBuilder<'a> {
                 let item_outer_height =
                     placement.height.saturating_add(placement.margin.vertical());
                 let remaining = line.height.saturating_sub(item_outer_height);
-                let offset = match align_items {
+                let alignment = match placement.align_self {
+                    AlignSelfValue::Auto => align_items,
+                    AlignSelfValue::FlexStart => AlignItemsValue::FlexStart,
+                    AlignSelfValue::Center => AlignItemsValue::Center,
+                    AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
+                };
+                let offset = match alignment {
                     AlignItemsValue::FlexStart => 0,
                     AlignItemsValue::Center => remaining / 2,
                     AlignItemsValue::FlexEnd => remaining,

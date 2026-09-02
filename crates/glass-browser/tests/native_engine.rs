@@ -2436,6 +2436,7 @@ fn native_flex_row_justifies_fixed_items_and_distributes_space_deterministically
     assert_eq!(positions("center"), (12, 20));
     assert_eq!(positions("flex-end"), (24, 32));
     assert_eq!(positions("space-between"), (0, 32));
+    assert_eq!(positions("space-around"), (6, 26));
 
     let remainder = NativeDocument::parse(
         "<div id='row' style='display:flex;width:41px;gap:1px;justify-content:space-between'><div id='first' style='width:6px;height:8px'>A</div><div id='second' style='width:6px;height:8px'>B</div><div id='third' style='width:6px;height:8px'>C</div></div>",
@@ -2455,6 +2456,104 @@ fn native_flex_row_justifies_fixed_items_and_distributes_space_deterministically
     assert_eq!(layout.box_for(first).unwrap().x, 0);
     assert_eq!(layout.box_for(second).unwrap().x, 18);
     assert_eq!(layout.box_for(third).unwrap().x, 35);
+}
+
+#[test]
+fn native_flex_row_space_around_rounds_and_mirrors_complete_item_geometry() {
+    let source = |direction: &str| {
+        format!(
+            "<div id='row' style='display:flex;width:40px;height:20px;gap:2px;flex-direction:{direction};justify-content:space-around'><button id='low' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>L</span></button><button id='middle' style='width:8px;height:8px;background-color:green'>M</button><button id='high' style='width:4px;height:8px;background-color:blue'>H</button></div>"
+        )
+    };
+    let viewport = Viewport {
+        width: 48,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+
+    for (direction, expected) in [
+        ("row", [(3, 6), (17, 8), (33, 4)]),
+        ("row-reverse", [(31, 6), (15, 8), (3, 4)]),
+    ] {
+        let document =
+            NativeDocument::parse(&source(direction), &NativeEngineLimits::default()).unwrap();
+        let row = document.resolve_target("id=row").unwrap();
+        let low = document.resolve_target("id=low").unwrap();
+        let nested = document.resolve_target("id=nested").unwrap();
+        let middle = document.resolve_target("id=middle").unwrap();
+        let high = document.resolve_target("id=high").unwrap();
+        let layout = document.layout(viewport).unwrap();
+
+        assert_eq!(layout.box_for(row).unwrap().width, 40);
+        for (node_id, (x, width)) in [
+            (low, expected[0]),
+            (middle, expected[1]),
+            (high, expected[2]),
+        ] {
+            assert_eq!(
+                layout.box_for(node_id).map(|rect| (rect.x, rect.width)),
+                Some((x, width))
+            );
+        }
+        assert_eq!(layout.box_for(nested).unwrap().x, expected[0].0);
+        assert_eq!(
+            layout.hit_test((expected[0].0 + 1).into(), 1).unwrap(),
+            Some(nested)
+        );
+
+        let list = document.display_list(viewport).unwrap();
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                    if *node_id == low && rect.x == expected[0].0 && *color == NativeColor::RED
+            )
+        }));
+    }
+
+    let wrapped = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:20px;gap:2px;flex-wrap:wrap;justify-content:space-around'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:6px'>B</div><div id='third' style='width:8px;height:6px'>C</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = wrapped.resolve_target("id=first").unwrap();
+    let second = wrapped.resolve_target("id=second").unwrap();
+    let third = wrapped.resolve_target("id=third").unwrap();
+    let wrapped_layout = wrapped.layout(viewport).unwrap();
+    assert_eq!(wrapped_layout.box_for(first).unwrap().x, 0);
+    assert_eq!(wrapped_layout.box_for(second).unwrap().x, 11);
+    assert_eq!(wrapped_layout.box_for(third).unwrap().x, 6);
+
+    let one = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:20px;justify-content:space-around'><div id='item' style='width:8px;height:6px'>I</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let one_item = one.resolve_target("id=item").unwrap();
+    assert_eq!(
+        one.layout(viewport).unwrap().box_for(one_item).unwrap().x,
+        6
+    );
+
+    let overflow = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:8px;justify-content:space-around'><div id='item' style='width:12px;height:6px;flex-shrink:0'>I</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let overflow_item = overflow.resolve_target("id=item").unwrap();
+    assert_eq!(
+        overflow
+            .layout(Viewport {
+                width: 16,
+                height: 32,
+                device_scale_factor_milli: 1000,
+            })
+            .unwrap()
+            .box_for(overflow_item)
+            .unwrap()
+            .x,
+        0
+    );
 }
 
 #[test]
@@ -7400,7 +7499,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-evenly; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

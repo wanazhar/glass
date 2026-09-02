@@ -236,6 +236,14 @@ and ambiguous forms remain typed diagnostics. The contract is recorded in
 `0291bf90`, and the strict-Clippy fix is `16e6d9aa`. Local validation and exact
 target-cleanup evidence are recorded there. Remote CI remains pending because
 the branch is local-only.
+The active 084 boundary adds bounded non-inherited `align-self:auto|flex-start|
+center|flex-end` for eligible direct flex items. `auto` resolves to the parent
+`align-items` value at the existing cross-axis placement decision; explicit
+values override only that item and translate its complete subtree artifacts.
+Stretch, baseline, logical, CSS-wide, and ambiguous forms remain typed
+diagnostics. The contract is recorded in
+`docs/plan/tasks/native-engine-084.md`; implementation and validation are
+pending. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

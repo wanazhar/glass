@@ -472,6 +472,15 @@ forms remain typed diagnostics. The complete contract and tradeoffs are in
 cleanup evidence are recorded there. Remote CI remains pending because the
 branch is local-only.
 
+The active dependency-ordered `native-engine-084` slice defines bounded
+non-inherited `align-self:auto|flex-start|center|flex-end` for eligible direct
+flex items. `auto` resolves to the parent `align-items` value at the existing
+cross-axis placement decision, while explicit values override only that item.
+Stretch, baseline, logical, CSS-wide, and ambiguous forms remain typed
+diagnostics. The complete contract and tradeoffs are in
+`docs/plan/tasks/native-engine-084.md`; implementation and validation are
+pending. Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -665,6 +674,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-081` | bounded non-inherited `flex-basis:auto|Npx` for eligible row-flex items, with explicit bases overriding width before the shared grow/shrink and line-formation owners | `native-engine-080` | flex shorthand, percentages, fractional lengths, `calc()`, `content`, intrinsic sizing changes, auto margins, columns, and browser Flexbox parity |
 | `native-engine-082` | bounded `flex` shorthand expansion into non-inherited grow, shrink, and basis components with declaration-order-aware longhand overrides | `native-engine-081` | CSS-wide reset keywords, percentage/fractional bases, fractional factors, ambiguous or unsupported token forms, auto margins, columns, and browser Flexbox parity |
 | `native-engine-083` | bounded `flex-flow` shorthand expansion into non-inherited direction and wrap components with omitted-component reset and declaration-order-aware longhand overrides | `native-engine-082` | columns, column-reverse, logical direction/RTL, duplicate tokens, CSS-wide reset keywords, ambiguous forms, and browser Flexbox parity |
+| `native-engine-084` | bounded non-inherited `align-self:auto|flex-start|center|flex-end` item override resolved through the existing flex line cross-axis and complete-artifact translation owner | `native-engine-083` | stretch, baseline metrics, normal, logical start/end, safe/unsafe alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

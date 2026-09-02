@@ -492,13 +492,15 @@ remain typed diagnostics. The complete contract and tradeoffs are in
 `02f866e6`, and focused/full/strict/documentation/cleanup evidence is recorded
 there. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-086` slice extends bounded
+The completed dependency-ordered `native-engine-086` slice extends bounded
 non-inherited `align-self` with `stretch` for eligible direct flex items.
 Auto-height items fill the existing line cross size; explicit heights remain
 unchanged and use the bounded flex-start fallback. The complete contract and
-tradeoffs are in `docs/plan/tasks/native-engine-086.md`; implementation and
-validation are pending. Remote CI remains pending because the branch is
-local-only.
+tradeoffs are in `docs/plan/tasks/native-engine-086.md`; design is `f92b7b9a`,
+implementation is `5ea2c8d1`, and strict layout lint cleanup is `2c07c749`.
+Focused, full, strict, documentation, release-certification, and exact
+target-cleanup evidence are recorded in the task file. Remote CI remains
+pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

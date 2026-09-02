@@ -621,6 +621,15 @@ implementation is `299c93f9`, and local validation and cleanup evidence are
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered [native-engine-082](tasks/native-engine-082.md)
+slice defines bounded `flex` shorthand expansion into the existing grow,
+shrink, and basis components. It covers `none`, `auto`, bounded integer
+factor forms, and bounded pixel/`auto` bases with declaration-order-aware
+longhand overrides; unsupported CSS-wide, percentage, fractional, and
+ambiguous forms remain diagnosed. The complete contract and tradeoffs are
+recorded in the task file; implementation and validation are pending. Remote
+CI remains pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

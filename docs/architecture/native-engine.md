@@ -217,6 +217,14 @@ consumers. The contract is recorded in
 `docs/plan/tasks/native-engine-081.md`; design is `04cc4a3e`, implementation is
 `299c93f9`, and local validation and cleanup evidence are recorded in that task
 file. Remote CI remains pending because the branch is local-only.
+The active 082 boundary defines bounded `flex` shorthand expansion into the
+existing non-inherited `flex-grow`, `flex-shrink`, and `flex-basis` computed
+components. Common `none`, `auto`, bounded integer-factor, and bounded
+pixel/`auto` basis forms share the existing declaration precedence, while
+unsupported CSS-wide, percentage, fractional, and ambiguous forms remain
+typed diagnostics. The contract is recorded in
+`docs/plan/tasks/native-engine-082.md`; implementation and validation are
+pending. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

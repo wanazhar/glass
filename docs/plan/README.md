@@ -659,6 +659,14 @@ forms remain diagnosed. The design is `adc61a1f`, implementation is
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered [native-engine-086](tasks/native-engine-086.md)
+slice extends bounded non-inherited `align-self` with `stretch` for eligible
+direct flex items. Auto-height items fill the existing line cross size while
+explicit heights keep their declared size and use the bounded flex-start
+fallback. The complete contract and tradeoffs are recorded in the task file;
+implementation and validation are pending. Remote CI remains pending because
+the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

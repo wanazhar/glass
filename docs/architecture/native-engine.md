@@ -254,6 +254,13 @@ contract is recorded in `docs/plan/tasks/native-engine-085.md`; design is
 `adc61a1f`, implementation is `02f866e6`, and focused/full/strict/documentation/
 cleanup evidence is recorded there. Remote CI remains pending because the
 branch is local-only.
+The active 086 boundary extends bounded non-inherited `align-self` with
+`stretch` for eligible direct flex items. Auto-height items fill the existing
+line cross size through the current box-model and complete-artifact owners;
+explicit heights remain unchanged and use the bounded flex-start fallback.
+The contract is recorded in `docs/plan/tasks/native-engine-086.md`; design and
+implementation/validation are pending. Remote CI remains pending because the
+branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

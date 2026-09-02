@@ -532,14 +532,15 @@ contract and tradeoffs are in
 implementation is `1ee55c43`. Remote CI remains pending because the branch is
 local-only.
 
-The active dependency-ordered `native-engine-090` slice adds explicit
+The completed dependency-ordered `native-engine-090` slice adds explicit
 `justify-content:space-around` to the bounded fixed-width row/row-reverse
 flex-line owner. Positive main-axis free space is distributed with
 deterministic integer cumulative offsets around existing item/gap/margin and
 flex-sizing geometry, while row-reverse mirrors the offsets and all downstream
-artifacts remain shared. The complete contract and tradeoffs are in
-`docs/plan/tasks/native-engine-090.md`; design is pending. Remote CI remains
-pending because the branch is local-only.
+artifacts remain shared. The complete contract and evidence are in
+`docs/plan/tasks/native-engine-090.md`; design is `97c69d9d` and
+implementation is `d814784f`. Remote CI remains pending because the branch is
+local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

@@ -289,13 +289,14 @@ distinct. The contract and evidence are recorded in
 `docs/plan/tasks/native-engine-089.md`; design is `95caf4a9` and
 implementation is `1ee55c43`. Remote CI remains pending because the branch is
 local-only.
-The active 090 boundary adds explicit `justify-content:space-around` to the
+The completed 090 boundary adds explicit `justify-content:space-around` to the
 bounded fixed-width row/row-reverse flex-line owner. Positive main-axis free
 space is distributed with deterministic integer cumulative offsets around the
 existing item, gap, margin, and flex-sizing geometry; row-reverse mirrors the
-same offsets and downstream artifacts remain shared. The contract is recorded
-in `docs/plan/tasks/native-engine-090.md`; design is pending. Remote CI remains
-pending because the branch is local-only.
+same offsets and downstream artifacts remain shared. The complete contract and
+evidence are recorded in `docs/plan/tasks/native-engine-090.md`; design is
+`97c69d9d` and implementation is `d814784f`. Remote CI remains pending because
+the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

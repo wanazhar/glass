@@ -3008,6 +3008,7 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
         ("space-around", (11, 9, 37)),
         ("space-evenly", (14, 12, 34)),
         ("stretch", (11, 9, 37)),
+        ("normal", (11, 9, 37)),
     ] {
         let document =
             NativeDocument::parse(&source(align_content), &NativeEngineLimits::default()).unwrap();
@@ -3057,7 +3058,7 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
         let one_line_y = match align_content {
             "center" | "space-around" | "space-evenly" => 27,
             "flex-end" => 54,
-            "flex-start" | "space-between" | "stretch" => 0,
+            "flex-start" | "space-between" | "stretch" | "normal" => 0,
             _ => unreachable!(),
         };
         assert_eq!(
@@ -3095,6 +3096,46 @@ fn native_flex_align_content_stretch_assigns_remainder_to_first_formed_line() {
         assert_eq!(layout.box_for(second).unwrap().y, expected.1);
         assert_eq!(layout.box_for(third).unwrap().y, expected.2);
     }
+}
+
+#[test]
+fn native_flex_align_content_normal_reuses_stretch_and_keeps_omitted_fallback() {
+    let source = |align_content: &str, wrap: &str| {
+        format!(
+            "<div id='row' style='display:flex;width:20px;height:61px;gap:2px;flex-wrap:{wrap};align-items:center;align-content:{align_content}'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:10px'>B</div><div id='third' style='width:8px;height:14px'>C</div></div>"
+        )
+    };
+    let viewport = Viewport {
+        width: 24,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+
+    for wrap in ["wrap", "wrap-reverse"] {
+        let normal =
+            NativeDocument::parse(&source("normal", wrap), &NativeEngineLimits::default()).unwrap();
+        let stretch =
+            NativeDocument::parse(&source("stretch", wrap), &NativeEngineLimits::default())
+                .unwrap();
+        assert_eq!(
+            normal.layout(viewport).unwrap(),
+            stretch.layout(viewport).unwrap()
+        );
+        assert_eq!(
+            normal.display_list(viewport).unwrap().commands,
+            stretch.display_list(viewport).unwrap().commands
+        );
+    }
+
+    let omitted_html = source("normal", "wrap").replace(";align-content:normal", "");
+    let omitted = NativeDocument::parse(&omitted_html, &NativeEngineLimits::default()).unwrap();
+    let omitted_first = omitted.resolve_target("id=first").unwrap();
+    let omitted_second = omitted.resolve_target("id=second").unwrap();
+    let omitted_third = omitted.resolve_target("id=third").unwrap();
+    let omitted_layout = omitted.layout(viewport).unwrap();
+    assert_eq!(omitted_layout.box_for(omitted_first).unwrap().y, 2);
+    assert_eq!(omitted_layout.box_for(omitted_second).unwrap().y, 0);
+    assert_eq!(omitted_layout.box_for(omitted_third).unwrap().y, 10);
 }
 
 #[test]
@@ -3178,6 +3219,7 @@ fn native_flex_wrap_reverse_reflects_lines_and_shared_artifacts() {
         ("space-between", (52, 50, 0)),
         ("space-around", (43, 41, 9)),
         ("space-evenly", (40, 38, 12)),
+        ("normal", (43, 41, 9)),
     ] {
         let html = source(align_content);
         let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
@@ -6290,7 +6332,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: stretch; align-content: normal; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px; row-gap: 4px; column-gap: 5px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

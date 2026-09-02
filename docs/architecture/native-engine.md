@@ -245,6 +245,14 @@ diagnostics. The contract is recorded in
 `docs/plan/tasks/native-engine-084.md`; design is `36085e9c`, implementation is
 `f2f99f66`, and focused/full/strict/documentation/cleanup evidence is recorded
 there. Remote CI remains pending because the branch is local-only.
+The active 085 boundary expands bounded `place-content` shorthand into the
+existing `align-content` and `justify-content` computed components. One shared
+token is limited to values valid in both bounded axes; two tokens use explicit
+cross-axis/main-axis order. Unsupported CSS-wide, logical, safe/unsafe,
+ambiguous, and unsupported justify forms remain typed diagnostics. The
+contract is recorded in `docs/plan/tasks/native-engine-085.md`; implementation
+and validation are pending. Remote CI remains pending because the branch is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

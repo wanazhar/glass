@@ -482,6 +482,15 @@ diagnostics. The complete contract and tradeoffs are in
 `f2f99f66`, and focused/full/strict/documentation/cleanup evidence is recorded
 there. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-085` slice defines bounded
+`place-content` shorthand expansion into the existing `align-content` and
+`justify-content` components. One shared token covers their common bounded
+values; two tokens use explicit cross-axis/main-axis order. Unsupported
+CSS-wide, logical, safe/unsafe, ambiguous, and unsupported justify forms
+remain typed diagnostics. The complete contract and tradeoffs are in
+`docs/plan/tasks/native-engine-085.md`; implementation and validation are
+pending. Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -676,6 +685,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-082` | bounded `flex` shorthand expansion into non-inherited grow, shrink, and basis components with declaration-order-aware longhand overrides | `native-engine-081` | CSS-wide reset keywords, percentage/fractional bases, fractional factors, ambiguous or unsupported token forms, auto margins, columns, and browser Flexbox parity |
 | `native-engine-083` | bounded `flex-flow` shorthand expansion into non-inherited direction and wrap components with omitted-component reset and declaration-order-aware longhand overrides | `native-engine-082` | columns, column-reverse, logical direction/RTL, duplicate tokens, CSS-wide reset keywords, ambiguous forms, and browser Flexbox parity |
 | `native-engine-084` | bounded non-inherited `align-self:auto|flex-start|center|flex-end` item override resolved through the existing flex line cross-axis and complete-artifact translation owner | `native-engine-083` | stretch, baseline metrics, normal, logical start/end, safe/unsafe alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity |
+| `native-engine-085` | bounded `place-content` shorthand expansion into the existing `align-content` and `justify-content` components with one-token shared values and explicit two-token axis order | `native-engine-084` | full CSS shorthand grammar, unsupported justify values, logical direction/writing modes, safe/unsafe alignment, CSS-wide reset semantics, grid, fractional/intrinsic sizing, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1071,6 +1081,7 @@ visual stacking.
 | bounded flex shorthand | makes common `flex` presets and compact grow/shrink/basis declarations feed the completed component owners with CSS-like declaration-order precedence | CSS-wide reset keywords, percentage/fractional bases, fractional factors, ambiguous token forms, auto margins, columns, and browser Flexbox parity | expand bounded `none`, `auto`, integer-factor, and pixel/`auto` basis forms directly into the existing component fields, preserve valid source-order longhand overrides, and reuse the existing flex sizing and artifact consumers |
 | bounded flex-flow shorthand | makes common row/reverse-row and nowrap/wrap/wrap-reverse combinations feed the completed direction and wrapping owners with shorthand reset and source-order precedence | columns, column-reverse, logical direction/RTL, duplicate tokens, CSS-wide reset keywords, ambiguous forms, and browser Flexbox parity | classify one or two bounded direction/wrap tokens, expand omitted components to row/nowrap, preserve valid longhand overrides, and reuse the existing physical placement, line formation, artifact, overflow, and hit-test consumers |
 | bounded flex align-self | makes common per-item cross-axis overrides observable without adding a second line or artifact owner | stretch sizing, baseline metrics, normal/logical/safe alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse non-inherited `auto|flex-start|center|flex-end`, resolve `auto` against the parent `align-items` at placement time, and translate the complete item subtree through existing boxes, text, paint, overflow, projection, hit-test, scroll, and capture consumers |
+| bounded flex place-content | makes common two-axis flex distribution declarations feed the existing line and main-axis owners without adding a second cascade or geometry representation | full CSS shorthand grammar, unsupported justify values, logical direction/writing modes, safe/unsafe alignment, grid, fractional/intrinsic sizing, and browser Flexbox parity | parse one shared or two explicit bounded tokens, expand them to `align-content` and `justify-content` at the existing declaration precedence, and reuse the current wrapped-line/main-axis distribution and complete artifact consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence

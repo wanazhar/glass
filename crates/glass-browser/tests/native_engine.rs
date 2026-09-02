@@ -2901,6 +2901,154 @@ fn native_flex_align_self_stretch_fills_auto_height_and_preserves_explicit_size(
 }
 
 #[test]
+fn native_flex_align_items_stretch_reuses_item_path_and_respects_overrides() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:48px;height:32px;gap:2px;align-items:stretch'><div id='stretched' style='width:8px;background-color:red'><span id='nested' style='display:block;height:2px'>F</span></div><div id='explicit' style='width:8px;height:8px;background-color:green'>E</div><div id='center' style='width:8px;height:8px;align-self:center;background-color:blue'>C</div><div id='inset' style='width:8px;box-sizing:border-box;padding:1px;border:1px solid blue;max-height:24px;background-color:blue'>I</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let stretched = document.resolve_target("id=stretched").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let explicit = document.resolve_target("id=explicit").unwrap();
+    let center = document.resolve_target("id=center").unwrap();
+    let inset = document.resolve_target("id=inset").unwrap();
+    let viewport = Viewport {
+        width: 56,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(row).unwrap().height, 32);
+    assert_eq!(layout.box_for(stretched).unwrap().x, 0);
+    assert_eq!(layout.box_for(stretched).unwrap().y, 0);
+    assert_eq!(layout.box_for(stretched).unwrap().height, 32);
+    assert_eq!(layout.box_for(nested).unwrap().y, 0);
+    assert_eq!(layout.box_for(explicit).unwrap().x, 10);
+    assert_eq!(layout.box_for(explicit).unwrap().y, 0);
+    assert_eq!(layout.box_for(explicit).unwrap().height, 8);
+    assert_eq!(layout.box_for(center).unwrap().x, 20);
+    assert_eq!(layout.box_for(center).unwrap().y, 12);
+    assert_eq!(layout.box_for(center).unwrap().height, 8);
+    assert_eq!(layout.box_for(inset).unwrap().x, 30);
+    assert_eq!(layout.box_for(inset).unwrap().y, 0);
+    assert_eq!(layout.box_for(inset).unwrap().height, 24);
+    assert_eq!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == inset)
+            .unwrap()
+            .content_rect
+            .height,
+        20
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == stretched
+                    && rect.x == 0
+                    && rect.y == 0
+                    && rect.height == 32
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == center
+                    && rect.x == 20
+                    && rect.y == 12
+                    && rect.height == 8
+                    && *color
+                        == (NativeColor {
+                            red: 0,
+                            green: 0,
+                            blue: u8::MAX,
+                            alpha: u8::MAX,
+                        })
+        )
+    }));
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(nested));
+    assert_eq!(layout.hit_test(1, 31).unwrap(), Some(stretched));
+    assert_eq!(layout.hit_test(21, 13).unwrap(), Some(center));
+    assert_eq!(layout.hit_test(31, 23).unwrap(), Some(inset));
+}
+
+#[test]
+fn native_flex_align_items_stretch_uses_the_formed_wrapped_line_size() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:20px;height:60px;gap:2px;align-items:stretch;align-content:stretch;flex-wrap:wrap'><div id='first' style='width:8px;background-color:red'><span id='first-nested' style='display:block;height:2px'>F</span></div><div id='explicit' style='width:8px;height:12px;background-color:green'>E</div><div id='second' style='width:8px;background-color:blue'><span id='second-nested' style='display:block;height:4px'>S</span></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let first_nested = document.resolve_target("id=first-nested").unwrap();
+    let explicit = document.resolve_target("id=explicit").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let second_nested = document.resolve_target("id=second-nested").unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 68,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(row).unwrap().height, 60);
+    assert_eq!(layout.box_for(first).unwrap().x, 0);
+    assert_eq!(layout.box_for(first).unwrap().y, 0);
+    assert_eq!(layout.box_for(first).unwrap().height, 29);
+    assert_eq!(layout.box_for(first_nested).unwrap().y, 0);
+    assert_eq!(layout.box_for(explicit).unwrap().x, 10);
+    assert_eq!(layout.box_for(explicit).unwrap().y, 0);
+    assert_eq!(layout.box_for(explicit).unwrap().height, 12);
+    assert_eq!(layout.box_for(second).unwrap().x, 0);
+    assert_eq!(layout.box_for(second).unwrap().y, 31);
+    assert_eq!(layout.box_for(second).unwrap().height, 29);
+    assert_eq!(layout.box_for(second_nested).unwrap().y, 31);
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == first
+                    && rect.x == 0
+                    && rect.y == 0
+                    && rect.height == 29
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == second
+                    && rect.x == 0
+                    && rect.y == 31
+                    && rect.height == 29
+                    && *color
+                        == (NativeColor {
+                            red: 0,
+                            green: 0,
+                            blue: u8::MAX,
+                            alpha: u8::MAX,
+                        })
+        )
+    }));
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(first_nested));
+    assert_eq!(layout.hit_test(1, 28).unwrap(), Some(first));
+    assert_eq!(layout.hit_test(1, 32).unwrap(), Some(second_nested));
+    assert_eq!(layout.hit_test(1, 59).unwrap(), Some(second));
+}
+
+#[test]
 fn native_flex_align_items_handles_auto_lines_box_sizing_overflow_and_fallback() {
     let auto = NativeDocument::parse(
         "<div id='row' style='display:flex;width:32px;align-items:center'><div id='short' style='width:8px;height:8px'>A</div><div id='tall' style='width:8px;height:24px'>B</div></div>",
@@ -7154,7 +7302,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: stretch; align-self: baseline; align-content: safe center; place-content: stretch; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

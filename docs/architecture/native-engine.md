@@ -281,6 +281,13 @@ computed keyword; the omitted native fallback remains `flex-start`. The
 contract and evidence are recorded in `docs/plan/tasks/native-engine-088.md`;
 design is `162543f1` and implementation is `19d8d3f6`. Remote CI remains
 pending because the branch is local-only.
+The active 089 boundary adds explicit child `align-self:normal`. In the
+supported row/row-reverse flex context, the explicit item value reuses the
+completed stretch used-size owner regardless of parent `align-items`, while
+`align-self:auto` remains parent-controlled and the computed keyword remains
+distinct. The contract is recorded in
+`docs/plan/tasks/native-engine-089.md`; design is pending. Remote CI remains
+pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

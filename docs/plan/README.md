@@ -649,6 +649,15 @@ diagnosed. The design is `36085e9c`, implementation is `f2f99f66`, and focused,
 full, strict, documentation, and exact target-cleanup evidence are recorded in
 the task file. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-085](tasks/native-engine-085.md)
+slice defines bounded `place-content` expansion into the existing
+`align-content` and `justify-content` components. One shared token supports
+their common values; two tokens use explicit cross-axis/main-axis order.
+Unsupported CSS-wide, logical, safe/unsafe, ambiguous, and unsupported justify
+forms remain diagnosed. The complete contract and tradeoffs are recorded in
+the task file; implementation and validation are pending. Remote CI remains
+pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

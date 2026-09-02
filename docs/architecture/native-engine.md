@@ -192,6 +192,12 @@ supplied the main axis. Its contract is recorded in
 `docs/plan/tasks/native-engine-078.md`; design is `c6ebecd`, implementation is
 `1bca33f`, and local validation and cleanup evidence are recorded in that task
 file. Remote CI remains pending because the branch is local-only.
+The active 079 boundary adds bounded non-inherited integer `flex-grow` weights
+to eligible row-flex items. Positive line free space will be allocated before
+justification with deterministic prefix-floor shares, while max-width caps
+freeze and redistribute remainder through the same geometry owner. Its
+contract is recorded in `docs/plan/tasks/native-engine-079.md`; implementation
+and validation are pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

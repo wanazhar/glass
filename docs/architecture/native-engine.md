@@ -22,7 +22,7 @@ bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-wrap/
 bounded-flex-wrap-reverse,
 bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
 bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
-bounded-flex-cross-line-normal,
+bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -175,6 +175,12 @@ omitted-value `flex-start` fallback. Its contract is recorded in
 `docs/plan/tasks/native-engine-076.md`; design is `b6c647e`, implementation is
 `e3933b3`, and local validation and cleanup evidence are recorded in that task
 file. Remote CI remains pending because the branch is local-only.
+The active 077 boundary adds explicit bounded non-inherited `row-gap` spacing
+between adjacent formed lines in eligible wrapped fixed-width flex rows. It
+accounts for that cross-line space once before the existing `align-content`
+free-space owner and preserves the current main-axis-only `gap` behavior. The
+contract is recorded in `docs/plan/tasks/native-engine-077.md`; implementation,
+validation, and remote-CI evidence are pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

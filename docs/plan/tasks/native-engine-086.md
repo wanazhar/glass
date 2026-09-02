@@ -1,7 +1,7 @@
 ---
 id: native-engine-086
 scope: glass-browser/native-engine/align-self-stretch
-status: active
+status: complete
 depends-on: [native-engine-085]
 ---
 
@@ -84,7 +84,46 @@ projection, hit testing, scrolling, capture, and semantic/source order.
 
 ## Verification
 
-Implementation, focused parser/cascade and shared-layout tests, full native
-suites, strict feature/documentation gates, issue #40 status, and exact
-regenerable-target cleanup will be recorded here when the slice closes. Remote
-CI is not claimed until the local branch is pushed.
+The implementation checkpoint is `5ea2c8d1`, following design checkpoint
+`f92b7b9a`; strict layout lint cleanup is `2c07c749`. Focused CSS
+parser/cascade coverage passed 2/2 tests in 6m53s after rebuilding from a
+clean target. Focused shared-layout integration coverage passed 1/1 test with
+the compile phase finishing in 31.90s and the test running in 0.05s. The
+integration case covers auto-height stretch, explicit-height preservation,
+box-model and max-height bounds, descendant coordinates, paint, and hit
+testing.
+
+The full native integration suite passed 112/112 tests in 2.54s. The full
+native library suite passed 887 tests with 1 ignored in 4.72s under
+`RUST_MIN_STACK=8388608`; the initial default-stack attempt hit the existing
+deep-suite stack limit and was not treated as passing evidence. Strict
+all-feature Clippy passed with warnings denied in 8m01s; the no-default-feature
+matrix passed with warnings denied in 7m12s. Rustdoc with
+`RUSTDOCFLAGS='-D warnings'` passed in 3m17s, and the locked `glass-dev`
+binary build passed in 11m28s. Formatting and `git diff --check` passed.
+
+The first full release-certification attempt reached the environment-dependent
+Rust Analyzer test and failed to receive diagnostics; the exact test passed
+immediately on retry, and the fresh full workspace test stage passed. The
+final `scripts/release-certify.sh` run passed all remaining release,
+documentation, package, dependency, and fuzz gates in 730.17s, with peak RSS
+of 1,564,156 KiB. Its repository evidence was: version `0.3.14`; feature
+parity 14 capabilities across 4 targets; release documentation 500 Markdown
+files with 0 current-claim failures; TUI 15 implementation help keys and 63
+documentation markers; documentation depth 93 current guides and 19
+substantive contracts; documentation coverage 500 Markdown files, 345
+full-product MCP tools (100 browser-only), 17 examples, and 22 public
+modules; reliability 6 scenarios across 4 targets; 5 public read-only
+adapters; and Web IR 8 fixtures, 8 scenarios, and 11 categories with runtime
+goldens verified. Both packages were packaged and `glass-dev` resolved
+`glass-browser` exactly at `0.3.14`.
+
+After certification, the exact regenerable
+`/home/ubuntu/work/glass/target` output fell from 8.4G to 4.0K and
+`/dev/sda1` moved from 138G used/56G available/72% to 129G used/65G
+available/67%. No Cargo/Rust writer, live target path, or Git lock remained
+at cleanup time. Three long-lived Glass processes held already-deleted
+executable mappings; they were retained and not terminated. Shared Cargo
+registries/toolchains were retained. Remote CI remains pending because the
+branch is local-only; no push, release, tag, registry publication, or
+browser-parity certification is claimed.

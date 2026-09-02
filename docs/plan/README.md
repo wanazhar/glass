@@ -698,6 +698,15 @@ distinct. Design is `95caf4a9`, implementation is `1ee55c43`, and focused,
 full, strict, documentation, and exact-target evidence are recorded in the
 task file. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-090](tasks/native-engine-090.md)
+slice adds explicit `justify-content:space-around` to the bounded fixed-width
+row and row-reverse flex-line owner. Positive main-axis free space is
+distributed with deterministic integer cumulative offsets around the existing
+item/gap/margin geometry; row-reverse mirrors the offsets and all downstream
+artifacts remain shared. The bounded contract and tradeoffs are recorded in the
+task file; implementation and validation are pending. Remote CI remains
+pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

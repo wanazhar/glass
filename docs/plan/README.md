@@ -541,14 +541,17 @@ the full native library suite passes with an explicit 8 MiB test-thread stack.
 and general Flexbox remain outside the contract. Remote CI remains pending
 until this branch is pushed.
 
-The active dependency-ordered [native-engine-074](tasks/native-engine-074.md)
+The completed dependency-ordered [native-engine-074](tasks/native-engine-074.md)
 slice adds bounded non-inherited `flex-wrap:wrap-reverse` to the same eligible
 fixed-width flex rows. It preserves source-order line formation while placing
 formed lines from the physical cross-axis end, reusing every bounded
 `align-content` value and translating complete line artifact ranges with a
-signed document-pixel delta. The design contract is recorded in the task file;
-implementation and validation evidence are pending. Remote CI remains pending
-until this branch is pushed.
+signed document-pixel delta. The design is `5f6c61a`, the implementation is
+`96fd15c`, and local validation and cleanup evidence are recorded in the task
+file. The previously documented default-stack issue in one large-Clap parser
+test remains a harness follow-up; the full native library suite passes with an
+explicit 8 MiB test-thread stack. Remote CI remains pending until this branch
+is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

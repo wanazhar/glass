@@ -363,14 +363,17 @@ artifact, overflow, and semantic owners. The contract is recorded in
 file. The default-stack overflow in one existing large-Clap parser test is
 documented there; the full native library suite passes with an explicit 8 MiB
 test-thread stack. Remote CI remains pending because the branch is local-only.
-The active dependency-ordered `native-engine-074` slice adds bounded
+The completed dependency-ordered `native-engine-074` slice adds bounded
 non-inherited `flex-wrap:wrap-reverse` to the same eligible fixed-width rows.
 It preserves source-order line formation, reverses physical cross-axis line
 stacking, reuses every bounded `align-content` value, and requires signed
 complete-artifact translation from provisional line origins. Its contract is
-recorded in `docs/plan/tasks/native-engine-074.md`; implementation and local
-validation evidence are pending. Remote CI remains pending because the branch
-is local-only.
+recorded in `docs/plan/tasks/native-engine-074.md`; design is `5f6c61a`,
+implementation is `96fd15c`, and local validation and cleanup evidence are
+recorded in the task file. The previously documented default-stack issue in
+one large-Clap parser test remains a harness follow-up; the full native
+library suite passes with an explicit 8 MiB test-thread stack. Remote CI
+remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -928,7 +931,7 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-074.md` is the active design checkpoint;
+`docs/plan/tasks/native-engine-074.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-069.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-068.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-067.md` is the preceding completed checkpoint;

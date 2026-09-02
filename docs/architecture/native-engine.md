@@ -146,14 +146,17 @@ semantic owners. The contract is recorded in
 file. The default-stack overflow in one existing large-Clap parser test is
 documented there; the full native library suite passes with an explicit 8 MiB
 test-thread stack. Remote CI remains pending because the branch is local-only.
-The active 074 boundary adds bounded non-inherited
+The completed 074 boundary adds bounded non-inherited
 `flex-wrap:wrap-reverse` to eligible fixed-width rows. It keeps source-order
 line formation, reflects physical line origins from the cross-axis end, reuses
 all bounded `align-content` offsets, and translates each complete line artifact
 range with a signed document-pixel delta. The contract is recorded in
-`docs/plan/tasks/native-engine-074.md`; implementation and local validation
-evidence are pending. Remote CI remains pending because the branch is
-local-only.
+`docs/plan/tasks/native-engine-074.md`; design is `5f6c61a`, implementation is
+`96fd15c`, and local validation and cleanup evidence are recorded in the task
+file. The previously documented default-stack issue in one large-Clap parser
+test remains a harness follow-up; the full native library suite passes with an
+explicit 8 MiB test-thread stack. Remote CI remains pending because the branch
+is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

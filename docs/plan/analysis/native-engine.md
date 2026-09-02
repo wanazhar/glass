@@ -472,14 +472,15 @@ forms remain typed diagnostics. The complete contract and tradeoffs are in
 cleanup evidence are recorded there. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered `native-engine-084` slice defines bounded
+The completed dependency-ordered `native-engine-084` slice defines bounded
 non-inherited `align-self:auto|flex-start|center|flex-end` for eligible direct
 flex items. `auto` resolves to the parent `align-items` value at the existing
 cross-axis placement decision, while explicit values override only that item.
 Stretch, baseline, logical, CSS-wide, and ambiguous forms remain typed
 diagnostics. The complete contract and tradeoffs are in
-`docs/plan/tasks/native-engine-084.md`; implementation and validation are
-pending. Remote CI remains pending because the branch is local-only.
+`docs/plan/tasks/native-engine-084.md`; design is `36085e9c`, implementation is
+`f2f99f66`, and focused/full/strict/documentation/cleanup evidence is recorded
+there. Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -534,8 +535,8 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, and bounded non-inherited flex-row `justify-content`, flex-item `order`, flex cross-axis `align-items`, `flex-direction`, `flex-wrap`, `align-content:flex-start|center|flex-end|space-between|space-around|space-evenly|stretch|normal`, integer `flex-grow`, integer `flex-shrink`, and `flex-basis:auto|Npx` | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
-| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, bounded fixed-width flex-row free-space placement, stable visual flex-item order sorting, complete flex cross-axis alignment with explicit/auto line sizing and subtree artifact translation, bounded physical flex wrapping and wrap-reverse line stacking, bounded cross-line alignment, `space-around`, `space-evenly`, `stretch`, explicit `normal` line distribution, bounded positive flex-grow allocation with max-width freeze/redistribution, base-width-weighted flex-shrink allocation with min-width freezing, and explicit flex-basis base sizing | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, and bounded non-inherited flex-row `justify-content`, flex-item `order`, flex cross-axis `align-items`, `align-self:auto|flex-start|center|flex-end`, `flex-direction`, `flex-wrap`, `flex-flow`, `align-content:flex-start|center|flex-end|space-between|space-around|space-evenly|stretch|normal`, integer `flex-grow`, integer `flex-shrink`, `flex-basis:auto|Npx`, and `flex` shorthand | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, bounded fixed-width flex-row free-space placement, stable visual flex-item order sorting, complete flex cross-axis alignment with explicit/auto line sizing and per-item `align-self` overrides, bounded physical flex wrapping and wrap-reverse line stacking, bounded cross-line alignment, `space-around`, `space-evenly`, `stretch`, explicit `normal` line distribution, bounded positive flex-grow allocation with max-width freeze/redistribution, base-width-weighted flex-shrink allocation with min-width freezing, explicit flex-basis base sizing, and flex shorthand/flow component reuse | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity/font presentation, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, nested opacity layers, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
 | `native_engine::dom` | arena DOM, semantic projection, and bounded control/form mutation | HTML source, locators, and limits | generational nodes/document evidence/effects | native limits |
@@ -1069,12 +1070,15 @@ visual stacking.
 | bounded flex basis | makes explicit fixed-pixel or `auto` flex bases override item width before the shared line-formation, grow, and shrink owners | flex shorthand, percentages, fractional lengths, `calc()`, `content`, intrinsic sizing changes, auto margins, columns, and browser Flexbox parity | resolve non-inherited `auto|Npx`, reuse box-sizing and min/max conversion, leave explicit bases unclamped before line formation, and pass final widths through the existing geometry consumers |
 | bounded flex shorthand | makes common `flex` presets and compact grow/shrink/basis declarations feed the completed component owners with CSS-like declaration-order precedence | CSS-wide reset keywords, percentage/fractional bases, fractional factors, ambiguous token forms, auto margins, columns, and browser Flexbox parity | expand bounded `none`, `auto`, integer-factor, and pixel/`auto` basis forms directly into the existing component fields, preserve valid source-order longhand overrides, and reuse the existing flex sizing and artifact consumers |
 | bounded flex-flow shorthand | makes common row/reverse-row and nowrap/wrap/wrap-reverse combinations feed the completed direction and wrapping owners with shorthand reset and source-order precedence | columns, column-reverse, logical direction/RTL, duplicate tokens, CSS-wide reset keywords, ambiguous forms, and browser Flexbox parity | classify one or two bounded direction/wrap tokens, expand omitted components to row/nowrap, preserve valid longhand overrides, and reuse the existing physical placement, line formation, artifact, overflow, and hit-test consumers |
+| bounded flex align-self | makes common per-item cross-axis overrides observable without adding a second line or artifact owner | stretch sizing, baseline metrics, normal/logical/safe alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse non-inherited `auto|flex-start|center|flex-end`, resolve `auto` against the parent `align-items` at placement time, and translate the complete item subtree through existing boxes, text, paint, overflow, projection, hit-test, scroll, and capture consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-082.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-084.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-083.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-082.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-081.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-080.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-079.md` is the preceding completed checkpoint;
@@ -1083,7 +1087,7 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-076.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-075.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-074.md` is an earlier completed checkpoint;
-`docs/plan/tasks/native-engine-069.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-069.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-068.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-067.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-066.md` is the preceding completed checkpoint;

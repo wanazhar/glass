@@ -355,6 +355,7 @@ pub(crate) struct NativeComputedStyle {
     word_spacing: u32,
     letter_spacing: u32,
     gap: u32,
+    row_gap: u32,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -463,6 +464,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn gap(self) -> u32 {
         self.gap
+    }
+
+    pub(crate) const fn row_gap(self) -> u32 {
+        self.row_gap
     }
 
     pub(crate) const fn width(self) -> Option<u32> {
@@ -627,6 +632,7 @@ impl NativeStylesheet {
         let mut word_spacing = None;
         let mut letter_spacing = None;
         let mut gap = None;
+        let mut row_gap = None;
         let mut width = None;
         let mut height = None;
         let mut min_width = None;
@@ -806,6 +812,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, gap)
             {
                 gap = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.row_gap
+                && wins(rule.selector.specificity, rule.order, false, row_gap)
+            {
+                row_gap = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1202,6 +1218,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.row_gap
+                && wins(u16::MAX, usize::MAX, true, row_gap)
+            {
+                row_gap = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.justify_content
                 && wins(u16::MAX, usize::MAX, true, justify_content)
             {
@@ -1441,6 +1467,7 @@ impl NativeStylesheet {
             word_spacing: word_spacing.map_or(inherited.word_spacing, |value| value.value),
             letter_spacing: letter_spacing.map_or(inherited.letter_spacing, |value| value.value),
             gap: gap.map_or(0, |value| value.value),
+            row_gap: row_gap.map_or(0, |value| value.value),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             min_width: min_width.map(|value| value.value),
@@ -1560,6 +1587,7 @@ struct NativeDeclarations {
     word_spacing: Option<u32>,
     letter_spacing: Option<u32>,
     gap: Option<u32>,
+    row_gap: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
     min_width: Option<u32>,
@@ -1738,6 +1766,7 @@ fn parse_source(
             || declarations.word_spacing.is_some()
             || declarations.letter_spacing.is_some()
             || declarations.gap.is_some()
+            || declarations.row_gap.is_some()
             || declarations.width.is_some()
             || declarations.height.is_some()
             || declarations.min_width.is_some()
@@ -1877,6 +1906,7 @@ fn parse_declarations_with_diagnostics(
             "word-spacing" => parse_dimension(value).is_some(),
             "letter-spacing" => parse_dimension(value).is_some(),
             "gap" => parse_dimension(value).is_some(),
+            "row-gap" => parse_dimension(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
             }
@@ -1947,6 +1977,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "vertical-align"
             | "text-indent"
             | "gap"
+            | "row-gap"
             | "width"
             | "height"
             | "min-width"
@@ -2076,6 +2107,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "gap" => {
                 declarations.gap = parse_dimension(value);
+            }
+            "row-gap" => {
+                declarations.row_gap = parse_dimension(value);
             }
             "width" => {
                 declarations.width = parse_dimension(value);
@@ -2887,7 +2921,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: stretch; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: stretch; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; row-gap: 13px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2914,6 +2948,7 @@ mod tests {
         assert_eq!(declarations.word_spacing, Some(12));
         assert_eq!(declarations.letter_spacing, Some(12));
         assert_eq!(declarations.gap, Some(12));
+        assert_eq!(declarations.row_gap, Some(13));
         assert_eq!(declarations.font_weight, Some(FontWeightValue::Bold));
         assert_eq!(declarations.font_style, Some(FontStyleValue::Italic));
         assert_eq!(declarations.word_break, Some(WordBreakValue::BreakAll));
@@ -3358,6 +3393,18 @@ mod tests {
         assert_eq!(parse_declarations("gap: 2em").gap, None);
         assert_eq!(parse_declarations("gap: 50%").gap, None);
         assert_eq!(parse_declarations("gap: 20000px").gap, None);
+    }
+
+    #[test]
+    fn row_gap_parser_accepts_only_bounded_non_negative_single_pixels() {
+        assert_eq!(parse_declarations("row-gap: 16px").row_gap, Some(16));
+        assert_eq!(parse_declarations("row-gap: 0px").row_gap, Some(0));
+        assert_eq!(parse_declarations("row-gap: -1px").row_gap, None);
+        assert_eq!(parse_declarations("row-gap: 1px 2px").row_gap, None);
+        assert_eq!(parse_declarations("row-gap: 1.5px").row_gap, None);
+        assert_eq!(parse_declarations("row-gap: 2em").row_gap, None);
+        assert_eq!(parse_declarations("row-gap: 50%").row_gap, None);
+        assert_eq!(parse_declarations("row-gap: 20000px").row_gap, None);
     }
 
     #[test]
@@ -4048,6 +4095,24 @@ mod tests {
         assert_eq!(document.computed_style_for_layout(child).gap(), 0);
         assert_eq!(document.computed_style_for_layout(explicit).gap(), 32);
         assert_eq!(document.computed_style_for_layout(invalid).gap(), 0);
+    }
+
+    #[test]
+    fn row_gap_is_cascaded_without_inheriting_to_children() {
+        let document = NativeDocument::parse(
+            "<style>#parent { row-gap: 16px; } #explicit { row-gap: 24px; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='row-gap: 32px'>Explicit</span><span id='invalid' style='row-gap: -1px'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(document.computed_style_for_layout(parent).row_gap(), 16);
+        assert_eq!(document.computed_style_for_layout(child).row_gap(), 0);
+        assert_eq!(document.computed_style_for_layout(explicit).row_gap(), 32);
+        assert_eq!(document.computed_style_for_layout(invalid).row_gap(), 0);
     }
 
     #[test]

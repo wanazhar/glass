@@ -1332,6 +1332,7 @@ impl<'a> LayoutBuilder<'a> {
         }
         let parent_style = self.document.computed_style_for_layout(parent);
         let gap = parent_style.gap();
+        let row_gap = parent_style.row_gap();
         let justify_content = parent_style.justify_content();
         let align_items = parent_style.align_items();
         let flex_wrap = parent_style.flex_wrap();
@@ -1442,13 +1443,16 @@ impl<'a> LayoutBuilder<'a> {
                 layout: line_layout,
             });
             if wrapped {
-                line_y = line_y.saturating_add(line_height);
+                line_y = line_y.saturating_add(line_height).saturating_add(row_gap);
             }
         }
 
+        let line_gap_count = u32::try_from(line_count.saturating_sub(1)).unwrap_or(u32::MAX);
+        let explicit_line_gap = row_gap.saturating_mul(line_gap_count);
         let total_line_height = line_records
             .iter()
             .fold(0u32, |total, line| total.saturating_add(line.height));
+        let total_line_height = total_line_height.saturating_add(explicit_line_gap);
         let line_content_height = if wrapped {
             explicit_line_height.unwrap_or(total_line_height)
         } else {
@@ -1472,10 +1476,11 @@ impl<'a> LayoutBuilder<'a> {
                 let extra = per_line_extra.saturating_add(u32::from(line_index < remainder));
                 line.height = line.height.saturating_add(extra);
                 line.y = stretched_line_y;
-                stretched_line_y = stretched_line_y.saturating_add(line.height);
+                stretched_line_y = stretched_line_y
+                    .saturating_add(line.height)
+                    .saturating_add(row_gap);
             }
         }
-        let line_gap_count = u32::try_from(line_count.saturating_sub(1)).unwrap_or(u32::MAX);
         let distributed_line_gap =
             if wrapped && parent_style.align_content() == AlignContentValue::SpaceBetween {
                 free_space.checked_div(line_gap_count).unwrap_or(0)

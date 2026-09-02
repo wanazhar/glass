@@ -688,10 +688,10 @@ fn apply_flex_shrink(items: &mut [FlexItem], available_width: u32, gap: u32) {
     }
 }
 
-fn flex_space_around_line_offset(free_space: u32, line_index: u32, line_count: usize) -> u32 {
+fn flex_space_around_offset(free_space: u32, item_index: u32, item_count: usize) -> u32 {
     let numerator = u64::from(free_space)
-        .saturating_mul(u64::from(line_index).saturating_mul(2).saturating_add(1));
-    let denominator = u64::try_from(line_count)
+        .saturating_mul(u64::from(item_index).saturating_mul(2).saturating_add(1));
+    let denominator = u64::try_from(item_count)
         .unwrap_or(u64::MAX)
         .saturating_mul(2)
         .max(1);
@@ -1435,15 +1435,24 @@ impl<'a> LayoutBuilder<'a> {
         });
         let occupied_width = item_width.saturating_add(context.gap.saturating_mul(gap_count));
         let free_space = context.available_width.saturating_sub(occupied_width);
+        let item_count = items.len();
         let leading_offset = if items.is_empty() {
             0
         } else {
             match context.justify_content {
                 JustifyContentValue::Center => free_space / 2,
                 JustifyContentValue::FlexEnd => free_space,
-                JustifyContentValue::FlexStart | JustifyContentValue::SpaceBetween => 0,
+                JustifyContentValue::FlexStart
+                | JustifyContentValue::SpaceBetween
+                | JustifyContentValue::SpaceAround => 0,
             }
         };
+        let initial_offset =
+            if context.justify_content == JustifyContentValue::SpaceAround && item_count > 0 {
+                flex_space_around_offset(free_space, 0, item_count)
+            } else {
+                leading_offset
+            };
         let distributed_gap = if context.justify_content == JustifyContentValue::SpaceBetween {
             free_space.checked_div(gap_count).unwrap_or(0)
         } else {
@@ -1455,14 +1464,13 @@ impl<'a> LayoutBuilder<'a> {
         } else {
             0
         };
-        let item_count = items.len();
         let mut placements = Vec::with_capacity(item_count);
         let width = if context.reverse {
             let reverse_shift = occupied_width.saturating_sub(context.available_width);
             let mut cursor_right = context
                 .x
                 .saturating_add(context.available_width)
-                .saturating_sub(leading_offset)
+                .saturating_sub(initial_offset)
                 .saturating_add(reverse_shift);
             for (index, item) in items.into_iter().enumerate() {
                 if index > 0 {
@@ -1474,6 +1482,19 @@ impl<'a> LayoutBuilder<'a> {
                         {
                             cursor_right = cursor_right.saturating_sub(1);
                         }
+                    } else if context.justify_content == JustifyContentValue::SpaceAround {
+                        let current_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_right = cursor_right
+                            .saturating_sub(current_offset.saturating_sub(previous_offset));
                     }
                 }
                 let item_x = cursor_right
@@ -1508,13 +1529,19 @@ impl<'a> LayoutBuilder<'a> {
                 occupied_width.saturating_add(
                     if context.justify_content == JustifyContentValue::SpaceBetween {
                         free_space
+                    } else if context.justify_content == JustifyContentValue::SpaceAround {
+                        flex_space_around_offset(
+                            free_space,
+                            u32::try_from(item_count.saturating_sub(1)).unwrap_or(u32::MAX),
+                            item_count,
+                        )
                     } else {
                         leading_offset
                     },
                 )
             }
         } else {
-            let mut cursor_x = context.x.saturating_add(leading_offset);
+            let mut cursor_x = context.x.saturating_add(initial_offset);
             for (index, item) in items.into_iter().enumerate() {
                 if index > 0 {
                     cursor_x = cursor_x.saturating_add(context.gap);
@@ -1525,6 +1552,19 @@ impl<'a> LayoutBuilder<'a> {
                         {
                             cursor_x = cursor_x.saturating_add(1);
                         }
+                    } else if context.justify_content == JustifyContentValue::SpaceAround {
+                        let current_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_x =
+                            cursor_x.saturating_add(current_offset.saturating_sub(previous_offset));
                     }
                 }
                 let item_x = cursor_x.saturating_add(item.margin.left());
@@ -1768,7 +1808,7 @@ impl<'a> LayoutBuilder<'a> {
             let line_offset = if wrapped
                 && parent_style.align_content() == AlignContentValue::SpaceAround
             {
-                flex_space_around_line_offset(free_space, line_index, line_count)
+                flex_space_around_offset(free_space, line_index, line_count)
             } else if wrapped && parent_style.align_content() == AlignContentValue::SpaceEvenly {
                 flex_space_evenly_line_offset(free_space, line_index, line_count)
             } else {

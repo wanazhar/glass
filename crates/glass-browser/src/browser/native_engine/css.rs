@@ -174,6 +174,7 @@ pub(crate) enum JustifyContentValue {
     Center,
     FlexEnd,
     SpaceBetween,
+    SpaceAround,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2845,6 +2846,7 @@ fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
         "center" => Some(JustifyContentValue::Center),
         "flex-end" => Some(JustifyContentValue::FlexEnd),
         "space-between" => Some(JustifyContentValue::SpaceBetween),
+        "space-around" => Some(JustifyContentValue::SpaceAround),
         _ => None,
     }
 }
@@ -4075,8 +4077,11 @@ mod tests {
             parse_justify_content("space-between"),
             Some(JustifyContentValue::SpaceBetween)
         );
+        assert_eq!(
+            parse_justify_content("SPACE-AROUND"),
+            Some(JustifyContentValue::SpaceAround)
+        );
         assert_eq!(parse_justify_content("normal"), None);
-        assert_eq!(parse_justify_content("space-around"), None);
         assert_eq!(parse_justify_content("space-evenly"), None);
         assert_eq!(parse_justify_content("start"), None);
     }
@@ -4099,6 +4104,13 @@ mod tests {
             Some((AlignContentValue::SpaceAround, JustifyContentValue::FlexEnd))
         );
         assert_eq!(
+            parse_place_content("space-around"),
+            Some((
+                AlignContentValue::SpaceAround,
+                JustifyContentValue::SpaceAround
+            ))
+        );
+        assert_eq!(
             parse_place_content("normal center"),
             Some((AlignContentValue::Normal, JustifyContentValue::Center))
         );
@@ -4106,7 +4118,6 @@ mod tests {
             parse_place_content("stretch flex-start"),
             Some((AlignContentValue::Stretch, JustifyContentValue::FlexStart))
         );
-        assert_eq!(parse_place_content("space-around"), None);
         assert_eq!(parse_place_content("center stretch"), None);
         assert_eq!(parse_place_content("center center center"), None);
         assert_eq!(parse_place_content("start center"), None);
@@ -4972,7 +4983,7 @@ mod tests {
     #[test]
     fn justify_content_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { justify-content: space-between; } #explicit { justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='justify-content: center'>Explicit</span><span id='invalid' style='justify-content: space-around'>Invalid</span></div>",
+            "<style>#parent { justify-content: space-between; } #explicit { justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='justify-content: center'>Explicit</span><span id='invalid' style='justify-content: space-evenly'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();

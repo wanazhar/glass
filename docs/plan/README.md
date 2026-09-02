@@ -593,13 +593,14 @@ affected wrapped-row goldens move with that implementation. The design is
 evidence are recorded in the task file. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered [native-engine-079](tasks/native-engine-079.md)
+The completed dependency-ordered [native-engine-079](tasks/native-engine-079.md)
 slice adds bounded non-inherited integer `flex-grow` weights to the existing
 row-flex owner. Positive free space is allocated before justification with a
 deterministic prefix-floor policy, max-width caps freeze and redistribute
 remainder, and negative free space remains an explicit no-shrink overflow
-case. The complete contract and tradeoffs are recorded in the task file;
-implementation and validation are pending.
+case. The design is `a45fb01`, implementation is `1a930a3`, and local
+validation and cleanup evidence are recorded in the task file. Remote CI
+remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

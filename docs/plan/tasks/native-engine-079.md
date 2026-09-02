@@ -1,7 +1,7 @@
 ---
 id: native-engine-079
 scope: glass-browser/native-engine/flex-grow
-status: active
+status: complete
 depends-on: [native-engine-078]
 ---
 
@@ -86,15 +86,33 @@ make native-engine selection implicit.
 
 ## Verification
 
-- parser, bounds, invalid fallback, selector specificity, source order, inline
-  precedence, and non-inheritance are covered by CSS unit tests;
-- one-line and wrapped rows cover weighted growth, zero/negative free space,
-  row-reverse, gap, margins, justify interaction, stable ordering, and
-  max-width freeze/redistribution;
-- grown child width reaches content rectangles, descendants, display-list,
-  raster, overflow, viewport projection, hit testing, scrolling, capture, and
-  source/semantic order;
-- existing native integration/library tests and all strict feature/documentation
-  gates remain green;
-- the implementation, documentation, and issue #40 checkpoints are committed
-  locally before the next slice; remote CI is not claimed until push.
+Local evidence captured on 2026-09-02 UTC:
+
+- `cargo fmt --all -- --check` and `git diff --check` passed;
+- focused CSS coverage passed 2/2 tests, including bounded parsing, invalid
+  fallback, specificity, declaration order, inline precedence, and
+  non-inheritance;
+- focused flex-grow integration coverage passed 2/2 tests in 19 seconds,
+  including weighted growth before justification, descendant geometry, paint,
+  hit testing, wrap-reverse, overflow, and max-width redistribution;
+- the full native integration suite passed 103/103 tests in 3 seconds;
+- the full native library suite passed 875 tests with 1 existing ignored test
+  under `RUST_MIN_STACK=8388608`;
+- strict `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  passed in 13m40s, and the no-default-feature variant passed in 7m02s;
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`
+  passed in 3m04s, and `cargo build -p glass-dev --bin glass --locked` passed
+  in 11m07s;
+- repository validators passed: version sync at 0.3.14; feature parity at 14
+  capabilities across 4 targets; release documentation at 493 Markdown files
+  with 0 current-claim failures; TUI at 15 implementation keys and 63
+  documentation markers; depth at 93 guides and 19 contracts; coverage at 493
+  Markdown files, 345 full-product MCP tools, 17 examples, and 22 public
+  modules; reliability at 6 scenarios across 4 targets; 5 read-only adapters;
+  and Web IR at 8 fixtures, 8 scenarios, and 11 categories;
+- after validation, the exact regenerable Glass target paths were checked for
+  active users and open files, then removed: `target` fell from 5.6 GB to 4.0
+  KB and filesystem headroom increased from 60 GB (70%) to 66 GB (67%);
+- implementation checkpoint `1a930a3` and this documentation checkpoint are
+  committed locally before the next slice; remote CI remains unclaimed because
+  the branch is local-only.

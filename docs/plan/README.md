@@ -565,13 +565,16 @@ existing large-Clap parser test remains a harness follow-up; the full native
 library suite passes with an explicit 8 MiB test-thread stack. Remote CI
 remains pending until this branch is pushed.
 
-The active dependency-ordered [native-engine-076](tasks/native-engine-076.md)
+The completed dependency-ordered [native-engine-076](tasks/native-engine-076.md)
 slice adds the explicit non-inherited `align-content:normal` keyword to the
 same wrapped fixed-width rows. In this bounded engine it aliases the completed
 075 line-box stretch owner for positive explicit cross-axis remainder, while
 the established omitted-value `flex-start` fallback remains unchanged. The
-design contract is recorded in the task file; implementation and validation
-evidence are pending. Remote CI remains pending until this branch is pushed.
+design is `b6c647e`, implementation is `e3933b3`, and local validation and
+cleanup evidence are recorded in the task file. The default-stack issue in one
+existing large-Clap parser test remains a harness follow-up; the full native
+library suite passes with an explicit 8 MiB test-thread stack. Remote CI
+remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

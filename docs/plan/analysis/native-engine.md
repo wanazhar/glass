@@ -386,14 +386,16 @@ existing large-Clap parser test remains a harness follow-up; the full native
 library suite passes with an explicit 8 MiB test-thread stack. Remote CI
 remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-076` slice adds explicit bounded
+The completed dependency-ordered `native-engine-076` slice adds explicit bounded
 non-inherited `align-content:normal` to wrapped fixed-width rows. It aliases
 the completed 075 line-box stretch owner for positive explicit cross-axis
 remainder, preserving normal and wrap-reverse artifact consumers while
 keeping the established omitted-value `flex-start` fallback unchanged. The
-contract is recorded in `docs/plan/tasks/native-engine-076.md`; implementation
-and local validation evidence are pending. Remote CI remains pending because
-the branch is local-only.
+design is `b6c647e`, implementation is `e3933b3`, and local validation and
+cleanup evidence are recorded in `docs/plan/tasks/native-engine-076.md`. The
+default-stack issue in one existing large-Clap parser test remains a harness
+follow-up; the full native library suite passes with an explicit 8 MiB
+test-thread stack. Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -579,7 +581,6 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-073` | bounded non-inherited `align-content:space-evenly` for wrapped fixed-width flex rows, with equal leading/inter-line/trailing integer slots and complete line artifact translation | `native-engine-072` | `stretch`, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, `wrap-reverse`, logical direction/RTL, and browser Flexbox parity |
 | `native-engine-074` | bounded non-inherited `flex-wrap:wrap-reverse` for eligible fixed-width flex rows, preserving source-order line formation while reversing physical cross-axis stacking through signed complete-artifact translation | `native-engine-073` | `flex-flow`, cross-axis gaps, flex sizing, auto margins, `stretch`, `place-content`, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 | `native-engine-075` | bounded explicit non-inherited `align-content:stretch` for wrapped fixed-width flex rows, expanding line heights by deterministic integer shares and preserving normal/wrap-reverse artifact consumers | `native-engine-074` | implicit `normal`, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
-| `native-engine-076` | bounded explicit non-inherited `align-content:normal` aliasing the completed stretch line-box owner for wrapped fixed-width flex rows while preserving the omitted-value fallback | `native-engine-075` | implicit initial-value change, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 | `native-engine-076` | bounded explicit non-inherited `align-content:normal` aliasing the completed stretch line-box owner for wrapped fixed-width flex rows while preserving the omitted-value fallback | `native-engine-075` | implicit initial-value change, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
@@ -974,9 +975,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-076.md` is the active checkpoint;
-`docs/plan/tasks/native-engine-075.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-074.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-076.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-075.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-074.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-069.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-068.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-067.md` is the preceding completed checkpoint;

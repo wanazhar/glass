@@ -406,6 +406,15 @@ is `4b27b15`, and local validation and cleanup evidence are recorded in
 `docs/plan/tasks/native-engine-077.md`. Remote CI remains pending because the
 branch is local-only.
 
+The active dependency-ordered `native-engine-078` slice completes the bounded
+flex gap family with one- and two-value integer-pixel `gap`, explicit
+`row-gap`/`column-gap` longhands, and declaration-order-aware shorthand and
+longhand cascade. One-value `gap` intentionally supplies both axes in this
+new boundary, so wrapped-row goldens that previously relied on the 077
+main-axis-only compatibility behavior will change. The design contract is in
+`docs/plan/tasks/native-engine-078.md`; implementation, validation, and
+remote CI evidence are pending.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -980,11 +989,13 @@ visual stacking.
 | bounded flex cross-line stretch | makes explicit-height wrapped rows expand each formed line using the existing item-alignment owner | implicit `normal`, `place-content`, row/column gaps, fractional distribution, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | retain formed line records, distribute only positive remainder by integer quotient plus first-line remainder pixels, rebuild line origins, then reuse `align-items` and complete artifact translation for normal and wrap-reverse rows |
 | bounded flex cross-line normal | makes the explicit `normal` keyword select the proven stretch line-box behavior without duplicating layout ownership | omitted-value initial-value semantics, `place-content`, row/column gaps, fractional distribution, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | parse a separate non-inherited keyword, route it through the existing stretch branch for eligible wrapped rows, preserve the established omitted-value `flex-start` fallback, and reuse all complete artifact consumers |
 | bounded flex row-gap | makes explicit cross-line spacing observable while preserving one line-record and artifact owner | full `gap` shorthand expansion, `column-gap`, percentage/fractional values, flex sizing, auto margins, column directions, logical direction/RTL, and browser Flexbox parity | insert one bounded integer-pixel gap between provisional wrapped lines, include it once before `align-content` distribution, and reuse the existing normal/reverse artifact, overflow, paint, and hit-test consumers |
+| bounded flex gap family | makes one- and two-axis gap spacing and shorthand/longhand precedence observable through one shared flex geometry owner | percentage/fractional lengths, negative values, column-direction flex, grid, flex sizing, auto margins, logical direction/RTL, and browser Flexbox parity | preserve per-rule valid declaration positions only for the interacting gap family, resolve row/column axes with specificity/order/inline precedence, then feed column spacing and cross-line spacing into the existing item/line records |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-078.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-077.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-076.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-075.md` is the preceding completed checkpoint;

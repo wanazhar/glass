@@ -640,6 +640,15 @@ is `0291bf90`, the strict-Clippy fix is `16e6d9aa`, and focused/full validation
 and exact target-cleanup evidence are recorded in the task file. Remote CI
 remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-084](tasks/native-engine-084.md)
+slice defines bounded non-inherited `align-self:auto|flex-start|center|flex-end`
+for eligible direct flex items. `auto` resolves to the existing parent
+`align-items` value; explicit values reuse the existing line/subtree artifact
+translation. Stretch, baseline, logical, CSS-wide, and ambiguous forms remain
+diagnosed. The complete contract and tradeoffs are recorded in the task file;
+implementation and validation are pending. Remote CI remains pending because
+the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -157,14 +157,15 @@ file. The previously documented default-stack issue in one large-Clap parser
 test remains a harness follow-up; the full native library suite passes with an
 explicit 8 MiB test-thread stack. Remote CI remains pending because the branch
 is local-only.
-The active 075 boundary adds explicit bounded non-inherited
+The completed 075 boundary adds explicit bounded non-inherited
 `align-content:stretch` to wrapped fixed-width rows. Positive explicit
 cross-axis remainder expands formed line boxes by deterministic integer shares,
 then the existing `align-items` and complete-artifact passes place normal and
 wrap-reverse rows through one coordinate owner. The contract is recorded in
-`docs/plan/tasks/native-engine-075.md`; implementation and local validation
-evidence are pending. Remote CI remains pending because the branch is
-local-only.
+`docs/plan/tasks/native-engine-075.md`; design is `4637863`, implementation is
+`e26c0a4` with the diagnostics-fixture correction in `cc8b538`, and local
+validation and cleanup evidence are recorded in that task file. Remote CI
+remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

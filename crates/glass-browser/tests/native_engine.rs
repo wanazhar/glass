@@ -3007,6 +3007,7 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
         ("space-between", (2, 0, 46)),
         ("space-around", (11, 9, 37)),
         ("space-evenly", (14, 12, 34)),
+        ("stretch", (11, 9, 37)),
     ] {
         let document =
             NativeDocument::parse(&source(align_content), &NativeEngineLimits::default()).unwrap();
@@ -3056,13 +3057,43 @@ fn native_flex_align_content_distributes_explicit_cross_axis_space() {
         let one_line_y = match align_content {
             "center" | "space-around" | "space-evenly" => 27,
             "flex-end" => 54,
-            "flex-start" | "space-between" => 0,
+            "flex-start" | "space-between" | "stretch" => 0,
             _ => unreachable!(),
         };
         assert_eq!(
             one_line_layout.box_for(one_line_item).unwrap().y,
             one_line_y
         );
+    }
+}
+
+#[test]
+fn native_flex_align_content_stretch_assigns_remainder_to_first_formed_line() {
+    let source = |wrap: &str| {
+        format!(
+            "<div id='row' style='display:flex;width:20px;height:61px;gap:2px;flex-wrap:{wrap};align-items:center;align-content:stretch'><div id='first' style='width:8px;height:6px'>A</div><div id='second' style='width:8px;height:10px'>B</div><div id='third' style='width:8px;height:14px'>C</div></div>"
+        )
+    };
+
+    for (wrap, expected) in [("wrap", (11, 9, 38)), ("wrap-reverse", (43, 41, 9))] {
+        let document =
+            NativeDocument::parse(&source(wrap), &NativeEngineLimits::default()).unwrap();
+        let row = document.resolve_target("id=row").unwrap();
+        let first = document.resolve_target("id=first").unwrap();
+        let second = document.resolve_target("id=second").unwrap();
+        let third = document.resolve_target("id=third").unwrap();
+        let layout = document
+            .layout(Viewport {
+                width: 24,
+                height: 64,
+                device_scale_factor_milli: 1000,
+            })
+            .unwrap();
+
+        assert_eq!(layout.box_for(row).unwrap().height, 61);
+        assert_eq!(layout.box_for(first).unwrap().y, expected.0);
+        assert_eq!(layout.box_for(second).unwrap().y, expected.1);
+        assert_eq!(layout.box_for(third).unwrap().y, expected.2);
     }
 }
 
@@ -3212,6 +3243,56 @@ fn native_flex_wrap_reverse_reflects_lines_and_shared_artifacts() {
     assert_eq!(small_layout.box_for(small_row).unwrap().height, 12);
     assert_eq!(small_layout.box_for(small_third).unwrap().y, 0);
     assert_eq!(small_layout.max_scroll_offset(), NativePoint { x: 0, y: 2 });
+
+    let stretch_auto = NativeDocument::parse(
+        &source("stretch").replace("height:60px;", ""),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let stretch_auto_row = stretch_auto.resolve_target("id=row").unwrap();
+    let stretch_auto_third = stretch_auto.resolve_target("id=third").unwrap();
+    let stretch_auto_layout = stretch_auto.layout(viewport).unwrap();
+    assert_eq!(
+        stretch_auto_layout
+            .box_for(stretch_auto_row)
+            .unwrap()
+            .height,
+        24
+    );
+    assert_eq!(
+        stretch_auto_layout.box_for(stretch_auto_third).unwrap().y,
+        0
+    );
+
+    let stretch_small = NativeDocument::parse(
+        &source("stretch").replace("height:60px;", "height:12px;"),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let stretch_small_row = stretch_small.resolve_target("id=row").unwrap();
+    let stretch_small_third = stretch_small.resolve_target("id=third").unwrap();
+    let stretch_small_layout = stretch_small
+        .layout(Viewport {
+            width: 24,
+            height: 12,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(
+        stretch_small_layout
+            .box_for(stretch_small_row)
+            .unwrap()
+            .height,
+        12
+    );
+    assert_eq!(
+        stretch_small_layout.box_for(stretch_small_third).unwrap().y,
+        0
+    );
+    assert_eq!(
+        stretch_small_layout.max_scroll_offset(),
+        NativePoint { x: 0, y: 2 }
+    );
 
     let html = source("flex-start");
     let third = NativeDocument::parse(&html, &NativeEngineLimits::default())

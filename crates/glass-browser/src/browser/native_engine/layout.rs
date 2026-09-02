@@ -484,6 +484,7 @@ struct FlexLineLayout {
 
 struct FlexLineRecord {
     y: u32,
+    provisional_y: u32,
     height: u32,
     layout: FlexLineLayout,
 }
@@ -1436,6 +1437,7 @@ impl<'a> LayoutBuilder<'a> {
             };
             line_records.push(FlexLineRecord {
                 y: line_y,
+                provisional_y: line_y,
                 height: line_height,
                 layout: line_layout,
             });
@@ -1453,6 +1455,23 @@ impl<'a> LayoutBuilder<'a> {
             total_line_height
         };
         let free_space = line_content_height.saturating_sub(total_line_height);
+        if wrapped
+            && parent_style.align_content() == AlignContentValue::Stretch
+            && free_space > 0
+            && line_count > 0
+        {
+            let line_count_u32 = u32::try_from(line_count).unwrap_or(u32::MAX).max(1);
+            let per_line_extra = free_space / line_count_u32;
+            let remainder = free_space % line_count_u32;
+            let mut stretched_line_y = y;
+            for (line_index, line) in line_records.iter_mut().enumerate() {
+                let line_index = u32::try_from(line_index).unwrap_or(u32::MAX);
+                let extra = per_line_extra.saturating_add(u32::from(line_index < remainder));
+                line.height = line.height.saturating_add(extra);
+                line.y = stretched_line_y;
+                stretched_line_y = stretched_line_y.saturating_add(line.height);
+            }
+        }
         let line_gap_count = u32::try_from(line_count.saturating_sub(1)).unwrap_or(u32::MAX);
         let distributed_line_gap =
             if wrapped && parent_style.align_content() == AlignContentValue::SpaceBetween {
@@ -1473,7 +1492,8 @@ impl<'a> LayoutBuilder<'a> {
                 AlignContentValue::FlexStart
                 | AlignContentValue::SpaceBetween
                 | AlignContentValue::SpaceAround
-                | AlignContentValue::SpaceEvenly => 0,
+                | AlignContentValue::SpaceEvenly
+                | AlignContentValue::Stretch => 0,
             }
         } else {
             0
@@ -1499,11 +1519,7 @@ impl<'a> LayoutBuilder<'a> {
             } else {
                 line.y.saturating_add(line_offset)
             };
-            let line_shift = if wrap_reverse {
-                i64::from(final_line_y).saturating_sub(i64::from(line.y))
-            } else {
-                i64::from(line_offset)
-            };
+            let line_shift = i64::from(final_line_y).saturating_sub(i64::from(line.provisional_y));
             max_bottom = max_bottom.max(final_line_y.saturating_add(line.height));
             for placement in line.layout.placements {
                 let item_outer_height =

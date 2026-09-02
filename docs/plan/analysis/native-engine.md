@@ -482,14 +482,15 @@ diagnostics. The complete contract and tradeoffs are in
 `f2f99f66`, and focused/full/strict/documentation/cleanup evidence is recorded
 there. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-085` slice defines bounded
+The completed dependency-ordered `native-engine-085` slice defines bounded
 `place-content` shorthand expansion into the existing `align-content` and
 `justify-content` components. One shared token covers their common bounded
 values; two tokens use explicit cross-axis/main-axis order. Unsupported
 CSS-wide, logical, safe/unsafe, ambiguous, and unsupported justify forms
 remain typed diagnostics. The complete contract and tradeoffs are in
-`docs/plan/tasks/native-engine-085.md`; implementation and validation are
-pending. Remote CI remains pending because the branch is local-only.
+`docs/plan/tasks/native-engine-085.md`; design is `adc61a1f`, implementation is
+`02f866e6`, and focused/full/strict/documentation/cleanup evidence is recorded
+there. Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -554,6 +555,12 @@ real edit touching the native module, and target-directory growth separately.
 | `browser::native_backend` | semantic adapter/profile | backend requests | typed backend responses/errors | engine + `browser_backend` |
 | `browser::runtime` | explicit native session construction | `NativeEngineConfig`, runtime choice | initialized `BrowserRuntimeSession` | backend factory + dispatcher |
 | `cli::runner` | feature-gated native one-shot dispatch | local command and semantic target | bounded CLI result or typed denial | runtime session + policy boundary |
+
+The completed 085 shorthand is intentionally represented by the existing CSS
+component fields and consumed by the existing layout owners: `align-content`
+continues to distribute wrapped lines, while `justify-content` continues to
+distribute items on each line. No standalone shorthand state or second
+geometry representation is introduced.
 
 ## Integration enumeration
 
@@ -1087,7 +1094,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-084.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-085.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-084.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-083.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-082.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-081.md` is the preceding completed checkpoint;
@@ -1137,6 +1145,16 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
+A completed checkpoint is also recorded for
+`docs/plan/tasks/native-engine-085.md`: design is `adc61a1f` and implementation
+is `02f866e6`. Focused CSS parser/cascade coverage passed 2/2 in 6m57s;
+focused shared-layout integration passed 1/1 in 20.68s; full native
+integration passed 111/111; full native library coverage passed 887 with 1
+ignored; strict all-feature and no-default-feature Clippy passed with
+warnings denied; rustdoc and the locked `glass-dev` build passed; and all
+repository documentation/reliability/adapter/Web IR validators passed. Exact
+target cleanup evidence is recorded in the task file. Remote CI remains
+pending because the branch is local-only.
 A checkpoint is complete only when
 the native feature tests pass, strict lint
 passes for the touched code, and the diff confirms no unrelated browser/TUI/

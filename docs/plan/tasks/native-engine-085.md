@@ -1,7 +1,7 @@
 ---
 id: native-engine-085
 scope: glass-browser/native-engine/place-content
-status: active
+status: complete
 depends-on: [native-engine-084]
 ---
 
@@ -80,7 +80,35 @@ native-engine selection implicit.
 
 ## Verification
 
-The implementation, focused parser/cascade and shared-layout tests, full native
-suites, strict feature/documentation gates, issue #40 status, and exact
-regenerable-target cleanup will be recorded here when the slice closes. Remote
-CI is not claimed until the local branch is pushed.
+The implementation checkpoint is `02f866e6`, following design checkpoint
+`adc61a1f`. Focused CSS parser/cascade coverage passed 2/2 tests in 6m57s
+after rebuilding from a clean target. Focused shared-layout integration
+coverage passed 1/1 test in 20.68s after that rebuild, covering wrapped-line
+distribution, main-axis distribution, nested subtree coordinates, paint, and
+hit testing.
+
+The full native integration suite passed 111/111 tests in 2.49s. The full
+native library suite passed 887 tests with 1 ignored in 7.28s under
+`RUST_MIN_STACK=8388608`. Strict all-feature Clippy passed with warnings
+denied in 14m19s; the no-default-feature matrix passed with warnings denied in
+7m19s. Rustdoc with `RUSTDOCFLAGS='-D warnings'` passed in 3m23s, and the
+locked `glass-dev` build passed in 11m15s. Formatting and `git diff --check`
+passed.
+
+Repository audits passed at version `0.3.14`: feature parity 14 capabilities
+across 4 targets; release documentation 499 Markdown files with 0
+current-claim failures; TUI 15 implementation help keys and 63 documentation
+markers; documentation depth 93 guides and 19 substantive contracts;
+documentation coverage 499 Markdown files, 345 full-product MCP tools (100
+browser-only), 17 examples, and 22 public modules; reliability 6 scenarios
+across 4 targets; 5 public read-only adapters; and Web IR 8 fixtures, 8
+scenarios, and 11 categories with runtime goldens verified.
+
+Issue #40 records the implementation checkpoint and remains open for the next
+dependency-ordered slice. Remote CI is not claimed because the branch is
+local-only; no push, release, tag, registry publication, or browser-parity
+certification is implied. After the final documentation validation, exact
+regenerable Glass `target` output fell from 5.3G to 4.0K. No active
+Cargo/Rust writer, open target handle, or Git lock remained; `/dev/sda1` moved
+from 134G used/60G available/70% to 129G used/65G available/67%. Shared
+registries/toolchains and long-lived Glass processes were retained.

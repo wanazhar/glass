@@ -226,6 +226,14 @@ typed diagnostics. The contract is recorded in
 `docs/plan/tasks/native-engine-082.md`; design is `71d1060d`, implementation is
 `40f6fb1c`, and local validation and cleanup evidence are recorded there.
 Remote CI remains pending because the branch is local-only.
+The active 083 boundary defines bounded `flex-flow` shorthand expansion into
+the existing non-inherited `flex-direction` and `flex-wrap` computed
+components. One-token forms reset the omitted component to its initial row or
+nowrap value; two-token forms accept one bounded direction and one bounded wrap
+keyword in either order. Unsupported columns, duplicates, CSS-wide, logical,
+and ambiguous forms remain typed diagnostics. The contract is recorded in
+`docs/plan/tasks/native-engine-083.md`; implementation and validation are
+pending. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -175,12 +175,14 @@ omitted-value `flex-start` fallback. Its contract is recorded in
 `docs/plan/tasks/native-engine-076.md`; design is `b6c647e`, implementation is
 `e3933b3`, and local validation and cleanup evidence are recorded in that task
 file. Remote CI remains pending because the branch is local-only.
-The active 077 boundary adds explicit bounded non-inherited `row-gap` spacing
-between adjacent formed lines in eligible wrapped fixed-width flex rows. It
-accounts for that cross-line space once before the existing `align-content`
-free-space owner and preserves the current main-axis-only `gap` behavior. The
-contract is recorded in `docs/plan/tasks/native-engine-077.md`; implementation,
-validation, and remote-CI evidence are pending.
+The completed 077 boundary adds explicit bounded non-inherited `row-gap`
+spacing between adjacent formed lines in eligible wrapped fixed-width flex
+rows. It accounts for that cross-line space once before the existing
+`align-content` free-space owner and preserves the current main-axis-only `gap`
+behavior. The contract is recorded in
+`docs/plan/tasks/native-engine-077.md`; design is `99d70ef`, implementation is
+`4b27b15`, and local validation and cleanup evidence are recorded in that task
+file. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -576,12 +576,13 @@ existing large-Clap parser test remains a harness follow-up; the full native
 library suite passes with an explicit 8 MiB test-thread stack. Remote CI
 remains pending until this branch is pushed.
 
-The active dependency-ordered [native-engine-077](tasks/native-engine-077.md)
+The completed dependency-ordered [native-engine-077](tasks/native-engine-077.md)
 slice adds explicit non-inherited `row-gap` spacing between adjacent formed
 lines in eligible wrapped fixed-width flex rows. It includes that gap once in
 the existing `align-content` occupied-size/free-space owner and preserves the
-current main-axis-only `gap` behavior. The design is active locally; no
-implementation or remote-CI result is claimed yet.
+current main-axis-only `gap` behavior. The design is `99d70ef`, implementation
+is `4b27b15`, and local validation and cleanup evidence are recorded in the
+task file. Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

@@ -611,6 +611,15 @@ explicit overflow. The design is `46227de5`, implementation is `b1414931`, and
 local validation and cleanup evidence are recorded in the task file. Remote CI
 remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-081](tasks/native-engine-081.md)
+slice defines bounded `flex-basis:auto|Npx` sizing for the same row-flex owner.
+Explicit bases override item `width`, use the existing box-sizing and min/max
+helpers, remain unclamped before line formation so the completed grow/shrink
+passes can resolve them, and preserve margins, gaps, descendants, paint,
+overflow, hit testing, and semantic/source order. The complete contract and
+tradeoffs are recorded in the task file; implementation and validation are
+pending. Remote CI remains pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

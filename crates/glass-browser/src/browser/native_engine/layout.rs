@@ -396,6 +396,42 @@ fn outer_width_from_declared(style: NativeComputedStyle, declared: u32) -> u32 {
     }
 }
 
+fn outer_height_inset(style: NativeComputedStyle) -> u32 {
+    let padding = style.padding();
+    let border_vertical = style.border().map_or(0, |border| {
+        border.top().width().saturating_add(border.bottom().width())
+    });
+    padding.vertical().saturating_add(border_vertical)
+}
+
+fn outer_height_from_declared(style: NativeComputedStyle, declared: u32) -> u32 {
+    if style.is_border_box() {
+        declared
+    } else {
+        declared.saturating_add(outer_height_inset(style))
+    }
+}
+
+fn stretched_outer_height(
+    style: NativeComputedStyle,
+    line_height: u32,
+    margin: NativeBoxEdges,
+    natural_height: u32,
+) -> Option<u32> {
+    if style.height().is_some() {
+        return None;
+    }
+    let line_height = line_height.saturating_sub(margin.vertical());
+    let target = natural_height.max(line_height);
+    let min_height = style
+        .min_height()
+        .map(|declared| outer_height_from_declared(style, declared));
+    let max_height = style
+        .max_height()
+        .map(|declared| outer_height_from_declared(style, declared));
+    Some(constrain_dimension(target, min_height, max_height))
+}
+
 pub(crate) fn rounded_rect_contains(
     rect: NativeRect,
     radius: NativeBorderRadius,
@@ -481,6 +517,7 @@ struct FlowSize {
 }
 
 struct FlexItemPlacement {
+    child: NativeNodeId,
     box_start: usize,
     box_end: usize,
     text_start: usize,
@@ -1340,6 +1377,22 @@ impl<'a> LayoutBuilder<'a> {
         }
     }
 
+    fn stretch_flex_item_box(
+        &mut self,
+        placement: &FlexItemPlacement,
+        style: NativeComputedStyle,
+        height: u32,
+    ) {
+        let Some(layout_box) = self.boxes.get_mut(placement.box_start) else {
+            return;
+        };
+        if layout_box.node_id != placement.child {
+            return;
+        }
+        layout_box.rect.height = height;
+        layout_box.content_rect.height = height.saturating_sub(outer_height_inset(style));
+    }
+
     fn can_use_flex_layout(&self, id: NativeNodeId) -> bool {
         let Some(node) = self.document.node(id) else {
             return false;
@@ -1438,6 +1491,7 @@ impl<'a> LayoutBuilder<'a> {
                     Some(item.width),
                 );
                 placements.push(FlexItemPlacement {
+                    child: item.child,
                     box_start,
                     box_end: self.boxes.len(),
                     text_start,
@@ -1486,6 +1540,7 @@ impl<'a> LayoutBuilder<'a> {
                     Some(item.width),
                 );
                 placements.push(FlexItemPlacement {
+                    child: item.child,
                     box_start,
                     box_end: self.boxes.len(),
                     text_start,
@@ -1730,7 +1785,21 @@ impl<'a> LayoutBuilder<'a> {
             };
             let line_shift = i64::from(final_line_y).saturating_sub(i64::from(line.provisional_y));
             max_bottom = max_bottom.max(final_line_y.saturating_add(line.height));
-            for placement in line.layout.placements {
+            for mut placement in line.layout.placements {
+                let style = self.document.computed_style_for_layout(placement.child);
+                if placement.align_self == AlignSelfValue::Stretch {
+                    if let Some(stretched_height) = stretched_outer_height(
+                        style,
+                        line.height,
+                        placement.margin,
+                        placement.height,
+                    ) {
+                        if stretched_height > placement.height {
+                            self.stretch_flex_item_box(&placement, style, stretched_height);
+                            placement.height = stretched_height;
+                        }
+                    }
+                }
                 let item_outer_height =
                     placement.height.saturating_add(placement.margin.vertical());
                 let remaining = line.height.saturating_sub(item_outer_height);
@@ -1739,6 +1808,7 @@ impl<'a> LayoutBuilder<'a> {
                     AlignSelfValue::FlexStart => AlignItemsValue::FlexStart,
                     AlignSelfValue::Center => AlignItemsValue::Center,
                     AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
+                    AlignSelfValue::Stretch => AlignItemsValue::FlexStart,
                 };
                 let offset = match alignment {
                     AlignItemsValue::FlexStart => 0,

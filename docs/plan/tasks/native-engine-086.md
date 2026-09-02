@@ -127,3 +127,11 @@ executable mappings; they were retained and not terminated. Shared Cargo
 registries/toolchains were retained. Remote CI remains pending because the
 branch is local-only; no push, release, tag, registry publication, or
 browser-parity certification is claimed.
+
+The post-cleanup documentation-coverage rerun required rebuilding only the two
+debug inventory binaries in 16m50s, with peak RSS of 2,001,956 KiB; it
+recreated 2.0G of target output. Coverage then passed, and a second exact
+safety-checked cleanup reclaimed that tree from 2.0G to 4.0K, moving
+`/dev/sda1` from 131G used/63G available/68% back to 129G used/65G
+available/67%. No live target path, build writer, or Git lock was present for
+the second cleanup.

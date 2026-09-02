@@ -1,7 +1,7 @@
 ---
 id: native-engine-089
 scope: glass-browser/native-engine/align-self-normal
-status: active
+status: complete
 depends-on: [native-engine-088]
 ---
 
@@ -104,8 +104,50 @@ cross-axis geometry representation.
 
 ## Verification
 
-Design is recorded in this task. Implementation, focused parser/cascade and
-shared-layout tests, full native suites, strict feature/documentation gates,
-issue #40 status, and exact regenerable-target cleanup will be recorded here
-when the slice closes. Remote CI is not claimed until the local branch is
-pushed.
+- Design checkpoint: `95caf4a9`.
+- Implementation checkpoint: `1ee55c43`. Focused CSS parser/cascade
+  coverage passed 2/2; the clean isolated measurement was 814.44 seconds with
+  2,511,600 KiB peak RSS.
+- Focused shared-layout integration passed 1/1 in the final run; its
+  incremental isolated measurement was 26.54 seconds with 612,284 KiB peak
+  RSS. The fixture covers explicit normal-to-stretch equivalence, overriding
+  parent alignment, auto-height and explicit-height behavior, box-model
+  bounds, descendants, paint, and hit testing. Two earlier fixture assertions
+  were corrected during validation: the existing text line box centers at
+  `y=6`, and the fourth item begins at `x=30`; neither exposed a
+  production implementation failure.
+- The full native integration suite passed 116/116 in 3.63 seconds with
+  82,864 KiB peak RSS. The first full native library run reached 886 passed
+  and one failure in the known environment-sensitive Rust Analyzer
+  diagnostics-cancellation probe; its exact isolated retry passed 1/1 in
+  1.14 seconds with 82,780 KiB peak RSS. The complete library retry then
+  passed 887 tests with 1 ignored and 0 failures in 4.58 seconds with
+  82,728 KiB peak RSS.
+- Strict all-feature Clippy passed with warnings denied in 809.68 seconds with
+  1,881,692 KiB peak RSS. Strict no-default-feature Clippy passed in 437.17
+  seconds with 1,798,152 KiB peak RSS. Workspace rustdoc with
+  `RUSTDOCFLAGS="-D warnings"` passed in 193.47 seconds with 1,631,548 KiB
+  peak RSS. The locked `glass-dev` binary build passed in 679.11 seconds
+  with 1,994,292 KiB peak RSS.
+- Formatting, `git diff --check`, version synchronization at `0.3.14`,
+  feature parity (14 capabilities across 4 targets), release documentation
+  (503 Markdown files, 83 current documents, 57 previous-version hits, 562
+  semantic audit hits, and 0 current-claim failures), TUI shortcut inventory
+  (15 implementation keys and 63 documentation markers), documentation depth
+  (93 current guides and 19 substantive contracts), reliability (6 scenarios
+  across 4 targets), public read-only adapters (5), and Web IR (8 fixtures,
+  8 scenarios, and 11 categories with runtime goldens) all passed.
+- Live documentation coverage passed in 4.58 seconds with 38,292 KiB peak
+  RSS: 503 Markdown files, 345 full-product MCP tools (100 browser-only),
+  17 examples, and 22 public modules.
+- The exact temporary `/tmp/glass-089-target` tree reached 5.3G during
+  validation. It was inspected after all processes exited, had no open files,
+  and was removed in full. The project
+  `/home/ubuntu/work/glass/target` remains only its root directory at 4.0K;
+  `/dev/sda1` is 129G used, 65G available, and 67% full. Shared Cargo
+  registries and toolchains were retained, and long-lived Glass processes
+  were not terminated.
+- Issue [#40](https://github.com/wanazhar/glass/issues/40) was updated with
+  the design, implementation, evidence, and cleanup state. Remote CI is not
+  claimed because this branch remains local-only; no push, release, tag,
+  registry publication, or browser-parity certification is claimed.

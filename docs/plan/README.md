@@ -689,14 +689,14 @@ is `19d8d3f6`, and focused, full, strict, documentation, and exact-target
 evidence are recorded in the task file. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered [native-engine-089](tasks/native-engine-089.md)
+The completed dependency-ordered [native-engine-089](tasks/native-engine-089.md)
 slice adds explicit child `align-self:normal`. In the supported row and
 row-reverse flex context, the explicit item value reuses the completed stretch
 used-size path regardless of the parent's `align-items` value, while omitted
 `align-self:auto` remains parent-controlled and the computed keyword remains
-distinct. The bounded contract and tradeoffs are recorded in the task file;
-implementation and validation are pending. Remote CI remains pending because
-the branch is local-only.
+distinct. Design is `95caf4a9`, implementation is `1ee55c43`, and focused,
+full, strict, documentation, and exact-target evidence are recorded in the
+task file. Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

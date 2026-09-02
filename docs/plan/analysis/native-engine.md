@@ -397,6 +397,14 @@ default-stack issue in one existing large-Clap parser test remains a harness
 follow-up; the full native library suite passes with an explicit 8 MiB
 test-thread stack. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-077` slice adds explicit bounded
+non-inherited `row-gap` spacing between adjacent formed lines in eligible
+wrapped fixed-width flex rows. It includes that spacing once in the existing
+cross-line occupied-size/free-space owner while preserving the current
+main-axis-only `gap` behavior. The design contract is recorded in
+`docs/plan/tasks/native-engine-077.md`; implementation, validation, and remote
+CI evidence are pending.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -582,6 +590,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-074` | bounded non-inherited `flex-wrap:wrap-reverse` for eligible fixed-width flex rows, preserving source-order line formation while reversing physical cross-axis stacking through signed complete-artifact translation | `native-engine-073` | `flex-flow`, cross-axis gaps, flex sizing, auto margins, `stretch`, `place-content`, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 | `native-engine-075` | bounded explicit non-inherited `align-content:stretch` for wrapped fixed-width flex rows, expanding line heights by deterministic integer shares and preserving normal/wrap-reverse artifact consumers | `native-engine-074` | implicit `normal`, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 | `native-engine-076` | bounded explicit non-inherited `align-content:normal` aliasing the completed stretch line-box owner for wrapped fixed-width flex rows while preserving the omitted-value fallback | `native-engine-075` | implicit initial-value change, `place-content`, cross-axis gaps, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
+| `native-engine-077` | bounded explicit non-inherited `row-gap` between adjacent formed lines in eligible wrapped fixed-width flex rows, included once before `align-content` free-space distribution | `native-engine-076` | `column-gap`, multi-value or percentage gap, implicit `gap` expansion, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -969,12 +978,13 @@ visual stacking.
 | bounded flex wrap-reverse | makes eligible wrapped rows stack formed lines from the physical cross-axis end without adding a second layout owner | `flex-flow`, cross-axis gaps, flex sizing, auto margins, `stretch`, `place-content`, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | retain source-order line formation and provisional records, reflect each line from the resolved cross-axis end using existing integer `align-content` offsets, and apply one signed coordinate delta to every line artifact range |
 | bounded flex cross-line stretch | makes explicit-height wrapped rows expand each formed line using the existing item-alignment owner | implicit `normal`, `place-content`, row/column gaps, fractional distribution, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | retain formed line records, distribute only positive remainder by integer quotient plus first-line remainder pixels, rebuild line origins, then reuse `align-items` and complete artifact translation for normal and wrap-reverse rows |
 | bounded flex cross-line normal | makes the explicit `normal` keyword select the proven stretch line-box behavior without duplicating layout ownership | omitted-value initial-value semantics, `place-content`, row/column gaps, fractional distribution, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | parse a separate non-inherited keyword, route it through the existing stretch branch for eligible wrapped rows, preserve the established omitted-value `flex-start` fallback, and reuse all complete artifact consumers |
-| bounded flex cross-line normal | makes the explicit `normal` keyword select the proven stretch line-box behavior without duplicating layout ownership | omitted-value initial-value semantics, `place-content`, row/column gaps, fractional distribution, flex sizing, auto margins, column directions, logical direction/RTL, intrinsic or percentage sizing, and browser Flexbox parity | parse a separate non-inherited keyword, route it through the existing stretch branch for eligible wrapped rows, preserve the established omitted-value `flex-start` fallback, and reuse all complete artifact consumers |
+| bounded flex row-gap | makes explicit cross-line spacing observable while preserving one line-record and artifact owner | full `gap` shorthand expansion, `column-gap`, percentage/fractional values, flex sizing, auto margins, column directions, logical direction/RTL, and browser Flexbox parity | insert one bounded integer-pixel gap between provisional wrapped lines, include it once before `align-content` distribution, and reuse the existing normal/reverse artifact, overflow, paint, and hit-test consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-077.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-076.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-075.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-074.md` is an earlier completed checkpoint;

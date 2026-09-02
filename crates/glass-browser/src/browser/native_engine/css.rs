@@ -213,6 +213,13 @@ pub(crate) enum FlexWrapValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum FlexBasisValue {
+    #[default]
+    Auto,
+    Length(u32),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeOrderValue(i32);
 
 impl NativeOrderValue {
@@ -354,6 +361,7 @@ pub(crate) struct NativeComputedStyle {
     flex_item_order: NativeOrderValue,
     flex_grow: u32,
     flex_shrink: u32,
+    flex_basis: FlexBasisValue,
     text_decoration: TextDecorationValue,
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
@@ -438,6 +446,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn flex_shrink(self) -> u32 {
         self.flex_shrink
+    }
+
+    pub(crate) const fn flex_basis(self) -> FlexBasisValue {
+        self.flex_basis
     }
 
     pub(crate) const fn text_decoration(self) -> TextDecorationValue {
@@ -641,6 +653,7 @@ impl NativeStylesheet {
         let mut flex_item_order = None;
         let mut flex_grow = None;
         let mut flex_shrink = None;
+        let mut flex_basis = None;
         let mut text_decoration = None;
         let mut text_transform = None;
         let mut font_weight = None;
@@ -882,6 +895,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, flex_shrink)
             {
                 flex_shrink = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.flex_basis
+                && wins(rule.selector.specificity, rule.order, false, flex_basis)
+            {
+                flex_basis = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1287,6 +1310,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.flex_basis
+                && wins(u16::MAX, usize::MAX, true, flex_basis)
+            {
+                flex_basis = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.align_items
                 && wins(u16::MAX, usize::MAX, true, align_items)
             {
@@ -1497,6 +1530,7 @@ impl NativeStylesheet {
                 .map_or(NativeOrderValue::default(), |value| value.value),
             flex_grow: flex_grow.map_or(0, |value| value.value),
             flex_shrink: flex_shrink.map_or(1, |value| value.value),
+            flex_basis: flex_basis.map_or(FlexBasisValue::Auto, |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
@@ -1744,6 +1778,7 @@ struct NativeDeclarations {
     order: Option<NativeOrderValue>,
     flex_grow: Option<u32>,
     flex_shrink: Option<u32>,
+    flex_basis: Option<FlexBasisValue>,
     text_decoration: Option<TextDecorationValue>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
@@ -1929,6 +1964,7 @@ fn parse_source(
             || declarations.order.is_some()
             || declarations.flex_grow.is_some()
             || declarations.flex_shrink.is_some()
+            || declarations.flex_basis.is_some()
             || declarations.text_decoration.is_some()
             || declarations.text_transform.is_some()
             || declarations.font_weight.is_some()
@@ -2072,6 +2108,7 @@ fn parse_declarations_with_diagnostics(
             "order" => parse_flex_item_order(value).is_some(),
             "flex-grow" => parse_flex_grow(value).is_some(),
             "flex-shrink" => parse_flex_shrink(value).is_some(),
+            "flex-basis" => parse_flex_basis(value).is_some(),
             "text-decoration" => parse_text_decoration(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
@@ -2147,6 +2184,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "order"
             | "flex-grow"
             | "flex-shrink"
+            | "flex-basis"
             | "text-decoration"
             | "text-transform"
             | "font-weight"
@@ -2263,6 +2301,11 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "flex-shrink" => {
                 if let Some(parsed) = parse_flex_shrink(value) {
                     declarations.flex_shrink = Some(parsed);
+                }
+            }
+            "flex-basis" => {
+                if let Some(parsed) = parse_flex_basis(value) {
+                    declarations.flex_basis = Some(parsed);
                 }
             }
             "text-decoration" => {
@@ -2805,6 +2848,14 @@ fn parse_flex_shrink(value: &str) -> Option<u32> {
         .then_some(parsed)
 }
 
+fn parse_flex_basis(value: &str) -> Option<FlexBasisValue> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("auto") {
+        return Some(FlexBasisValue::Auto);
+    }
+    parse_dimension(value).map(FlexBasisValue::Length)
+}
+
 fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
     match value.to_ascii_lowercase().as_str() {
         "none" => Some(TextDecorationValue::None),
@@ -3158,7 +3209,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: stretch; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: stretch; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -3177,6 +3228,9 @@ mod tests {
         );
         assert_eq!(declarations.flex_wrap, Some(FlexWrapValue::WrapReverse));
         assert_eq!(declarations.order, Some(NativeOrderValue(-12)));
+        assert_eq!(declarations.flex_grow, Some(2));
+        assert_eq!(declarations.flex_shrink, Some(3));
+        assert_eq!(declarations.flex_basis, Some(FlexBasisValue::Length(40)));
         assert_eq!(
             declarations.text_decoration,
             Some(TextDecorationValue::Underline)
@@ -3700,6 +3754,26 @@ mod tests {
         assert_eq!(parse_flex_shrink("1px"), None);
         assert_eq!(parse_flex_shrink("1025"), None);
         assert_eq!(parse_flex_shrink("1e2"), None);
+    }
+
+    #[test]
+    fn flex_basis_parser_accepts_auto_and_bounded_non_negative_pixels() {
+        assert_eq!(parse_flex_basis("auto"), Some(FlexBasisValue::Auto));
+        assert_eq!(parse_flex_basis("AUTO"), Some(FlexBasisValue::Auto));
+        assert_eq!(parse_flex_basis("0px"), Some(FlexBasisValue::Length(0)));
+        assert_eq!(parse_flex_basis(" 12px "), Some(FlexBasisValue::Length(12)));
+        assert_eq!(parse_flex_basis("-1px"), None);
+        assert_eq!(parse_flex_basis("12"), None);
+        assert_eq!(parse_flex_basis("1.5px"), None);
+        assert_eq!(parse_flex_basis("2em"), None);
+        assert_eq!(parse_flex_basis("50%"), None);
+        assert_eq!(parse_flex_basis("calc(12px)"), None);
+        assert_eq!(parse_flex_basis("content"), None);
+        assert_eq!(parse_flex_basis("20000px"), None);
+        assert_eq!(
+            parse_declarations("flex-basis: 12px; flex-basis: 1.5px").flex_basis,
+            Some(FlexBasisValue::Length(12))
+        );
     }
 
     #[test]
@@ -4479,6 +4553,41 @@ mod tests {
         assert_eq!(document.computed_style_for_layout(later).flex_shrink(), 4);
         assert_eq!(document.computed_style_for_layout(invalid).flex_shrink(), 2);
         assert_eq!(document.computed_style_for_layout(child).flex_shrink(), 1);
+    }
+
+    #[test]
+    fn flex_basis_is_cascaded_without_inheriting_and_defaults_to_auto() {
+        let document = NativeDocument::parse(
+            "<style>.basis { flex-basis: 12px; } #basis { flex-basis: 20px; } #later { flex-basis: 24px; flex-basis: 28px; } #invalid { flex-basis: 18px; flex-basis: 1.5px; } #parent { flex-basis: 40px; }</style><div id='parent'><span id='basis' class='basis' style='flex-basis: 16px'>Basis</span><span id='later'>Later</span><span id='invalid'>Invalid</span><span id='child'>Child</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let basis = document.resolve_target("id=basis").unwrap();
+        let later = document.resolve_target("id=later").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).flex_basis(),
+            FlexBasisValue::Length(40)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(basis).flex_basis(),
+            FlexBasisValue::Length(16)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(later).flex_basis(),
+            FlexBasisValue::Length(28)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).flex_basis(),
+            FlexBasisValue::Length(18)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).flex_basis(),
+            FlexBasisValue::Auto
+        );
     }
 
     #[test]

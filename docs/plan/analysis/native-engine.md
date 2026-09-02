@@ -374,14 +374,17 @@ recorded in the task file. The previously documented default-stack issue in
 one large-Clap parser test remains a harness follow-up; the full native
 library suite passes with an explicit 8 MiB test-thread stack. Remote CI
 remains pending because the branch is local-only.
-The active dependency-ordered `native-engine-075` slice adds bounded explicit
-non-inherited `align-content:stretch` to wrapped fixed-width rows. It expands
-formed line heights by deterministic integer shares of positive explicit
-content-box remainder, rebuilds provisional line origins, and reuses the
-existing per-line alignment and signed wrap-reverse artifact pass. Its
-contract is recorded in `docs/plan/tasks/native-engine-075.md`; implementation
-and local validation evidence are pending. Remote CI remains pending because
-the branch is local-only.
+The completed dependency-ordered `native-engine-075` slice adds bounded
+explicit non-inherited `align-content:stretch` to wrapped fixed-width rows. It
+expands formed line heights by deterministic integer shares of positive
+explicit content-box remainder, rebuilds provisional line origins, and reuses
+the existing per-line alignment and signed wrap-reverse artifact pass. The
+design is `4637863`, implementation is `e26c0a4` with the diagnostics-fixture
+correction in `cc8b538`, and local validation and cleanup evidence are recorded
+in `docs/plan/tasks/native-engine-075.md`. The default-stack issue in one
+existing large-Clap parser test remains a harness follow-up; the full native
+library suite passes with an explicit 8 MiB test-thread stack. Remote CI
+remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

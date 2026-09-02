@@ -553,14 +553,17 @@ test remains a harness follow-up; the full native library suite passes with an
 explicit 8 MiB test-thread stack. Remote CI remains pending until this branch
 is pushed.
 
-The active dependency-ordered [native-engine-075](tasks/native-engine-075.md)
+The completed dependency-ordered [native-engine-075](tasks/native-engine-075.md)
 slice adds bounded explicit non-inherited `align-content:stretch` to wrapped
 fixed-width flex rows. It expands formed line heights by deterministic integer
 shares of positive explicit content-box remainder, then reuses per-line
 `align-items` and complete artifact translation for normal and wrap-reverse
-stacking. The design contract is recorded in the task file; implementation and
-validation evidence are pending. Remote CI remains pending until this branch
-is pushed.
+stacking. The design is `4637863`, implementation is `e26c0a4` with the
+diagnostics-fixture correction in `cc8b538`, and local validation and cleanup
+evidence are recorded in the task file. The default-stack issue in one
+existing large-Clap parser test remains a harness follow-up; the full native
+library suite passes with an explicit 8 MiB test-thread stack. Remote CI
+remains pending until this branch is pushed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

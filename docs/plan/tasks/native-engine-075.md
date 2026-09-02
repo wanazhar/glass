@@ -1,7 +1,7 @@
 ---
 id: native-engine-075
 scope: glass-browser/native-engine/flex-align-content-stretch
-status: active
+status: complete
 depends-on: [native-engine-074]
 ---
 
@@ -104,19 +104,61 @@ behavior.
 
 ## Verification
 
-- [ ] CSS unit tests cover accepted `stretch`, defaulting, rejected values,
+- [x] CSS unit tests cover accepted `stretch`, defaulting, rejected values,
   non-inheritance, selector cascade, and inline precedence;
-- [ ] integration tests cover normal and wrap-reverse line expansion,
+- [x] integration tests cover normal and wrap-reverse line expansion,
   deterministic remainder pixels, per-line item alignment, explicit/auto/
   smaller heights, `nowrap` equivalence, descendants, root overflow,
   scrolling, hit testing, paint, and semantic/source-order preservation;
-- [ ] the full native integration suite, strict default/native Clippy,
+- [x] the full native integration suite, strict default/native Clippy,
   formatting, whitespace, and documentation validators pass;
-- [ ] implementation, documentation, and issue #40 checkpoints are committed
+- [x] implementation, documentation, and issue #40 checkpoints are committed
   locally; remote CI is not claimed until this branch is pushed;
-- [ ] exact regenerable Cargo outputs are reclaimed after all validation
+- [x] exact regenerable Cargo outputs are reclaimed after all validation
   without terminating long-lived Glass processes.
 
 ## Completion evidence
 
-Pending implementation and validation.
+Completed locally on 2026-09-02. The design checkpoint is `4637863`, the
+implementation checkpoint is `e26c0a4`, and the diagnostics-fixture correction
+is `cc8b538`. The documentation closeout is the follow-up checkpoint recorded
+with this task update. The implementation remains inside `glass-browser` and
+the `native-engine` feature remains default-off.
+
+Focused and full native validation passed:
+
+```text
+cargo test -p glass-browser --features native-engine --test native_engine \
+  --locked -- --nocapture
+96 passed; 0 failed; 0 ignored
+
+RUST_MIN_STACK=8388608 cargo test -p glass-browser \
+  --features native-engine --lib --locked -- --nocapture
+869 passed; 0 failed; 1 ignored
+
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo clippy --all-targets --no-default-features --locked -- -D warnings
+env RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps
+cargo build -p glass-dev --bin glass --locked
+```
+
+The strict all-target Clippy run passed in `13m27.97s` with peak RSS
+`1,870,216 KiB`; the no-default-feature run passed in `7m01.76s` with peak
+RSS `1,794,684 KiB`; rustdoc passed in `3m12.77s` with peak RSS
+`1,633,332 KiB`; and the `glass-dev` binary build passed in `11m15.25s` with
+peak RSS `1,991,332 KiB`. Formatting (`cargo fmt --all -- --check`) and
+`git diff --check` passed. The repository version, feature-parity, release-
+documentation, TUI-shortcut, documentation-depth, documentation-coverage,
+reliability-matrix, public-readonly-adapter, and Web IR baseline validators
+also passed before cleanup.
+
+One pre-existing large-Clap parser test can overflow the default test-thread
+stack; the complete native library result above uses the documented explicit
+8 MiB stack and has no test failure. This remains a harness follow-up, not a
+native-engine-075 failure.
+
+After validation, no cargo/rustc/rustdoc/clippy process had the target open.
+The exact `/home/ubuntu/work/glass/target` generated tree measured `5.6G`
+before cleanup and `4.0K` afterward. Shared Cargo registries/toolchains and
+source files were retained. Remote CI remains pending because this checkout
+is local-only; no remote-green claim is made.

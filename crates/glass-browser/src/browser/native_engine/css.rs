@@ -2139,6 +2139,7 @@ fn parse_declarations_with_diagnostics(
             "white-space" => parse_white_space(value).is_some(),
             "text-align" => parse_text_align(value).is_some(),
             "justify-content" => parse_justify_content(value).is_some(),
+            "place-content" => parse_place_content(value).is_some(),
             "align-items" => parse_align_items(value).is_some(),
             "align-self" => parse_align_self(value).is_some(),
             "align-content" => parse_align_content(value).is_some(),
@@ -2218,6 +2219,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "white-space"
             | "text-align"
             | "justify-content"
+            | "place-content"
             | "align-items"
             | "align-self"
             | "align-content"
@@ -2320,7 +2322,15 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.text_align = parse_text_align(value);
             }
             "justify-content" => {
-                declarations.justify_content = parse_justify_content(value);
+                if let Some(parsed) = parse_justify_content(value) {
+                    declarations.justify_content = Some(parsed);
+                }
+            }
+            "place-content" => {
+                if let Some((align_content, justify_content)) = parse_place_content(value) {
+                    declarations.align_content = Some(align_content);
+                    declarations.justify_content = Some(justify_content);
+                }
             }
             "align-items" => {
                 declarations.align_items = parse_align_items(value);
@@ -2331,7 +2341,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "align-content" => {
-                declarations.align_content = parse_align_content(value);
+                if let Some(parsed) = parse_align_content(value) {
+                    declarations.align_content = Some(parsed);
+                }
             }
             "flex-direction" => {
                 declarations.flex_direction = parse_flex_direction(value);
@@ -2829,6 +2841,22 @@ fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
         "center" => Some(JustifyContentValue::Center),
         "flex-end" => Some(JustifyContentValue::FlexEnd),
         "space-between" => Some(JustifyContentValue::SpaceBetween),
+        _ => None,
+    }
+}
+
+fn parse_place_content(value: &str) -> Option<(AlignContentValue, JustifyContentValue)> {
+    let values = value.split_ascii_whitespace().collect::<Vec<_>>();
+    match values.as_slice() {
+        [shared] => {
+            let justify_content = parse_justify_content(shared)?;
+            let align_content = parse_align_content(shared)?;
+            Some((align_content, justify_content))
+        }
+        [align_content, justify_content] => Some((
+            parse_align_content(align_content)?,
+            parse_justify_content(justify_content)?,
+        )),
         _ => None,
     }
 }
@@ -4046,6 +4074,37 @@ mod tests {
     }
 
     #[test]
+    fn place_content_parser_expands_bounded_shared_and_axis_values() {
+        assert_eq!(
+            parse_place_content("center"),
+            Some((AlignContentValue::Center, JustifyContentValue::Center))
+        );
+        assert_eq!(
+            parse_place_content("SPACE-BETWEEN"),
+            Some((
+                AlignContentValue::SpaceBetween,
+                JustifyContentValue::SpaceBetween
+            ))
+        );
+        assert_eq!(
+            parse_place_content("space-around flex-end"),
+            Some((AlignContentValue::SpaceAround, JustifyContentValue::FlexEnd))
+        );
+        assert_eq!(
+            parse_place_content("normal center"),
+            Some((AlignContentValue::Normal, JustifyContentValue::Center))
+        );
+        assert_eq!(
+            parse_place_content("stretch flex-start"),
+            Some((AlignContentValue::Stretch, JustifyContentValue::FlexStart))
+        );
+        assert_eq!(parse_place_content("space-around"), None);
+        assert_eq!(parse_place_content("center stretch"), None);
+        assert_eq!(parse_place_content("center center center"), None);
+        assert_eq!(parse_place_content("start center"), None);
+    }
+
+    #[test]
     fn align_items_parser_accepts_only_bounded_cross_axis_values() {
         assert_eq!(
             parse_align_items("flex-start"),
@@ -5008,6 +5067,85 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(auto).align_self(),
             AlignSelfValue::Auto
+        );
+    }
+
+    #[test]
+    fn place_content_is_expanded_with_component_precedence_and_no_inheritance() {
+        let document = NativeDocument::parse(
+            "<style>#parent { place-content: space-around flex-end; } .shared { place-content: center; } #shared { place-content: flex-start; } #longhands { place-content: stretch center; justify-content: flex-start; align-content: flex-end; } #invalid { place-content: center center; place-content: stretch; } #order { align-content: flex-end; place-content: space-between center; justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='shared' class='shared'>Shared</span><span id='longhands'>Longhands</span><span id='invalid'>Invalid</span><span id='order'>Order</span><span id='inline' style='place-content: flex-start flex-end; place-content: center; justify-content: flex-start'>Inline</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let shared = document.resolve_target("id=shared").unwrap();
+        let longhands = document.resolve_target("id=longhands").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let order = document.resolve_target("id=order").unwrap();
+        let inline = document.resolve_target("id=inline").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).align_content(),
+            AlignContentValue::SpaceAround
+        );
+        assert_eq!(
+            document.computed_style_for_layout(parent).justify_content(),
+            JustifyContentValue::FlexEnd
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).align_content(),
+            AlignContentValue::FlexStart
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).justify_content(),
+            JustifyContentValue::FlexStart
+        );
+        assert_eq!(
+            document.computed_style_for_layout(shared).align_content(),
+            AlignContentValue::FlexStart
+        );
+        assert_eq!(
+            document.computed_style_for_layout(shared).justify_content(),
+            JustifyContentValue::FlexStart
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(longhands)
+                .align_content(),
+            AlignContentValue::FlexEnd
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(longhands)
+                .justify_content(),
+            JustifyContentValue::FlexStart
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).align_content(),
+            AlignContentValue::Center
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .justify_content(),
+            JustifyContentValue::Center
+        );
+        assert_eq!(
+            document.computed_style_for_layout(order).align_content(),
+            AlignContentValue::SpaceBetween
+        );
+        assert_eq!(
+            document.computed_style_for_layout(order).justify_content(),
+            JustifyContentValue::FlexEnd
+        );
+        assert_eq!(
+            document.computed_style_for_layout(inline).align_content(),
+            AlignContentValue::Center
+        );
+        assert_eq!(
+            document.computed_style_for_layout(inline).justify_content(),
+            JustifyContentValue::FlexStart
         );
     }
 

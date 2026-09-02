@@ -2755,6 +2755,81 @@ fn native_flex_align_self_overrides_parent_and_moves_complete_subtrees() {
 }
 
 #[test]
+fn native_flex_place_content_reuses_axis_distribution_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:24px;height:60px;gap:2px;flex-wrap:wrap;align-items:center;place-content:center space-between'><div id='first' style='width:8px;height:6px;background-color:red'><span id='nested' style='display:block;height:2px'>F</span></div><div id='second' style='width:8px;height:10px;background-color:green'>S</div><div id='third' style='width:8px;height:14px;background-color:blue'>T</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let third = document.resolve_target("id=third").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(row).unwrap().height, 60);
+    assert_eq!(layout.box_for(first).unwrap().x, 0);
+    assert_eq!(layout.box_for(second).unwrap().x, 16);
+    assert_eq!(layout.box_for(third).unwrap().x, 0);
+    assert_eq!(layout.box_for(first).unwrap().y, 19);
+    assert_eq!(layout.box_for(second).unwrap().y, 17);
+    assert_eq!(layout.box_for(third).unwrap().y, 29);
+    assert_eq!(layout.box_for(nested).unwrap().y, 19);
+    assert_eq!(layout.content_height, 64);
+    assert_eq!(layout.max_scroll_offset(), NativePoint { x: 0, y: 0 });
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == first && rect.x == 0 && rect.y == 19 && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == second
+                    && rect.x == 16
+                    && rect.y == 17
+                    && *color
+                        == (NativeColor {
+                            red: 0,
+                            green: 128,
+                            blue: 0,
+                            alpha: u8::MAX,
+                        })
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == third
+                    && rect.x == 0
+                    && rect.y == 29
+                    && *color
+                        == (NativeColor {
+                            red: 0,
+                            green: 0,
+                            blue: u8::MAX,
+                            alpha: u8::MAX,
+                        })
+        )
+    }));
+    assert_eq!(layout.hit_test(1, 20).unwrap(), Some(nested));
+    assert_eq!(layout.hit_test(17, 18).unwrap(), Some(second));
+    assert_eq!(layout.hit_test(1, 30).unwrap(), Some(third));
+}
+
+#[test]
 fn native_flex_align_items_handles_auto_lines_box_sizing_overflow_and_fallback() {
     let auto = NativeDocument::parse(
         "<div id='row' style='display:flex;width:32px;align-items:center'><div id='short' style='width:8px;height:8px'>A</div><div id='tall' style='width:8px;height:24px'>B</div></div>",
@@ -7008,7 +7083,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: stretch; align-self: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: stretch; align-self: stretch; align-content: safe center; place-content: stretch; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -7117,6 +7192,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "align-content"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "place-content"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

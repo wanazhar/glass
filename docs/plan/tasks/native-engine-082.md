@@ -1,7 +1,7 @@
 ---
 id: native-engine-082
 scope: glass-browser/native-engine/flex-shorthand
-status: active
+status: complete
 depends-on: [native-engine-081]
 ---
 
@@ -86,7 +86,37 @@ semantic order or make native-engine selection implicit.
 
 ## Verification
 
-The implementation, focused tests, full native suites, strict feature and
-documentation gates, issue #40 status, and exact regenerable-target cleanup
-will be recorded here when the slice closes. Remote CI is not claimed until
-the local branch is pushed.
+Local evidence captured on 2026-09-02 UTC:
+
+- `cargo fmt --all -- --check` and `git diff --check` passed;
+- focused CSS coverage passed 2/2 shorthand parser and cascade tests in
+  13m48s, including every accepted form, invalid fallback, declaration-order
+  longhand overrides, inline precedence, and non-inheritance;
+- focused flex-shorthand integration coverage passed 1/1 test in 6m03s,
+  including zero-basis growth, descendant geometry, display-list paint, and
+  hit testing;
+- the full native integration suite passed 108/108 tests in 3.06s, and the
+  full native library suite passed 881 tests with 1 existing ignored test in
+  4.69s under `RUST_MIN_STACK=8388608`;
+- strict `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  passed in 13m32s, and the no-default-feature variant passed in 6m39s;
+- `RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps`
+  passed in 3m23s, and `cargo build -p glass-dev --locked` passed in 11m21s;
+- repository validators passed: version sync at 0.3.14; feature parity at 14
+  capabilities across 4 targets; release documentation at 496 Markdown files
+  with 0 current-claim failures; TUI at 15 implementation keys and 63
+  documentation markers; depth at 93 guides and 19 substantive contracts;
+  coverage at 496 Markdown files, 345 full-product MCP tools (100
+  browser-only), 17 examples, and 22 public modules; reliability at 6
+  scenarios across 4 targets; 5 public read-only adapters; and the Web IR
+  corpus at 8 fixtures, 8 scenarios, and 11 categories with runtime goldens
+  verified;
+- after validation, the exact Glass `target` inventory was 5.3G, with no active
+  Cargo/Rust/rustdoc/Clippy process and no open target file. Only regenerable
+  paths were removed: `target` fell to 4.0K; `/dev/sda1` moved from 134G
+  used/60G available/70% to 128G used/65G available/67%. Shared Cargo
+  registries/toolchains and long-lived processes were retained;
+- design checkpoint `71d1060d` and implementation checkpoint `40f6fb1c` are
+  committed locally; this task is the documentation closeout checkpoint.
+  Issue #40 remains OPEN and remote CI remains unclaimed because the branch is
+  local-only.

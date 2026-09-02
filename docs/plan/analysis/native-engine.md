@@ -450,15 +450,16 @@ implementation is `299c93f9`, and local validation and cleanup evidence are
 recorded in `docs/plan/tasks/native-engine-081.md`. Remote CI remains pending
 because the branch is local-only.
 
-The active dependency-ordered `native-engine-082` slice defines bounded `flex`
-shorthand expansion into the existing grow, shrink, and basis components. It
-accepts `none`, `auto`, bounded integer factor forms, and bounded pixel/`auto`
-bases; valid longhands after a shorthand override only their own component,
-while a later shorthand resets all three. Unsupported CSS-wide, percentage,
-fractional, and ambiguous forms remain typed diagnostics. The complete
-contract and tradeoffs are in `docs/plan/tasks/native-engine-082.md`;
-implementation and validation are pending. Remote CI remains pending because
-the branch is local-only.
+The completed dependency-ordered `native-engine-082` slice defines bounded
+`flex` shorthand expansion into the existing grow, shrink, and basis
+components. It accepts `none`, `auto`, bounded integer factor forms, and
+bounded pixel/`auto` bases; valid longhands after a shorthand override only
+their own component, while a later shorthand resets all three. Unsupported
+CSS-wide, percentage, fractional, and ambiguous forms remain typed
+diagnostics. The complete contract and tradeoffs are in
+`docs/plan/tasks/native-engine-082.md`; design is `71d1060d`, implementation is
+`40f6fb1c`, and local validation and cleanup evidence are recorded there.
+Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1050,7 +1051,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-081.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-082.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-081.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-080.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-079.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-078.md` is the preceding completed checkpoint;

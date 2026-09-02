@@ -1,7 +1,7 @@
 ---
 id: native-engine-076
 scope: glass-browser/native-engine/flex-align-content-normal
-status: active
+status: complete
 depends-on: [native-engine-075]
 ---
 
@@ -96,19 +96,80 @@ integer line expansion and the deliberate first-line remainder bias.
 
 ## Verification
 
-- [ ] CSS unit tests cover accepted explicit `normal`, omitted-value fallback,
+- [x] CSS unit tests cover accepted explicit `normal`, omitted-value fallback,
   rejected values, non-inheritance, selector cascade, and inline precedence;
-- [ ] integration tests cover normal/stretch equivalence for normal and
+- [x] integration tests cover normal/stretch equivalence for normal and
   wrap-reverse rows, deterministic line expansion, auto/smaller heights,
   `nowrap`, descendants, root overflow, scrolling, hit testing, paint, and
   semantic/source-order preservation;
-- [ ] the full native integration suite, strict default/native Clippy,
+- [x] the full native integration suite, strict default/native Clippy,
   formatting, whitespace, and documentation validators pass;
-- [ ] implementation, documentation, and issue #40 checkpoints are committed
+- [x] implementation, documentation, and issue #40 checkpoints are committed
   locally; remote CI is not claimed until this branch is pushed;
-- [ ] exact regenerable Cargo outputs are reclaimed after all validation
+- [x] exact regenerable Cargo outputs are reclaimed after all validation
   without terminating long-lived Glass processes.
 
 ## Completion evidence
 
-Pending implementation and validation.
+Completed locally on 2026-09-02. The design checkpoint is `b6c647e`, the
+implementation checkpoint is `e3933b3`, and the documentation closeout is the
+follow-up checkpoint recorded with this task update. The implementation stays
+inside `glass-browser`; `native-engine` remains default-off and the workspace
+still has exactly two installable crates.
+
+Focused and full native validation passed:
+
+```text
+cargo test -p glass-browser --features native-engine --test native_engine \
+  native_flex_align_content --locked -- --nocapture
+4 passed; 0 failed; 0 ignored
+
+cargo test -p glass-browser --features native-engine --lib align_content \
+  --locked -- --nocapture
+2 passed; 0 failed; 0 ignored
+
+cargo test -p glass-browser --features native-engine --test native_engine \
+  --locked -- --nocapture
+97 passed; 0 failed; 0 ignored
+
+RUST_MIN_STACK=8388608 cargo test -p glass-browser \
+  --features native-engine --lib --locked -- --nocapture
+869 passed; 0 failed; 1 ignored
+
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo clippy --all-targets --no-default-features --locked -- -D warnings
+env RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps
+cargo build -p glass-dev --bin glass --locked
+```
+
+The focused cold integration compile completed in `13m13s`; its tests ran in
+`0.45s`. The focused CSS parser/cascade run completed in `6m53.22s` with peak
+RSS `2,479,344 KiB`; full native integration completed in `2.97s` with peak
+RSS `82,104 KiB`; and the full native library completed in `9.31s` with peak
+RSS `81,968 KiB`. Strict all-target Clippy passed in `13m21.78s` with peak RSS
+`1,876,640 KiB`; no-default-feature Clippy passed in `6m37.40s` with peak RSS
+`1,792,064 KiB`; rustdoc passed in `3m16.73s` with peak RSS `1,632,060 KiB`;
+and the `glass-dev` binary build passed in `11m11.55s` with peak RSS
+`1,996,176 KiB`. Formatting (`cargo fmt --all -- --check`) and
+`git diff --check` passed.
+
+The repository validators passed after the 076 documentation edits: version
+sync, feature parity (14 capabilities across 4 targets), release
+documentation (490 Markdown documents; 83 current documents; 57 previous-
+version hits; 0 current-claim failures), TUI shortcuts, documentation depth
+(93 routed/audited guides and 19 substantive contracts), documentation
+coverage (490 Markdown files, 345 full-product MCP tools, 100 browser-only,
+17 examples, and 22 public modules), reliability matrix, public read-only
+adapters, and the 8-fixture/8-scenario/11-category Web IR corpus.
+
+The default-stack large-Clap parser overflow remains a pre-existing harness
+follow-up; the complete native library result above uses the documented 8 MiB
+test-thread stack and has no test failure. It is not a native-engine-076
+failure.
+
+After all validation, no cargo/rustc/rustdoc/clippy process had the target
+open. The exact `/home/ubuntu/work/glass/target` generated tree measured
+`5.2G` before cleanup and `4.0K` afterward; filesystem free space returned to
+`66G`. Shared Cargo registries/toolchains and source files were retained, and
+no long-lived Glass process was terminated. Remote CI remains pending because
+the checkout is local-only; no remote-green claim is made.

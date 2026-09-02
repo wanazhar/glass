@@ -417,7 +417,7 @@ validation and cleanup evidence are recorded in
 `docs/plan/tasks/native-engine-078.md`. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered `native-engine-079` slice adds bounded
+The completed dependency-ordered `native-engine-079` slice adds bounded
 non-inherited integer `flex-grow` weights to the existing row-flex owner.
 Positive line free space is allocated before `justify-content` with a
 deterministic prefix-floor policy; existing `max-width` caps freeze items and
@@ -425,7 +425,9 @@ redistribute remainder among the remaining positive weights. Negative free
 space remains a no-shrink overflow case, and the slice does not add
 `flex-shrink`, `flex-basis`, fractional factors, columns, or a second geometry
 owner. Its design contract is in `docs/plan/tasks/native-engine-079.md`;
-implementation and validation are pending.
+design is `a45fb01`, implementation is `1a930a3`, and local validation and
+cleanup evidence are recorded in that task file. Remote CI remains pending
+because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1008,7 +1010,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-078.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-079.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-078.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-077.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-076.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-075.md` is the preceding completed checkpoint;

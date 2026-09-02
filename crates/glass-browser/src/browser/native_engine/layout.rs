@@ -376,6 +376,25 @@ fn constrain_dimension(value: u32, minimum: Option<u32>, maximum: Option<u32>) -
     maximum.map_or(value, |maximum| value.min(maximum.max(minimum)))
 }
 
+fn outer_width_inset(style: NativeComputedStyle) -> u32 {
+    let padding = style.padding();
+    let (border_left, border_right) = style.border().map_or((0, 0), |border| {
+        (border.left().width(), border.right().width())
+    });
+    border_left
+        .saturating_add(padding.left())
+        .saturating_add(border_right)
+        .saturating_add(padding.right())
+}
+
+fn outer_width_from_declared(style: NativeComputedStyle, declared: u32) -> u32 {
+    if style.is_border_box() {
+        declared
+    } else {
+        declared.saturating_add(outer_width_inset(style))
+    }
+}
+
 pub(crate) fn rounded_rect_contains(
     rect: NativeRect,
     radius: NativeBorderRadius,
@@ -473,6 +492,8 @@ struct FlexItem {
     child: NativeNodeId,
     margin: NativeBoxEdges,
     width: u32,
+    max_width: Option<u32>,
+    flex_grow: u32,
     order: i32,
     source_index: usize,
 }
@@ -497,6 +518,69 @@ struct FlexLineContext {
     justify_content: JustifyContentValue,
     reverse: bool,
     depth: usize,
+}
+
+fn apply_flex_growth(items: &mut [FlexItem], available_width: u32, gap: u32) {
+    let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
+    let base_item_width = items.iter().fold(0u32, |total, item| {
+        total
+            .saturating_add(item.margin.horizontal())
+            .saturating_add(item.width)
+    });
+    let occupied_width = base_item_width.saturating_add(gap.saturating_mul(gap_count));
+    let mut remaining = available_width.saturating_sub(occupied_width);
+    if remaining == 0 {
+        return;
+    }
+
+    let mut active = vec![true; items.len()];
+    while remaining > 0 {
+        let total_weight = items
+            .iter()
+            .enumerate()
+            .filter(|(index, item)| active[*index] && item.flex_grow > 0)
+            .fold(0u64, |total, (_, item)| {
+                total.saturating_add(u64::from(item.flex_grow))
+            });
+        if total_weight == 0 {
+            break;
+        }
+
+        let mut cumulative_weight = 0u64;
+        let mut previous_target = 0u64;
+        let mut applied = 0u32;
+        let mut froze_item = false;
+        for (index, item) in items.iter_mut().enumerate() {
+            if !active[index] || item.flex_grow == 0 {
+                continue;
+            }
+            cumulative_weight = cumulative_weight.saturating_add(u64::from(item.flex_grow));
+            let target = u64::from(remaining).saturating_mul(cumulative_weight) / total_weight;
+            let share = u32::try_from(target.saturating_sub(previous_target)).unwrap_or(u32::MAX);
+            previous_target = target;
+            let capacity = item
+                .max_width
+                .map_or(u32::MAX, |max_width| max_width.saturating_sub(item.width));
+            let growth = share.min(capacity);
+            item.width = item.width.saturating_add(growth);
+            applied = applied.saturating_add(growth);
+            if item
+                .max_width
+                .is_some_and(|max_width| item.width >= max_width)
+            {
+                active[index] = false;
+                froze_item = true;
+            }
+        }
+
+        remaining = remaining.saturating_sub(applied);
+        if !froze_item {
+            break;
+        }
+        if applied == 0 && active.iter().all(|is_active| !*is_active) {
+            break;
+        }
+    }
 }
 
 fn flex_space_around_line_offset(free_space: u32, line_index: u32, line_count: usize) -> u32 {
@@ -975,6 +1059,18 @@ impl<'a> LayoutBuilder<'a> {
         available_width: u32,
         depth: usize,
     ) -> FlowSize {
+        self.layout_element_with_outer_width(id, x, y, available_width, depth, None)
+    }
+
+    fn layout_element_with_outer_width(
+        &mut self,
+        id: NativeNodeId,
+        x: u32,
+        y: u32,
+        available_width: u32,
+        depth: usize,
+        forced_outer_width: Option<u32>,
+    ) -> FlowSize {
         let style = self.document.computed_style_for_layout(id);
         let display = self.effective_display(id);
         if display == DisplayValue::None
@@ -1027,7 +1123,8 @@ impl<'a> LayoutBuilder<'a> {
         let bottom_inset = border_bottom.saturating_add(padding.bottom());
         let horizontal_inset = left_inset.saturating_add(right_inset);
         let vertical_inset = top_inset.saturating_add(bottom_inset);
-        let width = self.outer_width(id, style, is_block, available_width, true);
+        let width = forced_outer_width
+            .unwrap_or_else(|| self.outer_width(id, style, is_block, available_width, true));
         let minimum_line_height = style.line_height().unwrap_or(DEFAULT_LINE_HEIGHT);
         let default_content_height = if is_block {
             minimum_line_height
@@ -1202,6 +1299,8 @@ impl<'a> LayoutBuilder<'a> {
         items: Vec<FlexItem>,
         context: FlexLineContext,
     ) -> FlexLineLayout {
+        let mut items = items;
+        apply_flex_growth(&mut items, context.available_width, context.gap);
         let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
         let item_width = items.iter().fold(0u32, |total, item| {
             total
@@ -1257,8 +1356,14 @@ impl<'a> LayoutBuilder<'a> {
                 let item_y = context.y.saturating_add(item.margin.top());
                 let box_start = self.boxes.len();
                 let text_start = self.text_runs.len();
-                let size =
-                    self.layout_element(item.child, item_x, item_y, item.width, context.depth);
+                let size = self.layout_element_with_outer_width(
+                    item.child,
+                    item_x,
+                    item_y,
+                    item.width,
+                    context.depth,
+                    Some(item.width),
+                );
                 placements.push(FlexItemPlacement {
                     box_start,
                     box_end: self.boxes.len(),
@@ -1298,8 +1403,14 @@ impl<'a> LayoutBuilder<'a> {
                 let item_y = context.y.saturating_add(item.margin.top());
                 let box_start = self.boxes.len();
                 let text_start = self.text_runs.len();
-                let size =
-                    self.layout_element(item.child, item_x, item_y, item.width, context.depth);
+                let size = self.layout_element_with_outer_width(
+                    item.child,
+                    item_x,
+                    item_y,
+                    item.width,
+                    context.depth,
+                    Some(item.width),
+                );
                 placements.push(FlexItemPlacement {
                     box_start,
                     box_end: self.boxes.len(),
@@ -1364,10 +1475,15 @@ impl<'a> LayoutBuilder<'a> {
                     }
                     let margin = style.margin();
                     let width = self.outer_width(child, style, false, available_width, !wrapped);
+                    let max_width = style
+                        .max_width()
+                        .map(|declared| outer_width_from_declared(style, declared));
                     items.push(FlexItem {
                         child,
                         margin,
                         width,
+                        max_width,
+                        flex_grow: style.flex_grow(),
                         order: style.flex_item_order().value(),
                         source_index,
                     });
@@ -1575,14 +1691,7 @@ impl<'a> LayoutBuilder<'a> {
         available_width: u32,
         constrain_to_available: bool,
     ) -> u32 {
-        let padding = style.padding();
-        let (border_left, border_right) = style.border().map_or((0, 0), |border| {
-            (border.left().width(), border.right().width())
-        });
-        let horizontal_inset = border_left
-            .saturating_add(padding.left())
-            .saturating_add(border_right)
-            .saturating_add(padding.right());
+        let horizontal_inset = outer_width_inset(style);
         let default_outer_width = if is_block {
             available_width
         } else {
@@ -1590,26 +1699,14 @@ impl<'a> LayoutBuilder<'a> {
                 .saturating_add(horizontal_inset)
         };
         let width = style.width().map_or(default_outer_width, |declared| {
-            if style.is_border_box() {
-                declared
-            } else {
-                declared.saturating_add(horizontal_inset)
-            }
+            outer_width_from_declared(style, declared)
         });
-        let min_width = style.min_width().map(|declared| {
-            if style.is_border_box() {
-                declared
-            } else {
-                declared.saturating_add(horizontal_inset)
-            }
-        });
-        let max_width = style.max_width().map(|declared| {
-            if style.is_border_box() {
-                declared
-            } else {
-                declared.saturating_add(horizontal_inset)
-            }
-        });
+        let min_width = style
+            .min_width()
+            .map(|declared| outer_width_from_declared(style, declared));
+        let max_width = style
+            .max_width()
+            .map(|declared| outer_width_from_declared(style, declared));
         let width = constrain_dimension(width, min_width, max_width);
         if constrain_to_available {
             width.min(available_width.max(min_width.unwrap_or_default()))

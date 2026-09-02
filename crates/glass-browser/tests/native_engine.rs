@@ -5750,6 +5750,109 @@ async fn percent_decoded_fragments_match_utf8_ids_and_fail_closed() {
     }
 }
 
+#[test]
+fn native_flex_grow_allocates_weighted_space_before_justification() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:40px;gap:2px;justify-content:space-between'><div id='first' style='width:6px;height:8px;flex-grow:1;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></div><div id='second' style='width:8px;height:8px;flex-grow:2;background-color:blue'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(row).unwrap().width, 40);
+    assert_eq!(layout.box_for(first).unwrap().x, 0);
+    assert_eq!(layout.box_for(first).unwrap().width, 14);
+    assert_eq!(layout.box_for(nested).unwrap().x, 0);
+    assert_eq!(layout.box_for(nested).unwrap().width, 14);
+    assert_eq!(layout.box_for(second).unwrap().x, 16);
+    assert_eq!(layout.box_for(second).unwrap().width, 24);
+    assert_eq!(layout.content_width, 48);
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == first && rect.width == 14 && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(layout.hit_test(13, 6).unwrap(), Some(first));
+    assert_eq!(layout.hit_test(16, 1).unwrap(), Some(second));
+}
+
+#[test]
+fn native_flex_grow_handles_wrap_reverse_overflow_and_max_width_reallocation() {
+    let wrapped = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:30px;gap:2px;flex-wrap:wrap-reverse'><div id='first' style='width:14px;height:6px;flex-grow:1'>A</div><div id='second' style='width:14px;height:8px;flex-grow:1'>B</div><div id='third' style='width:14px;height:10px;flex-grow:2'>C</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = wrapped.resolve_target("id=first").unwrap();
+    let second = wrapped.resolve_target("id=second").unwrap();
+    let third = wrapped.resolve_target("id=third").unwrap();
+    let wrapped_layout = wrapped
+        .layout(Viewport {
+            width: 32,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+
+    assert_eq!(wrapped_layout.box_for(first).unwrap().width, 14);
+    assert_eq!(wrapped_layout.box_for(second).unwrap().width, 14);
+    assert_eq!(wrapped_layout.box_for(third).unwrap().width, 30);
+    assert_eq!(wrapped_layout.box_for(first).unwrap().y, 12);
+    assert_eq!(wrapped_layout.box_for(second).unwrap().y, 12);
+    assert_eq!(wrapped_layout.box_for(third).unwrap().y, 0);
+    assert_eq!(wrapped_layout.content_width, 32);
+
+    let maxed = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:40px;gap:2px'><div id='capped' style='width:8px;height:8px;max-width:10px;flex-grow:1'>A</div><div id='receiver' style='width:8px;height:8px;flex-grow:1'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let capped = maxed.resolve_target("id=capped").unwrap();
+    let receiver = maxed.resolve_target("id=receiver").unwrap();
+    let maxed_layout = maxed
+        .layout(Viewport {
+            width: 40,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(maxed_layout.box_for(capped).unwrap().width, 10);
+    assert_eq!(maxed_layout.box_for(receiver).unwrap().x, 12);
+    assert_eq!(maxed_layout.box_for(receiver).unwrap().width, 28);
+
+    let overflow = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:12px;gap:2px;flex-direction:row-reverse'><div id='first' style='width:8px;height:8px;flex-grow:1'>A</div><div id='second' style='width:8px;height:8px;flex-grow:2'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let overflow_first = overflow.resolve_target("id=first").unwrap();
+    let overflow_second = overflow.resolve_target("id=second").unwrap();
+    let overflow_layout = overflow
+        .layout(Viewport {
+            width: 12,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(overflow_layout.box_for(overflow_first).unwrap().width, 8);
+    assert_eq!(overflow_layout.box_for(overflow_second).unwrap().width, 8);
+    assert_eq!(overflow_layout.box_for(overflow_first).unwrap().x, 10);
+    assert_eq!(overflow_layout.box_for(overflow_second).unwrap().x, 0);
+}
+
 #[tokio::test]
 async fn legacy_name_fragments_use_decoded_fallback_and_preserve_scroll_safety() {
     let html = "<a id='jump' href='#legacy%20plan'>Jump</a><p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</p><p>seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six</p><a name='legacy plan'>Legacy target</a><a name='café'>UTF-8 legacy target</a><a name='same'>Name should lose</a><a name='hidden' style='display:none'>Hidden legacy target</a><a name='zero' style='display:contents'></a><a name='duplicate'>First duplicate</a><a name='duplicate'>Second duplicate</a><div name='not-anchor'>Not a target</div><p id='same'>ID target</p>";
@@ -6550,7 +6653,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: space-around; order: 1025; flex-grow: 1.5; align-items: stretch; align-content: safe center; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -6586,6 +6689,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-align"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "flex-grow"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

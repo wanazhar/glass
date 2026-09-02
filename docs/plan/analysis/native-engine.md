@@ -406,14 +406,16 @@ is `4b27b15`, and local validation and cleanup evidence are recorded in
 `docs/plan/tasks/native-engine-077.md`. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered `native-engine-078` slice completes the bounded
-flex gap family with one- and two-value integer-pixel `gap`, explicit
+The completed dependency-ordered `native-engine-078` slice completes the
+bounded flex gap family with one- and two-value integer-pixel `gap`, explicit
 `row-gap`/`column-gap` longhands, and declaration-order-aware shorthand and
 longhand cascade. One-value `gap` intentionally supplies both axes in this
 new boundary, so wrapped-row goldens that previously relied on the 077
-main-axis-only compatibility behavior will change. The design contract is in
-`docs/plan/tasks/native-engine-078.md`; implementation, validation, and
-remote CI evidence are pending.
+main-axis-only compatibility behavior now reflect the correct cross-axis
+spacing. The design is `c6ebecd`, implementation is `1bca33f`, and local
+validation and cleanup evidence are recorded in
+`docs/plan/tasks/native-engine-078.md`. Remote CI remains pending because the
+branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -995,8 +997,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-078.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-077.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-078.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-077.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-076.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-075.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-074.md` is an earlier completed checkpoint;

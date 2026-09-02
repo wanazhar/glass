@@ -1,7 +1,7 @@
 ---
 id: native-engine-078
 scope: glass-browser/native-engine/flex-gap-family
-status: active
+status: complete
 depends-on: [native-engine-077]
 ---
 
@@ -119,16 +119,77 @@ the interacting gap family and makes the source-order contract executable.
 
 ## Verification
 
-- [ ] CSS unit tests cover one- and two-value shorthand, longhands, bounds,
+- [x] CSS unit tests cover one- and two-value shorthand, longhands, bounds,
   invalid fallback, source-order cascade, selector specificity, inline
   precedence, and non-inheritance;
-- [ ] integration tests cover main-axis placement/line formation, all
+- [x] integration tests cover main-axis placement/line formation, all
   completed cross-line alignment values, wrap-reverse, nowrap/single-line
   fallback, overflow/scrolling, paint, hit testing, and source/semantic order;
-- [ ] full native integration/library, strict feature matrices, formatting,
+- [x] full native integration/library, strict feature matrices, formatting,
   rustdoc, and repository documentation validators pass;
-- [ ] implementation, documentation, and issue #40 checkpoints are committed
+- [x] implementation, documentation, and issue #40 checkpoints are committed
   locally; remote CI is not claimed until this branch is pushed;
-- [ ] exact regenerable Cargo outputs are reclaimed after validation without
+- [x] exact regenerable Cargo outputs are reclaimed after validation without
   terminating long-lived Glass processes.
 
+## Completion evidence
+
+Completed locally on 2026-09-02. The design checkpoint is `c6ebecd` and the
+implementation checkpoint is `1bca33f`. The implementation stays inside
+`glass-browser`; `native-engine` remains default-off and the workspace still
+has exactly two installable crates.
+
+Focused and full native validation passed:
+
+```text
+cargo test -p glass-browser --features native-engine --test native_engine native_flex --locked -- --nocapture
+23 passed; 0 failed; 0 ignored
+
+cargo test -p glass-browser --features native-engine --lib gap --locked -- --nocapture
+6 passed; 0 failed; 0 ignored
+
+cargo test -p glass-browser --features native-engine --test native_engine --locked -- --nocapture
+101 passed; 0 failed; 0 ignored
+
+RUST_MIN_STACK=8388608 cargo test -p glass-browser --features native-engine --lib --locked -- --nocapture
+873 passed; 0 failed; 1 ignored
+
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo clippy --all-targets --no-default-features --locked -- -D warnings
+both passed
+
+env RUSTDOCFLAGS='-D warnings' cargo doc --all-features --locked --no-deps
+cargo build -p glass-dev --bin glass --locked
+both passed
+```
+
+The final focused flex run completed in `21.11s` wall time with a `0.70s`
+test phase and peak RSS of `608,300 KiB`. The focused CSS gap run completed in
+`7m21.69s` with peak RSS `2,486,660 KiB`; the full native integration completed
+in `1m25.49s` with peak RSS `1,476,560 KiB`; and the full native library
+completed in `1m36.61s` with peak RSS `1,687,464 KiB`. Strict all-feature
+Clippy passed in `13m47.64s` with peak RSS `1,879,380 KiB`; no-default-feature
+Clippy passed in `7m31.70s` with peak RSS `1,792,468 KiB`; rustdoc passed in
+`3m27.58s` with peak RSS `1,631,772 KiB`; and the locked `glass-dev` binary
+build passed in `11m24.52s` with peak RSS `2,000,744 KiB`. Formatting and
+`git diff --check` passed.
+
+Repository validators also passed after the 078 docs update: version sync at
+`0.3.14`; feature parity across 14 capabilities and 4 targets;
+release-documentation audit over 492 Markdown documents with 0 current-claim
+failures; TUI shortcut inventory with 15 implementation keys and 63
+documentation markers; documentation depth with 93 current guides and 19
+substantive contracts; documentation coverage with 492 Markdown files, 345
+full-product MCP tools (100 browser-only), 17 examples, and 22 public
+modules; reliability matrix with 6 scenarios across 4 targets; 5 public
+read-only adapters; and the Web IR corpus with 8 fixtures, 8 scenarios, and 11
+categories with runtime goldens verified. Runtime certification remains
+explicitly unclaimed.
+
+The complete integration and library runs verify that one-value `gap` now
+feeds both axes, two-value shorthand uses row/column order, longhands obey
+declaration order and specificity/inline precedence, and all prior row,
+wrap, alignment, reverse, overflow, paint, hit-test, scroll, capture, and
+semantic/source-order consumers use the same final coordinates. Remote CI
+remains pending because the checkout is local-only; no push, release, tag, or
+registry publication is claimed.

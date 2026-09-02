@@ -492,8 +492,11 @@ struct FlexItem {
     child: NativeNodeId,
     margin: NativeBoxEdges,
     width: u32,
+    flex_base_width: u32,
+    min_width: u32,
     max_width: Option<u32>,
     flex_grow: u32,
+    flex_shrink: u32,
     order: i32,
     source_index: usize,
 }
@@ -520,14 +523,18 @@ struct FlexLineContext {
     depth: usize,
 }
 
-fn apply_flex_growth(items: &mut [FlexItem], available_width: u32, gap: u32) {
+fn flex_occupied_width(items: &[FlexItem], gap: u32) -> u32 {
     let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
-    let base_item_width = items.iter().fold(0u32, |total, item| {
+    let item_width = items.iter().fold(0u32, |total, item| {
         total
             .saturating_add(item.margin.horizontal())
             .saturating_add(item.width)
     });
-    let occupied_width = base_item_width.saturating_add(gap.saturating_mul(gap_count));
+    item_width.saturating_add(gap.saturating_mul(gap_count))
+}
+
+fn apply_flex_growth(items: &mut [FlexItem], available_width: u32, gap: u32) {
+    let occupied_width = flex_occupied_width(items, gap);
     let mut remaining = available_width.saturating_sub(occupied_width);
     if remaining == 0 {
         return;
@@ -568,6 +575,64 @@ fn apply_flex_growth(items: &mut [FlexItem], available_width: u32, gap: u32) {
                 .max_width
                 .is_some_and(|max_width| item.width >= max_width)
             {
+                active[index] = false;
+                froze_item = true;
+            }
+        }
+
+        remaining = remaining.saturating_sub(applied);
+        if !froze_item {
+            break;
+        }
+        if applied == 0 && active.iter().all(|is_active| !*is_active) {
+            break;
+        }
+    }
+}
+
+fn apply_flex_shrink(items: &mut [FlexItem], available_width: u32, gap: u32) {
+    let occupied_width = flex_occupied_width(items, gap);
+    let mut remaining = occupied_width.saturating_sub(available_width);
+    if remaining == 0 {
+        return;
+    }
+
+    let mut active = vec![true; items.len()];
+    while remaining > 0 {
+        let total_weight = items
+            .iter()
+            .enumerate()
+            .filter(|(index, item)| {
+                active[*index] && item.flex_shrink > 0 && item.flex_base_width > 0
+            })
+            .fold(0u64, |total, (_, item)| {
+                let weight =
+                    u64::from(item.flex_base_width).saturating_mul(u64::from(item.flex_shrink));
+                total.saturating_add(weight)
+            });
+        if total_weight == 0 {
+            break;
+        }
+
+        let mut cumulative_weight = 0u64;
+        let mut previous_target = 0u64;
+        let mut applied = 0u32;
+        let mut froze_item = false;
+        for (index, item) in items.iter_mut().enumerate() {
+            if !active[index] || item.flex_shrink == 0 || item.flex_base_width == 0 {
+                continue;
+            }
+            let weight =
+                u64::from(item.flex_base_width).saturating_mul(u64::from(item.flex_shrink));
+            cumulative_weight = cumulative_weight.saturating_add(weight);
+            let target = u64::from(remaining).saturating_mul(cumulative_weight) / total_weight;
+            let share = u32::try_from(target.saturating_sub(previous_target)).unwrap_or(u32::MAX);
+            previous_target = target;
+            let capacity = item.width.saturating_sub(item.min_width);
+            let reduction = share.min(capacity);
+            item.width = item.width.saturating_sub(reduction);
+            applied = applied.saturating_add(reduction);
+            if item.width <= item.min_width {
                 active[index] = false;
                 froze_item = true;
             }
@@ -1300,7 +1365,12 @@ impl<'a> LayoutBuilder<'a> {
         context: FlexLineContext,
     ) -> FlexLineLayout {
         let mut items = items;
-        apply_flex_growth(&mut items, context.available_width, context.gap);
+        let base_occupied_width = flex_occupied_width(&items, context.gap);
+        if base_occupied_width < context.available_width {
+            apply_flex_growth(&mut items, context.available_width, context.gap);
+        } else if base_occupied_width > context.available_width {
+            apply_flex_shrink(&mut items, context.available_width, context.gap);
+        }
         let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
         let item_width = items.iter().fold(0u32, |total, item| {
             total
@@ -1475,6 +1545,11 @@ impl<'a> LayoutBuilder<'a> {
                     }
                     let margin = style.margin();
                     let width = self.outer_width(child, style, false, available_width, !wrapped);
+                    let flex_base_width = width;
+                    let min_width = style
+                        .min_width()
+                        .map(|declared| outer_width_from_declared(style, declared))
+                        .unwrap_or(0);
                     let max_width = style
                         .max_width()
                         .map(|declared| outer_width_from_declared(style, declared));
@@ -1482,8 +1557,11 @@ impl<'a> LayoutBuilder<'a> {
                         child,
                         margin,
                         width,
+                        flex_base_width,
+                        min_width,
                         max_width,
                         flex_grow: style.flex_grow(),
+                        flex_shrink: style.flex_shrink(),
                         order: style.flex_item_order().value(),
                         source_index,
                     });

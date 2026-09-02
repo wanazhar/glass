@@ -7,6 +7,7 @@ pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 pub(crate) const MIN_NATIVE_FLEX_ITEM_ORDER: i32 = -1024;
 pub(crate) const MAX_NATIVE_FLEX_ITEM_ORDER: i32 = 1024;
 pub(crate) const MAX_NATIVE_FLEX_GROW: u32 = 1024;
+pub(crate) const MAX_NATIVE_FLEX_SHRINK: u32 = 1024;
 const MAX_SELECTOR_BYTES: usize = 256;
 const MAX_SELECTOR_PARTS: usize = 8;
 
@@ -352,6 +353,7 @@ pub(crate) struct NativeComputedStyle {
     flex_wrap: FlexWrapValue,
     flex_item_order: NativeOrderValue,
     flex_grow: u32,
+    flex_shrink: u32,
     text_decoration: TextDecorationValue,
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
@@ -432,6 +434,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn flex_grow(self) -> u32 {
         self.flex_grow
+    }
+
+    pub(crate) const fn flex_shrink(self) -> u32 {
+        self.flex_shrink
     }
 
     pub(crate) const fn text_decoration(self) -> TextDecorationValue {
@@ -634,6 +640,7 @@ impl NativeStylesheet {
         let mut flex_wrap = None;
         let mut flex_item_order = None;
         let mut flex_grow = None;
+        let mut flex_shrink = None;
         let mut text_decoration = None;
         let mut text_transform = None;
         let mut font_weight = None;
@@ -865,6 +872,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, flex_grow)
             {
                 flex_grow = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.flex_shrink
+                && wins(rule.selector.specificity, rule.order, false, flex_shrink)
+            {
+                flex_shrink = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1260,6 +1277,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.flex_shrink
+                && wins(u16::MAX, usize::MAX, true, flex_shrink)
+            {
+                flex_shrink = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.align_items
                 && wins(u16::MAX, usize::MAX, true, align_items)
             {
@@ -1469,6 +1496,7 @@ impl NativeStylesheet {
             flex_item_order: flex_item_order
                 .map_or(NativeOrderValue::default(), |value| value.value),
             flex_grow: flex_grow.map_or(0, |value| value.value),
+            flex_shrink: flex_shrink.map_or(1, |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
@@ -1715,6 +1743,7 @@ struct NativeDeclarations {
     flex_wrap: Option<FlexWrapValue>,
     order: Option<NativeOrderValue>,
     flex_grow: Option<u32>,
+    flex_shrink: Option<u32>,
     text_decoration: Option<TextDecorationValue>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
@@ -1899,6 +1928,7 @@ fn parse_source(
             || declarations.flex_wrap.is_some()
             || declarations.order.is_some()
             || declarations.flex_grow.is_some()
+            || declarations.flex_shrink.is_some()
             || declarations.text_decoration.is_some()
             || declarations.text_transform.is_some()
             || declarations.font_weight.is_some()
@@ -2041,6 +2071,7 @@ fn parse_declarations_with_diagnostics(
             "flex-wrap" => parse_flex_wrap(value).is_some(),
             "order" => parse_flex_item_order(value).is_some(),
             "flex-grow" => parse_flex_grow(value).is_some(),
+            "flex-shrink" => parse_flex_shrink(value).is_some(),
             "text-decoration" => parse_text_decoration(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
@@ -2115,6 +2146,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "flex-wrap"
             | "order"
             | "flex-grow"
+            | "flex-shrink"
             | "text-decoration"
             | "text-transform"
             | "font-weight"
@@ -2226,6 +2258,11 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "flex-grow" => {
                 if let Some(parsed) = parse_flex_grow(value) {
                     declarations.flex_grow = Some(parsed);
+                }
+            }
+            "flex-shrink" => {
+                if let Some(parsed) = parse_flex_shrink(value) {
+                    declarations.flex_shrink = Some(parsed);
                 }
             }
             "text-decoration" => {
@@ -2753,6 +2790,17 @@ fn parse_flex_grow(value: &str) -> Option<u32> {
     }
     let parsed = value.parse::<u32>().ok()?;
     (0..=MAX_NATIVE_FLEX_GROW)
+        .contains(&parsed)
+        .then_some(parsed)
+}
+
+fn parse_flex_shrink(value: &str) -> Option<u32> {
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let parsed = value.parse::<u32>().ok()?;
+    (0..=MAX_NATIVE_FLEX_SHRINK)
         .contains(&parsed)
         .then_some(parsed)
 }
@@ -3642,6 +3690,19 @@ mod tests {
     }
 
     #[test]
+    fn flex_shrink_parser_accepts_only_bounded_non_negative_integers() {
+        assert_eq!(parse_flex_shrink("0"), Some(0));
+        assert_eq!(parse_flex_shrink("1024"), Some(1024));
+        assert_eq!(parse_flex_shrink(" 12 "), Some(12));
+        assert_eq!(parse_flex_shrink("-1"), None);
+        assert_eq!(parse_flex_shrink("+1"), None);
+        assert_eq!(parse_flex_shrink("1.5"), None);
+        assert_eq!(parse_flex_shrink("1px"), None);
+        assert_eq!(parse_flex_shrink("1025"), None);
+        assert_eq!(parse_flex_shrink("1e2"), None);
+    }
+
+    #[test]
     fn opacity_parser_quantizes_bounded_numbers_and_percentages() {
         assert_eq!(parse_opacity("0"), Some(0));
         assert_eq!(parse_opacity("0.5"), Some(128));
@@ -4398,6 +4459,26 @@ mod tests {
         assert_eq!(document.computed_style_for_layout(later).flex_grow(), 4);
         assert_eq!(document.computed_style_for_layout(invalid).flex_grow(), 2);
         assert_eq!(document.computed_style_for_layout(child).flex_grow(), 0);
+    }
+
+    #[test]
+    fn flex_shrink_is_cascaded_without_inheriting_and_defaults_to_one() {
+        let document = NativeDocument::parse(
+            "<style>.shrink { flex-shrink: 1; } #shrink { flex-shrink: 2; } #later { flex-shrink: 3; flex-shrink: 4; } #invalid { flex-shrink: 2; flex-shrink: 1.5; } #parent { flex-shrink: 0; }</style><div id='parent'><span id='shrink' class='shrink' style='flex-shrink: 3'>Shrink</span><span id='later'>Later</span><span id='invalid'>Invalid</span><span id='child'>Child</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let shrink = document.resolve_target("id=shrink").unwrap();
+        let later = document.resolve_target("id=later").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+
+        assert_eq!(document.computed_style_for_layout(parent).flex_shrink(), 0);
+        assert_eq!(document.computed_style_for_layout(shrink).flex_shrink(), 3);
+        assert_eq!(document.computed_style_for_layout(later).flex_shrink(), 4);
+        assert_eq!(document.computed_style_for_layout(invalid).flex_shrink(), 2);
+        assert_eq!(document.computed_style_for_layout(child).flex_shrink(), 1);
     }
 
     #[test]

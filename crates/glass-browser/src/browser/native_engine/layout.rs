@@ -1151,19 +1151,26 @@ impl<'a> LayoutBuilder<'a> {
         box_end: usize,
         text_start: usize,
         text_end: usize,
-        offset: u32,
+        offset: i64,
     ) {
+        let shift = |value: u32| {
+            if offset.is_negative() {
+                value.saturating_sub(u32::try_from(offset.unsigned_abs()).unwrap_or(u32::MAX))
+            } else {
+                value.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX))
+            }
+        };
         let box_end = box_end.min(self.boxes.len());
         let box_start = box_start.min(box_end);
         for layout_box in &mut self.boxes[box_start..box_end] {
-            layout_box.rect.y = layout_box.rect.y.saturating_add(offset);
-            layout_box.content_rect.y = layout_box.content_rect.y.saturating_add(offset);
+            layout_box.rect.y = shift(layout_box.rect.y);
+            layout_box.content_rect.y = shift(layout_box.content_rect.y);
         }
 
         let text_end = text_end.min(self.text_runs.len());
         let text_start = text_start.min(text_end);
         for text_run in &mut self.text_runs[text_start..text_end] {
-            text_run.origin.y = text_run.origin.y.saturating_add(offset);
+            text_run.origin.y = shift(text_run.origin.y);
         }
     }
 
@@ -1327,7 +1334,8 @@ impl<'a> LayoutBuilder<'a> {
         let justify_content = parent_style.justify_content();
         let align_items = parent_style.align_items();
         let flex_wrap = parent_style.flex_wrap();
-        let wrapped = flex_wrap == FlexWrapValue::Wrap;
+        let wrapped = matches!(flex_wrap, FlexWrapValue::Wrap | FlexWrapValue::WrapReverse);
+        let wrap_reverse = flex_wrap == FlexWrapValue::WrapReverse;
         let explicit_line_height = Self::explicit_content_height(parent_style);
         let children = self
             .document
@@ -1484,7 +1492,18 @@ impl<'a> LayoutBuilder<'a> {
                     .saturating_add(distributed_line_gap.saturating_mul(line_index))
                     .saturating_add(line_index.min(distributed_remainder))
             };
-            let final_line_y = line.y.saturating_add(line_offset);
+            let final_line_y = if wrap_reverse {
+                y.saturating_add(line_content_height)
+                    .saturating_sub(line.y.saturating_sub(y).saturating_add(line.height))
+                    .saturating_sub(line_offset)
+            } else {
+                line.y.saturating_add(line_offset)
+            };
+            let line_shift = if wrap_reverse {
+                i64::from(final_line_y).saturating_sub(i64::from(line.y))
+            } else {
+                i64::from(line_offset)
+            };
             max_bottom = max_bottom.max(final_line_y.saturating_add(line.height));
             for placement in line.layout.placements {
                 let item_outer_height =
@@ -1500,7 +1519,7 @@ impl<'a> LayoutBuilder<'a> {
                     placement.box_end,
                     placement.text_start,
                     placement.text_end,
-                    line_offset.saturating_add(offset),
+                    line_shift.saturating_add(i64::from(offset)),
                 );
                 max_bottom = max_bottom.max(
                     final_line_y

@@ -205,6 +205,7 @@ pub(crate) enum FlexWrapValue {
     #[default]
     NoWrap,
     Wrap,
+    WrapReverse,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2509,6 +2510,7 @@ fn parse_flex_wrap(value: &str) -> Option<FlexWrapValue> {
     match value.to_ascii_lowercase().as_str() {
         "nowrap" => Some(FlexWrapValue::NoWrap),
         "wrap" => Some(FlexWrapValue::Wrap),
+        "wrap-reverse" => Some(FlexWrapValue::WrapReverse),
         _ => None,
     }
 }
@@ -2881,7 +2883,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: space-evenly; flex-direction: row-reverse; flex-wrap: wrap; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-content: space-evenly; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -2901,7 +2903,7 @@ mod tests {
             declarations.flex_direction,
             Some(FlexDirectionValue::RowReverse)
         );
-        assert_eq!(declarations.flex_wrap, Some(FlexWrapValue::Wrap));
+        assert_eq!(declarations.flex_wrap, Some(FlexWrapValue::WrapReverse));
         assert_eq!(declarations.order, Some(NativeOrderValue(-12)));
         assert_eq!(
             declarations.text_decoration,
@@ -3473,7 +3475,10 @@ mod tests {
     fn flex_wrap_parser_accepts_only_bounded_line_values() {
         assert_eq!(parse_flex_wrap("nowrap"), Some(FlexWrapValue::NoWrap));
         assert_eq!(parse_flex_wrap("WRAP"), Some(FlexWrapValue::Wrap));
-        assert_eq!(parse_flex_wrap("wrap-reverse"), None);
+        assert_eq!(
+            parse_flex_wrap("WRAP-REVERSE"),
+            Some(FlexWrapValue::WrapReverse)
+        );
         assert_eq!(parse_flex_wrap("row"), None);
         assert_eq!(parse_flex_wrap("normal"), None);
     }
@@ -4137,7 +4142,7 @@ mod tests {
     #[test]
     fn flex_wrap_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { flex-wrap: wrap; } #explicit { flex-wrap: nowrap; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='flex-wrap: nowrap'>Explicit</span><span id='invalid' style='flex-wrap: wrap-reverse'>Invalid</span></div>",
+            "<style>#parent { flex-wrap: wrap-reverse; } #explicit { flex-wrap: nowrap; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='flex-wrap: wrap'>Explicit</span><span id='invalid' style='flex-wrap: wrap reverse'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -4148,7 +4153,7 @@ mod tests {
 
         assert_eq!(
             document.computed_style_for_layout(parent).flex_wrap(),
-            FlexWrapValue::Wrap
+            FlexWrapValue::WrapReverse
         );
         assert_eq!(
             document.computed_style_for_layout(child).flex_wrap(),
@@ -4156,7 +4161,7 @@ mod tests {
         );
         assert_eq!(
             document.computed_style_for_layout(explicit).flex_wrap(),
-            FlexWrapValue::NoWrap
+            FlexWrapValue::Wrap
         );
         assert_eq!(
             document.computed_style_for_layout(invalid).flex_wrap(),

@@ -1456,7 +1456,10 @@ impl<'a> LayoutBuilder<'a> {
         };
         let free_space = line_content_height.saturating_sub(total_line_height);
         if wrapped
-            && parent_style.align_content() == AlignContentValue::Stretch
+            && matches!(
+                parent_style.align_content(),
+                AlignContentValue::Stretch | AlignContentValue::Normal
+            )
             && free_space > 0
             && line_count > 0
         {
@@ -1493,7 +1496,8 @@ impl<'a> LayoutBuilder<'a> {
                 | AlignContentValue::SpaceBetween
                 | AlignContentValue::SpaceAround
                 | AlignContentValue::SpaceEvenly
-                | AlignContentValue::Stretch => 0,
+                | AlignContentValue::Stretch
+                | AlignContentValue::Normal => 0,
             }
         } else {
             0

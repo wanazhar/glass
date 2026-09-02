@@ -192,6 +192,7 @@ pub(crate) enum AlignContentValue {
     SpaceAround,
     SpaceEvenly,
     Stretch,
+    Normal,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2496,6 +2497,7 @@ fn parse_align_content(value: &str) -> Option<AlignContentValue> {
         "space-around" => Some(AlignContentValue::SpaceAround),
         "space-evenly" => Some(AlignContentValue::SpaceEvenly),
         "stretch" => Some(AlignContentValue::Stretch),
+        "normal" => Some(AlignContentValue::Normal),
         _ => None,
     }
 }
@@ -3455,7 +3457,10 @@ mod tests {
             parse_align_content("STRETCH"),
             Some(AlignContentValue::Stretch)
         );
-        assert_eq!(parse_align_content("normal"), None);
+        assert_eq!(
+            parse_align_content("NORMAL"),
+            Some(AlignContentValue::Normal)
+        );
         assert_eq!(parse_align_content("start"), None);
         assert_eq!(parse_align_content("safe center"), None);
     }
@@ -4174,7 +4179,7 @@ mod tests {
     #[test]
     fn align_content_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { align-content: stretch; } #explicit { align-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='align-content: space-evenly'>Explicit</span><span id='invalid' style='align-content: normal'>Invalid</span></div>",
+            "<style>#parent { align-content: normal; } #explicit { align-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='align-content: space-evenly'>Explicit</span><span id='invalid' style='align-content: safe center'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -4185,7 +4190,7 @@ mod tests {
 
         assert_eq!(
             document.computed_style_for_layout(parent).align_content(),
-            AlignContentValue::Stretch
+            AlignContentValue::Normal
         );
         assert_eq!(
             document.computed_style_for_layout(child).align_content(),

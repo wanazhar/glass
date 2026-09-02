@@ -297,6 +297,13 @@ same offsets and downstream artifacts remain shared. The complete contract and
 evidence are recorded in `docs/plan/tasks/native-engine-090.md`; design is
 `97c69d9d` and implementation is `d814784f`. Remote CI remains pending because
 the branch is local-only.
+The active 091 boundary adds explicit `justify-content:space-evenly` to that
+same bounded fixed-width row/row-reverse owner. Positive main-axis free space
+will be distributed into equal deterministic integer slots after existing
+item, gap, margin, and flex-sizing geometry, with row-reverse mirroring and the
+same shared downstream artifact consumers. Its contract is recorded in
+`docs/plan/tasks/native-engine-091.md`; design is pending until this
+checkpoint. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

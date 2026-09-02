@@ -3049,6 +3049,50 @@ fn native_flex_align_items_stretch_uses_the_formed_wrapped_line_size() {
 }
 
 #[test]
+fn native_flex_align_items_normal_reuses_stretch_and_preserves_overrides() {
+    let normal = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:48px;height:32px;gap:2px;align-items:normal'><div id='auto' style='width:8px;background-color:red'><span id='nested' style='display:block;height:2px'>N</span></div><div id='explicit' style='width:8px;height:8px;background-color:green'>E</div><div id='center' style='width:8px;height:8px;align-self:center;background-color:blue'>C</div><div id='inset' style='width:8px;box-sizing:border-box;padding:1px;border:1px solid blue;max-height:24px;background-color:blue'>I</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let stretch = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:48px;height:32px;gap:2px;align-items:stretch'><div id='auto' style='width:8px;background-color:red'><span id='nested' style='display:block;height:2px'>N</span></div><div id='explicit' style='width:8px;height:8px;background-color:green'>E</div><div id='center' style='width:8px;height:8px;align-self:center;background-color:blue'>C</div><div id='inset' style='width:8px;box-sizing:border-box;padding:1px;border:1px solid blue;max-height:24px;background-color:blue'>I</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let normal_auto = normal.resolve_target("id=auto").unwrap();
+    let normal_nested = normal.resolve_target("id=nested").unwrap();
+    let normal_center = normal.resolve_target("id=center").unwrap();
+    let viewport = Viewport {
+        width: 56,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let normal_layout = normal.layout(viewport).unwrap();
+    let stretch_layout = stretch.layout(viewport).unwrap();
+
+    assert_eq!(normal_layout.boxes, stretch_layout.boxes);
+    assert_eq!(normal_layout.text_runs, stretch_layout.text_runs);
+    assert_eq!(normal_layout.box_for(normal_auto).unwrap().height, 32);
+    assert_eq!(normal_layout.box_for(normal_nested).unwrap().y, 0);
+    assert_eq!(normal_layout.box_for(normal_center).unwrap().y, 12);
+
+    let list = normal.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == normal_auto
+                    && rect.y == 0
+                    && rect.height == 32
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(normal_layout.hit_test(1, 1).unwrap(), Some(normal_nested));
+    assert_eq!(normal_layout.hit_test(21, 13).unwrap(), Some(normal_center));
+}
+
+#[test]
 fn native_flex_align_items_handles_auto_lines_box_sizing_overflow_and_fallback() {
     let auto = NativeDocument::parse(
         "<div id='row' style='display:flex;width:32px;align-items:center'><div id='short' style='width:8px;height:8px'>A</div><div id='tall' style='width:8px;height:24px'>B</div></div>",

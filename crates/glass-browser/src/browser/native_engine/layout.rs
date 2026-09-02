@@ -1794,13 +1794,11 @@ impl<'a> LayoutBuilder<'a> {
                     AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
                     AlignSelfValue::Stretch => AlignItemsValue::Stretch,
                 };
-                if alignment == AlignItemsValue::Stretch
-                    && let Some(stretched_height) = stretched_outer_height(
-                        style,
-                        line.height,
-                        placement.margin,
-                        placement.height,
-                    )
+                if matches!(
+                    alignment,
+                    AlignItemsValue::Stretch | AlignItemsValue::Normal
+                ) && let Some(stretched_height) =
+                    stretched_outer_height(style, line.height, placement.margin, placement.height)
                     && stretched_height > placement.height
                 {
                     self.stretch_flex_item_box(&placement, style, stretched_height);
@@ -1810,7 +1808,9 @@ impl<'a> LayoutBuilder<'a> {
                     placement.height.saturating_add(placement.margin.vertical());
                 let remaining = line.height.saturating_sub(item_outer_height);
                 let offset = match alignment {
-                    AlignItemsValue::FlexStart | AlignItemsValue::Stretch => 0,
+                    AlignItemsValue::FlexStart
+                    | AlignItemsValue::Stretch
+                    | AlignItemsValue::Normal => 0,
                     AlignItemsValue::Center => remaining / 2,
                     AlignItemsValue::FlexEnd => remaining,
                 };

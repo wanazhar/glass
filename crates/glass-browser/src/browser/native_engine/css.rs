@@ -183,6 +183,7 @@ pub(crate) enum AlignItemsValue {
     Center,
     FlexEnd,
     Stretch,
+    Normal,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2869,6 +2870,7 @@ fn parse_align_items(value: &str) -> Option<AlignItemsValue> {
         "center" => Some(AlignItemsValue::Center),
         "flex-end" => Some(AlignItemsValue::FlexEnd),
         "stretch" => Some(AlignItemsValue::Stretch),
+        "normal" => Some(AlignItemsValue::Normal),
         _ => None,
     }
 }
@@ -4120,8 +4122,8 @@ mod tests {
             Some(AlignItemsValue::FlexEnd)
         );
         assert_eq!(parse_align_items("stretch"), Some(AlignItemsValue::Stretch));
+        assert_eq!(parse_align_items("NORMAL"), Some(AlignItemsValue::Normal));
         assert_eq!(parse_align_items("baseline"), None);
-        assert_eq!(parse_align_items("normal"), None);
         assert_eq!(parse_align_items("start"), None);
         assert_eq!(parse_align_items("end"), None);
     }
@@ -5002,7 +5004,7 @@ mod tests {
     #[test]
     fn align_items_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { align-items: center; } #explicit { align-items: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='align-items: flex-start'>Explicit</span><span id='invalid' style='align-items: baseline'>Invalid</span><span id='stretch' style='align-items: stretch'>Stretch</span></div>",
+            "<style>#parent { align-items: center; } #explicit { align-items: flex-end; } #normal { align-items: normal; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='align-items: flex-start'>Explicit</span><span id='invalid' style='align-items: baseline'>Invalid</span><span id='stretch' style='align-items: stretch'>Stretch</span><span id='normal'>Normal</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5011,6 +5013,7 @@ mod tests {
         let explicit = document.resolve_target("id=explicit").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
         let stretch = document.resolve_target("id=stretch").unwrap();
+        let normal = document.resolve_target("id=normal").unwrap();
 
         assert_eq!(
             document.computed_style_for_layout(parent).align_items(),
@@ -5031,6 +5034,10 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(stretch).align_items(),
             AlignItemsValue::Stretch
+        );
+        assert_eq!(
+            document.computed_style_for_layout(normal).align_items(),
+            AlignItemsValue::Normal
         );
     }
 

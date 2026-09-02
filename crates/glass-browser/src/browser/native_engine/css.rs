@@ -194,6 +194,7 @@ pub(crate) enum AlignSelfValue {
     Center,
     FlexEnd,
     Stretch,
+    Normal,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2882,6 +2883,7 @@ fn parse_align_self(value: &str) -> Option<AlignSelfValue> {
         "center" => Some(AlignSelfValue::Center),
         "flex-end" => Some(AlignSelfValue::FlexEnd),
         "stretch" => Some(AlignSelfValue::Stretch),
+        "normal" => Some(AlignSelfValue::Normal),
         _ => None,
     }
 }
@@ -4138,8 +4140,8 @@ mod tests {
         assert_eq!(parse_align_self("center"), Some(AlignSelfValue::Center));
         assert_eq!(parse_align_self("flex-end"), Some(AlignSelfValue::FlexEnd));
         assert_eq!(parse_align_self("stretch"), Some(AlignSelfValue::Stretch));
+        assert_eq!(parse_align_self("NORMAL"), Some(AlignSelfValue::Normal));
         assert_eq!(parse_align_self("baseline"), None);
-        assert_eq!(parse_align_self("normal"), None);
         assert_eq!(parse_align_self("safe center"), None);
         assert_eq!(parse_align_self("flex-start center"), None);
     }
@@ -5044,7 +5046,7 @@ mod tests {
     #[test]
     fn align_self_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { align-items: center; } .item { align-self: flex-end; } #specific { align-self: flex-start; } #later { align-self: center; align-self: flex-end; } #invalid { align-self: center; align-self: baseline; } #stretch { align-self: stretch; }</style><div id='parent'><span id='child'>Child</span><span id='item' class='item'>Item</span><span id='specific' class='item'>Specific</span><span id='later'>Later</span><span id='invalid'>Invalid</span><span id='stretch'>Stretch</span><span id='auto' style='align-self: auto'>Auto</span></div>",
+            "<style>#parent { align-items: center; } .item { align-self: flex-end; } #specific { align-self: flex-start; } #later { align-self: center; align-self: flex-end; } #invalid { align-self: center; align-self: baseline; } #stretch { align-self: stretch; } #normal { align-self: normal; }</style><div id='parent'><span id='child'>Child</span><span id='item' class='item'>Item</span><span id='specific' class='item'>Specific</span><span id='later'>Later</span><span id='invalid'>Invalid</span><span id='stretch'>Stretch</span><span id='normal'>Normal</span><span id='auto' style='align-self: auto'>Auto</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5055,6 +5057,7 @@ mod tests {
         let later = document.resolve_target("id=later").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
         let stretch = document.resolve_target("id=stretch").unwrap();
+        let normal = document.resolve_target("id=normal").unwrap();
         let auto = document.resolve_target("id=auto").unwrap();
 
         assert_eq!(
@@ -5084,6 +5087,10 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(stretch).align_self(),
             AlignSelfValue::Stretch
+        );
+        assert_eq!(
+            document.computed_style_for_layout(normal).align_self(),
+            AlignSelfValue::Normal
         );
         assert_eq!(
             document.computed_style_for_layout(auto).align_self(),

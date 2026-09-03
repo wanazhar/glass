@@ -2676,6 +2676,167 @@ fn native_flex_wrapped_column_auto_margins_map_lines_reverse_and_artifacts() {
 }
 
 #[test]
+fn native_flex_direction_maps_rows_without_reordering_or_split_artifacts() {
+    let viewport = Viewport {
+        width: 36,
+        height: 20,
+        device_scale_factor_milli: 1000,
+    };
+
+    for direction in ["ltr", "rtl"] {
+        for flex_direction in ["row", "row-reverse"] {
+            let html = format!(
+                "<div id='row' style='display:flex;width:30px;height:12px;direction:{direction};flex-direction:{flex_direction};justify-content:flex-start;align-items:flex-start'><div id='first' style='width:8px;height:6px;background-color:red'><span id='nested' style='display:block;width:2px;height:2px'>A</span></div><div id='second' style='width:8px;height:6px;background-color:blue'>B</div></div>"
+            );
+            let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
+            let first = document.resolve_target("id=first").unwrap();
+            let second = document.resolve_target("id=second").unwrap();
+            let nested = document.resolve_target("id=nested").unwrap();
+            let layout = document.layout(viewport).unwrap();
+            let physical_reverse = (direction == "rtl") ^ (flex_direction == "row-reverse");
+            let first_x = if physical_reverse { 22 } else { 0 };
+            let second_x = if physical_reverse { 14 } else { 8 };
+
+            assert_eq!(layout.box_for(first).unwrap().x, first_x);
+            assert_eq!(layout.box_for(second).unwrap().x, second_x);
+            assert_eq!(
+                layout.box_for(nested).map(|rect| (rect.x, rect.y)),
+                Some((first_x, 0))
+            );
+            assert_eq!(
+                layout.hit_test(i64::from(first_x + 1), 1).unwrap(),
+                Some(nested)
+            );
+
+            let list = document.display_list(viewport).unwrap();
+            assert!(list.commands.iter().any(|command| {
+                matches!(
+                    command,
+                    NativeDisplayCommand::FillRect {
+                        node_id,
+                        rect,
+                        color,
+                        ..
+                    } if *node_id == first
+                        && rect.x == first_x
+                        && rect.y == 0
+                        && *color == NativeColor { red: 255, green: 0, blue: 0, alpha: 255 }
+                )
+            }));
+            let surface = list.rasterize().unwrap();
+            assert_eq!(surface.pixel(first_x + 1, 1), Some([255, 0, 0, 255]));
+            assert_eq!(document.visible_text(1024).0, "A B");
+        }
+    }
+}
+
+#[test]
+fn native_flex_direction_maps_physical_auto_margins_with_rows() {
+    for direction in ["ltr", "rtl"] {
+        let html = format!(
+            "<div id='row' style='display:flex;width:20px;height:10px;direction:{direction};flex-direction:row;justify-content:flex-start'><div id='first' style='width:6px;height:6px;margin-left:auto;flex-shrink:0'>A</div><div id='second' style='width:6px;height:6px;flex-shrink:0'>B</div></div>"
+        );
+        let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
+        let first = document.resolve_target("id=first").unwrap();
+        let second = document.resolve_target("id=second").unwrap();
+        let layout = document
+            .layout(Viewport {
+                width: 24,
+                height: 16,
+                device_scale_factor_milli: 1000,
+            })
+            .unwrap();
+        let expected = if direction == "ltr" { (8, 14) } else { (14, 0) };
+        assert_eq!(layout.box_for(first).unwrap().x, expected.0);
+        assert_eq!(layout.box_for(second).unwrap().x, expected.1);
+    }
+}
+
+#[test]
+fn native_flex_direction_maps_column_cross_start_and_wrapped_line_stacking() {
+    let viewport = Viewport {
+        width: 32,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+
+    for direction in ["ltr", "rtl"] {
+        for flex_direction in ["column", "column-reverse"] {
+            let html = format!(
+                "<div id='column' style='display:flex;width:20px;height:20px;direction:{direction};flex-direction:{flex_direction};align-items:flex-start'><div id='first' style='width:6px;height:6px;background-color:red'>A</div><div id='second' style='width:8px;height:6px;background-color:blue'>B</div></div>"
+            );
+            let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
+            let first = document.resolve_target("id=first").unwrap();
+            let second = document.resolve_target("id=second").unwrap();
+            let layout = document.layout(viewport).unwrap();
+            let expected_x = if direction == "rtl" { (14, 12) } else { (0, 0) };
+            let expected_y = if flex_direction == "column-reverse" {
+                (14, 8)
+            } else {
+                (0, 6)
+            };
+            assert_eq!(layout.box_for(first).unwrap().x, expected_x.0);
+            assert_eq!(layout.box_for(second).unwrap().x, expected_x.1);
+            assert_eq!(layout.box_for(first).unwrap().y, expected_y.0);
+            assert_eq!(layout.box_for(second).unwrap().y, expected_y.1);
+        }
+
+        for wrap in ["wrap", "wrap-reverse"] {
+            let html = format!(
+                "<div id='column' style='display:flex;width:24px;height:12px;direction:{direction};flex-direction:column;flex-wrap:{wrap};row-gap:2px;column-gap:3px;align-items:flex-start;align-content:flex-start'><div id='first' style='width:4px;height:6px;background-color:red'>A</div><div id='second' style='width:4px;height:6px;background-color:blue'>B</div><div id='third' style='width:4px;height:6px;background-color:green'>C</div></div>"
+            );
+            let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
+            let first = document.resolve_target("id=first").unwrap();
+            let second = document.resolve_target("id=second").unwrap();
+            let third = document.resolve_target("id=third").unwrap();
+            let layout = document.layout(viewport).unwrap();
+            let reflected = (direction == "rtl") ^ (wrap == "wrap-reverse");
+            let expected_x = if reflected { [20, 13, 6] } else { [0, 7, 14] };
+            assert_eq!(layout.box_for(first).unwrap().x, expected_x[0]);
+            assert_eq!(layout.box_for(second).unwrap().x, expected_x[1]);
+            assert_eq!(layout.box_for(third).unwrap().x, expected_x[2]);
+            assert_eq!(document.visible_text(1024).0, "A B C");
+        }
+    }
+}
+
+#[test]
+fn native_direction_keeps_non_flex_flow_and_source_text_order_bounded() {
+    let viewport = Viewport {
+        width: 32,
+        height: 20,
+        device_scale_factor_milli: 1000,
+    };
+    let ltr = NativeDocument::parse(
+        "<div id='root' style='width:20px;height:12px'><div id='first' style='width:6px;height:4px;background-color:red'>A</div><div id='second' style='width:8px;height:4px;background-color:blue'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let rtl = NativeDocument::parse(
+        "<div id='root' style='direction:rtl;width:20px;height:12px'><div id='first' style='width:6px;height:4px;background-color:red'>A</div><div id='second' style='width:8px;height:4px;background-color:blue'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let ltr_first = ltr.resolve_target("id=first").unwrap();
+    let ltr_second = ltr.resolve_target("id=second").unwrap();
+    let rtl_first = rtl.resolve_target("id=first").unwrap();
+    let rtl_second = rtl.resolve_target("id=second").unwrap();
+    let ltr_layout = ltr.layout(viewport).unwrap();
+    let rtl_layout = rtl.layout(viewport).unwrap();
+
+    assert_eq!(
+        ltr_layout.box_for(ltr_first),
+        rtl_layout.box_for(rtl_first)
+    );
+    assert_eq!(
+        ltr_layout.box_for(ltr_second),
+        rtl_layout.box_for(rtl_second)
+    );
+    assert_eq!(ltr.visible_text(1024).0, "A B");
+    assert_eq!(rtl.visible_text(1024).0, "A B");
+}
+
+#[test]
 fn native_flex_row_preserves_fixed_width_overflow_and_fallback_content() {
     let overflow = NativeDocument::parse(
         "<div id='row' style='display:flex;width:16px'><div id='first' style='width:12px;height:8px;flex-shrink:0'>A</div><div id='second' style='width:12px;height:8px;flex-shrink:0'>B</div></div>",
@@ -8593,7 +8754,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -8710,6 +8871,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "flex-direction"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "direction"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

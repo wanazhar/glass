@@ -736,6 +736,15 @@ one-token and two-token `place-content:stretch` forms valid. Design is
 documentation, binary, validator, and exact-target evidence are recorded in
 the task file. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-094](tasks/native-engine-094.md)
+slice extends the bounded Flexbox owner to explicit `flex-direction:column` and
+`column-reverse` for fixed-height, no-wrap containers. It maps existing
+vertical main-axis justification, row-gap, grow/shrink/basis, cross-axis item
+alignment, descendants, and shared artifacts without adding a second geometry
+owner. Auto-height columns, wrapping, column-gap line distribution, logical
+writing modes, and browser-wide Flexbox remain outside the contract. Remote CI
+remains pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

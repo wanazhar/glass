@@ -21,6 +21,7 @@ bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
 bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-column-direction/
 bounded-flex-wrap/
 bounded-flex-wrap-reverse,
+bounded-flex-column-wrap,
 bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
 bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
 bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
@@ -93,6 +94,10 @@ bounded non-inherited `flex-direction:column|column-reverse` placement for
 eligible fixed-height, no-wrap flex containers with vertical justification,
 row-gap, flexible lengths, horizontal item alignment, reverse placement, and
 shared descendant/artifact consumers,
+bounded `flex-wrap:wrap` for fixed-height `column|column-reverse` containers
+with vertical line formation, horizontal `column-gap`, per-line flex sizing
+and justification, bounded `align-content`, and shared descendant/artifact
+consumers,
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -337,14 +342,15 @@ modes, and browser-wide Flexbox remain outside the contract recorded in
 checkpoints are `7dc92517` and `4e212151`, and local certification/cleanup
 evidence is recorded there. Remote CI remains pending because the branch is
 local-only.
-The active 095 boundary extends the completed column owner to
+The completed 095 boundary extends the completed column owner to
 `flex-wrap:wrap` for fixed-height columns. It forms vertical main-axis lines,
 uses `column-gap` between horizontal line boxes, reuses per-line bounded
 flex-sizing/justification and existing `align-content`, and keeps complete
 descendant/artifact consumers on the shared geometry path. `wrap-reverse`,
 auto-height columns, and browser-wide Flexbox remain outside the contract
-recorded in `docs/plan/tasks/native-engine-095.md`. Remote CI remains pending
-because the branch is local-only.
+recorded in `docs/plan/tasks/native-engine-095.md`. Design is `598228a7`,
+implementation is `96ea62a3`, and local certification evidence is recorded in
+the task file. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

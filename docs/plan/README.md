@@ -748,15 +748,15 @@ focused, full, strict, documentation, validator, binary, and exact-target
 evidence is recorded in the task file. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered [native-engine-095](tasks/native-engine-095.md)
+The completed dependency-ordered [native-engine-095](tasks/native-engine-095.md)
 slice extends column and column-reverse flex to fixed-height `flex-wrap:wrap`
 containers. It forms vertical main-axis lines, maps `column-gap` across the
 horizontal cross axis, reuses per-line flex sizing/justification and existing
 `align-content`, alignment, and shared artifact consumers. `wrap-reverse`,
 auto-height columns, and browser-wide Flexbox remain outside this contract.
-The design is recorded in the task file; implementation, certification,
-documentation closeout, and exact-target cleanup are next. Remote CI remains
-pending because the branch is local-only.
+The design is `598228a7`, implementation is `96ea62a3`, and focused/full
+native, feature-library, strict-Clippy, and exact fallback evidence is recorded
+in the task file. Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

@@ -2136,6 +2136,297 @@ fn native_flex_row_places_eligible_element_children_in_source_order() {
 }
 
 #[test]
+fn native_flex_row_auto_margins_distribute_main_and_cross_space_with_artifacts() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:41px;height:20px;justify-content:space-between;align-items:flex-end'><div id='first' style='width:8px;height:6px;background-color:red'></div><div id='second' style='width:8px;height:8px;margin-left:auto;background-color:blue'></div><div id='third' style='width:8px;height:4px;margin:auto;background-color:green'><span id='nested' style='display:block;height:2px'></span></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let row = document.resolve_target("id=row").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let third = document.resolve_target("id=third").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(row),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 41,
+            height: 20
+        })
+    );
+    assert_eq!(
+        layout.box_for(first),
+        Some(NativeRect {
+            x: 0,
+            y: 14,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(
+        layout.box_for(second),
+        Some(NativeRect {
+            x: 14,
+            y: 12,
+            width: 8,
+            height: 8,
+        })
+    );
+    assert_eq!(
+        layout.box_for(third),
+        Some(NativeRect {
+            x: 28,
+            y: 8,
+            width: 8,
+            height: 4,
+        })
+    );
+    assert_eq!(
+        layout.box_for(nested),
+        Some(NativeRect {
+            x: 28,
+            y: 8,
+            width: 8,
+            height: 2,
+        })
+    );
+    assert_eq!(layout.hit_test(29, 9).unwrap(), Some(nested));
+
+    let list = document.display_list(viewport).unwrap();
+    for (node_id, color, x, y) in [
+        (first, NativeColor::RED, 0, 14),
+        (
+            second,
+            NativeColor {
+                red: 0,
+                green: 0,
+                blue: 255,
+                alpha: 255,
+            },
+            14,
+            12,
+        ),
+        (
+            third,
+            NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: 255,
+            },
+            28,
+            8,
+        ),
+    ] {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id: painted_id, rect, color: painted_color, .. }
+                    if *painted_id == node_id
+                        && rect.x == x
+                        && rect.y == y
+                        && *painted_color == color
+            )
+        }));
+    }
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(7, 19), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(21, 19), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(35, 11), Some([0, 128, 0, 255]));
+}
+
+#[test]
+fn native_flex_row_reverse_auto_margins_keep_physical_edges_and_order() {
+    let document = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:41px;height:12px;flex-direction:row-reverse;justify-content:flex-start;align-items:flex-start'><div id='first' style='width:8px;height:6px;margin-right:auto;background-color:red'></div><div id='second' style='width:8px;height:6px;margin-left:auto;background-color:blue'></div><div id='third' style='width:8px;height:6px;margin:auto;background-color:green'><span id='nested' style='display:block;height:2px'></span></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let third = document.resolve_target("id=third").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(first),
+        Some(NativeRect {
+            x: 28,
+            y: 0,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(
+        layout.box_for(second),
+        Some(NativeRect {
+            x: 20,
+            y: 0,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(
+        layout.box_for(third),
+        Some(NativeRect {
+            x: 4,
+            y: 3,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(
+        layout.box_for(nested).map(|rect| (rect.x, rect.y)),
+        Some((4, 3))
+    );
+    assert_eq!(layout.hit_test(5, 4).unwrap(), Some(nested));
+}
+
+#[test]
+fn native_flex_column_auto_margins_map_main_cross_axes_and_reverse() {
+    let viewport = Viewport {
+        width: 36,
+        height: 48,
+        device_scale_factor_milli: 1000,
+    };
+    for (direction, second_margin, expected) in [
+        (
+            "column",
+            "margin-top:auto",
+            [(24, 0, 6, 8), (22, 15, 8, 8), (12, 30, 6, 4)],
+        ),
+        (
+            "column-reverse",
+            "margin-bottom:auto",
+            [(24, 33, 6, 8), (22, 18, 8, 8), (12, 7, 6, 4)],
+        ),
+    ] {
+        let html = format!(
+            "<div id='column' style='display:flex;width:30px;height:41px;flex-direction:{direction};justify-content:space-between;align-items:flex-end'><div id='first' style='width:6px;height:8px;background-color:red'></div><div id='second' style='width:8px;height:8px;{second_margin};background-color:blue'></div><div id='third' style='width:6px;height:4px;margin:auto;background-color:green'><span id='nested' style='display:block;height:2px'></span></div></div>"
+        );
+        let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
+        let column = document.resolve_target("id=column").unwrap();
+        let first = document.resolve_target("id=first").unwrap();
+        let second = document.resolve_target("id=second").unwrap();
+        let third = document.resolve_target("id=third").unwrap();
+        let nested = document.resolve_target("id=nested").unwrap();
+        let layout = document.layout(viewport).unwrap();
+
+        assert_eq!(
+            layout.box_for(column),
+            Some(NativeRect {
+                x: 0,
+                y: 0,
+                width: 30,
+                height: 41
+            })
+        );
+        for (node_id, (x, y, width, height)) in [
+            (first, expected[0]),
+            (second, expected[1]),
+            (third, expected[2]),
+        ] {
+            assert_eq!(
+                layout.box_for(node_id),
+                Some(NativeRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                })
+            );
+        }
+        assert_eq!(
+            layout.box_for(nested).map(|rect| (rect.x, rect.y)),
+            Some((expected[2].0, expected[2].1))
+        );
+        assert_eq!(
+            layout
+                .hit_test(i64::from(expected[2].0 + 1), i64::from(expected[2].1 + 1))
+                .unwrap(),
+            Some(nested)
+        );
+
+        let list = document.display_list(viewport).unwrap();
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                    if *node_id == third
+                        && rect.x == expected[2].0
+                        && rect.y == expected[2].1
+                        && *color == NativeColor { red: 0, green: 128, blue: 0, alpha: 255 }
+            )
+        }));
+    }
+}
+
+#[test]
+fn native_flex_auto_margins_preserve_overflow_and_wrapped_fallback() {
+    let overflow = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:10px;height:8px'><div id='first' style='width:8px;height:4px;flex-shrink:0'></div><div id='second' style='width:8px;height:4px;margin-left:auto;flex-shrink:0'></div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = overflow.resolve_target("id=first").unwrap();
+    let second = overflow.resolve_target("id=second").unwrap();
+    let overflow_layout = overflow
+        .layout(Viewport {
+            width: 10,
+            height: 12,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(overflow_layout.box_for(first).unwrap().x, 0);
+    assert_eq!(overflow_layout.box_for(second).unwrap().x, 8);
+    assert_eq!(overflow_layout.content_width, 16);
+    assert_eq!(overflow_layout.max_scroll_offset().x, 6);
+
+    let with_auto = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:12px;flex-wrap:wrap'><div id='first' style='width:8px;height:4px'>A</div><div id='second' style='width:8px;height:4px;margin-left:auto'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let without_auto = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:12px;flex-wrap:wrap'><div id='first' style='width:8px;height:4px'>A</div><div id='second' style='width:8px;height:4px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let with_layout = with_auto
+        .layout(Viewport {
+            width: 16,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let without_layout = without_auto
+        .layout(Viewport {
+            width: 16,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(with_layout.boxes, without_layout.boxes);
+    assert_eq!(with_layout.text_runs, without_layout.text_runs);
+    assert_eq!(with_layout.content_width, without_layout.content_width);
+    assert_eq!(with_layout.content_height, without_layout.content_height);
+}
+
+#[test]
 fn native_flex_row_preserves_fixed_width_overflow_and_fallback_content() {
     let overflow = NativeDocument::parse(
         "<div id='row' style='display:flex;width:16px'><div id='first' style='width:12px;height:8px;flex-shrink:0'>A</div><div id='second' style='width:12px;height:8px;flex-shrink:0'>B</div></div>",

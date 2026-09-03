@@ -782,6 +782,18 @@ native, feature-library, strict-Clippy, rustdoc, binary, validator, and
 exact-target cleanup evidence is recorded in the task file. Remote CI remains
 pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-098](tasks/native-engine-098.md)
+slice extends that owner to line-local `margin:auto` resolution for eligible
+wrapped row/row-reverse and fixed-height column/column-reverse containers.
+Auto edges remain zero during line formation and per-line sizing, then absorb
+positive main-axis remainder before justification and positive cross-axis
+remainder before item alignment after the existing line and `align-content`
+owners have settled. `wrap-reverse`, reverse physical edges, deterministic
+integer shares, and complete artifact consumers remain in the same geometry
+path. Auto-height columns, new intrinsic/percentage sizing, normal-flow auto
+margins, and browser-wide Flexbox remain outside the contract. The design is
+ready locally; remote CI remains pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

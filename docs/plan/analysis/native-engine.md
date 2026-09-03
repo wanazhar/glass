@@ -616,6 +616,19 @@ writing modes, and normal-flow auto margins remain outside the contract in
 `815794ce`, and local certification/cleanup evidence is recorded in that task
 file. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-098` slice extends that auto-edge
+owner into eligible wrapped row/row-reverse and fixed-height
+column/column-reverse lines. Auto edges remain zero during line formation and
+per-line sizing, then absorb positive main-axis remainder before justification
+and positive cross-axis remainder before alignment after the existing final
+line and `align-content` owners settle. `wrap-reverse`, reverse physical-edge
+mapping, deterministic integer shares, and complete artifact consumers remain
+on the shared geometry path. Auto-height columns, new intrinsic/percentage
+sizing, normal-flow auto margins, logical writing modes, baseline alignment,
+grid, and browser-wide Flexbox remain outside the bounded contract in
+`docs/plan/tasks/native-engine-098.md`. The design is ready locally; remote CI
+remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -838,6 +851,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-095` | bounded `flex-wrap:wrap` for fixed-height column/column-reverse flex containers, with vertical line formation, column-gap, per-line flexible sizing/justification, cross-axis alignment, align-content, and complete artifacts | `native-engine-094` | wrap-reverse, auto-height columns, percentage/fractional/intrinsic main sizes, auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 | `native-engine-096` | bounded `flex-wrap:wrap-reverse` for fixed-height column/column-reverse flex containers, reflecting horizontal line boxes and cross-axis item alignment while preserving 095 geometry, gaps, align-content, reverse main placement, and complete artifacts | `native-engine-095` | auto-height columns, percentage/fractional/intrinsic main sizes, auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 | `native-engine-097` | bounded auto main/cross margins for eligible no-wrap row/row-reverse and fixed-height column/column-reverse flex containers, resolved before justify and align distribution with complete artifacts | `native-engine-096` | wrapped lines, auto-height columns, percentage/fractional/intrinsic sizing, normal-flow auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
+| `native-engine-098` | bounded line-local auto main/cross margins for eligible wrapped row/row-reverse and fixed-height column/column-reverse flex containers, resolved after final line sizing and before per-line justify/align distribution with complete artifacts | `native-engine-097` | auto-height columns, new intrinsic/percentage sizing, fractional lengths, normal-flow auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1237,6 +1251,7 @@ visual stacking.
 | bounded flex place-content | makes common two-axis flex distribution declarations feed the existing line and main-axis owners without adding a second cascade or geometry representation | full CSS shorthand grammar, logical direction/writing modes, safe/unsafe alignment, grid, fractional/intrinsic sizing, and browser Flexbox parity | parse one shared or two explicit bounded tokens, expand them to `align-content` and `justify-content` at the existing declaration precedence, and reuse the current wrapped-line/main-axis distribution and complete artifact consumers |
 | bounded flex align-self stretch | makes auto-height direct flex items fill the existing line cross size without replacing the natural child layout or line owner | baseline/logical alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse the additional non-inherited item value, retain the natural bounded child layout, adjust only the eligible root box to the line cross size subject to existing physical insets and min/max heights, and reuse complete artifact consumers |
 | bounded flex auto margins | makes common `margin:auto` edges absorb positive free space through the existing no-wrap row and fixed-height column owners without adding a second geometry representation | wrapped-line auto margins, auto-height columns, normal-flow centering, logical writing modes, baseline alignment, intrinsic/percentage sizing, grid, and browser Flexbox parity | retain auto-edge provenance while treating auto margins as zero during flex sizing, allocate positive main-axis remainder before justify and positive cross-axis remainder before item alignment with deterministic integer shares, preserve reverse/source order, and reuse shared layout, overflow, hit-test, paint, raster, capture, and semantic consumers |
+| bounded flex wrapped auto margins | makes common wrapped rows and fixed-height column lines resolve `margin:auto` independently per formed line without adding a second line or artifact owner | auto-height columns, new intrinsic/percentage sizing, fractional lengths, normal-flow centering, logical writing modes, baseline alignment, grid, and browser Flexbox parity | keep auto edges zero for line formation and provisional sizing, resolve positive main/cross remainder after final line and `align-content` sizing with deterministic per-line shares, preserve reverse and wrap-reverse physical mapping, and reuse shared layout, overflow, hit-test, paint, raster, capture, and semantic consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
@@ -1298,6 +1313,13 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
+The active next checkpoint is recorded for
+`docs/plan/tasks/native-engine-098.md`: it owns line-local auto-margin
+resolution for wrapped row/row-reverse and fixed-height column/column-reverse
+owners, after final line sizing and before per-line justify/align placement.
+The design is ready locally; implementation, certification, and exact-target
+cleanup remain pending. Remote CI remains pending because the branch is
+local-only.
 The completed current checkpoint is recorded for
 `docs/plan/tasks/native-engine-097.md`: design is `2901c830`, implementation
 is `815794ce`, and focused auto-margin, full-native, feature-library,

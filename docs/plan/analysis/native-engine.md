@@ -642,14 +642,15 @@ design is `2f18abb4`, the implementation is `3bf658e8`, and local gate
 evidence is recorded in the task file. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered `native-engine-100` slice adds bounded inherited
-`text-align:start|end` to the fixed-cell inline-flow owner. Logical start/end
-resolve through inherited `direction:ltr|rtl`; physical `left|right`, center,
-source order, and the existing no-bidi/shaping boundary remain unchanged.
-Wrapped lines, inline boxes, hard breaks, whitespace, spacing, indentation,
-overflow, and capture continue through the shared line-flush owner. The design
-is ready locally; implementation, certification, and exact-target cleanup
-remain pending. Remote CI remains pending because the branch is local-only.
+The completed dependency-ordered `native-engine-100` slice adds bounded
+inherited `text-align:start|end` to the fixed-cell inline-flow owner. Logical
+start/end resolve through inherited `direction:ltr|rtl`; physical
+`left|right`, center, source order, and the existing no-bidi/shaping boundary
+remain unchanged. Wrapped lines, inline boxes, hard breaks, whitespace,
+spacing, indentation, overflow, and capture continue through the shared
+line-flush owner. The design is `2dae80fc`, implementation is `3380978c`, and
+local gate and paired-package evidence is recorded in the task file. Remote CI
+remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1281,7 +1282,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-099.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-100.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-099.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-098.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-095.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-094.md` is an earlier completed checkpoint;
@@ -1338,19 +1340,18 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
+`docs/plan/tasks/native-engine-100.md`: the design is `2dae80fc` and the
+implementation is `3380978c`. Focused/full native, feature-library,
+strict-Clippy, rustdoc, binary, paired-package, dependency, and fuzz evidence
+is recorded in that task file; static documentation/release validators and
+exact isolated-target cleanup are completed in the final closeout. Remote CI
+remains pending because the branch is local-only.
+The completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-099.md`: the design is `2f18abb4` and the
 implementation is `3bf658e8`. Focused/full native, feature-library,
 strict-Clippy, rustdoc, binary, package/dependency, fuzz, documentation, and
-directionality fallback evidence is recorded in that task file. Static
-documentation/release validators and exact isolated-target cleanup are part of
-the final closeout. Remote CI remains pending because the branch is local-only.
-The active next checkpoint is recorded for
-`docs/plan/tasks/native-engine-100.md`: it owns inherited
-`text-align:start|end` for fixed-cell logical line alignment through the 099
-direction state, before any general bidi, logical-property, or vertical-writing
-work. The design is ready locally; implementation, certification, and
-exact-target cleanup remain pending. Remote CI remains pending because the
-branch is local-only.
+directionality fallback evidence is recorded in that task file. Remote CI
+remains pending because the branch is local-only.
 The completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-098.md`: design is `a4b05f07`, implementation
 is `77a4b629`, and the final test-only checkpoint is `866a8862`. Focused/full

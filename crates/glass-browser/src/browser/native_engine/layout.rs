@@ -531,9 +531,13 @@ struct FlexItem {
     child: NativeNodeId,
     margin: NativeBoxEdges,
     width: u32,
+    height: u32,
     flex_base_width: u32,
+    flex_base_height: u32,
     min_width: u32,
+    min_height: u32,
     max_width: Option<u32>,
+    max_height: Option<u32>,
     flex_grow: u32,
     flex_shrink: u32,
     order: i32,
@@ -673,6 +677,131 @@ fn apply_flex_shrink(items: &mut [FlexItem], available_width: u32, gap: u32) {
             item.width = item.width.saturating_sub(reduction);
             applied = applied.saturating_add(reduction);
             if item.width <= item.min_width {
+                active[index] = false;
+                froze_item = true;
+            }
+        }
+
+        remaining = remaining.saturating_sub(applied);
+        if !froze_item {
+            break;
+        }
+        if applied == 0 && active.iter().all(|is_active| !*is_active) {
+            break;
+        }
+    }
+}
+
+fn flex_occupied_height(items: &[FlexItem], gap: u32) -> u32 {
+    let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
+    let item_height = items.iter().fold(0u32, |total, item| {
+        total
+            .saturating_add(item.margin.vertical())
+            .saturating_add(item.height)
+    });
+    item_height.saturating_add(gap.saturating_mul(gap_count))
+}
+
+fn apply_flex_growth_height(items: &mut [FlexItem], available_height: u32, gap: u32) {
+    let occupied_height = flex_occupied_height(items, gap);
+    let mut remaining = available_height.saturating_sub(occupied_height);
+    if remaining == 0 {
+        return;
+    }
+
+    let mut active = vec![true; items.len()];
+    while remaining > 0 {
+        let total_weight = items
+            .iter()
+            .enumerate()
+            .filter(|(index, item)| active[*index] && item.flex_grow > 0)
+            .fold(0u64, |total, (_, item)| {
+                total.saturating_add(u64::from(item.flex_grow))
+            });
+        if total_weight == 0 {
+            break;
+        }
+
+        let mut cumulative_weight = 0u64;
+        let mut previous_target = 0u64;
+        let mut applied = 0u32;
+        let mut froze_item = false;
+        for (index, item) in items.iter_mut().enumerate() {
+            if !active[index] || item.flex_grow == 0 {
+                continue;
+            }
+            cumulative_weight = cumulative_weight.saturating_add(u64::from(item.flex_grow));
+            let target = u64::from(remaining).saturating_mul(cumulative_weight) / total_weight;
+            let share = u32::try_from(target.saturating_sub(previous_target)).unwrap_or(u32::MAX);
+            previous_target = target;
+            let capacity = item.max_height.map_or(u32::MAX, |max_height| {
+                max_height.saturating_sub(item.height)
+            });
+            let growth = share.min(capacity);
+            item.height = item.height.saturating_add(growth);
+            applied = applied.saturating_add(growth);
+            if item
+                .max_height
+                .is_some_and(|max_height| item.height >= max_height)
+            {
+                active[index] = false;
+                froze_item = true;
+            }
+        }
+
+        remaining = remaining.saturating_sub(applied);
+        if !froze_item {
+            break;
+        }
+        if applied == 0 && active.iter().all(|is_active| !*is_active) {
+            break;
+        }
+    }
+}
+
+fn apply_flex_shrink_height(items: &mut [FlexItem], available_height: u32, gap: u32) {
+    let occupied_height = flex_occupied_height(items, gap);
+    let mut remaining = occupied_height.saturating_sub(available_height);
+    if remaining == 0 {
+        return;
+    }
+
+    let mut active = vec![true; items.len()];
+    while remaining > 0 {
+        let total_weight = items
+            .iter()
+            .enumerate()
+            .filter(|(index, item)| {
+                active[*index] && item.flex_shrink > 0 && item.flex_base_height > 0
+            })
+            .fold(0u64, |total, (_, item)| {
+                let weight =
+                    u64::from(item.flex_base_height).saturating_mul(u64::from(item.flex_shrink));
+                total.saturating_add(weight)
+            });
+        if total_weight == 0 {
+            break;
+        }
+
+        let mut cumulative_weight = 0u64;
+        let mut previous_target = 0u64;
+        let mut applied = 0u32;
+        let mut froze_item = false;
+        for (index, item) in items.iter_mut().enumerate() {
+            if !active[index] || item.flex_shrink == 0 || item.flex_base_height == 0 {
+                continue;
+            }
+            let weight =
+                u64::from(item.flex_base_height).saturating_mul(u64::from(item.flex_shrink));
+            cumulative_weight = cumulative_weight.saturating_add(weight);
+            let target = u64::from(remaining).saturating_mul(cumulative_weight) / total_weight;
+            let share = u32::try_from(target.saturating_sub(previous_target)).unwrap_or(u32::MAX);
+            previous_target = target;
+            let capacity = item.height.saturating_sub(item.min_height);
+            let reduction = share.min(capacity);
+            item.height = item.height.saturating_sub(reduction);
+            applied = applied.saturating_add(reduction);
+            if item.height <= item.min_height {
                 active[index] = false;
                 froze_item = true;
             }
@@ -1164,7 +1293,7 @@ impl<'a> LayoutBuilder<'a> {
         available_width: u32,
         depth: usize,
     ) -> FlowSize {
-        self.layout_element_with_outer_width(id, x, y, available_width, depth, None)
+        self.layout_element_with_outer_width(id, x, y, available_width, depth, None, None)
     }
 
     fn layout_element_with_outer_width(
@@ -1175,6 +1304,7 @@ impl<'a> LayoutBuilder<'a> {
         available_width: u32,
         depth: usize,
         forced_outer_width: Option<u32>,
+        forced_outer_height: Option<u32>,
     ) -> FlowSize {
         let style = self.document.computed_style_for_layout(id);
         let display = self.effective_display(id);
@@ -1276,16 +1406,18 @@ impl<'a> LayoutBuilder<'a> {
             )
         };
         let auto_content_height = default_content_height.max(children.height);
-        let height = style.height().map_or(
-            vertical_inset.saturating_add(auto_content_height),
-            |declared| {
-                if style.is_border_box() {
-                    declared
-                } else {
-                    declared.saturating_add(vertical_inset)
-                }
-            },
-        );
+        let height = forced_outer_height.unwrap_or_else(|| {
+            style.height().map_or(
+                vertical_inset.saturating_add(auto_content_height),
+                |declared| {
+                    if style.is_border_box() {
+                        declared
+                    } else {
+                        declared.saturating_add(vertical_inset)
+                    }
+                },
+            )
+        });
         let min_height = style.min_height().map(|declared| {
             if style.is_border_box() {
                 declared
@@ -1415,6 +1547,40 @@ impl<'a> LayoutBuilder<'a> {
         })
     }
 
+    fn can_use_column_flex_layout(&self, id: NativeNodeId, style: NativeComputedStyle) -> bool {
+        if !matches!(
+            style.flex_direction(),
+            FlexDirectionValue::Column | FlexDirectionValue::ColumnReverse
+        ) || style.flex_wrap() != FlexWrapValue::NoWrap
+            || Self::explicit_content_height(style).is_none()
+            || !self.can_use_flex_layout(id)
+        {
+            return false;
+        }
+        self.document.node(id).is_some_and(|node| {
+            node.children().iter().all(|child| {
+                let Some(child_node) = self.document.node(*child) else {
+                    return false;
+                };
+                match child_node.kind() {
+                    NativeNodeKind::Text(value) => value.chars().all(char::is_whitespace),
+                    NativeNodeKind::Document => false,
+                    NativeNodeKind::Element { .. } => {
+                        if self.is_non_rendered(*child)
+                            || self.document.is_hidden_for_layout(*child)
+                            || self.effective_display(*child) == DisplayValue::None
+                        {
+                            return true;
+                        }
+                        let style = self.document.computed_style_for_layout(*child);
+                        style.height().is_some()
+                            || matches!(style.flex_basis(), FlexBasisValue::Length(_))
+                    }
+                }
+            })
+        })
+    }
+
     fn layout_flex_line(
         &mut self,
         items: Vec<FlexItem>,
@@ -1529,6 +1695,7 @@ impl<'a> LayoutBuilder<'a> {
                     item.width,
                     context.depth,
                     Some(item.width),
+                    None,
                 );
                 placements.push(FlexItemPlacement {
                     child: item.child,
@@ -1616,6 +1783,7 @@ impl<'a> LayoutBuilder<'a> {
                     item.width,
                     context.depth,
                     Some(item.width),
+                    None,
                 );
                 placements.push(FlexItemPlacement {
                     child: item.child,
@@ -1638,6 +1806,345 @@ impl<'a> LayoutBuilder<'a> {
         FlexLineLayout { width, placements }
     }
 
+    fn layout_flex_column_children(
+        &mut self,
+        parent: NativeNodeId,
+        x: u32,
+        y: u32,
+        available_width: u32,
+        depth: usize,
+    ) -> FlowSize {
+        let parent_style = self.document.computed_style_for_layout(parent);
+        let available_height = Self::explicit_content_height(parent_style).unwrap_or_default();
+        let gap = parent_style.row_gap();
+        let justify_content = parent_style.justify_content();
+        let align_items = parent_style.align_items();
+        let reverse = parent_style.flex_direction() == FlexDirectionValue::ColumnReverse;
+        let children = self
+            .document
+            .node(parent)
+            .map(|node| node.children().to_vec())
+            .unwrap_or_default();
+        let mut items = Vec::new();
+        for (source_index, child) in children.into_iter().enumerate() {
+            let Some(node) = self.document.node(child) else {
+                continue;
+            };
+            match node.kind() {
+                NativeNodeKind::Text(_) => {}
+                NativeNodeKind::Document => {
+                    return self.layout_children(parent, x, y, available_width, depth);
+                }
+                NativeNodeKind::Element { .. } => {
+                    if self.is_non_rendered(child) || self.document.is_hidden_for_layout(child) {
+                        continue;
+                    }
+                    let style = self.document.computed_style_for_layout(child);
+                    if self.effective_display(child) == DisplayValue::None {
+                        continue;
+                    }
+                    let margin = style.margin();
+                    let width = self.outer_width(child, style, false, available_width, true);
+                    let height = self.flex_item_base_height(child, style);
+                    let min_width = style
+                        .min_width()
+                        .map(|declared| outer_width_from_declared(style, declared))
+                        .unwrap_or(0);
+                    let max_width = style
+                        .max_width()
+                        .map(|declared| outer_width_from_declared(style, declared));
+                    let min_height = style
+                        .min_height()
+                        .map(|declared| outer_height_from_declared(style, declared))
+                        .unwrap_or(0);
+                    let max_height = style
+                        .max_height()
+                        .map(|declared| outer_height_from_declared(style, declared));
+                    items.push(FlexItem {
+                        child,
+                        margin,
+                        width,
+                        height,
+                        flex_base_width: width,
+                        flex_base_height: height,
+                        min_width,
+                        min_height,
+                        max_width,
+                        max_height,
+                        flex_grow: style.flex_grow(),
+                        flex_shrink: style.flex_shrink(),
+                        order: style.flex_item_order().value(),
+                        source_index,
+                        align_self: style.align_self(),
+                    });
+                }
+            }
+        }
+
+        items.sort_by_key(|item| (item.order, item.source_index));
+        let base_occupied_height = flex_occupied_height(&items, gap);
+        if base_occupied_height < available_height {
+            apply_flex_growth_height(&mut items, available_height, gap);
+        } else if base_occupied_height > available_height {
+            apply_flex_shrink_height(&mut items, available_height, gap);
+        }
+        let item_count = items.len();
+        let gap_count = u32::try_from(item_count.saturating_sub(1)).unwrap_or(u32::MAX);
+        let occupied_height = flex_occupied_height(&items, gap);
+        let free_space = available_height.saturating_sub(occupied_height);
+        let leading_offset = match justify_content {
+            JustifyContentValue::Center => free_space / 2,
+            JustifyContentValue::FlexEnd => free_space,
+            JustifyContentValue::FlexStart
+            | JustifyContentValue::Normal
+            | JustifyContentValue::Stretch
+            | JustifyContentValue::SpaceBetween
+            | JustifyContentValue::SpaceAround
+            | JustifyContentValue::SpaceEvenly => 0,
+        };
+        let initial_offset = match justify_content {
+            JustifyContentValue::SpaceAround if item_count > 0 => {
+                flex_space_around_offset(free_space, 0, item_count)
+            }
+            JustifyContentValue::SpaceEvenly if item_count > 0 => {
+                flex_space_evenly_offset(free_space, 0, item_count)
+            }
+            _ => leading_offset,
+        };
+        let distributed_gap = if justify_content == JustifyContentValue::SpaceBetween {
+            free_space.checked_div(gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let distributed_remainder = if justify_content == JustifyContentValue::SpaceBetween {
+            free_space.checked_rem(gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let mut max_right = x;
+        let mut max_bottom = y;
+        if reverse {
+            let reverse_shift = occupied_height.saturating_sub(available_height);
+            let mut cursor_bottom = y
+                .saturating_add(available_height)
+                .saturating_sub(initial_offset)
+                .saturating_add(reverse_shift);
+            for (index, item) in items.into_iter().enumerate() {
+                if index > 0 {
+                    cursor_bottom = cursor_bottom.saturating_sub(gap);
+                    if justify_content == JustifyContentValue::SpaceBetween {
+                        cursor_bottom = cursor_bottom.saturating_sub(distributed_gap);
+                        if u32::try_from(index - 1)
+                            .is_ok_and(|gap_index| gap_index < distributed_remainder)
+                        {
+                            cursor_bottom = cursor_bottom.saturating_sub(1);
+                        }
+                    } else if justify_content == JustifyContentValue::SpaceAround {
+                        let current_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_bottom = cursor_bottom
+                            .saturating_sub(current_offset.saturating_sub(previous_offset));
+                    } else if justify_content == JustifyContentValue::SpaceEvenly {
+                        let current_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_bottom = cursor_bottom
+                            .saturating_sub(current_offset.saturating_sub(previous_offset));
+                    }
+                }
+                let style = self.document.computed_style_for_layout(item.child);
+                let alignment = match item.align_self {
+                    AlignSelfValue::Auto => align_items,
+                    AlignSelfValue::FlexStart => AlignItemsValue::FlexStart,
+                    AlignSelfValue::Center => AlignItemsValue::Center,
+                    AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
+                    AlignSelfValue::Stretch => AlignItemsValue::Stretch,
+                    AlignSelfValue::Normal => AlignItemsValue::Normal,
+                };
+                let item_width = if matches!(
+                    alignment,
+                    AlignItemsValue::Stretch | AlignItemsValue::Normal
+                ) && style.width().is_none()
+                {
+                    constrain_dimension(
+                        available_width.saturating_sub(item.margin.horizontal()),
+                        Some(
+                            style
+                                .min_width()
+                                .map(|declared| outer_width_from_declared(style, declared))
+                                .unwrap_or(0),
+                        ),
+                        style
+                            .max_width()
+                            .map(|declared| outer_width_from_declared(style, declared)),
+                    )
+                } else {
+                    item.width
+                };
+                let remaining = available_width
+                    .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
+                let cross_offset = match alignment {
+                    AlignItemsValue::FlexStart
+                    | AlignItemsValue::Stretch
+                    | AlignItemsValue::Normal => 0,
+                    AlignItemsValue::Center => remaining / 2,
+                    AlignItemsValue::FlexEnd => remaining,
+                };
+                let item_x = x
+                    .saturating_add(item.margin.left())
+                    .saturating_add(cross_offset);
+                let item_y = cursor_bottom
+                    .saturating_sub(item.margin.bottom())
+                    .saturating_sub(item.height);
+                let size = self.layout_element_with_outer_width(
+                    item.child,
+                    item_x,
+                    item_y,
+                    item_width,
+                    depth,
+                    Some(item_width),
+                    Some(item.height),
+                );
+                max_right = max_right.max(
+                    item_x
+                        .saturating_add(size.width)
+                        .saturating_add(item.margin.right()),
+                );
+                max_bottom = max_bottom.max(
+                    item_y
+                        .saturating_add(size.height)
+                        .saturating_add(item.margin.bottom()),
+                );
+                cursor_bottom = item_y.saturating_sub(item.margin.top());
+            }
+        } else {
+            let mut cursor_y = y.saturating_add(initial_offset);
+            for (index, item) in items.into_iter().enumerate() {
+                if index > 0 {
+                    cursor_y = cursor_y.saturating_add(gap);
+                    if justify_content == JustifyContentValue::SpaceBetween {
+                        cursor_y = cursor_y.saturating_add(distributed_gap);
+                        if u32::try_from(index - 1)
+                            .is_ok_and(|gap_index| gap_index < distributed_remainder)
+                        {
+                            cursor_y = cursor_y.saturating_add(1);
+                        }
+                    } else if justify_content == JustifyContentValue::SpaceAround {
+                        let current_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_y =
+                            cursor_y.saturating_add(current_offset.saturating_sub(previous_offset));
+                    } else if justify_content == JustifyContentValue::SpaceEvenly {
+                        let current_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_y =
+                            cursor_y.saturating_add(current_offset.saturating_sub(previous_offset));
+                    }
+                }
+                let style = self.document.computed_style_for_layout(item.child);
+                let alignment = match item.align_self {
+                    AlignSelfValue::Auto => align_items,
+                    AlignSelfValue::FlexStart => AlignItemsValue::FlexStart,
+                    AlignSelfValue::Center => AlignItemsValue::Center,
+                    AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
+                    AlignSelfValue::Stretch => AlignItemsValue::Stretch,
+                    AlignSelfValue::Normal => AlignItemsValue::Normal,
+                };
+                let item_width = if matches!(
+                    alignment,
+                    AlignItemsValue::Stretch | AlignItemsValue::Normal
+                ) && style.width().is_none()
+                {
+                    constrain_dimension(
+                        available_width.saturating_sub(item.margin.horizontal()),
+                        Some(
+                            style
+                                .min_width()
+                                .map(|declared| outer_width_from_declared(style, declared))
+                                .unwrap_or(0),
+                        ),
+                        style
+                            .max_width()
+                            .map(|declared| outer_width_from_declared(style, declared)),
+                    )
+                } else {
+                    item.width
+                };
+                let remaining = available_width
+                    .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
+                let cross_offset = match alignment {
+                    AlignItemsValue::FlexStart
+                    | AlignItemsValue::Stretch
+                    | AlignItemsValue::Normal => 0,
+                    AlignItemsValue::Center => remaining / 2,
+                    AlignItemsValue::FlexEnd => remaining,
+                };
+                let item_x = x
+                    .saturating_add(item.margin.left())
+                    .saturating_add(cross_offset);
+                let item_y = cursor_y.saturating_add(item.margin.top());
+                let size = self.layout_element_with_outer_width(
+                    item.child,
+                    item_x,
+                    item_y,
+                    item_width,
+                    depth,
+                    Some(item_width),
+                    Some(item.height),
+                );
+                max_right = max_right.max(
+                    item_x
+                        .saturating_add(size.width)
+                        .saturating_add(item.margin.right()),
+                );
+                max_bottom = max_bottom.max(
+                    item_y
+                        .saturating_add(size.height)
+                        .saturating_add(item.margin.bottom()),
+                );
+                cursor_y = item_y
+                    .saturating_add(size.height)
+                    .saturating_add(item.margin.bottom());
+            }
+        }
+
+        FlowSize {
+            width: max_right.saturating_sub(x),
+            height: max_bottom.saturating_sub(y),
+        }
+    }
+
     fn layout_flex_children(
         &mut self,
         parent: NativeNodeId,
@@ -1650,6 +2157,16 @@ impl<'a> LayoutBuilder<'a> {
             return self.layout_children(parent, x, y, available_width, depth);
         }
         let parent_style = self.document.computed_style_for_layout(parent);
+        if matches!(
+            parent_style.flex_direction(),
+            FlexDirectionValue::Column | FlexDirectionValue::ColumnReverse
+        ) {
+            return if self.can_use_column_flex_layout(parent, parent_style) {
+                self.layout_flex_column_children(parent, x, y, available_width, depth)
+            } else {
+                self.layout_children(parent, x, y, available_width, depth)
+            };
+        }
         let gap = parent_style.column_gap();
         let row_gap = parent_style.row_gap();
         let justify_content = parent_style.justify_content();
@@ -1695,9 +2212,13 @@ impl<'a> LayoutBuilder<'a> {
                         child,
                         margin,
                         width,
+                        height: 0,
                         flex_base_width,
+                        flex_base_height: 0,
                         min_width,
+                        min_height: 0,
                         max_width,
+                        max_height: None,
                         flex_grow: style.flex_grow(),
                         flex_shrink: style.flex_shrink(),
                         order: style.flex_item_order().value(),
@@ -1973,6 +2494,26 @@ impl<'a> LayoutBuilder<'a> {
                 constrain_dimension(width, min_width, max_width)
             }
         }
+    }
+
+    fn flex_item_base_height(&self, id: NativeNodeId, style: NativeComputedStyle) -> u32 {
+        let height = match style.flex_basis() {
+            FlexBasisValue::Auto => style
+                .height()
+                .map(|declared| outer_height_from_declared(style, declared))
+                .unwrap_or_else(|| {
+                    self.intrinsic_inline_height(id)
+                        .saturating_add(outer_height_inset(style))
+                }),
+            FlexBasisValue::Length(declared) => outer_height_from_declared(style, declared),
+        };
+        let min_height = style
+            .min_height()
+            .map(|declared| outer_height_from_declared(style, declared));
+        let max_height = style
+            .max_height()
+            .map(|declared| outer_height_from_declared(style, declared));
+        constrain_dimension(height, min_height, max_height)
     }
 
     fn place_text(&mut self, parent: NativeNodeId, flow: &mut FlowCursor, value: &str) {

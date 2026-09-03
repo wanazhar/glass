@@ -391,15 +391,16 @@ baseline alignment, grid, and browser-wide Flexbox remain outside
 implementation is `77a4b629`, and the final test-only checkpoint is `866a8862`;
 local certification and cleanup evidence are recorded in the task file. Remote
 CI remains pending because the branch is local-only.
-The active 099 boundary adds inherited `direction:ltr|rtl` to the existing
+The completed 099 boundary adds inherited `direction:ltr|rtl` to the existing
 bounded Flexbox axis mapping under the current horizontal-tb assumptions. Rows
 map logical inline start to the physical left/right main start, columns retain
 their vertical main axis while reflecting horizontal cross-axis alignment and
 wrapped line stacking, and reverse/wrap-reverse combinations remain on the
 same owner. Source/semantic order, non-flex text bidi, logical properties,
 vertical writing modes, and browser-wide directionality remain outside
-`docs/plan/tasks/native-engine-099.md`. The design is ready locally and remote
-CI remains pending because the branch is local-only.
+`docs/plan/tasks/native-engine-099.md`. The design is `2f18abb4`, the
+implementation is `3bf658e8`, and local gate evidence is recorded in the task
+file. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

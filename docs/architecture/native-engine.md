@@ -26,6 +26,7 @@ bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
 bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
 bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
 bounded-flex-gap-family,
+bounded-flex-auto-margins,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -97,7 +98,9 @@ shared descendant/artifact consumers,
 bounded `flex-wrap:wrap` for fixed-height `column|column-reverse` containers
 with vertical line formation, horizontal `column-gap`, per-line flex sizing
 and justification, bounded `align-content`, and shared descendant/artifact
-consumers,
+consumers, and bounded `margin:auto` main- and cross-axis resolution for
+eligible no-wrap row/row-reverse and fixed-height column/column-reverse
+containers,
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -363,14 +366,16 @@ branch is local-only.
 Auto-height columns, intrinsic or percentage sizing, logical writing modes, and
 browser-wide Flexbox remain outside the contract. Remote CI remains pending
 because the branch is local-only.
-The active 097 design extends the existing no-wrap row and fixed-height column
-owners to bounded `margin:auto` edges. It preserves numeric margins while
-retaining auto-edge provenance, resolves positive main-axis space before
+The completed 097 boundary extends the existing no-wrap row and fixed-height
+column owners to bounded `margin:auto` edges. It preserves numeric margins
+while retaining auto-edge provenance, resolves positive main-axis space before
 `justify-content` and positive cross-axis space before item alignment, and
 keeps reverse directions and complete descendant/artifact consumers on the
 shared geometry path. Wrapped lines, auto-height columns, intrinsic or
 percentage sizing, and normal-flow auto margins remain outside the contract
-recorded in `docs/plan/tasks/native-engine-097.md`.
+recorded in `docs/plan/tasks/native-engine-097.md`; design is `2901c830`,
+implementation is `815794ce`, and local certification/cleanup evidence is
+recorded there. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

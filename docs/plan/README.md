@@ -727,12 +727,14 @@ shared one-token `place-content:normal` expansion valid. Design is
 documentation, binary, validator, and exact-target evidence are recorded in
 the task file. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered [native-engine-093](tasks/native-engine-093.md)
+The completed dependency-ordered [native-engine-093](tasks/native-engine-093.md)
 slice adds explicit `justify-content:stretch` to the same bounded row and
-row-reverse owner. It will preserve a distinct computed keyword while routing
-used placement through the completed `flex-start` geometry, and will make the
-shared one-token and two-token `place-content:stretch` forms valid. Remote CI
-remains pending because the branch is local-only.
+row-reverse owner. It preserves a distinct computed keyword while routing used
+placement through the completed `flex-start` geometry, and makes the shared
+one-token and two-token `place-content:stretch` forms valid. Design is
+`273b31db`, implementation is `653f025e`, and focused, full, strict,
+documentation, binary, validator, and exact-target evidence are recorded in
+the task file. Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

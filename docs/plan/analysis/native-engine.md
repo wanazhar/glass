@@ -604,7 +604,7 @@ tradeoffs, exclusions, and local evidence are in
 `docs/plan/tasks/native-engine-096.md`; design is `f5026f3c` and implementation
 is `6862aff6`. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-097` design extends the no-wrap
+The completed dependency-ordered `native-engine-097` slice extends the no-wrap
 row, row-reverse, column, and column-reverse owners to bounded `margin:auto`
 edges. Auto margins remain distinct from numeric box edges, resolve as zero
 during flex sizing, absorb positive main-axis remainder before
@@ -612,7 +612,9 @@ during flex sizing, absorb positive main-axis remainder before
 `align-items`/`align-self`, with deterministic integer remainder allocation.
 Wrapped lines, auto-height columns, intrinsic or percentage sizing, logical
 writing modes, and normal-flow auto margins remain outside the contract in
-`docs/plan/tasks/native-engine-097.md`.
+`docs/plan/tasks/native-engine-097.md`. Design is `2901c830`, implementation is
+`815794ce`, and local certification/cleanup evidence is recorded in that task
+file. Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1234,12 +1236,14 @@ visual stacking.
 | bounded flex align-self | makes common per-item cross-axis overrides observable without adding a second line or artifact owner | baseline metrics, logical/safe alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse non-inherited bounded item values, resolve `auto` against the parent `align-items` at placement time, and translate the complete item subtree through existing boxes, text, paint, overflow, projection, hit-test, scroll, and capture consumers |
 | bounded flex place-content | makes common two-axis flex distribution declarations feed the existing line and main-axis owners without adding a second cascade or geometry representation | full CSS shorthand grammar, logical direction/writing modes, safe/unsafe alignment, grid, fractional/intrinsic sizing, and browser Flexbox parity | parse one shared or two explicit bounded tokens, expand them to `align-content` and `justify-content` at the existing declaration precedence, and reuse the current wrapped-line/main-axis distribution and complete artifact consumers |
 | bounded flex align-self stretch | makes auto-height direct flex items fill the existing line cross size without replacing the natural child layout or line owner | baseline/logical alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse the additional non-inherited item value, retain the natural bounded child layout, adjust only the eligible root box to the line cross size subject to existing physical insets and min/max heights, and reuse complete artifact consumers |
+| bounded flex auto margins | makes common `margin:auto` edges absorb positive free space through the existing no-wrap row and fixed-height column owners without adding a second geometry representation | wrapped-line auto margins, auto-height columns, normal-flow centering, logical writing modes, baseline alignment, intrinsic/percentage sizing, grid, and browser Flexbox parity | retain auto-edge provenance while treating auto margins as zero during flex sizing, allocate positive main-axis remainder before justify and positive cross-axis remainder before item alignment with deterministic integer shares, preserve reverse/source order, and reuse shared layout, overflow, hit-test, paint, raster, capture, and semantic consumers |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-096.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-097.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-096.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-095.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-094.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-093.md` is the preceding completed checkpoint;
@@ -1295,6 +1299,14 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
+`docs/plan/tasks/native-engine-097.md`: design is `2901c830`, implementation
+is `815794ce`, and focused auto-margin, full-native, feature-library,
+strict-Clippy, rustdoc, binary, validator, and exact-target-cleanup evidence
+is recorded in that task file. The default-stack overflow in the pre-existing
+large-Clap parser test remains isolated; the feature library suite passes with
+`RUST_MIN_STACK=8388608`. Remote CI remains pending because the branch is
+local-only.
+A completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-096.md`: design is `f5026f3c`, implementation
 is `6862aff6`, and focused column-wrap-reverse, full-native, feature-library,
 strict-Clippy, fallback, documentation, package, fuzz, and exact-target

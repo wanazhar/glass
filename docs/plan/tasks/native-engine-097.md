@@ -1,7 +1,7 @@
 ---
 id: native-engine-097
 scope: glass-browser/native-engine/flex-auto-margins
-status: ready
+status: complete
 depends-on: [native-engine-096]
 ---
 
@@ -94,14 +94,42 @@ Layout consumes auto margins only for one bounded no-wrap context:
 
 ## Verification
 
-The certification gate will include focused parser/cascade tests, row and
-column auto-margin placement for forward and reverse directions, precedence
-and overflow tests, complete descendant/artifact checks, explicit wrapped and
-intrinsic fallback coverage, the full native integration and feature-enabled
-library suites, strict all-feature and no-default-feature Clippy,
-warning-denied workspace rustdoc, locked `glass-dev` binary compilation,
-static documentation/release validators, live documentation coverage with
-isolated temporary binaries, and exact isolated-target cleanup.
+Implementation and documentation closeout are complete. The design checkpoint
+is `2901c830` and the implementation checkpoint is `815794ce`.
+
+Passed locally:
+
+- `cargo fmt --all -- --check` and `git diff --check`;
+- focused `auto_margins` native integration: 4/4 passed;
+- full `cargo test -p glass-browser --features native-engine --test
+  native_engine --no-fail-fast`: 129/129 passed;
+- `RUST_MIN_STACK=8388608 cargo test -p glass-browser --features
+  native-engine --lib --quiet --no-fail-fast`: 888 passed, 1 ignored, 0
+  failed;
+- the default 2 MiB test-thread stack issue remains isolated to the existing
+  `cli::args::tests::agent_readiness_commands_are_explicit` test; its focused
+  run passes with the explicit 8 MiB stack and the failure reproduces before
+  any native-engine path is exercised;
+- lockfile-pinned all-feature workspace Clippy passed with warnings denied;
+- lockfile-pinned no-default-feature `glass-browser` Clippy passed with
+  warnings denied;
+- warning-denied locked workspace rustdoc passed;
+- locked `glass-dev --bins` compilation passed;
+- the static version, feature-parity, release-documentation, TUI-shortcut,
+  documentation-depth, documentation-coverage, reliability, public-adapter,
+  and Web IR validators passed against the current checkout;
+- the row/column forward/reverse placements, integer remainder allocation,
+  cascade precedence, overflow behavior, wrapped fallback, complete nested
+  geometry, display-list paint, software raster output, and hit testing are
+  covered by the new native integration tests.
+
+Cleanup removed the exact regenerable `/tmp/glass-097-target` tree and
+`/tmp/glass-097-release-documentation.json` only after process/open-file
+checks. No `/tmp/glass-*-target` directories remain, the repository `target/`
+remains 4.0K, `fuzz/target` is absent, and the final filesystem check reports
+the available space and usage recorded in the issue comment. Shared
+registries/toolchains, source, durable data, and long-lived Glass processes
+were retained.
 
 Remote CI remains pending because `main` is local-only and has not been pushed.
 No new crate, dependency, runtime, network, JavaScript, storage, artifact

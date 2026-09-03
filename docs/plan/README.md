@@ -769,16 +769,18 @@ modes, and browser-wide Flexbox remain outside the contract. The design is
 feature-library, strict-Clippy, and exact fallback/cleanup evidence is recorded
 in the task file. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered [native-engine-097](tasks/native-engine-097.md)
-design extends the existing no-wrap row, row-reverse, column, and
+The completed dependency-ordered [native-engine-097](tasks/native-engine-097.md)
+slice extends the existing no-wrap row, row-reverse, column, and
 column-reverse owners to bounded `margin:auto` edges. Auto margins are zero
 during flex sizing, then absorb positive main-axis space before
 `justify-content` and positive cross-axis space before `align-items`/
 `align-self`, with deterministic integer remainder allocation and complete
 artifact consumers. Wrapped lines, auto-height columns, intrinsic or
 percentage sizing, and normal-flow auto margins remain outside the contract.
-The design is committed locally for implementation; remote CI remains pending
-because the branch is local-only.
+The design is `2901c830`, the implementation is `815794ce`, and focused/full
+native, feature-library, strict-Clippy, rustdoc, binary, validator, and
+exact-target cleanup evidence is recorded in the task file. Remote CI remains
+pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

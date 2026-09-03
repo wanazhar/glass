@@ -990,6 +990,7 @@ fn flex_space_evenly_offset(free_space: u32, index: u32, count: usize) -> u32 {
 #[derive(Debug, Clone, Copy)]
 struct FlowStyle {
     minimum_line_height: u32,
+    direction: DirectionValue,
     text_align: TextAlignValue,
     allow_soft_wrap: bool,
     text_indent: u32,
@@ -1027,6 +1028,7 @@ struct FlowCursor {
     x: u32,
     y: u32,
     minimum_line_height: u32,
+    direction: DirectionValue,
     text_align: TextAlignValue,
     allow_soft_wrap: bool,
     line_height: u32,
@@ -1053,6 +1055,7 @@ impl FlowCursor {
             x: x.saturating_add(effective_indent),
             y,
             minimum_line_height: style.minimum_line_height,
+            direction: style.direction,
             text_align: style.text_align,
             allow_soft_wrap: style.allow_soft_wrap,
             line_height: 0,
@@ -1204,6 +1207,20 @@ impl FlowCursor {
             TextAlignValue::Left => 0,
             TextAlignValue::Center => remaining / 2,
             TextAlignValue::Right => remaining,
+            TextAlignValue::Start => {
+                if self.direction == DirectionValue::Rtl {
+                    remaining
+                } else {
+                    0
+                }
+            }
+            TextAlignValue::End => {
+                if self.direction == DirectionValue::Rtl {
+                    0
+                } else {
+                    remaining
+                }
+            }
         }
     }
 
@@ -1239,6 +1256,7 @@ impl<'a> LayoutBuilder<'a> {
             .computed_style_for_layout(parent)
             .white_space();
         let style = self.document.computed_style_for_layout(parent);
+        let direction = style.direction();
         let text_align = style.text_align();
         let text_indent = if self.effective_display(parent) == DisplayValue::Block {
             style.text_indent()
@@ -1255,6 +1273,7 @@ impl<'a> LayoutBuilder<'a> {
             available_width,
             FlowStyle {
                 minimum_line_height,
+                direction,
                 text_align,
                 allow_soft_wrap,
                 text_indent,

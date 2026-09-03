@@ -1,9 +1,9 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
     AlignContentValue, AlignItemsValue, AlignSelfValue, DisplayValue, FlexBasisValue,
-    FlexDirectionValue, FlexWrapValue, JustifyContentValue, NativeBorderRadius, NativeBoxEdges,
-    NativeComputedStyle, TextAlignValue, TextOverflowValue, TextTransformValue, VerticalAlignValue,
-    WhiteSpaceValue, WordBreakValue,
+    FlexDirectionValue, FlexWrapValue, JustifyContentValue, NativeAutoEdges, NativeBorderRadius,
+    NativeBoxEdges, NativeComputedStyle, TextAlignValue, TextOverflowValue, TextTransformValue,
+    VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -523,6 +523,7 @@ struct FlexItemPlacement {
     text_start: usize,
     text_end: usize,
     margin: NativeBoxEdges,
+    auto_margin: NativeAutoEdges,
     height: u32,
     align_self: AlignSelfValue,
 }
@@ -530,6 +531,7 @@ struct FlexItemPlacement {
 struct FlexItem {
     child: NativeNodeId,
     margin: NativeBoxEdges,
+    auto_margin: NativeAutoEdges,
     width: u32,
     height: u32,
     flex_base_width: u32,
@@ -571,6 +573,130 @@ struct FlexLineContext {
     justify_content: JustifyContentValue,
     reverse: bool,
     depth: usize,
+}
+
+fn auto_margin_share(free_space: u32, slot: u32, count: u32) -> u32 {
+    if count == 0 {
+        return 0;
+    }
+    free_space
+        .checked_div(count)
+        .unwrap_or(0)
+        .saturating_add(u32::from(slot < free_space.checked_rem(count).unwrap_or(0)))
+}
+
+fn horizontal_auto_margin_count(auto_margin: NativeAutoEdges) -> u32 {
+    u32::from(auto_margin.left()) + u32::from(auto_margin.right())
+}
+
+fn vertical_auto_margin_count(auto_margin: NativeAutoEdges) -> u32 {
+    u32::from(auto_margin.top()) + u32::from(auto_margin.bottom())
+}
+
+fn resolve_row_main_auto_margins(items: &mut [FlexItem], free_space: u32, reverse: bool) -> bool {
+    let count = items.iter().fold(0u32, |total, item| {
+        total.saturating_add(horizontal_auto_margin_count(item.auto_margin))
+    });
+    if count == 0 || free_space == 0 {
+        return false;
+    }
+    let mut slot = 0;
+    for item in items {
+        if reverse {
+            if item.auto_margin.right() {
+                item.margin = item
+                    .margin
+                    .with_right(auto_margin_share(free_space, slot, count));
+                slot = slot.saturating_add(1);
+            }
+            if item.auto_margin.left() {
+                item.margin = item
+                    .margin
+                    .with_left(auto_margin_share(free_space, slot, count));
+                slot = slot.saturating_add(1);
+            }
+        } else {
+            if item.auto_margin.left() {
+                item.margin = item
+                    .margin
+                    .with_left(auto_margin_share(free_space, slot, count));
+                slot = slot.saturating_add(1);
+            }
+            if item.auto_margin.right() {
+                item.margin = item
+                    .margin
+                    .with_right(auto_margin_share(free_space, slot, count));
+                slot = slot.saturating_add(1);
+            }
+        }
+    }
+    true
+}
+
+fn resolve_column_main_auto_margins(
+    items: &mut [FlexItem],
+    free_space: u32,
+    reverse: bool,
+) -> bool {
+    let count = items.iter().fold(0u32, |total, item| {
+        total.saturating_add(vertical_auto_margin_count(item.auto_margin))
+    });
+    if count == 0 || free_space == 0 {
+        return false;
+    }
+    let mut slot = 0;
+    for item in items {
+        if reverse {
+            if item.auto_margin.bottom() {
+                item.margin = item
+                    .margin
+                    .with_bottom(auto_margin_share(free_space, slot, count));
+                slot = slot.saturating_add(1);
+            }
+            if item.auto_margin.top() {
+                item.margin = item
+                    .margin
+                    .with_top(auto_margin_share(free_space, slot, count));
+                slot = slot.saturating_add(1);
+            }
+        } else {
+            if item.auto_margin.top() {
+                item.margin = item
+                    .margin
+                    .with_top(auto_margin_share(free_space, slot, count));
+                slot = slot.saturating_add(1);
+            }
+            if item.auto_margin.bottom() {
+                item.margin = item
+                    .margin
+                    .with_bottom(auto_margin_share(free_space, slot, count));
+                slot = slot.saturating_add(1);
+            }
+        }
+    }
+    true
+}
+
+fn resolve_column_cross_auto_margins(item: &mut FlexItem, available_width: u32) -> bool {
+    let count = horizontal_auto_margin_count(item.auto_margin);
+    let free_space =
+        available_width.saturating_sub(item.width.saturating_add(item.margin.horizontal()));
+    if count == 0 || free_space == 0 {
+        return false;
+    }
+    let mut slot = 0;
+    if item.auto_margin.left() {
+        item.margin = item
+            .margin
+            .with_left(auto_margin_share(free_space, slot, count));
+        slot = slot.saturating_add(1);
+    }
+    if item.auto_margin.right() {
+        item.margin = item
+            .margin
+            .with_right(auto_margin_share(free_space, slot, count));
+    }
+    true
 }
 
 struct FlexColumnLineContext {
@@ -1615,6 +1741,30 @@ impl<'a> LayoutBuilder<'a> {
         })
     }
 
+    fn has_visible_auto_margin_child(&self, id: NativeNodeId) -> bool {
+        self.document.node(id).is_some_and(|node| {
+            node.children().iter().any(|child| {
+                let Some(child_node) = self.document.node(*child) else {
+                    return false;
+                };
+                match child_node.kind() {
+                    NativeNodeKind::Element { .. }
+                        if !self.is_non_rendered(*child)
+                            && !self.document.is_hidden_for_layout(*child)
+                            && self.effective_display(*child) != DisplayValue::None =>
+                    {
+                        self.document
+                            .computed_style_for_layout(*child)
+                            .margin_auto()
+                            .any()
+                    }
+                    NativeNodeKind::Text(_) | NativeNodeKind::Document => false,
+                    NativeNodeKind::Element { .. } => false,
+                }
+            })
+        })
+    }
+
     fn layout_flex_line(
         &mut self,
         items: Vec<FlexItem>,
@@ -1628,6 +1778,14 @@ impl<'a> LayoutBuilder<'a> {
             apply_flex_shrink(&mut items, context.available_width, context.gap);
         }
         let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        let item_width = items.iter().fold(0u32, |total, item| {
+            total
+                .saturating_add(item.margin.horizontal())
+                .saturating_add(item.width)
+        });
+        let occupied_width = item_width.saturating_add(context.gap.saturating_mul(gap_count));
+        let free_space_before_auto = context.available_width.saturating_sub(occupied_width);
+        resolve_row_main_auto_margins(&mut items, free_space_before_auto, context.reverse);
         let item_width = items.iter().fold(0u32, |total, item| {
             total
                 .saturating_add(item.margin.horizontal())
@@ -1740,6 +1898,7 @@ impl<'a> LayoutBuilder<'a> {
                     text_start,
                     text_end: self.text_runs.len(),
                     margin: item.margin,
+                    auto_margin: item.auto_margin,
                     height: size.height,
                     align_self: item.align_self,
                 });
@@ -1830,6 +1989,7 @@ impl<'a> LayoutBuilder<'a> {
                     text_start,
                     text_end: self.text_runs.len(),
                     margin: item.margin,
+                    auto_margin: item.auto_margin,
                     height: size.height,
                     align_self: item.align_self,
                 });
@@ -1901,6 +2061,7 @@ impl<'a> LayoutBuilder<'a> {
                     items.push(FlexItem {
                         child,
                         margin,
+                        auto_margin: style.margin_auto(),
                         width,
                         height,
                         flex_base_width: width,
@@ -1928,6 +2089,9 @@ impl<'a> LayoutBuilder<'a> {
         }
         let item_count = items.len();
         let gap_count = u32::try_from(item_count.saturating_sub(1)).unwrap_or(u32::MAX);
+        let occupied_height = flex_occupied_height(&items, gap);
+        let free_space_before_auto = available_height.saturating_sub(occupied_height);
+        resolve_column_main_auto_margins(&mut items, free_space_before_auto, reverse);
         let occupied_height = flex_occupied_height(&items, gap);
         let free_space = available_height.saturating_sub(occupied_height);
         let leading_offset = match justify_content {
@@ -1967,7 +2131,7 @@ impl<'a> LayoutBuilder<'a> {
                 .saturating_add(available_height)
                 .saturating_sub(initial_offset)
                 .saturating_add(reverse_shift);
-            for (index, item) in items.into_iter().enumerate() {
+            for (index, mut item) in items.into_iter().enumerate() {
                 if index > 0 {
                     cursor_bottom = cursor_bottom.saturating_sub(gap);
                     if justify_content == JustifyContentValue::SpaceBetween {
@@ -2014,10 +2178,13 @@ impl<'a> LayoutBuilder<'a> {
                     AlignSelfValue::Stretch => AlignItemsValue::Stretch,
                     AlignSelfValue::Normal => AlignItemsValue::Normal,
                 };
+                let cross_auto_resolved =
+                    resolve_column_cross_auto_margins(&mut item, available_width);
                 let item_width = if matches!(
                     alignment,
                     AlignItemsValue::Stretch | AlignItemsValue::Normal
-                ) && style.width().is_none()
+                ) && !cross_auto_resolved
+                    && style.width().is_none()
                 {
                     constrain_dimension(
                         available_width.saturating_sub(item.margin.horizontal()),
@@ -2036,12 +2203,16 @@ impl<'a> LayoutBuilder<'a> {
                 };
                 let remaining = available_width
                     .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
-                let cross_offset = match alignment {
-                    AlignItemsValue::FlexStart
-                    | AlignItemsValue::Stretch
-                    | AlignItemsValue::Normal => 0,
-                    AlignItemsValue::Center => remaining / 2,
-                    AlignItemsValue::FlexEnd => remaining,
+                let cross_offset = if cross_auto_resolved {
+                    0
+                } else {
+                    match alignment {
+                        AlignItemsValue::FlexStart
+                        | AlignItemsValue::Stretch
+                        | AlignItemsValue::Normal => 0,
+                        AlignItemsValue::Center => remaining / 2,
+                        AlignItemsValue::FlexEnd => remaining,
+                    }
                 };
                 let item_x = x
                     .saturating_add(item.margin.left())
@@ -2074,7 +2245,7 @@ impl<'a> LayoutBuilder<'a> {
             }
         } else {
             let mut cursor_y = y.saturating_add(initial_offset);
-            for (index, item) in items.into_iter().enumerate() {
+            for (index, mut item) in items.into_iter().enumerate() {
                 if index > 0 {
                     cursor_y = cursor_y.saturating_add(gap);
                     if justify_content == JustifyContentValue::SpaceBetween {
@@ -2121,10 +2292,13 @@ impl<'a> LayoutBuilder<'a> {
                     AlignSelfValue::Stretch => AlignItemsValue::Stretch,
                     AlignSelfValue::Normal => AlignItemsValue::Normal,
                 };
+                let cross_auto_resolved =
+                    resolve_column_cross_auto_margins(&mut item, available_width);
                 let item_width = if matches!(
                     alignment,
                     AlignItemsValue::Stretch | AlignItemsValue::Normal
-                ) && style.width().is_none()
+                ) && !cross_auto_resolved
+                    && style.width().is_none()
                 {
                     constrain_dimension(
                         available_width.saturating_sub(item.margin.horizontal()),
@@ -2143,12 +2317,16 @@ impl<'a> LayoutBuilder<'a> {
                 };
                 let remaining = available_width
                     .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
-                let cross_offset = match alignment {
-                    AlignItemsValue::FlexStart
-                    | AlignItemsValue::Stretch
-                    | AlignItemsValue::Normal => 0,
-                    AlignItemsValue::Center => remaining / 2,
-                    AlignItemsValue::FlexEnd => remaining,
+                let cross_offset = if cross_auto_resolved {
+                    0
+                } else {
+                    match alignment {
+                        AlignItemsValue::FlexStart
+                        | AlignItemsValue::Stretch
+                        | AlignItemsValue::Normal => 0,
+                        AlignItemsValue::Center => remaining / 2,
+                        AlignItemsValue::FlexEnd => remaining,
+                    }
                 };
                 let item_x = x
                     .saturating_add(item.margin.left())
@@ -2539,6 +2717,7 @@ impl<'a> LayoutBuilder<'a> {
                     items.push(FlexItem {
                         child,
                         margin,
+                        auto_margin: style.margin_auto(),
                         width,
                         height,
                         flex_base_width: width,
@@ -2715,6 +2894,11 @@ impl<'a> LayoutBuilder<'a> {
             return self.layout_children(parent, x, y, available_width, depth);
         }
         let parent_style = self.document.computed_style_for_layout(parent);
+        if parent_style.flex_wrap() != FlexWrapValue::NoWrap
+            && self.has_visible_auto_margin_child(parent)
+        {
+            return self.layout_children(parent, x, y, available_width, depth);
+        }
         if matches!(
             parent_style.flex_direction(),
             FlexDirectionValue::Column | FlexDirectionValue::ColumnReverse
@@ -2784,6 +2968,7 @@ impl<'a> LayoutBuilder<'a> {
                     items.push(FlexItem {
                         child,
                         margin,
+                        auto_margin: style.margin_auto(),
                         width,
                         height: 0,
                         flex_base_width,
@@ -2967,11 +3152,46 @@ impl<'a> LayoutBuilder<'a> {
                     AlignSelfValue::Stretch => AlignItemsValue::Stretch,
                     AlignSelfValue::Normal => AlignItemsValue::Normal,
                 };
+                let cross_auto_count = vertical_auto_margin_count(placement.auto_margin);
+                let cross_free_space = line
+                    .height
+                    .saturating_sub(placement.height.saturating_add(placement.margin.vertical()));
+                let cross_auto_resolved = cross_auto_count > 0 && cross_free_space > 0;
+                if cross_auto_resolved {
+                    let mut slot = 0;
+                    if placement.auto_margin.top() {
+                        placement.margin = placement.margin.with_top(auto_margin_share(
+                            cross_free_space,
+                            slot,
+                            cross_auto_count,
+                        ));
+                        slot = slot.saturating_add(1);
+                    }
+                    if placement.auto_margin.bottom() {
+                        placement.margin = placement.margin.with_bottom(auto_margin_share(
+                            cross_free_space,
+                            slot,
+                            cross_auto_count,
+                        ));
+                    }
+                    self.shift_layout_y(
+                        placement.box_start,
+                        placement.box_end,
+                        placement.text_start,
+                        placement.text_end,
+                        i64::from(placement.margin.top()),
+                    );
+                }
                 if matches!(
                     alignment,
                     AlignItemsValue::Stretch | AlignItemsValue::Normal
-                ) && let Some(stretched_height) =
-                    stretched_outer_height(style, line.height, placement.margin, placement.height)
+                ) && !cross_auto_resolved
+                    && let Some(stretched_height) = stretched_outer_height(
+                        style,
+                        line.height,
+                        placement.margin,
+                        placement.height,
+                    )
                     && stretched_height > placement.height
                 {
                     self.stretch_flex_item_box(&placement, style, stretched_height);
@@ -2980,12 +3200,16 @@ impl<'a> LayoutBuilder<'a> {
                 let item_outer_height =
                     placement.height.saturating_add(placement.margin.vertical());
                 let remaining = line.height.saturating_sub(item_outer_height);
-                let offset = match alignment {
-                    AlignItemsValue::FlexStart
-                    | AlignItemsValue::Stretch
-                    | AlignItemsValue::Normal => 0,
-                    AlignItemsValue::Center => remaining / 2,
-                    AlignItemsValue::FlexEnd => remaining,
+                let offset = if cross_auto_resolved {
+                    0
+                } else {
+                    match alignment {
+                        AlignItemsValue::FlexStart
+                        | AlignItemsValue::Stretch
+                        | AlignItemsValue::Normal => 0,
+                        AlignItemsValue::Center => remaining / 2,
+                        AlignItemsValue::FlexEnd => remaining,
+                    }
                 };
                 self.shift_layout_y(
                     placement.box_start,

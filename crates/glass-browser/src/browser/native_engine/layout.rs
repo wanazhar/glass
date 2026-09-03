@@ -573,6 +573,24 @@ struct FlexLineContext {
     depth: usize,
 }
 
+struct FlexColumnLineContext {
+    x: u32,
+    y: u32,
+    available_width: u32,
+    available_height: u32,
+    gap: u32,
+    justify_content: JustifyContentValue,
+    align_items: AlignItemsValue,
+    reverse: bool,
+    depth: usize,
+}
+
+struct FlexColumnWrapLine {
+    items: Vec<FlexItem>,
+    provisional_x: u32,
+    width: u32,
+}
+
 fn flex_occupied_width(items: &[FlexItem], gap: u32) -> u32 {
     let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
     let item_width = items.iter().fold(0u32, |total, item| {
@@ -1564,8 +1582,10 @@ impl<'a> LayoutBuilder<'a> {
         if !matches!(
             style.flex_direction(),
             FlexDirectionValue::Column | FlexDirectionValue::ColumnReverse
-        ) || style.flex_wrap() != FlexWrapValue::NoWrap
-            || Self::explicit_content_height(style).is_none()
+        ) || !matches!(
+            style.flex_wrap(),
+            FlexWrapValue::NoWrap | FlexWrapValue::Wrap
+        ) || Self::explicit_content_height(style).is_none()
             || !self.can_use_flex_layout(id)
         {
             return false;
@@ -2166,6 +2186,507 @@ impl<'a> LayoutBuilder<'a> {
         }
     }
 
+    fn layout_flex_column_line(
+        &mut self,
+        mut items: Vec<FlexItem>,
+        context: FlexColumnLineContext,
+    ) -> FlowSize {
+        let base_occupied_height = flex_occupied_height(&items, context.gap);
+        if base_occupied_height < context.available_height {
+            apply_flex_growth_height(&mut items, context.available_height, context.gap);
+        } else if base_occupied_height > context.available_height {
+            apply_flex_shrink_height(&mut items, context.available_height, context.gap);
+        }
+        let gap_count = u32::try_from(items.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        let item_height = items.iter().fold(0u32, |total, item| {
+            total
+                .saturating_add(item.margin.vertical())
+                .saturating_add(item.height)
+        });
+        let occupied_height = item_height.saturating_add(context.gap.saturating_mul(gap_count));
+        let free_space = context.available_height.saturating_sub(occupied_height);
+        let item_count = items.len();
+        let leading_offset = match context.justify_content {
+            JustifyContentValue::Center => free_space / 2,
+            JustifyContentValue::FlexEnd => free_space,
+            JustifyContentValue::FlexStart
+            | JustifyContentValue::Normal
+            | JustifyContentValue::Stretch
+            | JustifyContentValue::SpaceBetween
+            | JustifyContentValue::SpaceAround
+            | JustifyContentValue::SpaceEvenly => 0,
+        };
+        let initial_offset = match context.justify_content {
+            JustifyContentValue::SpaceAround if item_count > 0 => {
+                flex_space_around_offset(free_space, 0, item_count)
+            }
+            JustifyContentValue::SpaceEvenly if item_count > 0 => {
+                flex_space_evenly_offset(free_space, 0, item_count)
+            }
+            _ => leading_offset,
+        };
+        let distributed_gap = if context.justify_content == JustifyContentValue::SpaceBetween {
+            free_space.checked_div(gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let distributed_remainder = if context.justify_content == JustifyContentValue::SpaceBetween
+        {
+            free_space.checked_rem(gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let mut max_right = context.x.saturating_add(context.available_width);
+        let mut max_bottom = context.y.saturating_add(context.available_height);
+        if context.reverse {
+            let reverse_shift = occupied_height.saturating_sub(context.available_height);
+            let mut cursor_bottom = context
+                .y
+                .saturating_add(context.available_height)
+                .saturating_sub(initial_offset)
+                .saturating_add(reverse_shift);
+            for (index, item) in items.into_iter().enumerate() {
+                if index > 0 {
+                    cursor_bottom = cursor_bottom.saturating_sub(context.gap);
+                    if context.justify_content == JustifyContentValue::SpaceBetween {
+                        cursor_bottom = cursor_bottom.saturating_sub(distributed_gap);
+                        if u32::try_from(index - 1)
+                            .is_ok_and(|gap_index| gap_index < distributed_remainder)
+                        {
+                            cursor_bottom = cursor_bottom.saturating_sub(1);
+                        }
+                    } else if context.justify_content == JustifyContentValue::SpaceAround {
+                        let current_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_bottom = cursor_bottom
+                            .saturating_sub(current_offset.saturating_sub(previous_offset));
+                    } else if context.justify_content == JustifyContentValue::SpaceEvenly {
+                        let current_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_bottom = cursor_bottom
+                            .saturating_sub(current_offset.saturating_sub(previous_offset));
+                    }
+                }
+                let style = self.document.computed_style_for_layout(item.child);
+                let alignment = match item.align_self {
+                    AlignSelfValue::Auto => context.align_items,
+                    AlignSelfValue::FlexStart => AlignItemsValue::FlexStart,
+                    AlignSelfValue::Center => AlignItemsValue::Center,
+                    AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
+                    AlignSelfValue::Stretch => AlignItemsValue::Stretch,
+                    AlignSelfValue::Normal => AlignItemsValue::Normal,
+                };
+                let item_width = if matches!(
+                    alignment,
+                    AlignItemsValue::Stretch | AlignItemsValue::Normal
+                ) && style.width().is_none()
+                {
+                    constrain_dimension(
+                        context
+                            .available_width
+                            .saturating_sub(item.margin.horizontal()),
+                        Some(
+                            style
+                                .min_width()
+                                .map(|declared| outer_width_from_declared(style, declared))
+                                .unwrap_or(0),
+                        ),
+                        style
+                            .max_width()
+                            .map(|declared| outer_width_from_declared(style, declared)),
+                    )
+                } else {
+                    item.width
+                };
+                let remaining = context
+                    .available_width
+                    .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
+                let cross_offset = match alignment {
+                    AlignItemsValue::FlexStart
+                    | AlignItemsValue::Stretch
+                    | AlignItemsValue::Normal => 0,
+                    AlignItemsValue::Center => remaining / 2,
+                    AlignItemsValue::FlexEnd => remaining,
+                };
+                let item_x = context
+                    .x
+                    .saturating_add(item.margin.left())
+                    .saturating_add(cross_offset);
+                let item_y = cursor_bottom
+                    .saturating_sub(item.margin.bottom())
+                    .saturating_sub(item.height);
+                let size = self.layout_element_with_outer_width(
+                    item.child,
+                    item_x,
+                    item_y,
+                    item_width,
+                    context.depth,
+                    ForcedOuterSize {
+                        width: Some(item_width),
+                        height: Some(item.height),
+                    },
+                );
+                max_right = max_right.max(
+                    item_x
+                        .saturating_add(size.width)
+                        .saturating_add(item.margin.right()),
+                );
+                max_bottom = max_bottom.max(
+                    item_y
+                        .saturating_add(size.height)
+                        .saturating_add(item.margin.bottom()),
+                );
+                cursor_bottom = item_y.saturating_sub(item.margin.top());
+            }
+        } else {
+            let mut cursor_y = context.y.saturating_add(initial_offset);
+            for (index, item) in items.into_iter().enumerate() {
+                if index > 0 {
+                    cursor_y = cursor_y.saturating_add(context.gap);
+                    if context.justify_content == JustifyContentValue::SpaceBetween {
+                        cursor_y = cursor_y.saturating_add(distributed_gap);
+                        if u32::try_from(index - 1)
+                            .is_ok_and(|gap_index| gap_index < distributed_remainder)
+                        {
+                            cursor_y = cursor_y.saturating_add(1);
+                        }
+                    } else if context.justify_content == JustifyContentValue::SpaceAround {
+                        let current_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_y =
+                            cursor_y.saturating_add(current_offset.saturating_sub(previous_offset));
+                    } else if context.justify_content == JustifyContentValue::SpaceEvenly {
+                        let current_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_y =
+                            cursor_y.saturating_add(current_offset.saturating_sub(previous_offset));
+                    }
+                }
+                let style = self.document.computed_style_for_layout(item.child);
+                let alignment = match item.align_self {
+                    AlignSelfValue::Auto => context.align_items,
+                    AlignSelfValue::FlexStart => AlignItemsValue::FlexStart,
+                    AlignSelfValue::Center => AlignItemsValue::Center,
+                    AlignSelfValue::FlexEnd => AlignItemsValue::FlexEnd,
+                    AlignSelfValue::Stretch => AlignItemsValue::Stretch,
+                    AlignSelfValue::Normal => AlignItemsValue::Normal,
+                };
+                let item_width = if matches!(
+                    alignment,
+                    AlignItemsValue::Stretch | AlignItemsValue::Normal
+                ) && style.width().is_none()
+                {
+                    constrain_dimension(
+                        context
+                            .available_width
+                            .saturating_sub(item.margin.horizontal()),
+                        Some(
+                            style
+                                .min_width()
+                                .map(|declared| outer_width_from_declared(style, declared))
+                                .unwrap_or(0),
+                        ),
+                        style
+                            .max_width()
+                            .map(|declared| outer_width_from_declared(style, declared)),
+                    )
+                } else {
+                    item.width
+                };
+                let remaining = context
+                    .available_width
+                    .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
+                let cross_offset = match alignment {
+                    AlignItemsValue::FlexStart
+                    | AlignItemsValue::Stretch
+                    | AlignItemsValue::Normal => 0,
+                    AlignItemsValue::Center => remaining / 2,
+                    AlignItemsValue::FlexEnd => remaining,
+                };
+                let item_x = context
+                    .x
+                    .saturating_add(item.margin.left())
+                    .saturating_add(cross_offset);
+                let item_y = cursor_y.saturating_add(item.margin.top());
+                let size = self.layout_element_with_outer_width(
+                    item.child,
+                    item_x,
+                    item_y,
+                    item_width,
+                    context.depth,
+                    ForcedOuterSize {
+                        width: Some(item_width),
+                        height: Some(item.height),
+                    },
+                );
+                max_right = max_right.max(
+                    item_x
+                        .saturating_add(size.width)
+                        .saturating_add(item.margin.right()),
+                );
+                max_bottom = max_bottom.max(
+                    item_y
+                        .saturating_add(size.height)
+                        .saturating_add(item.margin.bottom()),
+                );
+                cursor_y = item_y
+                    .saturating_add(size.height)
+                    .saturating_add(item.margin.bottom());
+            }
+        }
+
+        FlowSize {
+            width: max_right.saturating_sub(context.x),
+            height: max_bottom.saturating_sub(context.y),
+        }
+    }
+
+    fn layout_flex_column_wrap_children(
+        &mut self,
+        parent: NativeNodeId,
+        x: u32,
+        y: u32,
+        available_width: u32,
+        depth: usize,
+    ) -> FlowSize {
+        let parent_style = self.document.computed_style_for_layout(parent);
+        let available_height = Self::explicit_content_height(parent_style).unwrap_or_default();
+        let row_gap = parent_style.row_gap();
+        let column_gap = parent_style.column_gap();
+        let justify_content = parent_style.justify_content();
+        let align_items = parent_style.align_items();
+        let align_content = parent_style.align_content();
+        let reverse = parent_style.flex_direction() == FlexDirectionValue::ColumnReverse;
+        let children = self
+            .document
+            .node(parent)
+            .map(|node| node.children().to_vec())
+            .unwrap_or_default();
+        let mut items = Vec::new();
+        for (source_index, child) in children.into_iter().enumerate() {
+            let Some(node) = self.document.node(child) else {
+                continue;
+            };
+            match node.kind() {
+                NativeNodeKind::Text(_) => {}
+                NativeNodeKind::Document => {
+                    return self.layout_children(parent, x, y, available_width, depth);
+                }
+                NativeNodeKind::Element { .. } => {
+                    if self.is_non_rendered(child) || self.document.is_hidden_for_layout(child) {
+                        continue;
+                    }
+                    let style = self.document.computed_style_for_layout(child);
+                    if self.effective_display(child) == DisplayValue::None {
+                        continue;
+                    }
+                    let margin = style.margin();
+                    let width = self.outer_width(child, style, false, available_width, true);
+                    let height = self.flex_item_base_height(child, style);
+                    let min_width = style
+                        .min_width()
+                        .map(|declared| outer_width_from_declared(style, declared))
+                        .unwrap_or(0);
+                    let max_width = style
+                        .max_width()
+                        .map(|declared| outer_width_from_declared(style, declared));
+                    let min_height = style
+                        .min_height()
+                        .map(|declared| outer_height_from_declared(style, declared))
+                        .unwrap_or(0);
+                    let max_height = style
+                        .max_height()
+                        .map(|declared| outer_height_from_declared(style, declared));
+                    items.push(FlexItem {
+                        child,
+                        margin,
+                        width,
+                        height,
+                        flex_base_width: width,
+                        flex_base_height: height,
+                        min_width,
+                        min_height,
+                        max_width,
+                        max_height,
+                        flex_grow: style.flex_grow(),
+                        flex_shrink: style.flex_shrink(),
+                        order: style.flex_item_order().value(),
+                        source_index,
+                        align_self: style.align_self(),
+                    });
+                }
+            }
+        }
+
+        items.sort_by_key(|item| (item.order, item.source_index));
+        let mut lines = Vec::new();
+        let mut current = Vec::new();
+        let mut current_height = 0u32;
+        for item in items {
+            let item_outer_height = item.margin.vertical().saturating_add(item.height);
+            let separator_height = if current.is_empty() { 0 } else { row_gap };
+            if !current.is_empty()
+                && current_height
+                    .saturating_add(separator_height)
+                    .saturating_add(item_outer_height)
+                    > available_height
+            {
+                let width = current
+                    .iter()
+                    .map(|item: &FlexItem| item.margin.horizontal().saturating_add(item.width))
+                    .max()
+                    .unwrap_or(0);
+                lines.push(FlexColumnWrapLine {
+                    items: current,
+                    provisional_x: x,
+                    width,
+                });
+                current = Vec::new();
+                current_height = 0;
+            }
+            if !current.is_empty() {
+                current_height = current_height.saturating_add(row_gap);
+            }
+            current_height = current_height.saturating_add(item_outer_height);
+            current.push(item);
+        }
+        if !current.is_empty() {
+            let width = current
+                .iter()
+                .map(|item: &FlexItem| item.margin.horizontal().saturating_add(item.width))
+                .max()
+                .unwrap_or(0);
+            lines.push(FlexColumnWrapLine {
+                items: current,
+                provisional_x: x,
+                width,
+            });
+        }
+
+        let line_count = lines.len();
+        let line_gap_count = u32::try_from(line_count.saturating_sub(1)).unwrap_or(u32::MAX);
+        let explicit_line_gap = column_gap.saturating_mul(line_gap_count);
+        let total_line_width = lines
+            .iter()
+            .fold(0u32, |total, line| total.saturating_add(line.width));
+        let total_line_width = total_line_width.saturating_add(explicit_line_gap);
+        let free_space = available_width.saturating_sub(total_line_width);
+        if line_count > 0
+            && matches!(
+                align_content,
+                AlignContentValue::Stretch | AlignContentValue::Normal
+            )
+            && free_space > 0
+        {
+            let line_count_u32 = u32::try_from(line_count).unwrap_or(u32::MAX).max(1);
+            let per_line_extra = free_space / line_count_u32;
+            let remainder = free_space % line_count_u32;
+            for (index, line) in lines.iter_mut().enumerate() {
+                let index = u32::try_from(index).unwrap_or(u32::MAX);
+                line.width = line
+                    .width
+                    .saturating_add(per_line_extra)
+                    .saturating_add(u32::from(index < remainder));
+            }
+        }
+
+        let mut provisional_x = x;
+        for line in &mut lines {
+            line.provisional_x = provisional_x;
+            provisional_x = provisional_x
+                .saturating_add(line.width)
+                .saturating_add(column_gap);
+        }
+        let distributed_line_gap = if align_content == AlignContentValue::SpaceBetween {
+            free_space.checked_div(line_gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let distributed_remainder = if align_content == AlignContentValue::SpaceBetween {
+            free_space.checked_rem(line_gap_count).unwrap_or(0)
+        } else {
+            0
+        };
+        let leading_line_offset = match align_content {
+            AlignContentValue::Center => free_space / 2,
+            AlignContentValue::FlexEnd => free_space,
+            AlignContentValue::FlexStart
+            | AlignContentValue::SpaceBetween
+            | AlignContentValue::SpaceAround
+            | AlignContentValue::SpaceEvenly
+            | AlignContentValue::Stretch
+            | AlignContentValue::Normal => 0,
+        };
+        let mut max_right = x;
+        let mut max_bottom = y.saturating_add(available_height);
+        for (index, line) in lines.into_iter().enumerate() {
+            let index = u32::try_from(index).unwrap_or(u32::MAX);
+            let line_offset = if align_content == AlignContentValue::SpaceAround {
+                flex_space_around_offset(free_space, index, line_count)
+            } else if align_content == AlignContentValue::SpaceEvenly {
+                flex_space_evenly_offset(free_space, index, line_count)
+            } else {
+                leading_line_offset
+                    .saturating_add(distributed_line_gap.saturating_mul(index))
+                    .saturating_add(index.min(distributed_remainder))
+            };
+            let line_x = line.provisional_x.saturating_add(line_offset);
+            let line_layout = self.layout_flex_column_line(
+                line.items,
+                FlexColumnLineContext {
+                    x: line_x,
+                    y,
+                    available_width: line.width,
+                    available_height,
+                    gap: row_gap,
+                    justify_content,
+                    align_items,
+                    reverse,
+                    depth,
+                },
+            );
+            max_right = max_right.max(line_x.saturating_add(line_layout.width));
+            max_bottom = max_bottom.max(y.saturating_add(line_layout.height));
+        }
+
+        FlowSize {
+            width: max_right.saturating_sub(x).max(available_width),
+            height: max_bottom.saturating_sub(y),
+        }
+    }
+
     fn layout_flex_children(
         &mut self,
         parent: NativeNodeId,
@@ -2182,10 +2703,16 @@ impl<'a> LayoutBuilder<'a> {
             parent_style.flex_direction(),
             FlexDirectionValue::Column | FlexDirectionValue::ColumnReverse
         ) {
-            return if self.can_use_column_flex_layout(parent, parent_style) {
-                self.layout_flex_column_children(parent, x, y, available_width, depth)
-            } else {
-                self.layout_children(parent, x, y, available_width, depth)
+            return match parent_style.flex_wrap() {
+                FlexWrapValue::NoWrap if self.can_use_column_flex_layout(parent, parent_style) => {
+                    self.layout_flex_column_children(parent, x, y, available_width, depth)
+                }
+                FlexWrapValue::Wrap if self.can_use_column_flex_layout(parent, parent_style) => {
+                    self.layout_flex_column_wrap_children(parent, x, y, available_width, depth)
+                }
+                FlexWrapValue::WrapReverse | FlexWrapValue::NoWrap | FlexWrapValue::Wrap => {
+                    self.layout_children(parent, x, y, available_width, depth)
+                }
             };
         }
         let gap = parent_style.column_gap();

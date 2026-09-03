@@ -666,16 +666,17 @@ evidence is recorded in the task file, with exact isolated-target cleanup
 recorded in the final cleanup checkpoint. Remote CI remains pending because
 the branch is local-only.
 
-The active dependency-ordered `native-engine-102` slice adds inherited
+The completed dependency-ordered `native-engine-102` slice adds inherited
 `text-align-last:auto|left|center|right|start|end` to the same fixed-cell
 inline-flow owner. Only the final non-empty line flushed by a block's normal
 completion path uses the explicit value; soft-wrap justification remains
 owned by 101 for non-final lines, while forced-break paths, bidi/shaping,
 language-specific line breaking, logical properties, vertical writing, and
-full text conformance remain outside the bounded contract. The active task is
-`docs/plan/tasks/native-engine-102.md`; design is ready locally and
-implementation, certification, and exact-target cleanup remain pending.
-Remote CI remains pending because the branch is local-only.
+full text conformance remain outside the bounded contract. The contract is
+`docs/plan/tasks/native-engine-102.md`; design is `fc396200`, implementation
+is `1157bf49`, and complete local gate plus exact-target cleanup evidence is
+recorded in the task file. Remote CI remains pending because the branch is
+local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1310,8 +1311,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-102.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-101.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-102.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-101.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-100.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-099.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-098.md` is the preceding completed checkpoint;

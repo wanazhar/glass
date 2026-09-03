@@ -419,14 +419,15 @@ language-specific line breaking remain outside the contract. The contract is
 gate evidence is recorded in the task file, with exact isolated-target cleanup
 recorded in the final cleanup checkpoint. Remote CI remains pending because
 the branch is local-only.
-The active 102 boundary adds inherited `text-align-last` to that same
+The completed 102 boundary adds inherited `text-align-last` to that same
 fixed-cell inline-flow owner. Only the final non-empty line flushed by a
 block's normal completion path resolves the bounded `auto|left|center|right|
 start|end` value; 101 soft-wrap justification, forced-break paths,
 bidi/shaping, and language-specific line breaking remain outside the contract.
-The active contract is `docs/plan/tasks/native-engine-102.md`; design is ready
-locally and implementation, certification, and exact-target cleanup remain
-pending. Remote CI remains pending because the branch is local-only.
+The completed contract is `docs/plan/tasks/native-engine-102.md`; design is
+`fc396200`, implementation is `1157bf49`, and complete local gate plus
+exact-target cleanup evidence is recorded in the task file. Remote CI remains
+pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

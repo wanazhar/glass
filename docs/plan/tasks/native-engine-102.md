@@ -1,7 +1,7 @@
 ---
 id: native-engine-102
 scope: glass-browser/native-engine/text-align-last
-status: ready
+status: complete
 depends-on: [native-engine-101]
 ---
 
@@ -83,24 +83,47 @@ conformance remain outside the contract.
 - `crates/glass-browser/tests/native_engine.rs`
 - synchronized native-engine architecture, analysis, and plan docs
 
-## Verification
+## Implementation and verification evidence
 
-The implementation gate will include:
+The design checkpoint is `fc396200` (`docs(native-engine): define final-line
+alignment slice`) and the implementation checkpoint is `1157bf49`
+(`feat(native-engine): support final-line text alignment`). The implementation
+keeps the feature inside `glass-browser`, adds no crate or dependency, and
+routes final-line offsets through the existing layout, display-list, raster,
+viewport, overflow, capture, hit-test, and semantic consumers.
 
-- parser, declaration, cascade, inheritance, inline precedence, and typed
-  unsupported-value diagnostics for `text-align-last`;
-- final-line `auto`, physical, and direction-aware logical alignment,
-  inherited/overridden values, no-text and empty-final-line fallback, and
-  101 justification remaining limited to eligible soft-wrapped non-final
-  lines;
-- forced-break, source-newline, preformatted, break-all, intermediate block,
-  inline-box, overflow, scroll, capture, display-list, raster, hit-test, and
-  semantic/source-order regressions through the shared line-flush owner;
-- `cargo fmt --all -- --check`, focused and full native integration tests,
-  feature-enabled library tests with the documented explicit stack, strict
-  all-feature and no-default-feature Clippy, warning-denied rustdoc, locked
-  binaries, paired package/dependency gates, fuzz checking,
-  documentation/release validators, and exact isolated-target cleanup.
+The completed local gate evidence is:
+
+- focused parser/cascade coverage: 2/2 `text_align_last` tests;
+- focused final-line artifact geometry: 1/1;
+- unsupported-value diagnostic regression: 1/1;
+- full native integration suite: 139/139;
+- feature-enabled library suite with `RUST_MIN_STACK=8388608`: 893 passed,
+  1 ignored, 0 failed;
+- strict all-feature Clippy: passed in 13m30s; strict no-default-feature
+  Clippy: passed in 6m15s;
+- warning-denied workspace rustdoc: passed in 3m14s;
+- locked `glass-dev` binaries: passed in 11m27s;
+- locked paired packages: both crates packaged successfully and
+  `check-packaged-dependency.py` confirmed `glass-dev` resolves
+  `glass-browser` exactly at 0.3.14; Cargo emitted only the known yanked
+  `chacha20 v0.10.1` warning;
+- locked fuzz fetch and offline all-target check: passed in 8m38s;
+- version sync, feature parity, release-documentation, TUI shortcut,
+  documentation-depth, documentation-coverage, reliability, public-adapter,
+  and Web IR validators all passed: 516 Markdown documents, 83 current
+  documents, 57 previous-version hits, 582 semantic hits, 0 current-claim
+  failures; 15 implementation help keys/63 documentation markers; 93/19
+  depth; 516/345/17/22 coverage; 6/4 reliability; 5 adapters; and 8/8/11
+  Web IR fixtures/scenarios/categories;
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+
+The exact isolated cleanup gate ran after validation. `/tmp/glass-102-target`
+measured 6.2G and the generated release report measured 160K. Process and
+open-file checks were empty; the exact target, report, and 102 log files were
+removed with bounded `find -P ... -xdev -depth -delete`. No `/tmp/glass-102*`
+or `glass-clean-install.*` paths remain, the repository and fuzz targets were
+not retained, and the final filesystem state is 65G available at 67% use.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this

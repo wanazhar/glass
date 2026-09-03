@@ -80,7 +80,7 @@ fixed-cell inline and inline-block line items, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
-items, and bounded `justify-content:flex-start|center|flex-end|space-between|
+items, and bounded `justify-content:normal|flex-start|center|flex-end|space-between|
 space-around|space-evenly` free-space placement for eligible fixed-width flex
 rows,
 bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
@@ -306,12 +306,13 @@ shared downstream artifact consumers. Its contract and evidence are recorded
 in `docs/plan/tasks/native-engine-091.md`; design is `be1a8e20` and
 implementation is `118590f7`. Remote CI remains pending because the branch is
 local-only.
-The active 092 boundary adds explicit `justify-content:normal` to that owner.
-The computed keyword remains distinct while used placement reuses the
+The completed 092 boundary adds explicit `justify-content:normal` to that
+owner. The computed keyword remains distinct while used placement reuses the
 completed `flex-start` path, including explicit gaps, margins, row-reverse,
-wrapping, and shared downstream artifacts. Its contract is recorded in
-`docs/plan/tasks/native-engine-092.md`; design is pending until this
-checkpoint. Remote CI remains pending because the branch is local-only.
+wrapping, and shared downstream artifacts. Its contract and evidence are
+recorded in `docs/plan/tasks/native-engine-092.md`; design is `4cbaf338` and
+implementation is `ce19db39`. Remote CI remains pending because the branch is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1234,8 +1235,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited `vertical-align:baseline|top|middle|bottom` parsing and
   cascade, with clamped fixed-cell top/middle/bottom offsets applied to
   complete inline-item box and text artifact ranges during line flush.
-- bounded non-inherited `justify-content:flex-start|center|flex-end|space-between|
-  space-around|space-evenly`
+- bounded non-inherited `justify-content:normal|flex-start|center|flex-end|
+  space-between|space-around|space-evenly`
   parsing and cascade, fixed-width flex-row free-space placement, deterministic
   gap distribution, overflow preservation, and shared layout/paint/scroll/
   hit-test coordinates.

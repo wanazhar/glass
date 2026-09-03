@@ -1,7 +1,7 @@
 ---
 id: native-engine-098
 scope: glass-browser/native-engine/flex-wrapped-auto-margins
-status: ready
+status: complete
 depends-on: [native-engine-097]
 ---
 
@@ -97,25 +97,50 @@ owners:
 
 ## Verification
 
-The implementation gate will include:
+Implementation and documentation closeout are complete. The design
+checkpoint is `a4b05f07`, the implementation checkpoint is `77a4b629`, and the
+final test-only checkpoint is `866a8862`.
 
-- focused row and row-reverse `wrap`/`wrap-reverse` tests covering per-line
-  main auto margins, cross auto margins, integer remainders, `justify-content`,
-  `align-content`, and source/order preservation;
-- focused column and column-reverse fixed-height `wrap`/`wrap-reverse` tests
-  covering vertical main auto margins, horizontal cross auto margins,
-  `row-gap`, `column-gap`, line distribution, and reverse physical placement;
-- overflow and zero-free-space cases proving auto margins resolve to zero;
-- explicit fallback tests for auto-height columns, unsupported direct children,
-  and normal-flow auto margins;
-- nested descendant geometry, display-list paint, software raster, viewport
-  projection, capture, scroll, semantic, and point-hit consumers;
-- `cargo fmt --all -- --check`, focused and full native integration tests,
-  feature-enabled library tests with the documented explicit stack, strict
-  all-feature and no-default-feature Clippy, warning-denied rustdoc, locked
-  binaries, package/dependency gates, fuzz checking, documentation/release
-  validators, and exact isolated-target cleanup.
+Passed locally:
 
-Remote CI remains pending because `main` is local-only. No browser-parity,
-release, registry-publication, or remote-certification claim is part of this
-task.
+- `cargo fmt --all -- --check` and `git diff --check`;
+- focused `auto_margins` native integration: 6/6 passed;
+- full `cargo test -p glass-browser --features native-engine --test
+  native_engine --no-fail-fast`: 131/131 passed;
+- `RUST_MIN_STACK=8388608 cargo test -p glass-browser --features
+  native-engine --lib --quiet --no-fail-fast`: 888 passed, 1 ignored, 0
+  failed;
+- the default 2 MiB test-thread stack issue remains isolated to the existing
+  `cli::args::tests::agent_readiness_commands_are_explicit` test; the feature
+  library suite passes with the documented explicit 8 MiB stack;
+- lockfile-pinned all-feature workspace Clippy and no-default-feature
+  `glass-browser` Clippy passed with warnings denied;
+- warning-denied locked workspace rustdoc passed;
+- locked `glass-dev --bins` compilation passed and produced both expected
+  development binaries;
+- locked `cargo package` passed for both `glass-browser` and `glass-dev`, and
+  the packaged dependency validator confirmed the exact `glass-browser`
+  `0.3.14` dependency;
+- locked offline fuzz all-target checking passed;
+- the static version, feature-parity, release-documentation, TUI-shortcut,
+  documentation-depth, documentation-coverage, reliability, public-adapter,
+  and Web IR validators passed against the current checkout. Documentation
+  coverage reports 512 Markdown files, 345 full-product MCP tools (100
+  browser-only), 17 examples, and 22 public modules; the release-documentation
+  audit reports 83 current documents, 57 previous-version hits, 574 semantic
+  hits, and 0 current-claim failures;
+- the row/column forward/reverse placements, `wrap-reverse`, per-line integer
+  remainder allocation, `justify-content`, `align-content`, overflow and
+  auto-height fallback behavior, nested geometry, display-list paint, software
+  raster output, and hit testing are covered by the native integration tests.
+
+Cleanup is recorded as an exact, post-validation operation: only the
+regenerable `/tmp/glass-098-target` tree and
+`/tmp/glass-098-release-documentation.json` report are eligible for removal
+after process/open-file checks. The repository `target/` and `fuzz/target`
+remain untouched; shared registries/toolchains, source, durable data, and
+long-lived Glass processes are retained.
+
+Remote CI remains pending because `main` is local-only and has not been
+pushed. No browser-parity, release, registry-publication, or remote-
+certification claim is part of this task.

@@ -616,7 +616,7 @@ writing modes, and normal-flow auto margins remain outside the contract in
 `815794ce`, and local certification/cleanup evidence is recorded in that task
 file. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-098` slice extends that auto-edge
+The completed dependency-ordered `native-engine-098` slice extends that auto-edge
 owner into eligible wrapped row/row-reverse and fixed-height
 column/column-reverse lines. Auto edges remain zero during line formation and
 per-line sizing, then absorb positive main-axis remainder before justification
@@ -626,7 +626,8 @@ mapping, deterministic integer shares, and complete artifact consumers remain
 on the shared geometry path. Auto-height columns, new intrinsic/percentage
 sizing, normal-flow auto margins, logical writing modes, baseline alignment,
 grid, and browser-wide Flexbox remain outside the bounded contract in
-`docs/plan/tasks/native-engine-098.md`. The design is ready locally; remote CI
+`docs/plan/tasks/native-engine-098.md`. Design is `a4b05f07`, implementation is
+`77a4b629`, and the final test-only checkpoint is `866a8862`; remote CI
 remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
@@ -1257,8 +1258,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-097.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-096.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-098.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-097.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-095.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-094.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-093.md` is the preceding completed checkpoint;
@@ -1313,14 +1314,16 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
-The active next checkpoint is recorded for
-`docs/plan/tasks/native-engine-098.md`: it owns line-local auto-margin
-resolution for wrapped row/row-reverse and fixed-height column/column-reverse
-owners, after final line sizing and before per-line justify/align placement.
-The design is ready locally; implementation, certification, and exact-target
-cleanup remain pending. Remote CI remains pending because the branch is
-local-only.
 The completed current checkpoint is recorded for
+`docs/plan/tasks/native-engine-098.md`: design is `a4b05f07`, implementation
+is `77a4b629`, and the final test-only checkpoint is `866a8862`. Focused/full
+native, feature-library, strict-Clippy, rustdoc, binary, package/dependency,
+fuzz, documentation, and exact-target cleanup evidence is recorded in that
+task file. The default-stack overflow in the pre-existing large-Clap parser
+test remains isolated; the feature library suite passes with
+`RUST_MIN_STACK=8388608`. Remote CI remains pending because the branch is
+local-only.
+A completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-097.md`: design is `2901c830`, implementation
 is `815794ce`, and focused auto-margin, full-native, feature-library,
 strict-Clippy, rustdoc, binary, validator, and exact-target-cleanup evidence

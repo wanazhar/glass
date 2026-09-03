@@ -630,6 +630,17 @@ grid, and browser-wide Flexbox remain outside the bounded contract in
 `77a4b629`, and the final test-only checkpoint is `866a8862`; remote CI
 remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-099` slice adds inherited
+`direction:ltr|rtl` to the bounded Flexbox axis mapping. Rows use the inline
+direction for physical main-start placement; columns preserve their vertical
+main axis while reflecting horizontal cross-axis alignment and wrapped line
+stacking. Reverse and wrap-reverse combinations, auto margins, and complete
+artifact consumers remain on the shared owner. Non-flex text bidi, logical
+properties, vertical writing modes, and browser-wide directionality remain
+outside the bounded contract in `docs/plan/tasks/native-engine-099.md`. The
+design is ready locally; remote CI remains pending because the branch is
+local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -853,6 +864,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-096` | bounded `flex-wrap:wrap-reverse` for fixed-height column/column-reverse flex containers, reflecting horizontal line boxes and cross-axis item alignment while preserving 095 geometry, gaps, align-content, reverse main placement, and complete artifacts | `native-engine-095` | auto-height columns, percentage/fractional/intrinsic main sizes, auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 | `native-engine-097` | bounded auto main/cross margins for eligible no-wrap row/row-reverse and fixed-height column/column-reverse flex containers, resolved before justify and align distribution with complete artifacts | `native-engine-096` | wrapped lines, auto-height columns, percentage/fractional/intrinsic sizing, normal-flow auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 | `native-engine-098` | bounded line-local auto main/cross margins for eligible wrapped row/row-reverse and fixed-height column/column-reverse flex containers, resolved after final line sizing and before per-line justify/align distribution with complete artifacts | `native-engine-097` | auto-height columns, new intrinsic/percentage sizing, fractional lengths, normal-flow auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
+| `native-engine-099` | bounded inherited `direction:ltr|rtl` for eligible Flexbox owners, mapping row main-start and column horizontal cross-start through the existing reverse/wrap-reverse and artifact consumers | `native-engine-098` | non-flex bidi/text reordering, `text-align:start|end`, logical properties, vertical writing modes, grid, and browser-wide directionality |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1314,6 +1326,12 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
+The active next checkpoint is recorded for
+`docs/plan/tasks/native-engine-099.md`: it owns inherited `direction:ltr|rtl`
+for eligible Flexbox physical axis mapping, after 098 line-local auto margins
+and before any future logical-writing or general bidi work. The design is ready
+locally; implementation, certification, and exact-target cleanup remain
+pending. Remote CI remains pending because the branch is local-only.
 The completed current checkpoint is recorded for
 `docs/plan/tasks/native-engine-098.md`: design is `a4b05f07`, implementation
 is `77a4b629`, and the final test-only checkpoint is `866a8862`. Focused/full

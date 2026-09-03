@@ -584,14 +584,15 @@ is `aea47b17`, implementation checkpoints are `7dc92517` and `4e212151`, and
 local certification/cleanup evidence is recorded in the task file. Remote CI
 remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-095` slice extends the completed
+The completed dependency-ordered `native-engine-095` slice extends the completed
 column owner to fixed-height `flex-wrap:wrap` containers. It forms vertical
 main-axis lines, consumes `column-gap` across the horizontal cross axis,
 reuses per-line integer flex sizing/justification and existing `align-content`,
 and keeps complete descendant/artifact consumers on the shared geometry owner.
 `wrap-reverse`, auto-height columns, and browser-wide Flexbox remain outside
-the contract in `docs/plan/tasks/native-engine-095.md`. Remote CI remains
-pending because the branch is local-only.
+the contract in `docs/plan/tasks/native-engine-095.md`. Design is `598228a7`,
+implementation is `96ea62a3`, and local certification evidence is recorded in
+the task file. Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1193,6 +1194,7 @@ visual stacking.
 | bounded flex-item order | makes common fixed-width rows support deterministic visual reordering without changing semantic/source identity | column directions, anonymous text-item sorting, semantic/accessibility/keyboard reordering, stacking-context parity, and browser Flexbox parity | parse a bounded signed integer, sort eligible visual items by `(order, source_index)`, preserve source-order semantic evidence, and reuse the existing gap/justification/layout/paint/hit-test owners |
 | bounded flex cross-axis alignment | makes common fixed-width rows with different item heights visually align without adding a second layout owner | baseline/logical alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse bounded non-inherited item values, determine an explicit or maximum-item line height, lay out once at the top edge, and translate each complete item artifact range by a clamped integer offset |
 | bounded flex direction | makes common fixed-width rows and eligible fixed-height columns support deterministic physical direction while preserving semantic/source identity | wrapping columns, multi-line cross-axis distribution, logical direction/RTL, auto margins, percentage/fractional/intrinsic sizing, and browser Flexbox parity | parse non-inherited `row|row-reverse|column|column-reverse`, preserve the existing order-sorted sequence, map justification and row-gap to the selected physical axis, perform a margin-aware forward/reverse walk, and route complete subtrees through the shared layout, paint, overflow, scroll, hit-test, and capture consumers |
+| bounded flex column wrapping | makes eligible fixed-height column and column-reverse containers form deterministic vertical main-axis lines across the horizontal cross axis | wrap-reverse, auto-height columns, percentage/fractional/intrinsic main sizing, auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity | require fixed-height column containers and visible direct elements with bounded main sizes, form order-sorted lines using row-gap, size and justify each line independently, distribute line widths with column-gap and existing align-content offsets, and reuse complete subtree/artifact consumers |
 | bounded flex wrapping | makes common fixed-width rows form deterministic physical lines without adding a second layout owner | column directions, auto margins, logical direction/RTL, percentage/fractional/intrinsic sizing, and browser Flexbox parity | parse non-inherited `nowrap|wrap`, partition sorted visible items by integer outer width plus the existing gap, reuse per-line row/reverse placement and alignment, stack maximum-height lines, and preserve shared subtree/scroll consumers |
 | bounded flex cross-line alignment | makes explicit-height wrapped rows use positive cross-axis space without changing line membership or item sizing | fractional distribution, auto margins, column directions, logical direction/RTL, and browser Flexbox parity | retain provisional line records, resolve only positive explicit-height remainder, allocate deterministic integer leading/inter-line offsets, and translate complete line artifact ranges after per-line item alignment |
 | bounded flex cross-line space-around | makes explicit-height wrapped rows distribute positive remainder around each physical line with deterministic slot centers | fractional distribution, auto margins, column directions, logical direction/RTL, and browser Flexbox parity | retain formed line records, calculate saturating integer `floor(remainder * (2*i + 1) / (2*line_count))` offsets, and translate complete line artifact ranges through the existing consumers |
@@ -1215,7 +1217,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-094.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-095.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-094.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-093.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-092.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-085.md` is an earlier completed checkpoint;
@@ -1269,6 +1272,14 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 A completed current checkpoint is recorded for
+`docs/plan/tasks/native-engine-095.md`: design is `598228a7`, implementation
+is `96ea62a3`, and focused column-wrap, full-native, feature-library,
+strict-Clippy, fallback, and exact-target evidence is recorded in that task
+file. The default-stack overflow in the pre-existing large-Clap parser test
+is reproduced with and without `native-engine`; the feature library suite
+passes with `RUST_MIN_STACK=33554432`. Remote CI remains pending because the
+branch is local-only.
+A completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-094.md`: design is `aea47b17`, implementation
 checkpoints are `7dc92517` and `4e212151`, and the focused parser/column,
 full-native, feature-library, strict-Clippy, rustdoc, locked-binary,

@@ -175,6 +175,7 @@ pub(crate) enum JustifyContentValue {
     FlexEnd,
     SpaceBetween,
     SpaceAround,
+    SpaceEvenly,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2847,6 +2848,7 @@ fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
         "flex-end" => Some(JustifyContentValue::FlexEnd),
         "space-between" => Some(JustifyContentValue::SpaceBetween),
         "space-around" => Some(JustifyContentValue::SpaceAround),
+        "space-evenly" => Some(JustifyContentValue::SpaceEvenly),
         _ => None,
     }
 }
@@ -4081,8 +4083,11 @@ mod tests {
             parse_justify_content("SPACE-AROUND"),
             Some(JustifyContentValue::SpaceAround)
         );
+        assert_eq!(
+            parse_justify_content("SPACE-EVENLY"),
+            Some(JustifyContentValue::SpaceEvenly)
+        );
         assert_eq!(parse_justify_content("normal"), None);
-        assert_eq!(parse_justify_content("space-evenly"), None);
         assert_eq!(parse_justify_content("start"), None);
     }
 
@@ -4108,6 +4113,13 @@ mod tests {
             Some((
                 AlignContentValue::SpaceAround,
                 JustifyContentValue::SpaceAround
+            ))
+        );
+        assert_eq!(
+            parse_place_content("space-evenly"),
+            Some((
+                AlignContentValue::SpaceEvenly,
+                JustifyContentValue::SpaceEvenly
             ))
         );
         assert_eq!(
@@ -4983,7 +4995,7 @@ mod tests {
     #[test]
     fn justify_content_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { justify-content: space-between; } #explicit { justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='justify-content: center'>Explicit</span><span id='invalid' style='justify-content: space-evenly'>Invalid</span></div>",
+            "<style>#parent { justify-content: space-between; } #explicit { justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='justify-content: center'>Explicit</span><span id='invalid' style='justify-content: normal'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();

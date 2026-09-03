@@ -2519,6 +2519,147 @@ fn native_flex_row_justify_content_aliases_reuse_flex_start_geometry_and_artifac
 }
 
 #[test]
+fn native_flex_column_maps_vertical_justification_and_cross_axis_artifacts() {
+    let source = |direction: &str, justify: &str| {
+        format!(
+            "<div id='column' style='display:flex;width:30px;height:40px;row-gap:2px;flex-direction:{direction};justify-content:{justify};align-items:center'><button id='first' style='width:6px;height:6px;background-color:red'><span id='nested' style='display:block;height:4px'>F</span></button><button id='second' style='width:8px;height:8px;background-color:blue'>S</button></div>"
+        )
+    };
+    let viewport = Viewport {
+        width: 40,
+        height: 48,
+        device_scale_factor_milli: 1000,
+    };
+
+    for justify in [
+        "flex-start",
+        "center",
+        "flex-end",
+        "space-between",
+        "space-around",
+        "space-evenly",
+        "normal",
+        "stretch",
+    ] {
+        let expected = match justify {
+            "center" => [(12, 6), (20, 8)],
+            "flex-end" => [(24, 6), (32, 8)],
+            "space-between" => [(0, 6), (32, 8)],
+            "space-around" => [(6, 6), (26, 8)],
+            "space-evenly" => [(8, 6), (24, 8)],
+            _ => [(0, 6), (8, 8)],
+        };
+        for (direction, expected) in [
+            ("column", expected),
+            (
+                "column-reverse",
+                [
+                    (40 - expected[0].0 - expected[0].1, expected[0].1),
+                    (40 - expected[1].0 - expected[1].1, expected[1].1),
+                ],
+            ),
+        ] {
+            let document =
+                NativeDocument::parse(&source(direction, justify), &NativeEngineLimits::default())
+                    .unwrap();
+            let column = document.resolve_target("id=column").unwrap();
+            let first = document.resolve_target("id=first").unwrap();
+            let nested = document.resolve_target("id=nested").unwrap();
+            let second = document.resolve_target("id=second").unwrap();
+            let layout = document.layout(viewport).unwrap();
+
+            assert_eq!(
+                layout.box_for(column).map(|rect| (rect.width, rect.height)),
+                Some((30, 40))
+            );
+            assert_eq!(
+                layout
+                    .box_for(first)
+                    .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+                Some((12, expected[0].0, expected[0].1, expected[0].1))
+            );
+            assert_eq!(
+                layout
+                    .box_for(second)
+                    .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+                Some((11, expected[1].0, expected[1].1, expected[1].1))
+            );
+            assert_eq!(
+                layout.box_for(nested).map(|rect| (rect.x, rect.y)),
+                Some((12, expected[0].0))
+            );
+            assert_eq!(
+                layout
+                    .hit_test((12 + 1).into(), (expected[0].0 + 1).into())
+                    .unwrap(),
+                Some(nested)
+            );
+
+            let list = document.display_list(viewport).unwrap();
+            assert!(list.commands.iter().any(|command| {
+                matches!(
+                    command,
+                    NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                        if *node_id == first
+                            && rect.x == 12
+                            && rect.y == expected[0].0
+                            && *color == NativeColor::RED
+                )
+            }));
+        }
+    }
+}
+
+#[test]
+fn native_flex_column_applies_vertical_flex_sizing_before_justification() {
+    let grown = NativeDocument::parse(
+        "<div id='column' style='display:flex;width:20px;height:30px;row-gap:2px;flex-direction:column'><div id='first' style='width:6px;height:6px;flex-grow:1'>A</div><div id='second' style='width:6px;height:6px;flex-grow:2'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = grown.resolve_target("id=first").unwrap();
+    let second = grown.resolve_target("id=second").unwrap();
+    let layout = grown
+        .layout(Viewport {
+            width: 24,
+            height: 40,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(
+        layout.box_for(first).map(|rect| (rect.y, rect.height)),
+        Some((0, 11))
+    );
+    assert_eq!(
+        layout.box_for(second).map(|rect| (rect.y, rect.height)),
+        Some((13, 17))
+    );
+
+    let shrunk = NativeDocument::parse(
+        "<div id='column' style='display:flex;width:20px;height:10px;row-gap:2px;flex-direction:column'><div id='first' style='width:6px;height:8px'>A</div><div id='second' style='width:6px;height:8px'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = shrunk.resolve_target("id=first").unwrap();
+    let second = shrunk.resolve_target("id=second").unwrap();
+    let layout = shrunk
+        .layout(Viewport {
+            width: 24,
+            height: 20,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(
+        layout.box_for(first).map(|rect| (rect.y, rect.height)),
+        Some((0, 4))
+    );
+    assert_eq!(
+        layout.box_for(second).map(|rect| (rect.y, rect.height)),
+        Some((6, 4))
+    );
+}
+
+#[test]
 fn native_flex_row_space_around_rounds_and_mirrors_complete_item_geometry() {
     let source = |direction: &str| {
         format!(
@@ -7657,7 +7798,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

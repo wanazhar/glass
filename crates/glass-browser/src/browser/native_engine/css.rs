@@ -219,6 +219,8 @@ pub(crate) enum FlexDirectionValue {
     #[default]
     Row,
     RowReverse,
+    Column,
+    ColumnReverse,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2914,6 +2916,8 @@ fn parse_flex_direction(value: &str) -> Option<FlexDirectionValue> {
     match value.to_ascii_lowercase().as_str() {
         "row" => Some(FlexDirectionValue::Row),
         "row-reverse" => Some(FlexDirectionValue::RowReverse),
+        "column" => Some(FlexDirectionValue::Column),
+        "column-reverse" => Some(FlexDirectionValue::ColumnReverse),
         _ => None,
     }
 }
@@ -4003,6 +4007,14 @@ mod tests {
             Some((FlexDirectionValue::RowReverse, FlexWrapValue::NoWrap))
         );
         assert_eq!(
+            parse_flex_flow("column"),
+            Some((FlexDirectionValue::Column, FlexWrapValue::NoWrap))
+        );
+        assert_eq!(
+            parse_flex_flow("COLUMN-REVERSE"),
+            Some((FlexDirectionValue::ColumnReverse, FlexWrapValue::NoWrap))
+        );
+        assert_eq!(
             parse_flex_flow("wrap"),
             Some((FlexDirectionValue::Row, FlexWrapValue::Wrap))
         );
@@ -4023,7 +4035,17 @@ mod tests {
             Some((FlexDirectionValue::RowReverse, FlexWrapValue::WrapReverse))
         );
         assert_eq!(parse_flex_flow(""), None);
-        assert_eq!(parse_flex_flow("column"), None);
+        assert_eq!(
+            parse_flex_flow("column wrap"),
+            Some((FlexDirectionValue::Column, FlexWrapValue::Wrap))
+        );
+        assert_eq!(
+            parse_flex_flow("column-reverse wrap-reverse"),
+            Some((
+                FlexDirectionValue::ColumnReverse,
+                FlexWrapValue::WrapReverse
+            ))
+        );
         assert_eq!(parse_flex_flow("row column"), None);
         assert_eq!(parse_flex_flow("wrap wrap-reverse"), None);
         assert_eq!(parse_flex_flow("row row-reverse"), None);
@@ -4231,14 +4253,20 @@ mod tests {
     }
 
     #[test]
-    fn flex_direction_parser_accepts_only_bounded_row_values() {
+    fn flex_direction_parser_accepts_bounded_row_and_column_values() {
         assert_eq!(parse_flex_direction("row"), Some(FlexDirectionValue::Row));
         assert_eq!(
             parse_flex_direction("ROW-REVERSE"),
             Some(FlexDirectionValue::RowReverse)
         );
-        assert_eq!(parse_flex_direction("column"), None);
-        assert_eq!(parse_flex_direction("column-reverse"), None);
+        assert_eq!(
+            parse_flex_direction("COLUMN"),
+            Some(FlexDirectionValue::Column)
+        );
+        assert_eq!(
+            parse_flex_direction("column-reverse"),
+            Some(FlexDirectionValue::ColumnReverse)
+        );
         assert_eq!(parse_flex_direction("start"), None);
         assert_eq!(parse_flex_direction("row reverse"), None);
     }
@@ -4981,13 +5009,14 @@ mod tests {
     #[test]
     fn flex_flow_is_cascaded_without_inheriting_and_longhands_override_components() {
         let document = NativeDocument::parse(
-            "<style>.flow { flex-flow: row-reverse wrap; } #flow { flex-wrap: nowrap; } #either { flex-flow: wrap-reverse row; } #invalid { flex-flow: row-reverse wrap; flex-flow: column wrap; } #parent { flex-flow: wrap-reverse; }</style><div id='parent'><span id='flow' class='flow'>Flow</span><span id='either'>Either</span><span id='invalid'>Invalid</span><span id='child'>Child</span></div>",
+            "<style>.flow { flex-flow: row-reverse wrap; } #flow { flex-wrap: nowrap; } #either { flex-flow: wrap-reverse row; } #column { flex-flow: column wrap; } #invalid { flex-flow: row-reverse wrap; flex-flow: column wrap wrap; } #parent { flex-flow: wrap-reverse; }</style><div id='parent'><span id='flow' class='flow'>Flow</span><span id='either'>Either</span><span id='column'>Column</span><span id='invalid'>Invalid</span><span id='child'>Child</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let flow = document.resolve_target("id=flow").unwrap();
         let either = document.resolve_target("id=either").unwrap();
+        let column = document.resolve_target("id=column").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
         let child = document.resolve_target("id=child").unwrap();
 
@@ -5002,6 +5031,10 @@ mod tests {
         let either_style = document.computed_style_for_layout(either);
         assert_eq!(either_style.flex_direction(), FlexDirectionValue::Row);
         assert_eq!(either_style.flex_wrap(), FlexWrapValue::WrapReverse);
+
+        let column_style = document.computed_style_for_layout(column);
+        assert_eq!(column_style.flex_direction(), FlexDirectionValue::Column);
+        assert_eq!(column_style.flex_wrap(), FlexWrapValue::Wrap);
 
         let invalid_style = document.computed_style_for_layout(invalid);
         assert_eq!(
@@ -5258,12 +5291,14 @@ mod tests {
     #[test]
     fn flex_direction_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { flex-direction: row-reverse; } #explicit { flex-direction: row; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='flex-direction: row'>Explicit</span><span id='invalid' style='flex-direction: column'>Invalid</span></div>",
+            "<style>#parent { flex-direction: row-reverse; } #column { flex-direction: column; } #reverse { flex-direction: column-reverse; } #explicit { flex-direction: row; }</style><div id='parent'><span id='child'>Child</span><span id='column'>Column</span><span id='reverse'>Reverse</span><span id='explicit' style='flex-direction: row'>Explicit</span><span id='invalid' style='flex-direction: row reverse'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let child = document.resolve_target("id=child").unwrap();
+        let column = document.resolve_target("id=column").unwrap();
+        let reverse = document.resolve_target("id=reverse").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
@@ -5274,6 +5309,14 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(child).flex_direction(),
             FlexDirectionValue::Row
+        );
+        assert_eq!(
+            document.computed_style_for_layout(column).flex_direction(),
+            FlexDirectionValue::Column
+        );
+        assert_eq!(
+            document.computed_style_for_layout(reverse).flex_direction(),
+            FlexDirectionValue::ColumnReverse
         );
         assert_eq!(
             document

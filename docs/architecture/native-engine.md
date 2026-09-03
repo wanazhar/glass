@@ -321,6 +321,15 @@ wrapping, and shared downstream artifacts; the shared one-token and two-token
 recorded in `docs/plan/tasks/native-engine-093.md`; design is `273b31db` and
 implementation is `653f025e`. Remote CI remains pending because the branch is
 local-only.
+The active 094 boundary extends that same owner to explicit
+`flex-direction:column|column-reverse` for fixed-height, no-wrap containers.
+Vertical main-axis justification, row-gap, bounded grow/shrink/basis,
+cross-axis item alignment, reverse placement, and complete descendant/artifact
+consumers are mapped through the existing state owner. Auto-height columns,
+wrapping, column-gap line distribution, logical writing modes, and
+browser-wide Flexbox remain outside the contract recorded in
+`docs/plan/tasks/native-engine-094.md`. Remote CI remains pending because the
+branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

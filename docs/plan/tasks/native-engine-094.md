@@ -1,7 +1,7 @@
 ---
 id: native-engine-094
 scope: glass-browser/native-engine/flex-direction-column
-status: active
+status: complete
 depends-on: [native-engine-093]
 ---
 
@@ -113,3 +113,57 @@ compilation, static documentation/release validators, live documentation
 coverage with explicit temporary binaries, and exact isolated-target cleanup.
 Remote CI remains pending because `main` is local-only and has not been
 pushed.
+
+## Completion evidence
+
+Design checkpoint: `aea47b17`.
+
+Implementation checkpoints: `7dc92517` added the parser, cascade, vertical
+flex sizing/placement owner, and integration coverage; `4e212151` grouped the
+forced outer dimensions into a bounded value so the strict lint contract stays
+clean.
+
+Focused and full behavior evidence:
+
+- focused CSS parser/cascade: 73/73 passed in 14m13.20s; peak RSS
+  2,521,608 KiB;
+- focused column justification/cross-axis/descendant/artifact integration:
+  1/1 passed in 6m13.74s; peak RSS 2,105,384 KiB;
+- focused vertical grow/shrink integration: 1/1 passed in 1.33s; peak RSS
+  82,500 KiB;
+- full native integration: 121/121 passed in 3.95s; peak RSS 82,496 KiB;
+- feature-enabled `glass-browser` library: 887 passed, 1 ignored, 0 failed
+  in 6.21s under `RUST_MIN_STACK=8388608`; peak RSS 82,232 KiB.
+
+Repository certification evidence:
+
+- strict all-feature Clippy passed with warnings denied in 5m29.37s; peak RSS
+  1,886,036 KiB;
+- strict no-default-feature Clippy passed with warnings denied in 4m52.17s;
+  peak RSS 1,805,448 KiB;
+- warning-denied workspace rustdoc passed in 7m18.43s; peak RSS
+  1,638,396 KiB;
+- locked `glass-dev --bins` build passed in 11m07.77s; peak RSS
+  1,999,576 KiB;
+- generated binaries are AArch64 ELF debug outputs: `glass` 140,088,688
+  bytes and `glass-browser` 90,867,448 bytes;
+- version sync, feature parity, release documentation, TUI, documentation
+  depth/coverage, reliability, adapter, Web IR, formatting, and diff audits
+  passed. The release-doc audit reported 508 Markdown documents, 83 current
+documents, 57 previous-version hits, 568 semantic hits, and 0 current-claim
+  failures; coverage reported 508/345/17/22 and Web IR reported 8/8/11.
+
+The first all-feature Clippy attempt correctly blocked on the new helper's
+eight arguments; `4e212151` repaired that finding and the rerun passed. This
+is recorded so the implementation checkpoint reflects the actual gate path,
+not only the final green result.
+
+Cleanup evidence: the exact regenerable `/tmp/glass-094-target` tree removed
+5.0G after process and open-file checks; its temporary release-documentation
+report was removed; no `/tmp/glass-*-target` directories remain;
+`/home/ubuntu/work/glass/target` remains 4.0K and `fuzz/target` is absent.
+The final filesystem check reported 65G available at 67% use. Shared
+registries/toolchains, source, durable data, and long-lived Glass processes
+were retained. Remote CI remains pending because `main` is local-only; no
+push, tag, release, registry publication, or browser-parity certification is
+claimed.

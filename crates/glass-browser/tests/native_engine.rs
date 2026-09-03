@@ -787,6 +787,59 @@ fn native_justified_text_expands_soft_wrapped_spaces_through_shared_artifacts() 
 }
 
 #[test]
+fn native_justification_composes_authored_word_spacing() {
+    let document = NativeDocument::parse(
+        "<style>#target { display:block; width:45px; text-align:justify; word-spacing:2px; }</style><div id='target'>A B C D</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let target = document.resolve_target("id=target").unwrap();
+    let layout = document
+        .layout(Viewport {
+            width: 45,
+            height: 80,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+
+    let runs = layout
+        .text_runs
+        .iter()
+        .filter(|run| run.node_id == target)
+        .map(|run| (run.origin, run.text.as_str(), run.justify_spacing))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        runs,
+        vec![
+            (NativePoint { x: 0, y: 0 }, "A", 0),
+            (NativePoint { x: 8, y: 0 }, " B", 1),
+            (NativePoint { x: 27, y: 0 }, " C", 0),
+            (NativePoint { x: 0, y: 20 }, "D", 0),
+        ]
+    );
+
+    let list = document
+        .display_list(Viewport {
+            width: 45,
+            height: 80,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun {
+                node_id,
+                text,
+                word_spacing: 2,
+                justify_spacing: 1,
+                ..
+            } if *node_id == target && text == " B"
+        )
+    }));
+}
+
+#[test]
 fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
     let document = NativeDocument::parse(
         "<style>#parent { display:block; width:32px; text-decoration:underline; color:rgba(0, 128, 0, 50%); } #clear { text-decoration:none; } #contents { display:contents; }</style><div id='parent'>A<span id='clear'>B</span><span id='contents'><span id='nested'>C</span></span></div>",

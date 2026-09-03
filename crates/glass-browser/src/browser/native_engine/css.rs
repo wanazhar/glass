@@ -179,6 +179,7 @@ pub(crate) enum TextAlignLastValue {
     Right,
     Start,
     End,
+    Justify,
 }
 
 impl TextAlignLastValue {
@@ -193,6 +194,7 @@ impl TextAlignLastValue {
             Self::Right => TextAlignValue::Right,
             Self::Start => TextAlignValue::Start,
             Self::End => TextAlignValue::End,
+            Self::Justify => TextAlignValue::Justify,
         }
     }
 }
@@ -3078,6 +3080,7 @@ fn parse_text_align_last(value: &str) -> Option<TextAlignLastValue> {
         "right" => Some(TextAlignLastValue::Right),
         "start" => Some(TextAlignLastValue::Start),
         "end" => Some(TextAlignLastValue::End),
+        "justify" => Some(TextAlignLastValue::Justify),
         _ => None,
     }
 }
@@ -4415,7 +4418,7 @@ mod tests {
     }
 
     #[test]
-    fn text_align_last_parser_accepts_only_bounded_inherited_values() {
+    fn text_align_last_parser_accepts_bounded_inherited_values() {
         assert_eq!(
             parse_text_align_last("auto"),
             Some(TextAlignLastValue::Auto)
@@ -4437,7 +4440,10 @@ mod tests {
             Some(TextAlignLastValue::Start)
         );
         assert_eq!(parse_text_align_last("end"), Some(TextAlignLastValue::End));
-        assert_eq!(parse_text_align_last("justify"), None);
+        assert_eq!(
+            parse_text_align_last("JUSTIFY"),
+            Some(TextAlignLastValue::Justify)
+        );
         assert_eq!(parse_text_align_last("match-parent"), None);
         assert_eq!(parse_text_align_last("start end"), None);
     }
@@ -4843,13 +4849,14 @@ mod tests {
         );
 
         let document = NativeDocument::parse(
-            "<style>#parent { text-align-last: center; } #explicit { text-align-last: end; } #invalid { text-align-last: justify; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span></div>",
+            "<style>#parent { text-align-last: center; } #explicit { text-align-last: end; } #justify { text-align-last: justify; } #invalid { text-align-last: match-parent; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='justify'>Justify</span><span id='invalid'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let child = document.resolve_target("id=child").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
+        let justify = document.resolve_target("id=justify").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
         assert_eq!(
@@ -4865,6 +4872,12 @@ mod tests {
                 .computed_style_for_layout(explicit)
                 .text_align_last(),
             TextAlignLastValue::End
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(justify)
+                .text_align_last(),
+            TextAlignLastValue::Justify
         );
         assert_eq!(
             document

@@ -599,6 +599,114 @@ fn native_text_alignment_shifts_complete_fixed_cell_line_items() {
 }
 
 #[test]
+fn native_text_alignment_maps_logical_edges_through_direction_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>#ltr-start,#ltr-end,#rtl-start,#rtl-end,#physical-left,#physical-right,#inline { display:block; width:32px; height:20px; } #ltr-start { direction:ltr; text-align:start; } #ltr-end { direction:ltr; text-align:end; } #rtl-start { text-align:start; } #rtl-end { text-align:end; } #physical-left { text-align:left; } #physical-right { text-align:right; } #rtl-wrapped { display:block; width:32px; text-align:start; } #inline { text-align:start; } #chip { display:inline-block; width:8px; height:8px; background-color:red; }</style><div id='root' style='direction:rtl'><div id='ltr-start'>L</div><div id='ltr-end'>E</div><div id='rtl-start'>S</div><div id='rtl-end'>N</div><div id='physical-left'>P</div><div id='physical-right'>R</div><div id='rtl-wrapped'>A B C</div><div id='inline'><span id='chip'></span>Q</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 200,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let expected_text_x = [
+        ("ltr-start", 0),
+        ("ltr-end", 24),
+        ("rtl-start", 24),
+        ("rtl-end", 0),
+        ("physical-left", 0),
+        ("physical-right", 24),
+    ];
+    for (target, expected_x) in expected_text_x {
+        let node = document.resolve_target(&format!("id={target}")).unwrap();
+        let text_run = layout
+            .text_runs
+            .iter()
+            .find(|text_run| text_run.node_id == node)
+            .unwrap();
+        assert_eq!(text_run.origin.x, expected_x, "{target}");
+    }
+
+    let inline = document.resolve_target("id=inline").unwrap();
+    let chip = document.resolve_target("id=chip").unwrap();
+    let rtl_wrapped = document.resolve_target("id=rtl-wrapped").unwrap();
+    let inline_rect = layout.box_for(inline).unwrap();
+    let chip_rect = layout.box_for(chip).unwrap();
+    assert_eq!(chip_rect.x, 16);
+    assert_eq!(chip_rect.y, inline_rect.y);
+    let inline_text = layout
+        .text_runs
+        .iter()
+        .find(|text_run| text_run.node_id == inline)
+        .unwrap();
+    assert_eq!(
+        inline_text.origin,
+        NativePoint {
+            x: 24,
+            y: inline_rect.y
+        }
+    );
+    assert_eq!(
+        layout.hit_test(17, i64::from(inline_rect.y + 1)),
+        Ok(Some(chip))
+    );
+
+    let wrapped_rect = layout.box_for(rtl_wrapped).unwrap();
+    let wrapped_text = layout
+        .text_runs
+        .iter()
+        .filter(|text_run| text_run.node_id == rtl_wrapped)
+        .map(|text_run| (text_run.origin, text_run.text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        wrapped_text,
+        vec![
+            (
+                NativePoint {
+                    x: 8,
+                    y: wrapped_rect.y
+                },
+                "A"
+            ),
+            (
+                NativePoint {
+                    x: 16,
+                    y: wrapped_rect.y
+                },
+                " B"
+            ),
+            (
+                NativePoint {
+                    x: 24,
+                    y: wrapped_rect.y + 20
+                },
+                "C"
+            ),
+        ]
+    );
+
+    let display_list = document.display_list(viewport).unwrap();
+    assert!(display_list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == chip && rect.x == 16 && rect.y == inline_rect.y
+        )
+    }));
+    let surface = display_list.rasterize().unwrap();
+    assert_eq!(surface.pixel(17, inline_rect.y + 1), Some([255, 0, 0, 255]));
+
+    let visible = document.visible_text(1024).0;
+    let mut search_start = 0;
+    for token in ["L", "E", "S", "N", "P", "R", "A", "B", "C", "Q"] {
+        let offset = visible[search_start..].find(token).unwrap();
+        search_start = search_start.saturating_add(offset + token.len());
+    }
+}
+
+#[test]
 fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
     let document = NativeDocument::parse(
         "<style>#parent { display:block; width:32px; text-decoration:underline; color:rgba(0, 128, 0, 50%); } #clear { text-decoration:none; } #contents { display:contents; }</style><div id='parent'>A<span id='clear'>B</span><span id='contents'><span id='nested'>C</span></span></div>",
@@ -2824,10 +2932,7 @@ fn native_direction_keeps_non_flex_flow_and_source_text_order_bounded() {
     let ltr_layout = ltr.layout(viewport).unwrap();
     let rtl_layout = rtl.layout(viewport).unwrap();
 
-    assert_eq!(
-        ltr_layout.box_for(ltr_first),
-        rtl_layout.box_for(rtl_first)
-    );
+    assert_eq!(ltr_layout.box_for(ltr_first), rtl_layout.box_for(rtl_first));
     assert_eq!(
         ltr_layout.box_for(ltr_second),
         rtl_layout.box_for(rtl_second)
@@ -8754,7 +8859,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

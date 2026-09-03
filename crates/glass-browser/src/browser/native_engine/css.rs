@@ -165,6 +165,8 @@ pub(crate) enum TextAlignValue {
     Left,
     Center,
     Right,
+    Start,
+    End,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2993,6 +2995,8 @@ fn parse_text_align(value: &str) -> Option<TextAlignValue> {
         "left" => Some(TextAlignValue::Left),
         "center" => Some(TextAlignValue::Center),
         "right" => Some(TextAlignValue::Right),
+        "start" => Some(TextAlignValue::Start),
+        "end" => Some(TextAlignValue::End),
         _ => None,
     }
 }
@@ -4317,13 +4321,15 @@ mod tests {
     }
 
     #[test]
-    fn text_align_parser_accepts_only_bounded_physical_values() {
+    fn text_align_parser_accepts_bounded_physical_and_logical_values() {
         assert_eq!(parse_text_align("left"), Some(TextAlignValue::Left));
         assert_eq!(parse_text_align("CENTER"), Some(TextAlignValue::Center));
         assert_eq!(parse_text_align("right"), Some(TextAlignValue::Right));
+        assert_eq!(parse_text_align("START"), Some(TextAlignValue::Start));
+        assert_eq!(parse_text_align("end"), Some(TextAlignValue::End));
         assert_eq!(parse_text_align("justify"), None);
-        assert_eq!(parse_text_align("start"), None);
-        assert_eq!(parse_text_align("end"), None);
+        assert_eq!(parse_text_align("match-parent"), None);
+        assert_eq!(parse_text_align("start end"), None);
     }
 
     #[test]
@@ -4706,6 +4712,50 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).text_align(),
             TextAlignValue::Center
+        );
+    }
+
+    #[test]
+    fn logical_text_align_is_inherited_and_respects_direction_overrides() {
+        let document = NativeDocument::parse(
+            "<style>#parent { direction: rtl; text-align: start; } #ltr { direction: ltr; } #end { text-align: end; } #physical { text-align: right; } #invalid { text-align: justify; }</style><div id='parent'><span id='child'>Child</span><span id='ltr'>Ltr</span><span id='end'>End</span><span id='physical'>Physical</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let ltr = document.resolve_target("id=ltr").unwrap();
+        let end = document.resolve_target("id=end").unwrap();
+        let physical = document.resolve_target("id=physical").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).text_align(),
+            TextAlignValue::Start
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).text_align(),
+            TextAlignValue::Start
+        );
+        assert_eq!(
+            document.computed_style_for_layout(ltr).direction(),
+            DirectionValue::Ltr
+        );
+        assert_eq!(
+            document.computed_style_for_layout(ltr).text_align(),
+            TextAlignValue::Start
+        );
+        assert_eq!(
+            document.computed_style_for_layout(end).text_align(),
+            TextAlignValue::End
+        );
+        assert_eq!(
+            document.computed_style_for_layout(physical).text_align(),
+            TextAlignValue::Right
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).text_align(),
+            TextAlignValue::Start
         );
     }
 

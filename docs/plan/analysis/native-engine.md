@@ -652,6 +652,18 @@ line-flush owner. The design is `2dae80fc`, implementation is `3380978c`, and
 local gate and paired-package evidence is recorded in the task file. Remote CI
 remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-101` slice adds inherited
+`text-align:justify` to the same fixed-cell inline-flow owner. It stretches
+only emitted collapsed ASCII separators on soft-wrapped non-final lines with
+positive free space, using deterministic source-order integer remainder
+allocation and carrying the extra advance through text runs, display-list,
+raster, overflow, scrolling, capture, and existing inline-item translations.
+Preformatted flow, bidi/shaping, language-specific line breaking, logical
+properties, vertical writing, and full text conformance remain outside the
+bounded contract. The design is ready locally; implementation, certification,
+and exact-target cleanup remain pending. Remote CI remains pending because the
+branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -877,6 +889,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-098` | bounded line-local auto main/cross margins for eligible wrapped row/row-reverse and fixed-height column/column-reverse flex containers, resolved after final line sizing and before per-line justify/align distribution with complete artifacts | `native-engine-097` | auto-height columns, new intrinsic/percentage sizing, fractional lengths, normal-flow auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 | `native-engine-099` | bounded inherited direction ltr/rtl for eligible Flexbox owners, mapping row main-start and column horizontal cross-start through the existing reverse/wrap-reverse and artifact consumers | `native-engine-098` | non-flex bidi/text reordering, `text-align:start|end`, logical properties, vertical writing modes, grid, and browser-wide directionality |
 | `native-engine-100` | bounded inherited `text-align:start/end` for fixed-cell inline flow, resolving logical line alignment through inherited direction while preserving physical alignment and source order | `native-engine-099` | Unicode bidi/shaping, mixed bidi runs, justify/match-parent/justify-all, logical properties, vertical writing modes, grid, floats, and browser-wide text conformance |
+| `native-engine-101` | bounded inherited `text-align:justify` for eligible collapsed fixed-cell soft-wrapped lines, with deterministic per-space integer expansion through shared text/artifact consumers | `native-engine-100` | final-line/hard-break justification, preformatted and break-all flow, Unicode bidi/shaping, language-specific line breaking, match-parent/justify-all, logical properties, vertical writing modes, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1277,11 +1290,13 @@ visual stacking.
 | bounded flex align-self stretch | makes auto-height direct flex items fill the existing line cross size without replacing the natural child layout or line owner | baseline/logical alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse the additional non-inherited item value, retain the natural bounded child layout, adjust only the eligible root box to the line cross size subject to existing physical insets and min/max heights, and reuse complete artifact consumers |
 | bounded flex auto margins | makes common `margin:auto` edges absorb positive free space through the existing no-wrap row and fixed-height column owners without adding a second geometry representation | wrapped-line auto margins, auto-height columns, normal-flow centering, logical writing modes, baseline alignment, intrinsic/percentage sizing, grid, and browser Flexbox parity | retain auto-edge provenance while treating auto margins as zero during flex sizing, allocate positive main-axis remainder before justify and positive cross-axis remainder before item alignment with deterministic integer shares, preserve reverse/source order, and reuse shared layout, overflow, hit-test, paint, raster, capture, and semantic consumers |
 | bounded flex wrapped auto margins | makes common wrapped rows and fixed-height column lines resolve `margin:auto` independently per formed line without adding a second line or artifact owner | auto-height columns, new intrinsic/percentage sizing, fractional lengths, normal-flow centering, logical writing modes, baseline alignment, grid, and browser Flexbox parity | keep auto edges zero for line formation and provisional sizing, resolve positive main/cross remainder after final line and `align-content` sizing with deterministic per-line shares, preserve reverse and wrap-reverse physical mapping, and reuse shared layout, overflow, hit-test, paint, raster, capture, and semantic consumers |
+| bounded text justification | makes collapsed soft-wrapped text consume positive line remainder through explicit, observable separator expansion | final-line/hard-break behavior, preformatted and break-all whitespace, bidi/shaping, language-specific line breaking, logical properties, vertical writing, and browser text conformance | record a soft-wrap line boundary, count emitted eligible separators, distribute integer remainder in source order, and carry the extra per-space advance through text layout, display-list, raster, overflow, scrolling, capture, and inline subtree translation |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-101.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-100.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-099.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-098.md` is the preceding completed checkpoint;
@@ -1339,6 +1354,12 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
+The active next checkpoint is recorded for
+`docs/plan/tasks/native-engine-101.md`: it owns bounded inherited
+`text-align:justify` for collapsed ASCII separators on soft-wrapped non-final
+fixed-cell lines. The design is ready locally; implementation, certification,
+and exact isolated-target cleanup remain pending. Remote CI remains pending
+because the branch is local-only.
 The completed current checkpoint is recorded for
 `docs/plan/tasks/native-engine-100.md`: the design is `2dae80fc` and the
 implementation is `3380978c`. Focused/full native, feature-library,

@@ -2439,6 +2439,7 @@ fn native_flex_row_justifies_fixed_items_and_distributes_space_deterministically
     assert_eq!(positions("space-around"), (6, 26));
     assert_eq!(positions("space-evenly"), (8, 24));
     assert_eq!(positions("normal"), (0, 8));
+    assert_eq!(positions("stretch"), (0, 8));
 
     let remainder = NativeDocument::parse(
         "<div id='row' style='display:flex;width:41px;gap:1px;justify-content:space-between'><div id='first' style='width:6px;height:8px'>A</div><div id='second' style='width:6px;height:8px'>B</div><div id='third' style='width:6px;height:8px'>C</div></div>",
@@ -2461,10 +2462,10 @@ fn native_flex_row_justifies_fixed_items_and_distributes_space_deterministically
 }
 
 #[test]
-fn native_flex_row_justify_content_normal_reuses_flex_start_geometry_and_artifacts() {
-    let source = |direction: &str| {
+fn native_flex_row_justify_content_aliases_reuse_flex_start_geometry_and_artifacts() {
+    let source = |direction: &str, justify: &str| {
         format!(
-            "<div id='row' style='display:flex;width:40px;height:20px;gap:2px;flex-direction:{direction};justify-content:normal'><button id='low' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>L</span></button><button id='middle' style='width:8px;height:8px;background-color:green'>M</button><button id='high' style='width:4px;height:8px;background-color:blue'>H</button></div>"
+            "<div id='row' style='display:flex;width:40px;height:20px;gap:2px;flex-direction:{direction};justify-content:{justify}'><button id='low' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>L</span></button><button id='middle' style='width:8px;height:8px;background-color:green'>M</button><button id='high' style='width:4px;height:8px;background-color:blue'>H</button></div>"
         )
     };
     let viewport = Viewport {
@@ -2473,44 +2474,47 @@ fn native_flex_row_justify_content_normal_reuses_flex_start_geometry_and_artifac
         device_scale_factor_milli: 1000,
     };
 
-    for (direction, expected) in [
-        ("row", [(0, 6), (8, 8), (18, 4)]),
-        ("row-reverse", [(34, 6), (24, 8), (18, 4)]),
-    ] {
-        let document =
-            NativeDocument::parse(&source(direction), &NativeEngineLimits::default()).unwrap();
-        let row = document.resolve_target("id=row").unwrap();
-        let low = document.resolve_target("id=low").unwrap();
-        let nested = document.resolve_target("id=nested").unwrap();
-        let middle = document.resolve_target("id=middle").unwrap();
-        let high = document.resolve_target("id=high").unwrap();
-        let layout = document.layout(viewport).unwrap();
-
-        assert_eq!(layout.box_for(row).unwrap().width, 40);
-        for (node_id, (x, width)) in [
-            (low, expected[0]),
-            (middle, expected[1]),
-            (high, expected[2]),
+    for justify in ["normal", "stretch"] {
+        for (direction, expected) in [
+            ("row", [(0, 6), (8, 8), (18, 4)]),
+            ("row-reverse", [(34, 6), (24, 8), (18, 4)]),
         ] {
-            assert_eq!(
-                layout.box_for(node_id).map(|rect| (rect.x, rect.width)),
-                Some((x, width))
-            );
-        }
-        assert_eq!(layout.box_for(nested).unwrap().x, expected[0].0);
-        assert_eq!(
-            layout.hit_test((expected[0].0 + 1).into(), 1).unwrap(),
-            Some(nested)
-        );
+            let document =
+                NativeDocument::parse(&source(direction, justify), &NativeEngineLimits::default())
+                    .unwrap();
+            let row = document.resolve_target("id=row").unwrap();
+            let low = document.resolve_target("id=low").unwrap();
+            let nested = document.resolve_target("id=nested").unwrap();
+            let middle = document.resolve_target("id=middle").unwrap();
+            let high = document.resolve_target("id=high").unwrap();
+            let layout = document.layout(viewport).unwrap();
 
-        let list = document.display_list(viewport).unwrap();
-        assert!(list.commands.iter().any(|command| {
-            matches!(
-                command,
-                NativeDisplayCommand::FillRect { node_id, rect, color, .. }
-                    if *node_id == low && rect.x == expected[0].0 && *color == NativeColor::RED
-            )
-        }));
+            assert_eq!(layout.box_for(row).unwrap().width, 40);
+            for (node_id, (x, width)) in [
+                (low, expected[0]),
+                (middle, expected[1]),
+                (high, expected[2]),
+            ] {
+                assert_eq!(
+                    layout.box_for(node_id).map(|rect| (rect.x, rect.width)),
+                    Some((x, width))
+                );
+            }
+            assert_eq!(layout.box_for(nested).unwrap().x, expected[0].0);
+            assert_eq!(
+                layout.hit_test((expected[0].0 + 1).into(), 1).unwrap(),
+                Some(nested)
+            );
+
+            let list = document.display_list(viewport).unwrap();
+            assert!(list.commands.iter().any(|command| {
+                matches!(
+                    command,
+                    NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                        if *node_id == low && rect.x == expected[0].0 && *color == NativeColor::RED
+                )
+            }));
+        }
     }
 }
 
@@ -7653,7 +7657,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

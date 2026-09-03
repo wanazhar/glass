@@ -172,6 +172,7 @@ pub(crate) enum JustifyContentValue {
     #[default]
     FlexStart,
     Normal,
+    Stretch,
     Center,
     FlexEnd,
     SpaceBetween,
@@ -2846,6 +2847,7 @@ fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
     match value.to_ascii_lowercase().as_str() {
         "flex-start" => Some(JustifyContentValue::FlexStart),
         "normal" => Some(JustifyContentValue::Normal),
+        "stretch" => Some(JustifyContentValue::Stretch),
         "center" => Some(JustifyContentValue::Center),
         "flex-end" => Some(JustifyContentValue::FlexEnd),
         "space-between" => Some(JustifyContentValue::SpaceBetween),
@@ -4093,6 +4095,11 @@ mod tests {
             parse_justify_content("NORMAL"),
             Some(JustifyContentValue::Normal)
         );
+        assert_eq!(
+            parse_justify_content("STRETCH"),
+            Some(JustifyContentValue::Stretch)
+        );
+        assert_eq!(parse_justify_content("safe center"), None);
         assert_eq!(parse_justify_content("start"), None);
     }
 
@@ -4132,6 +4139,10 @@ mod tests {
             Some((AlignContentValue::Normal, JustifyContentValue::Normal))
         );
         assert_eq!(
+            parse_place_content("stretch"),
+            Some((AlignContentValue::Stretch, JustifyContentValue::Stretch))
+        );
+        assert_eq!(
             parse_place_content("normal center"),
             Some((AlignContentValue::Normal, JustifyContentValue::Center))
         );
@@ -4139,7 +4150,10 @@ mod tests {
             parse_place_content("stretch flex-start"),
             Some((AlignContentValue::Stretch, JustifyContentValue::FlexStart))
         );
-        assert_eq!(parse_place_content("center stretch"), None);
+        assert_eq!(
+            parse_place_content("center stretch"),
+            Some((AlignContentValue::Center, JustifyContentValue::Stretch))
+        );
         assert_eq!(parse_place_content("center center center"), None);
         assert_eq!(parse_place_content("start center"), None);
     }
@@ -5004,7 +5018,7 @@ mod tests {
     #[test]
     fn justify_content_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { justify-content: space-between; } #explicit { justify-content: flex-end; } #normal { justify-content: normal; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='justify-content: center'>Explicit</span><span id='normal' style='justify-content: safe center'>Normal</span><span id='invalid' style='justify-content: safe center'>Invalid</span></div>",
+            "<style>#parent { justify-content: space-between; } #explicit { justify-content: flex-end; } #normal { justify-content: normal; } #stretch { justify-content: stretch; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='justify-content: center'>Explicit</span><span id='normal' style='justify-content: safe center'>Normal</span><span id='stretch' style='justify-content: safe center'>Stretch</span><span id='invalid' style='justify-content: safe center'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5012,6 +5026,7 @@ mod tests {
         let child = document.resolve_target("id=child").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
         let normal = document.resolve_target("id=normal").unwrap();
+        let stretch = document.resolve_target("id=stretch").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
         assert_eq!(
@@ -5031,6 +5046,12 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(normal).justify_content(),
             JustifyContentValue::Normal
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(stretch)
+                .justify_content(),
+            JustifyContentValue::Stretch
         );
         assert_eq!(
             document
@@ -5138,7 +5159,7 @@ mod tests {
     #[test]
     fn place_content_is_expanded_with_component_precedence_and_no_inheritance() {
         let document = NativeDocument::parse(
-            "<style>#parent { place-content: space-around flex-end; } .shared { place-content: center; } #shared { place-content: flex-start; } #longhands { place-content: stretch center; justify-content: flex-start; align-content: flex-end; } #invalid { place-content: center center; place-content: stretch; } #normal { place-content: normal; } #order { align-content: flex-end; place-content: space-between center; justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='shared' class='shared'>Shared</span><span id='longhands'>Longhands</span><span id='invalid'>Invalid</span><span id='normal'>Normal</span><span id='order'>Order</span><span id='inline' style='place-content: flex-start flex-end; place-content: center; justify-content: flex-start'>Inline</span></div>",
+            "<style>#parent { place-content: space-around flex-end; } .shared { place-content: center; } #shared { place-content: flex-start; } #longhands { place-content: stretch center; justify-content: flex-start; align-content: flex-end; } #invalid { place-content: center center; place-content: stretch stretch stretch; } #normal { place-content: normal; } #stretch { place-content: stretch; } #order { align-content: flex-end; place-content: space-between center; justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='shared' class='shared'>Shared</span><span id='longhands'>Longhands</span><span id='invalid'>Invalid</span><span id='normal'>Normal</span><span id='stretch'>Stretch</span><span id='order'>Order</span><span id='inline' style='place-content: flex-start flex-end; place-content: center; justify-content: flex-start'>Inline</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5148,6 +5169,7 @@ mod tests {
         let longhands = document.resolve_target("id=longhands").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
         let normal = document.resolve_target("id=normal").unwrap();
+        let stretch = document.resolve_target("id=stretch").unwrap();
         let order = document.resolve_target("id=order").unwrap();
         let inline = document.resolve_target("id=inline").unwrap();
 
@@ -5204,6 +5226,16 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(normal).justify_content(),
             JustifyContentValue::Normal
+        );
+        assert_eq!(
+            document.computed_style_for_layout(stretch).align_content(),
+            AlignContentValue::Stretch
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(stretch)
+                .justify_content(),
+            JustifyContentValue::Stretch
         );
         assert_eq!(
             document.computed_style_for_layout(order).align_content(),

@@ -1444,6 +1444,7 @@ impl<'a> LayoutBuilder<'a> {
                 JustifyContentValue::FlexEnd => free_space,
                 JustifyContentValue::FlexStart
                 | JustifyContentValue::Normal
+                | JustifyContentValue::Stretch
                 | JustifyContentValue::SpaceBetween
                 | JustifyContentValue::SpaceAround
                 | JustifyContentValue::SpaceEvenly => 0,

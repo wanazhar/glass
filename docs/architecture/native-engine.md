@@ -351,13 +351,15 @@ auto-height columns, and browser-wide Flexbox remain outside the contract
 recorded in `docs/plan/tasks/native-engine-095.md`. Design is `598228a7`,
 implementation is `96ea62a3`, and local certification evidence is recorded in
 the task file. Remote CI remains pending because the branch is local-only.
-The active 096 design extends that same fixed-height column owner to
+The completed 096 boundary extends that same fixed-height column owner to
 `flex-wrap:wrap-reverse`. It reflects horizontal line boxes and each line's
 cross-axis `align-items`/`align-self` placement from the physical cross-end,
 reuses 095 line formation, `column-gap`, `align-content`, main-axis direction,
 and shared descendant/artifact consumers, and preserves source/semantic order.
-The contract is recorded in `docs/plan/tasks/native-engine-096.md`; the design
-checkpoint is `f5026f3c` and implementation is in progress.
+The contract is recorded in `docs/plan/tasks/native-engine-096.md`; design is
+`f5026f3c`, implementation is `6862aff6`, and local certification/cleanup
+evidence is recorded in the task file. Remote CI remains pending because the
+branch is local-only.
 Auto-height columns, intrinsic or percentage sizing, logical writing modes, and
 browser-wide Flexbox remain outside the contract. Remote CI remains pending
 because the branch is local-only.

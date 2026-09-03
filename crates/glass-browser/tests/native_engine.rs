@@ -2376,7 +2376,7 @@ fn native_flex_column_auto_margins_map_main_cross_axes_and_reverse() {
 }
 
 #[test]
-fn native_flex_auto_margins_preserve_overflow_and_wrapped_fallback() {
+fn native_flex_auto_margins_preserve_overflow_and_resolve_wrapped_lines() {
     let overflow = NativeDocument::parse(
         "<div id='row' style='display:flex;width:10px;height:8px'><div id='first' style='width:8px;height:4px;flex-shrink:0'></div><div id='second' style='width:8px;height:4px;margin-left:auto;flex-shrink:0'></div></div>",
         &NativeEngineLimits::default(),
@@ -2420,10 +2420,259 @@ fn native_flex_auto_margins_preserve_overflow_and_wrapped_fallback() {
             device_scale_factor_milli: 1000,
         })
         .unwrap();
-    assert_eq!(with_layout.boxes, without_layout.boxes);
-    assert_eq!(with_layout.text_runs, without_layout.text_runs);
-    assert_eq!(with_layout.content_width, without_layout.content_width);
-    assert_eq!(with_layout.content_height, without_layout.content_height);
+    let with_first = with_auto.resolve_target("id=first").unwrap();
+    let with_second = with_auto.resolve_target("id=second").unwrap();
+    let without_first = without_auto.resolve_target("id=first").unwrap();
+    let without_second = without_auto.resolve_target("id=second").unwrap();
+    assert_eq!(with_layout.box_for(with_first).unwrap().x, 0);
+    assert_eq!(with_layout.box_for(with_second).unwrap().x, 4);
+    assert_eq!(without_layout.box_for(without_first).unwrap().x, 0);
+    assert_eq!(without_layout.box_for(without_second).unwrap().x, 0);
+    assert_eq!(with_layout.box_for(with_second).unwrap().y, 4);
+    assert_eq!(without_layout.box_for(without_second).unwrap().y, 4);
+}
+
+#[test]
+fn native_flex_wrapped_row_auto_margins_resolve_per_line_and_wrap_reverse() {
+    let viewport = Viewport {
+        width: 32,
+        height: 36,
+        device_scale_factor_milli: 1000,
+    };
+
+    for direction in ["row", "row-reverse"] {
+        for wrap in ["wrap", "wrap-reverse"] {
+            let html = format!(
+                "<div id='row' style='display:flex;width:21px;height:31px;gap:2px;flex-direction:{direction};flex-wrap:{wrap};align-items:flex-start;align-content:stretch'><div id='first' style='width:8px;height:6px;background-color:red'>A</div><button id='second' style='width:8px;height:6px;margin-left:auto;margin-top:auto;background-color:blue'><span id='nested' style='display:block;height:2px'>B</span></button><div id='third' style='width:8px;height:4px;margin-left:auto;margin-right:auto;background-color:green'>C</div></div>"
+            );
+            let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
+            let row = document.resolve_target("id=row").unwrap();
+            let first = document.resolve_target("id=first").unwrap();
+            let second = document.resolve_target("id=second").unwrap();
+            let nested = document.resolve_target("id=nested").unwrap();
+            let third = document.resolve_target("id=third").unwrap();
+            let layout = document.layout(viewport).unwrap();
+
+            let (first_x, second_x) = if direction == "row" { (0, 13) } else { (13, 3) };
+            let third_x = if direction == "row" { 7 } else { 6 };
+            let (first_y, second_y, third_y) = if wrap == "wrap" {
+                (0, 10, 18)
+            } else {
+                (15, 25, 0)
+            };
+            assert_eq!(
+                layout.box_for(row),
+                Some(NativeRect {
+                    x: 0,
+                    y: 0,
+                    width: 21,
+                    height: 31,
+                })
+            );
+            assert_eq!(
+                layout.box_for(first),
+                Some(NativeRect {
+                    x: first_x,
+                    y: first_y,
+                    width: 8,
+                    height: 6,
+                })
+            );
+            assert_eq!(
+                layout.box_for(second),
+                Some(NativeRect {
+                    x: second_x,
+                    y: second_y,
+                    width: 8,
+                    height: 6,
+                })
+            );
+            assert_eq!(
+                layout.box_for(third),
+                Some(NativeRect {
+                    x: third_x,
+                    y: third_y,
+                    width: 8,
+                    height: 4,
+                })
+            );
+            assert_eq!(
+                layout.box_for(nested).map(|rect| (rect.x, rect.y)),
+                Some((second_x, second_y))
+            );
+            assert_eq!(
+                layout
+                    .hit_test(i64::from(second_x + 1), i64::from(second_y + 1))
+                    .unwrap(),
+                Some(nested)
+            );
+
+            let list = document.display_list(viewport).unwrap();
+            assert!(list.commands.iter().any(|command| {
+                matches!(
+                    command,
+                    NativeDisplayCommand::FillRect {
+                        node_id,
+                        rect,
+                        color,
+                        ..
+                    } if *node_id == second
+                        && rect.x == second_x
+                        && rect.y == second_y
+                        && *color == NativeColor {
+                            red: 0,
+                            green: 0,
+                            blue: 255,
+                            alpha: 255,
+                        }
+                )
+            }));
+            let surface = list.rasterize().unwrap();
+            assert_eq!(
+                surface.pixel(second_x + 1, second_y + 1),
+                Some([0, 0, 255, 255])
+            );
+        }
+    }
+
+    let overflow = NativeDocument::parse(
+        "<div id='row' style='display:flex;width:10px;flex-wrap:wrap'><div id='wide' style='width:16px;height:4px;margin-left:auto;flex-shrink:0;background-color:red'>W</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let wide = overflow.resolve_target("id=wide").unwrap();
+    let overflow_layout = overflow
+        .layout(Viewport {
+            width: 10,
+            height: 12,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(overflow_layout.box_for(wide).unwrap().x, 0);
+    assert_eq!(overflow_layout.content_width, 16);
+    assert_eq!(overflow_layout.max_scroll_offset().x, 6);
+}
+
+#[test]
+fn native_flex_wrapped_column_auto_margins_map_lines_reverse_and_artifacts() {
+    let viewport = Viewport {
+        width: 36,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+
+    for direction in ["column", "column-reverse"] {
+        for wrap in ["wrap", "wrap-reverse"] {
+            let html = format!(
+                "<div id='column' style='display:flex;width:31px;height:21px;flex-direction:{direction};flex-wrap:{wrap};row-gap:2px;column-gap:3px;align-items:flex-start;align-content:stretch'><div id='first' style='width:6px;height:8px;background-color:red'>A</div><button id='second' style='width:8px;height:8px;margin-top:auto;margin-left:auto;background-color:blue'><span id='nested' style='display:block;height:2px'>B</span></button><div id='third' style='width:10px;height:6px;margin:auto;background-color:green'>C</div></div>"
+            );
+            let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
+            let column = document.resolve_target("id=column").unwrap();
+            let first = document.resolve_target("id=first").unwrap();
+            let second = document.resolve_target("id=second").unwrap();
+            let nested = document.resolve_target("id=nested").unwrap();
+            let third = document.resolve_target("id=third").unwrap();
+            let layout = document.layout(viewport).unwrap();
+
+            let line_one_x = if wrap == "wrap" { 0 } else { 18 };
+            let line_two_x = if wrap == "wrap" { 16 } else { 0 };
+            let first_x = if wrap == "wrap" {
+                line_one_x
+            } else {
+                line_one_x + 7
+            };
+            let second_x = line_one_x + 5;
+            let third_x = line_two_x + 3;
+            let (first_y, second_y, third_y) = if direction == "column" {
+                (0, 13, 8)
+            } else {
+                (13, 3, 7)
+            };
+            assert_eq!(
+                layout.box_for(column),
+                Some(NativeRect {
+                    x: 0,
+                    y: 0,
+                    width: 31,
+                    height: 21,
+                })
+            );
+            assert_eq!(
+                layout.box_for(first),
+                Some(NativeRect {
+                    x: first_x,
+                    y: first_y,
+                    width: 6,
+                    height: 8,
+                })
+            );
+            assert_eq!(
+                layout.box_for(second),
+                Some(NativeRect {
+                    x: second_x,
+                    y: second_y,
+                    width: 8,
+                    height: 8,
+                })
+            );
+            assert_eq!(
+                layout.box_for(third),
+                Some(NativeRect {
+                    x: third_x,
+                    y: third_y,
+                    width: 10,
+                    height: 6,
+                })
+            );
+            assert_eq!(
+                layout.box_for(nested).map(|rect| (rect.x, rect.y)),
+                Some((second_x, second_y))
+            );
+            assert_eq!(
+                layout
+                    .hit_test(i64::from(second_x + 1), i64::from(second_y + 1))
+                    .unwrap(),
+                Some(nested)
+            );
+
+            let list = document.display_list(viewport).unwrap();
+            assert!(list.commands.iter().any(|command| {
+                matches!(
+                    command,
+                    NativeDisplayCommand::FillRect {
+                        node_id,
+                        rect,
+                        color,
+                        ..
+                    } if *node_id == third
+                        && rect.x == third_x
+                        && rect.y == third_y
+                        && *color == NativeColor { red: 0, green: 128, blue: 0, alpha: 255 }
+                )
+            }));
+            let surface = list.rasterize().unwrap();
+            assert_eq!(
+                surface.pixel(second_x + 1, second_y + 1),
+                Some([0, 0, 255, 255])
+            );
+        }
+    }
+
+    let auto_height = NativeDocument::parse(
+        "<div id='column' style='display:flex;width:20px;flex-direction:column;flex-wrap:wrap'><div id='item' style='width:8px;height:4px;margin-left:auto'>I</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let item = auto_height.resolve_target("id=item").unwrap();
+    assert_eq!(
+        auto_height
+            .layout(viewport)
+            .unwrap()
+            .box_for(item)
+            .unwrap()
+            .x,
+        0
+    );
 }
 
 #[test]

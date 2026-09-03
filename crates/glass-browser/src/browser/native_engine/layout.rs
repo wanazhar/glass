@@ -1741,30 +1741,6 @@ impl<'a> LayoutBuilder<'a> {
         })
     }
 
-    fn has_visible_auto_margin_child(&self, id: NativeNodeId) -> bool {
-        self.document.node(id).is_some_and(|node| {
-            node.children().iter().any(|child| {
-                let Some(child_node) = self.document.node(*child) else {
-                    return false;
-                };
-                match child_node.kind() {
-                    NativeNodeKind::Element { .. }
-                        if !self.is_non_rendered(*child)
-                            && !self.document.is_hidden_for_layout(*child)
-                            && self.effective_display(*child) != DisplayValue::None =>
-                    {
-                        self.document
-                            .computed_style_for_layout(*child)
-                            .margin_auto()
-                            .any()
-                    }
-                    NativeNodeKind::Text(_) | NativeNodeKind::Document => false,
-                    NativeNodeKind::Element { .. } => false,
-                }
-            })
-        })
-    }
-
     fn layout_flex_line(
         &mut self,
         items: Vec<FlexItem>,
@@ -2383,6 +2359,14 @@ impl<'a> LayoutBuilder<'a> {
                 .saturating_add(item.height)
         });
         let occupied_height = item_height.saturating_add(context.gap.saturating_mul(gap_count));
+        let free_space_before_auto = context.available_height.saturating_sub(occupied_height);
+        resolve_column_main_auto_margins(&mut items, free_space_before_auto, context.reverse);
+        let item_height = items.iter().fold(0u32, |total, item| {
+            total
+                .saturating_add(item.margin.vertical())
+                .saturating_add(item.height)
+        });
+        let occupied_height = item_height.saturating_add(context.gap.saturating_mul(gap_count));
         let free_space = context.available_height.saturating_sub(occupied_height);
         let item_count = items.len();
         let leading_offset = match context.justify_content {
@@ -2441,7 +2425,7 @@ impl<'a> LayoutBuilder<'a> {
                 .saturating_add(context.available_height)
                 .saturating_sub(initial_offset)
                 .saturating_add(reverse_shift);
-            for (index, item) in items.into_iter().enumerate() {
+            for (index, mut item) in items.into_iter().enumerate() {
                 if index > 0 {
                     cursor_bottom = cursor_bottom.saturating_sub(context.gap);
                     if context.justify_content == JustifyContentValue::SpaceBetween {
@@ -2488,10 +2472,13 @@ impl<'a> LayoutBuilder<'a> {
                     AlignSelfValue::Stretch => AlignItemsValue::Stretch,
                     AlignSelfValue::Normal => AlignItemsValue::Normal,
                 };
+                let cross_auto_resolved =
+                    resolve_column_cross_auto_margins(&mut item, context.available_width);
                 let item_width = if matches!(
                     alignment,
                     AlignItemsValue::Stretch | AlignItemsValue::Normal
-                ) && style.width().is_none()
+                ) && !cross_auto_resolved
+                    && style.width().is_none()
                 {
                     constrain_dimension(
                         context
@@ -2513,7 +2500,11 @@ impl<'a> LayoutBuilder<'a> {
                 let remaining = context
                     .available_width
                     .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
-                let cross_offset = cross_axis_offset(alignment, remaining);
+                let cross_offset = if cross_auto_resolved {
+                    0
+                } else {
+                    cross_axis_offset(alignment, remaining)
+                };
                 let item_x = context
                     .x
                     .saturating_add(item.margin.left())
@@ -2546,7 +2537,7 @@ impl<'a> LayoutBuilder<'a> {
             }
         } else {
             let mut cursor_y = context.y.saturating_add(initial_offset);
-            for (index, item) in items.into_iter().enumerate() {
+            for (index, mut item) in items.into_iter().enumerate() {
                 if index > 0 {
                     cursor_y = cursor_y.saturating_add(context.gap);
                     if context.justify_content == JustifyContentValue::SpaceBetween {
@@ -2593,10 +2584,13 @@ impl<'a> LayoutBuilder<'a> {
                     AlignSelfValue::Stretch => AlignItemsValue::Stretch,
                     AlignSelfValue::Normal => AlignItemsValue::Normal,
                 };
+                let cross_auto_resolved =
+                    resolve_column_cross_auto_margins(&mut item, context.available_width);
                 let item_width = if matches!(
                     alignment,
                     AlignItemsValue::Stretch | AlignItemsValue::Normal
-                ) && style.width().is_none()
+                ) && !cross_auto_resolved
+                    && style.width().is_none()
                 {
                     constrain_dimension(
                         context
@@ -2618,7 +2612,11 @@ impl<'a> LayoutBuilder<'a> {
                 let remaining = context
                     .available_width
                     .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
-                let cross_offset = cross_axis_offset(alignment, remaining);
+                let cross_offset = if cross_auto_resolved {
+                    0
+                } else {
+                    cross_axis_offset(alignment, remaining)
+                };
                 let item_x = context
                     .x
                     .saturating_add(item.margin.left())
@@ -2894,11 +2892,6 @@ impl<'a> LayoutBuilder<'a> {
             return self.layout_children(parent, x, y, available_width, depth);
         }
         let parent_style = self.document.computed_style_for_layout(parent);
-        if parent_style.flex_wrap() != FlexWrapValue::NoWrap
-            && self.has_visible_auto_margin_child(parent)
-        {
-            return self.layout_children(parent, x, y, available_width, depth);
-        }
         if matches!(
             parent_style.flex_direction(),
             FlexDirectionValue::Column | FlexDirectionValue::ColumnReverse

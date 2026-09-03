@@ -2660,6 +2660,156 @@ fn native_flex_column_applies_vertical_flex_sizing_before_justification() {
 }
 
 #[test]
+fn native_flex_column_wrap_forms_vertical_lines_and_maps_cross_axis_spacing() {
+    let source = |direction: &str| {
+        format!(
+            "<div id='column' style='display:flex;width:26px;height:20px;flex-direction:{direction};flex-wrap:wrap;row-gap:2px;column-gap:3px;align-items:center;align-content:space-between'><div id='first' style='width:4px;height:8px;background-color:red'><span id='nested' style='display:block;height:2px'>F</span></div><div id='second' style='width:8px;height:7px;background-color:green'>S</div><div id='third' style='width:6px;height:6px;background-color:blue'>T</div></div>"
+        )
+    };
+    let viewport = Viewport {
+        width: 32,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+
+    for (direction, expected) in [
+        ("column", [(2, 0, 4, 8), (0, 10, 8, 7), (20, 0, 6, 6)]),
+        (
+            "column-reverse",
+            [(2, 12, 4, 8), (0, 3, 8, 7), (20, 14, 6, 6)],
+        ),
+    ] {
+        let document =
+            NativeDocument::parse(&source(direction), &NativeEngineLimits::default()).unwrap();
+        let column = document.resolve_target("id=column").unwrap();
+        let first = document.resolve_target("id=first").unwrap();
+        let nested = document.resolve_target("id=nested").unwrap();
+        let second = document.resolve_target("id=second").unwrap();
+        let third = document.resolve_target("id=third").unwrap();
+        let layout = document.layout(viewport).unwrap();
+
+        assert_eq!(
+            layout
+                .box_for(column)
+                .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+            Some((0, 0, 26, 20))
+        );
+        for (node_id, expected_rect) in [
+            (first, expected[0]),
+            (second, expected[1]),
+            (third, expected[2]),
+        ] {
+            assert_eq!(
+                layout
+                    .box_for(node_id)
+                    .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+                Some(expected_rect)
+            );
+        }
+        assert_eq!(
+            layout.box_for(nested).map(|rect| (rect.x, rect.y)),
+            Some((expected[0].0, expected[0].1))
+        );
+        assert_eq!(
+            layout.hit_test(3, i64::from(expected[0].1 + 1)).unwrap(),
+            Some(nested)
+        );
+
+        let list = document.display_list(viewport).unwrap();
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                    if *node_id == first
+                        && rect.x == expected[0].0
+                        && rect.y == expected[0].1
+                        && *color == NativeColor::RED
+            )
+        }));
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                    if *node_id == third
+                        && rect.x == expected[2].0
+                        && rect.y == expected[2].1
+                        && *color
+                            == (NativeColor {
+                                red: 0,
+                                green: 0,
+                                blue: u8::MAX,
+                                alpha: u8::MAX,
+                            })
+            )
+        }));
+    }
+}
+
+#[test]
+fn native_flex_column_wrap_sizes_each_line_and_preserves_wrap_reverse_fallback() {
+    let wrapped = NativeDocument::parse(
+        "<div id='column' style='display:flex;width:20px;height:20px;flex-direction:column;flex-wrap:wrap;row-gap:2px;column-gap:1px;align-content:flex-start'><div id='first' style='width:5px;height:6px;flex-grow:1'>A</div><div id='second' style='width:5px;height:6px;flex-grow:1'>B</div><div id='third' style='width:5px;height:6px;flex-grow:1'>C</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = wrapped.resolve_target("id=first").unwrap();
+    let second = wrapped.resolve_target("id=second").unwrap();
+    let third = wrapped.resolve_target("id=third").unwrap();
+    let layout = wrapped
+        .layout(Viewport {
+            width: 24,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(
+        layout
+            .box_for(first)
+            .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+        Some((0, 0, 5, 9))
+    );
+    assert_eq!(
+        layout
+            .box_for(second)
+            .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+        Some((0, 11, 5, 9))
+    );
+    assert_eq!(
+        layout
+            .box_for(third)
+            .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+        Some((6, 0, 5, 20))
+    );
+
+    let wrap_reverse = NativeDocument::parse(
+        "<div id='column' style='display:flex;width:20px;height:20px;flex-direction:column;flex-wrap:wrap-reverse;row-gap:2px'><div id='first' style='display:block;width:5px;height:6px'>A</div><div id='second' style='display:block;width:5px;height:6px'>B</div><div id='third' style='display:block;width:5px;height:6px'>C</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let block = NativeDocument::parse(
+        "<div id='column' style='display:block;width:20px;height:20px;row-gap:2px'><div id='first' style='display:block;width:5px;height:6px'>A</div><div id='second' style='display:block;width:5px;height:6px'>B</div><div id='third' style='display:block;width:5px;height:6px'>C</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let wrap_reverse_layout = wrap_reverse
+        .layout(Viewport {
+            width: 24,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let block_layout = block
+        .layout(Viewport {
+            width: 24,
+            height: 24,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(wrap_reverse_layout.boxes, block_layout.boxes);
+    assert_eq!(wrap_reverse_layout.text_runs, block_layout.text_runs);
+}
+
+#[test]
 fn native_flex_row_space_around_rounds_and_mirrors_complete_item_geometry() {
     let source = |direction: &str| {
         format!(

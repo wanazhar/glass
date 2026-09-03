@@ -1443,6 +1443,7 @@ impl<'a> LayoutBuilder<'a> {
                 JustifyContentValue::Center => free_space / 2,
                 JustifyContentValue::FlexEnd => free_space,
                 JustifyContentValue::FlexStart
+                | JustifyContentValue::Normal
                 | JustifyContentValue::SpaceBetween
                 | JustifyContentValue::SpaceAround
                 | JustifyContentValue::SpaceEvenly => 0,

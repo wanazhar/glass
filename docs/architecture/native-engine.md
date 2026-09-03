@@ -28,7 +28,7 @@ bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
 bounded-flex-gap-family,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
-bounded-flex-directionality/bounded-final-line-alignment,
+bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -428,6 +428,15 @@ The completed contract is `docs/plan/tasks/native-engine-102.md`; design is
 `fc396200`, implementation is `1157bf49`, and complete local gate plus
 exact-target cleanup evidence is recorded in the task file. Remote CI remains
 pending because the branch is local-only.
+The active 103 boundary adds explicit inherited `text-align-last:justify` to
+that same fixed-cell inline-flow owner. Only the final non-empty line reaching
+the normal block completion flush may distribute positive free space across
+eligible collapsed ASCII separators through the 101 spacing fields; ordinary
+soft-wrap justification, preformatted/break-all paths, bidi/shaping, and
+full text conformance remain outside the contract. The active contract is
+`docs/plan/tasks/native-engine-103.md`; design is ready locally and
+implementation, certification, and exact-target cleanup remain pending.
+Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

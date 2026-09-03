@@ -377,7 +377,7 @@ percentage sizing, and normal-flow auto margins remain outside the contract
 recorded in `docs/plan/tasks/native-engine-097.md`; design is `2901c830`,
 implementation is `815794ce`, and local certification/cleanup evidence is
 recorded there. Remote CI remains pending because the branch is local-only.
-The active 098 boundary extends that auto-edge owner into eligible
+The completed 098 boundary extends that auto-edge owner into eligible
 `flex-wrap:wrap|wrap-reverse` row/row-reverse and fixed-height
 column/column-reverse lines. Auto margins remain zero during line formation and
 per-line sizing, then resolve against each final line after `align-content`
@@ -386,7 +386,9 @@ wrap-reverse physical reflection, deterministic integer shares, and complete
 descendant/artifact consumers remain shared; auto-height columns, new
 intrinsic/percentage sizing, normal-flow auto margins, logical writing modes,
 baseline alignment, grid, and browser-wide Flexbox remain outside
-`docs/plan/tasks/native-engine-098.md`. The design is ready locally and remote
+`docs/plan/tasks/native-engine-098.md`. The design is `a4b05f07`, the
+implementation is `77a4b629`, and the final test-only checkpoint is `866a8862`;
+local certification and cleanup evidence are recorded in the task file. Remote
 CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

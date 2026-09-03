@@ -584,6 +584,15 @@ is `aea47b17`, implementation checkpoints are `7dc92517` and `4e212151`, and
 local certification/cleanup evidence is recorded in the task file. Remote CI
 remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-095` slice extends the completed
+column owner to fixed-height `flex-wrap:wrap` containers. It forms vertical
+main-axis lines, consumes `column-gap` across the horizontal cross axis,
+reuses per-line integer flex sizing/justification and existing `align-content`,
+and keeps complete descendant/artifact consumers on the shared geometry owner.
+`wrap-reverse`, auto-height columns, and browser-wide Flexbox remain outside
+the contract in `docs/plan/tasks/native-engine-095.md`. Remote CI remains
+pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -803,6 +812,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-092` | bounded explicit non-inherited `justify-content:normal` retaining a distinct computed keyword while reusing the flex-start used-placement owner for eligible row/row-reverse flex lines | `native-engine-091` | auto margins, negative-free-space fallback, column directions, logical direction/RTL, percentage/fractional/intrinsic sizing, grid, and browser Flexbox parity |
 | `native-engine-093` | bounded explicit non-inherited `justify-content:stretch` retaining a distinct computed keyword while reusing the flex-start used-placement owner for eligible row/row-reverse flex lines | `native-engine-092` | auto margins, negative-free-space fallback, column directions, logical direction/RTL, percentage/fractional/intrinsic sizing, grid, and browser Flexbox parity |
 | `native-engine-094` | bounded explicit `flex-direction:column|column-reverse` for fixed-height no-wrap flex containers, reusing vertical main-axis justification, row-gap, flexible lengths, cross-axis alignment, reverse placement, and complete artifacts | `native-engine-093` | auto-height columns, wrapping, column-gap line distribution, auto margins, logical direction/writing modes, percentage/fractional/intrinsic sizing, baseline alignment, grid, and browser Flexbox parity |
+| `native-engine-095` | bounded `flex-wrap:wrap` for fixed-height column/column-reverse flex containers, with vertical line formation, column-gap, per-line flexible sizing/justification, cross-axis alignment, align-content, and complete artifacts | `native-engine-094` | wrap-reverse, auto-height columns, percentage/fractional/intrinsic main sizes, auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

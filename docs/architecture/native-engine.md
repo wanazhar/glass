@@ -337,6 +337,14 @@ modes, and browser-wide Flexbox remain outside the contract recorded in
 checkpoints are `7dc92517` and `4e212151`, and local certification/cleanup
 evidence is recorded there. Remote CI remains pending because the branch is
 local-only.
+The active 095 boundary extends the completed column owner to
+`flex-wrap:wrap` for fixed-height columns. It forms vertical main-axis lines,
+uses `column-gap` between horizontal line boxes, reuses per-line bounded
+flex-sizing/justification and existing `align-content`, and keeps complete
+descendant/artifact consumers on the shared geometry path. `wrap-reverse`,
+auto-height columns, and browser-wide Flexbox remain outside the contract
+recorded in `docs/plan/tasks/native-engine-095.md`. Remote CI remains pending
+because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

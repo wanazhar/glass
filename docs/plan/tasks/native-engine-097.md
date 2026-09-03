@@ -115,6 +115,10 @@ Passed locally:
   warnings denied;
 - warning-denied locked workspace rustdoc passed;
 - locked `glass-dev --bins` compilation passed;
+- locked `cargo package` passed for both `glass-browser` and `glass-dev`, and
+  the packaged dependency validator confirmed the exact `glass-browser`
+  `0.3.14` dependency;
+- locked offline fuzz all-target checking passed;
 - the static version, feature-parity, release-documentation, TUI-shortcut,
   documentation-depth, documentation-coverage, reliability, public-adapter,
   and Web IR validators passed against the current checkout;

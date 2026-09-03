@@ -27,6 +27,7 @@ bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
 bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
 bounded-flex-gap-family,
 bounded-flex-auto-margins,
+bounded-flex-wrapped-auto-margins,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -376,6 +377,17 @@ percentage sizing, and normal-flow auto margins remain outside the contract
 recorded in `docs/plan/tasks/native-engine-097.md`; design is `2901c830`,
 implementation is `815794ce`, and local certification/cleanup evidence is
 recorded there. Remote CI remains pending because the branch is local-only.
+The active 098 boundary extends that auto-edge owner into eligible
+`flex-wrap:wrap|wrap-reverse` row/row-reverse and fixed-height
+column/column-reverse lines. Auto margins remain zero during line formation and
+per-line sizing, then resolve against each final line after `align-content`
+before the existing justification and alignment owners. Reverse directions,
+wrap-reverse physical reflection, deterministic integer shares, and complete
+descendant/artifact consumers remain shared; auto-height columns, new
+intrinsic/percentage sizing, normal-flow auto margins, logical writing modes,
+baseline alignment, grid, and browser-wide Flexbox remain outside
+`docs/plan/tasks/native-engine-098.md`. The design is ready locally and remote
+CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

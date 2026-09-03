@@ -80,8 +80,9 @@ fixed-cell inline and inline-block line items, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
-items, and bounded `justify-content` free-space placement for eligible
-fixed-width flex rows,
+items, and bounded `justify-content:flex-start|center|flex-end|space-between|
+space-around|space-evenly` free-space placement for eligible fixed-width flex
+rows,
 bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
 source-order ties,
 bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
@@ -297,13 +298,14 @@ same offsets and downstream artifacts remain shared. The complete contract and
 evidence are recorded in `docs/plan/tasks/native-engine-090.md`; design is
 `97c69d9d` and implementation is `d814784f`. Remote CI remains pending because
 the branch is local-only.
-The active 091 boundary adds explicit `justify-content:space-evenly` to that
+The completed 091 boundary adds explicit `justify-content:space-evenly` to that
 same bounded fixed-width row/row-reverse owner. Positive main-axis free space
-will be distributed into equal deterministic integer slots after existing
-item, gap, margin, and flex-sizing geometry, with row-reverse mirroring and the
-same shared downstream artifact consumers. Its contract is recorded in
-`docs/plan/tasks/native-engine-091.md`; design is pending until this
-checkpoint. Remote CI remains pending because the branch is local-only.
+is distributed into equal deterministic integer slots after existing item,
+gap, margin, and flex-sizing geometry, with row-reverse mirroring and the same
+shared downstream artifact consumers. Its contract and evidence are recorded
+in `docs/plan/tasks/native-engine-091.md`; design is `be1a8e20` and
+implementation is `118590f7`. Remote CI remains pending because the branch is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1226,7 +1228,8 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited `vertical-align:baseline|top|middle|bottom` parsing and
   cascade, with clamped fixed-cell top/middle/bottom offsets applied to
   complete inline-item box and text artifact ranges during line flush.
-- bounded non-inherited `justify-content:flex-start|center|flex-end|space-between`
+- bounded non-inherited `justify-content:flex-start|center|flex-end|space-between|
+  space-around|space-evenly`
   parsing and cascade, fixed-width flex-row free-space placement, deterministic
   gap distribution, overflow preservation, and shared layout/paint/scroll/
   hit-test coordinates.

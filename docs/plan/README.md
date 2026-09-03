@@ -708,15 +708,15 @@ all downstream artifacts remain shared. Design is `97c69d9d`, implementation is
 are recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
-The active dependency-ordered [native-engine-091](tasks/native-engine-091.md)
+The completed dependency-ordered [native-engine-091](tasks/native-engine-091.md)
 slice adds explicit `justify-content:space-evenly` to the same bounded
-fixed-width row and row-reverse flex-line owner. It will distribute positive
-main-axis free space into deterministic equal integer slots after existing
+fixed-width row and row-reverse flex-line owner. Positive main-axis free space
+is distributed into deterministic equal integer slots after existing
 item/gap/margin and flex-sizing geometry, while preserving shared layout,
-paint, hit-test, scroll, capture, and semantic/source-order consumers.
-`space-around` is now a completed main-axis capability; `space-evenly` is the
-current implementation boundary. Remote CI remains pending because the branch
-is local-only.
+paint, hit-test, scroll, capture, and semantic/source-order consumers. Design
+is `be1a8e20`, implementation is `118590f7`, and focused, full, strict,
+documentation, binary, validator, and exact-target evidence are recorded in
+the task file. Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

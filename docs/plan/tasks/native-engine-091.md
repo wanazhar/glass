@@ -1,7 +1,7 @@
 ---
 id: native-engine-091
 scope: glass-browser/native-engine/justify-content-space-evenly
-status: active
+status: complete
 depends-on: [native-engine-090]
 ---
 
@@ -105,10 +105,36 @@ and semantic/source order.
 
 ## Verification
 
-Validation evidence will be appended after implementation. The required gate
-set is focused parser/cascade and shared-layout coverage, the full native
-integration and feature-enabled library suites, strict all-feature and
-no-default-feature Clippy, warning-denied workspace rustdoc, locked
-`glass-dev` binary compilation, static documentation/release validators, and
-an exact isolated-target cleanup audit. Remote CI remains pending because the
-branch is local-only.
+The implementation checkpoint is `118590f7`; the documentation closeout is
+the follow-up checkpoint that records this evidence. Focused parser/cascade
+coverage passed 2/2 in 13m27.54s with 2,505,236 KiB peak RSS. Focused shared
+layout coverage passed 1/1 in 5m53.45s with 2,108,284 KiB peak RSS. The full
+native integration suite passed 118/118 in 2.96s with 81,892 KiB peak RSS;
+the complete feature-enabled library suite passed 887 with 1 ignored and 0
+failures in 6.20s with 81,676 KiB peak RSS.
+
+Strict all-feature Clippy passed with warnings denied in 13m25.67s with
+1,888,112 KiB peak RSS. Strict no-default-feature Clippy passed with warnings
+denied in 6m56.40s with 1,792,464 KiB peak RSS. Workspace rustdoc passed with
+`RUSTDOCFLAGS="-D warnings"` in 3m11.04s with 1,634,344 KiB peak RSS. The
+locked `glass-dev --bins` build passed in 11m08.68s with 1,996,664 KiB peak
+RSS. The exact generated AArch64 ELF binaries were 140,088,688 bytes for
+`glass` and 90,867,448 bytes for `glass-browser`.
+
+Static validators passed at version `0.3.14`: feature parity 14 capabilities
+across 4 targets; release documentation 505 Markdown documents, 83 current
+documents, 57 previous-version hits, 566 semantic audit hits, and 0 current
+claim failures; TUI 15 implementation keys and 63 documentation markers;
+depth 93 guides and 19 contracts; live documentation coverage 505 Markdown
+files, 345 full-product MCP tools (100 browser-only), 17 examples, and 22
+public modules; reliability 6 scenarios across 4 targets; 5 public read-only
+adapters; and Web IR 8 fixtures, 8 scenarios, and 11 categories. Formatting
+and `git diff --check` passed.
+
+The isolated `/tmp/glass-091-target` reached 5.3G. After all commands exited,
+an exact no-process/no-open-file check passed and the tree was removed with a
+bounded same-filesystem delete. Only the 4.0K project `target/` placeholder
+remains; `/dev/sda1` is 129G used, 65G available, and 67% full. The separate
+regenerable `fuzz/target` tree remains absent. Shared registries, toolchains,
+source, and long-lived Glass processes were retained. Remote CI remains
+pending because the branch is local-only.

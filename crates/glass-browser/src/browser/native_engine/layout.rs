@@ -545,6 +545,12 @@ struct FlexItem {
     align_self: AlignSelfValue,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ForcedOuterSize {
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
 struct FlexLineLayout {
     width: u32,
     placements: Vec<FlexItemPlacement>,
@@ -1293,7 +1299,14 @@ impl<'a> LayoutBuilder<'a> {
         available_width: u32,
         depth: usize,
     ) -> FlowSize {
-        self.layout_element_with_outer_width(id, x, y, available_width, depth, None, None)
+        self.layout_element_with_outer_width(
+            id,
+            x,
+            y,
+            available_width,
+            depth,
+            ForcedOuterSize::default(),
+        )
     }
 
     fn layout_element_with_outer_width(
@@ -1303,8 +1316,7 @@ impl<'a> LayoutBuilder<'a> {
         y: u32,
         available_width: u32,
         depth: usize,
-        forced_outer_width: Option<u32>,
-        forced_outer_height: Option<u32>,
+        forced_outer_size: ForcedOuterSize,
     ) -> FlowSize {
         let style = self.document.computed_style_for_layout(id);
         let display = self.effective_display(id);
@@ -1358,7 +1370,8 @@ impl<'a> LayoutBuilder<'a> {
         let bottom_inset = border_bottom.saturating_add(padding.bottom());
         let horizontal_inset = left_inset.saturating_add(right_inset);
         let vertical_inset = top_inset.saturating_add(bottom_inset);
-        let width = forced_outer_width
+        let width = forced_outer_size
+            .width
             .unwrap_or_else(|| self.outer_width(id, style, is_block, available_width, true));
         let minimum_line_height = style.line_height().unwrap_or(DEFAULT_LINE_HEIGHT);
         let default_content_height = if is_block {
@@ -1406,7 +1419,7 @@ impl<'a> LayoutBuilder<'a> {
             )
         };
         let auto_content_height = default_content_height.max(children.height);
-        let height = forced_outer_height.unwrap_or_else(|| {
+        let height = forced_outer_size.height.unwrap_or_else(|| {
             style.height().map_or(
                 vertical_inset.saturating_add(auto_content_height),
                 |declared| {
@@ -1694,8 +1707,10 @@ impl<'a> LayoutBuilder<'a> {
                     item_y,
                     item.width,
                     context.depth,
-                    Some(item.width),
-                    None,
+                    ForcedOuterSize {
+                        width: Some(item.width),
+                        ..ForcedOuterSize::default()
+                    },
                 );
                 placements.push(FlexItemPlacement {
                     child: item.child,
@@ -1782,8 +1797,10 @@ impl<'a> LayoutBuilder<'a> {
                     item_y,
                     item.width,
                     context.depth,
-                    Some(item.width),
-                    None,
+                    ForcedOuterSize {
+                        width: Some(item.width),
+                        ..ForcedOuterSize::default()
+                    },
                 );
                 placements.push(FlexItemPlacement {
                     child: item.child,
@@ -2017,8 +2034,10 @@ impl<'a> LayoutBuilder<'a> {
                     item_y,
                     item_width,
                     depth,
-                    Some(item_width),
-                    Some(item.height),
+                    ForcedOuterSize {
+                        width: Some(item_width),
+                        height: Some(item.height),
+                    },
                 );
                 max_right = max_right.max(
                     item_x
@@ -2120,8 +2139,10 @@ impl<'a> LayoutBuilder<'a> {
                     item_y,
                     item_width,
                     depth,
-                    Some(item_width),
-                    Some(item.height),
+                    ForcedOuterSize {
+                        width: Some(item_width),
+                        height: Some(item.height),
+                    },
                 );
                 max_right = max_right.max(
                     item_x

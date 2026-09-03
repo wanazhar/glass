@@ -68,6 +68,9 @@ pub struct NativeTextLayout {
     pub origin: NativePoint,
     pub text: String,
     pub truncated: bool,
+    /// Extra fixed-cell advance applied to each eligible ASCII separator by
+    /// `text-align:justify` on a soft-wrapped line.
+    pub justify_spacing: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +133,7 @@ impl NativeLayoutSnapshot {
                 let text_rect = NativeRect {
                     x: text_run.origin.x,
                     y: text_run.origin.y,
-                    width: LayoutBuilder::text_width_with_spacing(
+                    width: LayoutBuilder::text_width_with_justification(
                         &text_run.text,
                         document
                             .computed_style_for_layout(text_run.node_id)
@@ -138,6 +141,7 @@ impl NativeLayoutSnapshot {
                         document
                             .computed_style_for_layout(text_run.node_id)
                             .word_spacing(),
+                        text_run.justify_spacing,
                     ),
                     height: DEFAULT_LINE_HEIGHT,
                 };
@@ -992,6 +996,7 @@ struct FlowStyle {
     minimum_line_height: u32,
     direction: DirectionValue,
     text_align: TextAlignValue,
+    justify_enabled: bool,
     allow_soft_wrap: bool,
     text_indent: u32,
     word_spacing: u32,
@@ -1006,6 +1011,12 @@ struct FlowItem {
     text_end: usize,
     height: u32,
     vertical_align: VerticalAlignValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowFlushReason {
+    Normal,
+    SoftWrap,
 }
 
 impl FlowItem {
@@ -1030,6 +1041,7 @@ struct FlowCursor {
     minimum_line_height: u32,
     direction: DirectionValue,
     text_align: TextAlignValue,
+    justify_enabled: bool,
     allow_soft_wrap: bool,
     line_height: u32,
     line_has_content: bool,
@@ -1057,6 +1069,7 @@ impl FlowCursor {
             minimum_line_height: style.minimum_line_height,
             direction: style.direction,
             text_align: style.text_align,
+            justify_enabled: style.justify_enabled,
             allow_soft_wrap: style.allow_soft_wrap,
             line_height: 0,
             line_has_content: false,
@@ -1221,6 +1234,7 @@ impl FlowCursor {
                     remaining
                 }
             }
+            TextAlignValue::Justify => 0,
         }
     }
 
@@ -1267,6 +1281,12 @@ impl<'a> LayoutBuilder<'a> {
         let letter_spacing = style.letter_spacing();
         let allow_soft_wrap =
             !matches!(white_space, WhiteSpaceValue::Pre | WhiteSpaceValue::NoWrap);
+        let justify_enabled = text_align == TextAlignValue::Justify
+            && matches!(
+                white_space,
+                WhiteSpaceValue::Normal | WhiteSpaceValue::PreLine
+            )
+            && style.word_break() == WordBreakValue::Normal;
         let mut flow = FlowCursor::new(
             x,
             y,
@@ -1275,6 +1295,7 @@ impl<'a> LayoutBuilder<'a> {
                 minimum_line_height,
                 direction,
                 text_align,
+                justify_enabled,
                 allow_soft_wrap,
                 text_indent,
                 word_spacing,
@@ -1291,19 +1312,47 @@ impl<'a> LayoutBuilder<'a> {
     }
 
     fn flush_line(&mut self, flow: &mut FlowCursor) {
+        self.flush_line_with_reason(flow, FlowFlushReason::Normal);
+    }
+
+    fn flush_line_after_soft_wrap(&mut self, flow: &mut FlowCursor) {
+        self.flush_line_with_reason(flow, FlowFlushReason::SoftWrap);
+    }
+
+    fn flush_line_with_reason(&mut self, flow: &mut FlowCursor, reason: FlowFlushReason) {
         if flow.line_has_content {
+            let line_items = flow.take_line_items();
+            let eligible_spaces = if reason == FlowFlushReason::SoftWrap && flow.justify_enabled {
+                line_items
+                    .iter()
+                    .filter(|item| self.justifiable_text_run(**item).is_some())
+                    .count()
+            } else {
+                0
+            };
+            let free_space = if eligible_spaces > 0 {
+                flow.available_width
+                    .saturating_sub(flow.x.saturating_sub(flow.start_x))
+            } else {
+                0
+            };
+            let spaces = u32::try_from(eligible_spaces).unwrap_or(u32::MAX);
+            let extra_per_space = free_space.checked_div(spaces).unwrap_or(0);
+            let extra_remainder = free_space.checked_rem(spaces).unwrap_or(0);
             let offset = flow.alignment_offset();
             let line_height = flow.line_height.max(flow.minimum_line_height);
-            let line_right = flow.x.saturating_add(offset);
-            flow.max_right = flow.max_right.max(line_right);
-            for item in flow.take_line_items() {
+            let mut extra_width = 0;
+            let mut space_index = 0;
+            for item in line_items {
                 let vertical_offset = item.vertical_offset(line_height);
+                let item_shift = offset.saturating_add(extra_width);
                 let box_end = item.box_end.min(self.boxes.len());
                 let box_start = item.box_start.min(box_end);
                 for layout_box in &mut self.boxes[box_start..box_end] {
-                    layout_box.rect.x = layout_box.rect.x.saturating_add(offset);
+                    layout_box.rect.x = layout_box.rect.x.saturating_add(item_shift);
                     layout_box.rect.y = layout_box.rect.y.saturating_add(vertical_offset);
-                    layout_box.content_rect.x = layout_box.content_rect.x.saturating_add(offset);
+                    layout_box.content_rect.x =
+                        layout_box.content_rect.x.saturating_add(item_shift);
                     layout_box.content_rect.y =
                         layout_box.content_rect.y.saturating_add(vertical_offset);
                 }
@@ -1311,12 +1360,50 @@ impl<'a> LayoutBuilder<'a> {
                 let text_end = item.text_end.min(self.text_runs.len());
                 let text_start = item.text_start.min(text_end);
                 for text_run in &mut self.text_runs[text_start..text_end] {
-                    text_run.origin.x = text_run.origin.x.saturating_add(offset);
+                    text_run.origin.x = text_run.origin.x.saturating_add(item_shift);
                     text_run.origin.y = text_run.origin.y.saturating_add(vertical_offset);
                 }
+                let justified_text = self.justifiable_text_run(item);
+                if let Some(text_index) = justified_text {
+                    let extra =
+                        extra_per_space.saturating_add(u32::from(space_index < extra_remainder));
+                    if let Some(text_run) = self.text_runs.get_mut(text_index) {
+                        text_run.justify_spacing = extra;
+                    }
+                    extra_width = extra_width.saturating_add(extra);
+                    space_index = space_index.saturating_add(1);
+                }
             }
+            let line_right = flow.x.saturating_add(offset).saturating_add(extra_width);
+            flow.max_right = flow.max_right.max(line_right);
         }
         flow.flush_line();
+    }
+
+    fn justifiable_text_run(&self, item: FlowItem) -> Option<usize> {
+        if item.box_start != item.box_end || item.text_end != item.text_start.saturating_add(1) {
+            return None;
+        }
+        let text_index = item.text_start;
+        let text_run = self.text_runs.get(text_index)?;
+        if text_run.truncated
+            || text_run
+                .text
+                .chars()
+                .filter(|character| *character == ' ')
+                .count()
+                != 1
+        {
+            return None;
+        }
+        let style = self.document.computed_style_for_layout(text_run.node_id);
+        (style.text_align() == TextAlignValue::Justify
+            && matches!(
+                style.white_space(),
+                WhiteSpaceValue::Normal | WhiteSpaceValue::PreLine
+            )
+            && style.word_break() == WordBreakValue::Normal)
+            .then_some(text_index)
     }
 
     fn force_line_break(&mut self, flow: &mut FlowCursor) {
@@ -1419,7 +1506,7 @@ impl<'a> LayoutBuilder<'a> {
                                     0
                                 };
                             if flow.would_wrap(candidate_width.saturating_add(separator_width)) {
-                                self.flush_line(flow);
+                                self.flush_line_after_soft_wrap(flow);
                             } else {
                                 self.place_pending_separator(parent, flow);
                             }
@@ -3469,6 +3556,7 @@ impl<'a> LayoutBuilder<'a> {
             origin,
             text: value,
             truncated: false,
+            justify_spacing: 0,
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));
@@ -3578,7 +3666,7 @@ impl<'a> LayoutBuilder<'a> {
                     self.place_text_fragment(parent, flow, &fragment, truncated && is_last_word);
                     continue;
                 }
-                self.flush_line(flow);
+                self.flush_line_after_soft_wrap(flow);
             }
             self.place_word(parent, flow, word, is_last_word, truncated);
         }
@@ -3752,7 +3840,7 @@ impl<'a> LayoutBuilder<'a> {
                 self.place_text_fragment(parent, flow, " ", false);
                 return;
             }
-            self.flush_line(flow);
+            self.flush_line_after_soft_wrap(flow);
             return;
         }
         self.place_text_fragment(parent, flow, " ", false);
@@ -3776,7 +3864,7 @@ impl<'a> LayoutBuilder<'a> {
         let mut offset = 0;
         while offset < characters.len() {
             if flow.line_has_content {
-                self.flush_line(flow);
+                self.flush_line_after_soft_wrap(flow);
             }
             let remaining = characters[offset..].iter().collect::<String>();
             let fragment_length = flow
@@ -3817,6 +3905,7 @@ impl<'a> LayoutBuilder<'a> {
             origin,
             text: fragment.to_owned(),
             truncated,
+            justify_spacing: 0,
         });
         self.paint_order
             .push(NativeLayoutPaintOrder::Text(text_index));
@@ -3837,12 +3926,23 @@ impl<'a> LayoutBuilder<'a> {
     }
 
     fn text_width_with_spacing(value: &str, letter_spacing: u32, word_spacing: u32) -> u32 {
+        Self::text_width_with_justification(value, letter_spacing, word_spacing, 0)
+    }
+
+    fn text_width_with_justification(
+        value: &str,
+        letter_spacing: u32,
+        word_spacing: u32,
+        justify_spacing: u32,
+    ) -> u32 {
         value.chars().fold(0, |width, character| {
-            width.saturating_add(Self::character_advance(
-                character,
-                letter_spacing,
-                word_spacing,
-            ))
+            width
+                .saturating_add(Self::character_advance(
+                    character,
+                    letter_spacing,
+                    word_spacing,
+                ))
+                .saturating_add(if character == ' ' { justify_spacing } else { 0 })
         })
     }
 

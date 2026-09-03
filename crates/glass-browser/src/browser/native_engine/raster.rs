@@ -22,6 +22,7 @@ struct TextPaint {
     italic: bool,
     word_spacing: u32,
     letter_spacing: u32,
+    justify_spacing: u32,
 }
 
 /// Immutable logical RGBA output from the native display-list seed.
@@ -160,6 +161,7 @@ impl NativeSurface {
                     italic,
                     word_spacing,
                     letter_spacing,
+                    justify_spacing,
                     clip,
                     ..
                 } => {
@@ -183,6 +185,7 @@ impl NativeSurface {
                             italic: *italic,
                             word_spacing: *word_spacing,
                             letter_spacing: *letter_spacing,
+                            justify_spacing: *justify_spacing,
                         },
                         clip,
                         scroll_offset,
@@ -544,7 +547,7 @@ impl NativeSurface {
                 .saturating_add(GLYPH_ADVANCE)
                 .saturating_add(paint.letter_spacing)
                 .saturating_add(if character == ' ' {
-                    paint.word_spacing
+                    paint.word_spacing.saturating_add(paint.justify_spacing)
                 } else {
                     0
                 });
@@ -1003,6 +1006,7 @@ mod tests {
                     italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
+                    justify_spacing: 0,
                     clip: None,
                 },
             ],
@@ -1035,6 +1039,7 @@ mod tests {
                     italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
+                    justify_spacing: 0,
                     clip: None,
                 },
                 NativeDisplayCommand::TextRun {
@@ -1048,6 +1053,7 @@ mod tests {
                     italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
+                    justify_spacing: 0,
                     clip: None,
                 },
             ],
@@ -1080,6 +1086,7 @@ mod tests {
                     italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
+                    justify_spacing: 0,
                     clip: None,
                 },
                 NativeDisplayCommand::TextRun {
@@ -1093,6 +1100,7 @@ mod tests {
                     italic: true,
                     word_spacing: 0,
                     letter_spacing: 0,
+                    justify_spacing: 0,
                     clip: None,
                 },
                 NativeDisplayCommand::TextRun {
@@ -1111,6 +1119,7 @@ mod tests {
                     italic: true,
                     word_spacing: 0,
                     letter_spacing: 0,
+                    justify_spacing: 0,
                     clip: None,
                 },
             ],
@@ -1151,6 +1160,7 @@ mod tests {
                     italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
+                    justify_spacing: 0,
                     clip: Some(NativeRect {
                         x: 2,
                         y: 7,
@@ -1487,6 +1497,7 @@ mod tests {
                     italic: false,
                     word_spacing: 0,
                     letter_spacing: 0,
+                    justify_spacing: 0,
                     clip: None,
                 },
             ],

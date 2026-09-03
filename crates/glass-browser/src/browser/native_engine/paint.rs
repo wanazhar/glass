@@ -82,6 +82,7 @@ pub enum NativeDisplayCommand {
         italic: bool,
         word_spacing: u32,
         letter_spacing: u32,
+        justify_spacing: u32,
         clip: Option<NativeRect>,
     },
     EndOpacityGroup {
@@ -193,6 +194,7 @@ impl NativeDisplayList {
                             italic: style.font_style() == FontStyleValue::Italic,
                             word_spacing: style.word_spacing(),
                             letter_spacing: style.letter_spacing(),
+                            justify_spacing: text_run.justify_spacing,
                             clip,
                         },
                     )?;

@@ -10,8 +10,8 @@ use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
         DirectionValue, FontStyleValue, FontWeightValue, NativeColor, NativeComputedStyle,
-        NativeInheritedStyle, TextAlignValue, TextDecorationValue, TextTransformValue,
-        VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        NativeInheritedStyle, TextAlignLastValue, TextAlignValue, TextDecorationValue,
+        TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use std::collections::BTreeMap;
@@ -852,6 +852,7 @@ impl NativeDocument {
         let mut inherited_white_space = WhiteSpaceValue::Normal;
         let mut inherited_line_height = None;
         let mut inherited_text_align = TextAlignValue::Left;
+        let mut inherited_text_align_last = TextAlignLastValue::Auto;
         let mut inherited_text_decoration = TextDecorationValue::None;
         let mut inherited_text_transform = TextTransformValue::None;
         let mut inherited_font_weight = FontWeightValue::Normal;
@@ -873,6 +874,7 @@ impl NativeDocument {
                     white_space: inherited_white_space,
                     line_height: inherited_line_height,
                     text_align: inherited_text_align,
+                    text_align_last: inherited_text_align_last,
                     text_decoration: inherited_text_decoration,
                     text_transform: inherited_text_transform,
                     font_weight: inherited_font_weight,
@@ -888,6 +890,7 @@ impl NativeDocument {
             inherited_white_space = style.white_space();
             inherited_line_height = style.line_height().or(inherited_line_height);
             inherited_text_align = style.text_align();
+            inherited_text_align_last = style.text_align_last();
             inherited_text_decoration = style.text_decoration();
             inherited_text_transform = style.text_transform();
             inherited_font_weight = style.font_weight();

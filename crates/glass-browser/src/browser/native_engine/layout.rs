@@ -2,8 +2,8 @@ use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
     AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, DisplayValue,
     FlexBasisValue, FlexDirectionValue, FlexWrapValue, JustifyContentValue, NativeAutoEdges,
-    NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, TextAlignValue, TextOverflowValue,
-    TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+    NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, TextAlignLastValue, TextAlignValue,
+    TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -996,6 +996,7 @@ struct FlowStyle {
     minimum_line_height: u32,
     direction: DirectionValue,
     text_align: TextAlignValue,
+    text_align_last: TextAlignLastValue,
     justify_enabled: bool,
     allow_soft_wrap: bool,
     text_indent: u32,
@@ -1017,6 +1018,7 @@ struct FlowItem {
 enum FlowFlushReason {
     Normal,
     SoftWrap,
+    Final,
 }
 
 impl FlowItem {
@@ -1041,6 +1043,7 @@ struct FlowCursor {
     minimum_line_height: u32,
     direction: DirectionValue,
     text_align: TextAlignValue,
+    text_align_last: TextAlignLastValue,
     justify_enabled: bool,
     allow_soft_wrap: bool,
     line_height: u32,
@@ -1069,6 +1072,7 @@ impl FlowCursor {
             minimum_line_height: style.minimum_line_height,
             direction: style.direction,
             text_align: style.text_align,
+            text_align_last: style.text_align_last,
             justify_enabled: style.justify_enabled,
             allow_soft_wrap: style.allow_soft_wrap,
             line_height: 0,
@@ -1212,11 +1216,11 @@ impl FlowCursor {
         self.line_items.push(item);
     }
 
-    fn alignment_offset(&self) -> u32 {
+    fn alignment_offset_for(&self, text_align: TextAlignValue) -> u32 {
         let remaining = self
             .available_width
             .saturating_sub(self.x.saturating_sub(self.start_x));
-        match self.text_align {
+        match text_align {
             TextAlignValue::Left => 0,
             TextAlignValue::Center => remaining / 2,
             TextAlignValue::Right => remaining,
@@ -1236,6 +1240,14 @@ impl FlowCursor {
             }
             TextAlignValue::Justify => 0,
         }
+    }
+
+    fn alignment_offset(&self) -> u32 {
+        self.alignment_offset_for(self.text_align)
+    }
+
+    fn final_alignment_offset(&self) -> u32 {
+        self.alignment_offset_for(self.text_align_last.resolve(self.text_align))
     }
 
     fn take_line_items(&mut self) -> Vec<FlowItem> {
@@ -1272,6 +1284,7 @@ impl<'a> LayoutBuilder<'a> {
         let style = self.document.computed_style_for_layout(parent);
         let direction = style.direction();
         let text_align = style.text_align();
+        let text_align_last = style.text_align_last();
         let text_indent = if self.effective_display(parent) == DisplayValue::Block {
             style.text_indent()
         } else {
@@ -1295,6 +1308,7 @@ impl<'a> LayoutBuilder<'a> {
                 minimum_line_height,
                 direction,
                 text_align,
+                text_align_last,
                 justify_enabled,
                 allow_soft_wrap,
                 text_indent,
@@ -1303,7 +1317,7 @@ impl<'a> LayoutBuilder<'a> {
             },
         );
         self.process_children(parent, &mut flow, depth);
-        self.flush_line(&mut flow);
+        self.flush_final_line(&mut flow);
         let bottom = flow.max_bottom;
         let start_y = y;
         let mut result = flow.finish();
@@ -1317,6 +1331,10 @@ impl<'a> LayoutBuilder<'a> {
 
     fn flush_line_after_soft_wrap(&mut self, flow: &mut FlowCursor) {
         self.flush_line_with_reason(flow, FlowFlushReason::SoftWrap);
+    }
+
+    fn flush_final_line(&mut self, flow: &mut FlowCursor) {
+        self.flush_line_with_reason(flow, FlowFlushReason::Final);
     }
 
     fn flush_line_with_reason(&mut self, flow: &mut FlowCursor, reason: FlowFlushReason) {
@@ -1339,7 +1357,11 @@ impl<'a> LayoutBuilder<'a> {
             let spaces = u32::try_from(eligible_spaces).unwrap_or(u32::MAX);
             let extra_per_space = free_space.checked_div(spaces).unwrap_or(0);
             let extra_remainder = free_space.checked_rem(spaces).unwrap_or(0);
-            let offset = flow.alignment_offset();
+            let offset = if reason == FlowFlushReason::Final {
+                flow.final_alignment_offset()
+            } else {
+                flow.alignment_offset()
+            };
             let line_height = flow.line_height.max(flow.minimum_line_height);
             let mut extra_width = 0;
             let mut space_index = 0;

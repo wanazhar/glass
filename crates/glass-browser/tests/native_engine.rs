@@ -840,6 +840,65 @@ fn native_justification_composes_authored_word_spacing() {
 }
 
 #[test]
+fn native_text_align_last_resolves_final_lines_through_shared_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>.block { display:block; width:45px; text-align:justify; } #center { text-align-last:center; } #right { text-align-last:right; } #start-rtl { direction:rtl; text-align-last:start; } #end-rtl { direction:rtl; text-align-last:end; } #auto { text-align-last:auto; } #hard { text-align-last:right; }</style><div id='center' class='block'>A B C D</div><div id='right' class='block'>A B C D</div><div id='start-rtl' class='block'>A B C D</div><div id='end-rtl' class='block'>A B C D</div><div id='auto' class='block'>A B C D</div><div id='hard' class='block'>A B C<br>D</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 45,
+        height: 280,
+        device_scale_factor_milli: 1000,
+    };
+    let center = document.resolve_target("id=center").unwrap();
+    let right = document.resolve_target("id=right").unwrap();
+    let start_rtl = document.resolve_target("id=start-rtl").unwrap();
+    let end_rtl = document.resolve_target("id=end-rtl").unwrap();
+    let auto = document.resolve_target("id=auto").unwrap();
+    let hard = document.resolve_target("id=hard").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    let final_origin = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id && run.text == "D" && run.origin.y > 0)
+            .map(|run| run.origin)
+            .unwrap()
+    };
+    assert_eq!(final_origin(center), NativePoint { x: 18, y: 20 });
+    assert_eq!(final_origin(right), NativePoint { x: 37, y: 60 });
+    assert_eq!(final_origin(start_rtl), NativePoint { x: 37, y: 100 });
+    assert_eq!(final_origin(end_rtl), NativePoint { x: 0, y: 140 });
+    assert_eq!(final_origin(auto), NativePoint { x: 0, y: 180 });
+    assert_eq!(final_origin(hard), NativePoint { x: 37, y: 220 });
+
+    let hard_runs = layout
+        .text_runs
+        .iter()
+        .filter(|run| run.node_id == hard)
+        .collect::<Vec<_>>();
+    assert!(hard_runs.iter().all(|run| run.justify_spacing == 0));
+    assert_eq!(layout.box_for(center).unwrap().height, 40);
+
+    let display_list = document.display_list(viewport).unwrap();
+    assert!(display_list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun {
+                node_id,
+                origin: NativePoint { x: 18, y: 20 },
+                text,
+                ..
+            } if *node_id == center && text == "D"
+        )
+    }));
+    let surface = display_list.rasterize().unwrap();
+    assert_eq!(surface.pixel(18, 20), Some([0, 0, 0, 255]));
+}
+
+#[test]
 fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
     let document = NativeDocument::parse(
         "<style>#parent { display:block; width:32px; text-decoration:underline; color:rgba(0, 128, 0, 50%); } #clear { text-decoration:none; } #contents { display:contents; }</style><div id='parent'>A<span id='clear'>B</span><span id='contents'><span id='nested'>C</span></span></div>",
@@ -8992,7 +9051,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -9028,6 +9087,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-align"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-align-last"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

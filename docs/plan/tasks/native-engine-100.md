@@ -131,9 +131,12 @@ build root:
 After all validation completed, process and open-file checks found no consumer
 of `/tmp/glass-100-target` or the clean-install temporary root. The validated
 non-symlink target resolved to `/tmp/glass-100-target` and measured 9.0G; the
-release-documentation report measured 160K. Both are disposable certification
-outputs and are removed in the final cleanup step. The repository target and
-other project-owned build outputs are not part of this cleanup.
+release-documentation report measured 160K. Both disposable certification
+outputs were removed with bounded same-filesystem deletion. No
+`glass-*-target` or clean-install temporary roots remain; the repository and
+ForgeBuild targets are each 4.0K, `fuzz/target` is absent, and disk usage
+changed from 56G available / 72% used to 65G available / 67% used. Other
+project-owned build outputs were not part of this cleanup.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this

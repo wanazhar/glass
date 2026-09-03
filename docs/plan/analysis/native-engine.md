@@ -642,6 +642,15 @@ design is `2f18abb4`, the implementation is `3bf658e8`, and local gate
 evidence is recorded in the task file. Remote CI remains pending because the
 branch is local-only.
 
+The active dependency-ordered `native-engine-100` slice adds bounded inherited
+`text-align:start|end` to the fixed-cell inline-flow owner. Logical start/end
+resolve through inherited `direction:ltr|rtl`; physical `left|right`, center,
+source order, and the existing no-bidi/shaping boundary remain unchanged.
+Wrapped lines, inline boxes, hard breaks, whitespace, spacing, indentation,
+overflow, and capture continue through the shared line-flush owner. The design
+is ready locally; implementation, certification, and exact-target cleanup
+remain pending. Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -865,7 +874,8 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-096` | bounded `flex-wrap:wrap-reverse` for fixed-height column/column-reverse flex containers, reflecting horizontal line boxes and cross-axis item alignment while preserving 095 geometry, gaps, align-content, reverse main placement, and complete artifacts | `native-engine-095` | auto-height columns, percentage/fractional/intrinsic main sizes, auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 | `native-engine-097` | bounded auto main/cross margins for eligible no-wrap row/row-reverse and fixed-height column/column-reverse flex containers, resolved before justify and align distribution with complete artifacts | `native-engine-096` | wrapped lines, auto-height columns, percentage/fractional/intrinsic sizing, normal-flow auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 | `native-engine-098` | bounded line-local auto main/cross margins for eligible wrapped row/row-reverse and fixed-height column/column-reverse flex containers, resolved after final line sizing and before per-line justify/align distribution with complete artifacts | `native-engine-097` | auto-height columns, new intrinsic/percentage sizing, fractional lengths, normal-flow auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
-| `native-engine-099` | bounded inherited `direction:ltr|rtl` for eligible Flexbox owners, mapping row main-start and column horizontal cross-start through the existing reverse/wrap-reverse and artifact consumers | `native-engine-098` | non-flex bidi/text reordering, `text-align:start|end`, logical properties, vertical writing modes, grid, and browser-wide directionality |
+| `native-engine-099` | bounded inherited direction ltr/rtl for eligible Flexbox owners, mapping row main-start and column horizontal cross-start through the existing reverse/wrap-reverse and artifact consumers | `native-engine-098` | non-flex bidi/text reordering, `text-align:start|end`, logical properties, vertical writing modes, grid, and browser-wide directionality |
+| `native-engine-100` | bounded inherited `text-align:start/end` for fixed-cell inline flow, resolving logical line alignment through inherited direction while preserving physical alignment and source order | `native-engine-099` | Unicode bidi/shaping, mixed bidi runs, justify/match-parent/justify-all, logical properties, vertical writing modes, grid, floats, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1334,6 +1344,13 @@ strict-Clippy, rustdoc, binary, package/dependency, fuzz, documentation, and
 directionality fallback evidence is recorded in that task file. Static
 documentation/release validators and exact isolated-target cleanup are part of
 the final closeout. Remote CI remains pending because the branch is local-only.
+The active next checkpoint is recorded for
+`docs/plan/tasks/native-engine-100.md`: it owns inherited
+`text-align:start|end` for fixed-cell logical line alignment through the 099
+direction state, before any general bidi, logical-property, or vertical-writing
+work. The design is ready locally; implementation, certification, and
+exact-target cleanup remain pending. Remote CI remains pending because the
+branch is local-only.
 The completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-098.md`: design is `a4b05f07`, implementation
 is `77a4b629`, and the final test-only checkpoint is `866a8862`. Focused/full

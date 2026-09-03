@@ -401,6 +401,12 @@ vertical writing modes, and browser-wide directionality remain outside
 `docs/plan/tasks/native-engine-099.md`. The design is `2f18abb4`, the
 implementation is `3bf658e8`, and local gate evidence is recorded in the task
 file. Remote CI remains pending because the branch is local-only.
+The active 100 boundary adds inherited `text-align:start|end` to the existing
+fixed-cell inline-flow owner. Logical start/end resolve through inherited
+`direction:ltr|rtl`; physical `left|right`, center, source order, and the
+fixed-cell no-bidi/shaping boundary remain unchanged. The active contract is
+`docs/plan/tasks/native-engine-100.md`; its design is ready locally and remote
+CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

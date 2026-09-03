@@ -21,7 +21,7 @@ bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
 bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-column-direction/
 bounded-flex-wrap/
 bounded-flex-wrap-reverse,
-bounded-flex-column-wrap,
+bounded-flex-column-wrap/bounded-flex-column-wrap-reverse,
 bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
 bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
 bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
@@ -351,6 +351,16 @@ auto-height columns, and browser-wide Flexbox remain outside the contract
 recorded in `docs/plan/tasks/native-engine-095.md`. Design is `598228a7`,
 implementation is `96ea62a3`, and local certification evidence is recorded in
 the task file. Remote CI remains pending because the branch is local-only.
+The active 096 design extends that same fixed-height column owner to
+`flex-wrap:wrap-reverse`. It reflects horizontal line boxes and each line's
+cross-axis `align-items`/`align-self` placement from the physical cross-end,
+reuses 095 line formation, `column-gap`, `align-content`, main-axis direction,
+and shared descendant/artifact consumers, and preserves source/semantic order.
+The contract is recorded in `docs/plan/tasks/native-engine-096.md`; the design
+checkpoint is the current ready commit and implementation remains pending.
+Auto-height columns, intrinsic or percentage sizing, logical writing modes, and
+browser-wide Flexbox remain outside the contract. Remote CI remains pending
+because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

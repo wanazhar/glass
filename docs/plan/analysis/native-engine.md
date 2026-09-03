@@ -594,6 +594,16 @@ the contract in `docs/plan/tasks/native-engine-095.md`. Design is `598228a7`,
 implementation is `96ea62a3`, and local certification evidence is recorded in
 the task file. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-096` design extends the same
+fixed-height column/column-reverse owner to `flex-wrap:wrap-reverse`. It keeps
+095's order-sorted vertical line formation, per-line sizing and justification,
+row/column gap mapping, and complete artifact ownership, then reflects line
+boxes and cross-axis item alignment from the physical horizontal cross-end.
+Source, semantic, and keyboard order remain unchanged. The bounded contract,
+tradeoffs, exclusions, and required evidence are in
+`docs/plan/tasks/native-engine-096.md`; implementation is not yet claimed.
+Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -814,6 +824,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-093` | bounded explicit non-inherited `justify-content:stretch` retaining a distinct computed keyword while reusing the flex-start used-placement owner for eligible row/row-reverse flex lines | `native-engine-092` | auto margins, negative-free-space fallback, column directions, logical direction/RTL, percentage/fractional/intrinsic sizing, grid, and browser Flexbox parity |
 | `native-engine-094` | bounded explicit `flex-direction:column|column-reverse` for fixed-height no-wrap flex containers, reusing vertical main-axis justification, row-gap, flexible lengths, cross-axis alignment, reverse placement, and complete artifacts | `native-engine-093` | auto-height columns, wrapping, column-gap line distribution, auto margins, logical direction/writing modes, percentage/fractional/intrinsic sizing, baseline alignment, grid, and browser Flexbox parity |
 | `native-engine-095` | bounded `flex-wrap:wrap` for fixed-height column/column-reverse flex containers, with vertical line formation, column-gap, per-line flexible sizing/justification, cross-axis alignment, align-content, and complete artifacts | `native-engine-094` | wrap-reverse, auto-height columns, percentage/fractional/intrinsic main sizes, auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
+| `native-engine-096` | bounded `flex-wrap:wrap-reverse` for fixed-height column/column-reverse flex containers, reflecting horizontal line boxes and cross-axis item alignment while preserving 095 geometry, gaps, align-content, reverse main placement, and complete artifacts | `native-engine-095` | auto-height columns, percentage/fractional/intrinsic main sizes, auto margins, logical direction/writing modes, baseline alignment, grid, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1288,6 +1299,11 @@ that task file. The final local release-documentation audit reported 508
 Markdown documents, 83 current documents, 57 previous-version hits, 568
 semantic hits, and 0 current-claim failures; remote CI remains pending
 because the branch is local-only.
+The next active design checkpoint is
+`docs/plan/tasks/native-engine-096.md`; it is ready locally for implementation
+after the 095 dependency. Its contract explicitly covers physical cross-axis
+reflection for column `wrap-reverse`, including align-content and
+align-items/self behavior, while retaining the established fallback boundary.
 A completed checkpoint is also recorded for
 `docs/plan/tasks/native-engine-085.md`: design is `adc61a1f` and implementation
 is `02f866e6`. Focused CSS parser/cascade coverage passed 2/2 in 6m57s;

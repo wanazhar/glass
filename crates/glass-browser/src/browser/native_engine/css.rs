@@ -442,10 +442,6 @@ impl NativeAutoEdges {
     pub(crate) const fn left(self) -> bool {
         self.left
     }
-
-    pub(crate) const fn any(self) -> bool {
-        self.top || self.right || self.bottom || self.left
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

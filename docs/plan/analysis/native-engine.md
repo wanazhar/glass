@@ -572,15 +572,17 @@ existing axis parser composition. Its contract and evidence are in
 implementation is `653f025e`. Remote CI remains pending because the branch is
 local-only.
 
-The active dependency-ordered `native-engine-094` slice extends the bounded
-Flexbox owner to explicit `flex-direction:column|column-reverse` for fixed-
-height, no-wrap containers. It maps the existing vertical main-axis
+The completed dependency-ordered `native-engine-094` slice extends the bounded
+Flexbox owner to explicit `flex-direction:column|column-reverse` for eligible
+fixed-height, no-wrap containers. It maps the existing vertical main-axis
 justification and row-gap, bounded grow/shrink/basis, horizontal item
 alignment, reverse placement, and complete descendant/artifact consumers
 without adding a second geometry owner. Auto-height columns, wrapping,
 column-gap line distribution, logical writing modes, and browser-wide Flexbox
-remain outside the contract in `docs/plan/tasks/native-engine-094.md`. Remote
-CI remains pending because the branch is local-only.
+remain outside the contract in `docs/plan/tasks/native-engine-094.md`. Design
+is `aea47b17`, implementation checkpoints are `7dc92517` and `4e212151`, and
+local certification/cleanup evidence is recorded in the task file. Remote CI
+remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -645,6 +647,15 @@ real edit touching the native module, and target-directory growth separately.
 | `browser::native_backend` | semantic adapter/profile | backend requests | typed backend responses/errors | engine + `browser_backend` |
 | `browser::runtime` | explicit native session construction | `NativeEngineConfig`, runtime choice | initialized `BrowserRuntimeSession` | backend factory + dispatcher |
 | `cli::runner` | feature-gated native one-shot dispatch | local command and semantic target | bounded CLI result or typed denial | runtime session + policy boundary |
+
+The completed 094 extension makes the `css` direction state explicit as
+`row|row-reverse|column|column-reverse`. The `layout` owner now consumes
+column directions only for fixed-height, no-wrap flex containers, maps
+vertical justification and `row-gap`, applies bounded vertical flexible
+sizing, resolves horizontal item alignment, and sends the resulting complete
+subtree ranges through the existing paint, raster, overflow, scroll, hit-test,
+and capture consumers. Unsupported auto-height and wrapped-column contexts
+retain the established fallback boundary.
 
 The completed 085 shorthand is intentionally represented by the existing CSS
 component fields and consumed by the existing layout owners: `align-content`
@@ -1171,7 +1182,7 @@ visual stacking.
 | bounded flex-row justification | makes common fixed-width rows support leading, centered, trailing, space-between, space-around, and space-evenly distribution without a second layout owner | fractional/subpixel rounding, auto margins, negative-free-space fallback, column directions, logical direction/RTL, anonymous items, and browser Flexbox parity | preflight existing item widths/margins, preserve the configured gap as a minimum, distribute only positive free space with documented cumulative integer offsets, and clamp overflowing rows to a zero leading offset |
 | bounded flex-item order | makes common fixed-width rows support deterministic visual reordering without changing semantic/source identity | column directions, anonymous text-item sorting, semantic/accessibility/keyboard reordering, stacking-context parity, and browser Flexbox parity | parse a bounded signed integer, sort eligible visual items by `(order, source_index)`, preserve source-order semantic evidence, and reuse the existing gap/justification/layout/paint/hit-test owners |
 | bounded flex cross-axis alignment | makes common fixed-width rows with different item heights visually align without adding a second layout owner | baseline/logical alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse bounded non-inherited item values, determine an explicit or maximum-item line height, lay out once at the top edge, and translate each complete item artifact range by a clamped integer offset |
-| bounded flex direction | makes common fixed-width rows support a deterministic physical reverse direction while preserving semantic/source identity | column directions, logical direction/RTL, auto margins, and browser Flexbox parity | parse non-inherited `row|row-reverse`, preserve the existing order-sorted sequence, map justification to physical edges, perform a margin-aware reverse walk, and shift overflowing rows as one bounded artifact-preserving range |
+| bounded flex direction | makes common fixed-width rows and eligible fixed-height columns support deterministic physical direction while preserving semantic/source identity | wrapping columns, multi-line cross-axis distribution, logical direction/RTL, auto margins, percentage/fractional/intrinsic sizing, and browser Flexbox parity | parse non-inherited `row|row-reverse|column|column-reverse`, preserve the existing order-sorted sequence, map justification and row-gap to the selected physical axis, perform a margin-aware forward/reverse walk, and route complete subtrees through the shared layout, paint, overflow, scroll, hit-test, and capture consumers |
 | bounded flex wrapping | makes common fixed-width rows form deterministic physical lines without adding a second layout owner | column directions, auto margins, logical direction/RTL, percentage/fractional/intrinsic sizing, and browser Flexbox parity | parse non-inherited `nowrap|wrap`, partition sorted visible items by integer outer width plus the existing gap, reuse per-line row/reverse placement and alignment, stack maximum-height lines, and preserve shared subtree/scroll consumers |
 | bounded flex cross-line alignment | makes explicit-height wrapped rows use positive cross-axis space without changing line membership or item sizing | fractional distribution, auto margins, column directions, logical direction/RTL, and browser Flexbox parity | retain provisional line records, resolve only positive explicit-height remainder, allocate deterministic integer leading/inter-line offsets, and translate complete line artifact ranges after per-line item alignment |
 | bounded flex cross-line space-around | makes explicit-height wrapped rows distribute positive remainder around each physical line with deterministic slot centers | fractional distribution, auto margins, column directions, logical direction/RTL, and browser Flexbox parity | retain formed line records, calculate saturating integer `floor(remainder * (2*i + 1) / (2*line_count))` offsets, and translate complete line artifact ranges through the existing consumers |
@@ -1185,7 +1196,7 @@ visual stacking.
 | bounded flex shrink | makes negative fixed-width row free space observable through weighted item reduction while preserving one line/coordinate owner | fractional factors, full flex base-size reflow, auto margins, column directions, percentage/intrinsic sizing, and browser Flexbox parity | resolve bounded integer shrink factors, weight them by original flex base widths, allocate deficit with prefix-floor shares, freeze effective min-width floors and redistribute remainder, then pass final outer widths through existing flex/justify/paint/hit/scroll consumers |
 | bounded flex basis | makes explicit fixed-pixel or `auto` flex bases override item width before the shared line-formation, grow, and shrink owners | percentages, fractional lengths, `calc()`, `content`, intrinsic sizing changes, auto margins, columns, and browser Flexbox parity | resolve non-inherited `auto|Npx`, reuse box-sizing and min/max conversion, leave explicit bases unclamped before line formation, and pass final widths through the existing geometry consumers |
 | bounded flex shorthand | makes common `flex` presets and compact grow/shrink/basis declarations feed the completed component owners with CSS-like declaration-order precedence | CSS-wide reset keywords, percentage/fractional bases, fractional factors, ambiguous token forms, auto margins, columns, and browser Flexbox parity | expand bounded `none`, `auto`, integer-factor, and pixel/`auto` basis forms directly into the existing component fields, preserve valid source-order longhand overrides, and reuse the existing flex sizing and artifact consumers |
-| bounded flex-flow shorthand | makes common row/reverse-row and nowrap/wrap/wrap-reverse combinations feed the completed direction and wrapping owners with shorthand reset and source-order precedence | columns, column-reverse, logical direction/RTL, duplicate tokens, CSS-wide reset keywords, ambiguous forms, and browser Flexbox parity | classify one or two bounded direction/wrap tokens, expand omitted components to row/nowrap, preserve valid longhand overrides, and reuse the existing physical placement, line formation, artifact, overflow, and hit-test consumers |
+| bounded flex-flow shorthand | makes common row/reverse-row and fixed-height column/no-wrap combinations feed the completed direction and wrapping owners with shorthand reset and source-order precedence | wrapping columns, multi-line cross-axis distribution, logical direction/RTL, duplicate tokens, CSS-wide reset keywords, ambiguous forms, and browser Flexbox parity | classify one or two bounded direction/wrap tokens including column directions, expand omitted components to row/nowrap, preserve valid longhand overrides, and reuse the existing physical placement, line formation, artifact, overflow, and hit-test consumers |
 | bounded flex align-self | makes common per-item cross-axis overrides observable without adding a second line or artifact owner | baseline metrics, logical/safe alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse non-inherited bounded item values, resolve `auto` against the parent `align-items` at placement time, and translate the complete item subtree through existing boxes, text, paint, overflow, projection, hit-test, scroll, and capture consumers |
 | bounded flex place-content | makes common two-axis flex distribution declarations feed the existing line and main-axis owners without adding a second cascade or geometry representation | full CSS shorthand grammar, logical direction/writing modes, safe/unsafe alignment, grid, fractional/intrinsic sizing, and browser Flexbox parity | parse one shared or two explicit bounded tokens, expand them to `align-content` and `justify-content` at the existing declaration precedence, and reuse the current wrapped-line/main-axis distribution and complete artifact consumers |
 | bounded flex align-self stretch | makes auto-height direct flex items fill the existing line cross size without replacing the natural child layout or line owner | baseline/logical alignment, auto margins, column directions, fractional/intrinsic sizing, and browser Flexbox parity | parse the additional non-inherited item value, retain the natural bounded child layout, adjust only the eligible root box to the line cross size subject to existing physical insets and min/max heights, and reuse complete artifact consumers |
@@ -1194,8 +1205,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-085.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-084.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-094.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-093.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-092.md` is an earlier completed checkpoint;
+`docs/plan/tasks/native-engine-085.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-083.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-082.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-081.md` is the preceding completed checkpoint;
@@ -1245,6 +1258,15 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
+A completed current checkpoint is recorded for
+`docs/plan/tasks/native-engine-094.md`: design is `aea47b17`, implementation
+checkpoints are `7dc92517` and `4e212151`, and the focused parser/column,
+full-native, feature-library, strict-Clippy, rustdoc, locked-binary,
+documentation-validator, and exact-target-cleanup evidence is recorded in
+that task file. The final local release-documentation audit reported 508
+Markdown documents, 83 current documents, 57 previous-version hits, 568
+semantic hits, and 0 current-claim failures; remote CI remains pending
+because the branch is local-only.
 A completed checkpoint is also recorded for
 `docs/plan/tasks/native-engine-085.md`: design is `adc61a1f` and implementation
 is `02f866e6`. Focused CSS parser/cascade coverage passed 2/2 in 6m57s;

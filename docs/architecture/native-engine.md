@@ -18,7 +18,8 @@ bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
 bounded-text-overflow/bounded-vertical-align/bounded-flex-row/
 bounded-flex-row-gap/bounded-flex-row-justification/bounded-flex-item-order/
-bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-wrap/
+bounded-flex-cross-axis-alignment/bounded-flex-direction/bounded-flex-column-direction/
+bounded-flex-wrap/
 bounded-flex-wrap-reverse,
 bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
 bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
@@ -88,6 +89,10 @@ source-order ties,
 bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
 placement using explicit content height or the auto row's maximum item outer
 height,
+bounded non-inherited `flex-direction:column|column-reverse` placement for
+eligible fixed-height, no-wrap flex containers with vertical justification,
+row-gap, flexible lengths, horizontal item alignment, reverse placement, and
+shared descendant/artifact consumers,
 bounded rectangular
 `overflow:hidden`/`overflow:clip` clips shared by paint,
 viewport projection, and point hit testing, and bounded read-only diagnostics
@@ -321,15 +326,17 @@ wrapping, and shared downstream artifacts; the shared one-token and two-token
 recorded in `docs/plan/tasks/native-engine-093.md`; design is `273b31db` and
 implementation is `653f025e`. Remote CI remains pending because the branch is
 local-only.
-The active 094 boundary extends that same owner to explicit
-`flex-direction:column|column-reverse` for fixed-height, no-wrap containers.
-Vertical main-axis justification, row-gap, bounded grow/shrink/basis,
-cross-axis item alignment, reverse placement, and complete descendant/artifact
-consumers are mapped through the existing state owner. Auto-height columns,
-wrapping, column-gap line distribution, logical writing modes, and
-browser-wide Flexbox remain outside the contract recorded in
-`docs/plan/tasks/native-engine-094.md`. Remote CI remains pending because the
-branch is local-only.
+The completed 094 boundary extends that same owner to explicit
+`flex-direction:column|column-reverse` for eligible fixed-height, no-wrap
+containers. Vertical main-axis justification uses `row-gap`; bounded
+grow/shrink/basis, horizontal item alignment, reverse placement, and complete
+descendant/artifact consumers are mapped through the existing state owner.
+Auto-height columns, wrapping, column-gap line distribution, logical writing
+modes, and browser-wide Flexbox remain outside the contract recorded in
+`docs/plan/tasks/native-engine-094.md`; design is `aea47b17`, implementation
+checkpoints are `7dc92517` and `4e212151`, and local certification/cleanup
+evidence is recorded there. Remote CI remains pending because the branch is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

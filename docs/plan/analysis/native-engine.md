@@ -678,6 +678,19 @@ is `1157bf49`, and complete local gate plus exact-target cleanup evidence is
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered `native-engine-103` slice adds explicit
+inherited `text-align-last:justify` to the same fixed-cell inline-flow owner.
+Only the final non-empty line reaching the normal block completion flush may
+distribute positive free space across eligible collapsed ASCII separators,
+reusing 101's deterministic integer spacing through 102's final-line owner.
+Ordinary soft-wrap justification, preformatted/pre-wrap, break-all, truncated,
+forced-break and intermediate-boundary paths, bidi/shaping, logical
+properties, vertical writing, and full text conformance remain outside the
+bounded contract. The active task is
+`docs/plan/tasks/native-engine-103.md`; design is ready locally and
+implementation, certification, and exact-target cleanup remain pending.
+Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -905,6 +918,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-100` | bounded inherited `text-align:start/end` for fixed-cell inline flow, resolving logical line alignment through inherited direction while preserving physical alignment and source order | `native-engine-099` | Unicode bidi/shaping, mixed bidi runs, justify/match-parent/justify-all, logical properties, vertical writing modes, grid, floats, and browser-wide text conformance |
 | `native-engine-101` | bounded inherited `text-align:justify` for eligible collapsed fixed-cell soft-wrapped lines, with deterministic per-space integer expansion through shared text/artifact consumers | `native-engine-100` | final-line/hard-break justification, preformatted and break-all flow, Unicode bidi/shaping, language-specific line breaking, match-parent/justify-all, logical properties, vertical writing modes, and browser-wide text conformance |
 | `native-engine-102` | bounded inherited `text-align-last:auto/left/center/right/start/end` for the final non-empty line of eligible fixed-cell blocks, reusing the shared line-flush and artifact consumers | `native-engine-101` | final-line justification, forced-break and intermediate-boundary semantics, Unicode bidi/shaping, text-align match-parent/justify-all, logical properties, vertical writing modes, and browser-wide text conformance |
+| `native-engine-103` | explicit inherited `text-align-last:justify` for the final non-empty line of eligible fixed-cell blocks, reusing 101's deterministic separator spacing through 102's final-line flush | `native-engine-102` | inter-character justification, preformatted/break-all/truncated final-line spacing, forced-break ownership, Unicode bidi/shaping, language-specific line breaking, text-justify, logical properties, vertical writing modes, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1311,6 +1325,7 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-103.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-102.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-101.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-100.md` is the preceding completed checkpoint;

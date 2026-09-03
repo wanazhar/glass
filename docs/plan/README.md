@@ -838,6 +838,15 @@ remain bounded as documented. The design is `fc396200`, implementation is
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered [native-engine-103](tasks/native-engine-103.md)
+slice adds bounded inherited `text-align-last:justify` to the same fixed-cell
+inline-flow owner. Only the final non-empty line flushed by a block's normal
+completion path may distribute positive free space across eligible collapsed
+ASCII separators; 101 soft-wrap justification and 102 physical/logical final
+alignment remain bounded as documented. The design is ready locally;
+implementation, certification, and exact-target cleanup remain pending.
+Remote CI remains pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

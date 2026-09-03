@@ -552,6 +552,14 @@ remain shared. The complete contract and evidence are in
 implementation is `118590f7`. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered `native-engine-092` slice adds explicit
+`justify-content:normal` to the same bounded fixed-width row/row-reverse
+flex-line owner. The computed keyword remains distinct while used placement
+reuses the completed `flex-start` path, including explicit gaps, margins,
+wrapping, reverse placement, and shared downstream artifacts. Its contract is
+in `docs/plan/tasks/native-engine-092.md`; design is pending at this
+checkpoint. Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -759,6 +767,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-089` | bounded explicit non-inherited `align-self:normal` resolving as the existing stretch path for eligible row/row-reverse flex items while retaining a distinct computed keyword | `native-engine-088` | auto margins, baseline/logical alignment, block/grid/absolute layout modes, column directions, fractional/percentage/intrinsic sizing, changed omitted-value defaults, and browser Flexbox parity |
 | `native-engine-090` | bounded explicit non-inherited `justify-content:space-around` using deterministic cumulative integer main-axis offsets for eligible row/row-reverse flex lines | `native-engine-089` | auto margins, negative-free-space fallback, column directions, logical direction/RTL, percentage/fractional/intrinsic sizing, grid, and browser Flexbox parity |
 | `native-engine-091` | bounded explicit non-inherited `justify-content:space-evenly` using deterministic cumulative integer main-axis offsets for eligible row/row-reverse flex lines | `native-engine-090` | auto margins, negative-free-space fallback, column directions, logical direction/RTL, percentage/fractional/intrinsic sizing, grid, and browser Flexbox parity |
+| `native-engine-092` | bounded explicit non-inherited `justify-content:normal` retaining a distinct computed keyword while reusing the flex-start used-placement owner for eligible row/row-reverse flex lines | `native-engine-091` | auto margins, negative-free-space fallback, column directions, logical direction/RTL, percentage/fractional/intrinsic sizing, grid, and browser Flexbox parity |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

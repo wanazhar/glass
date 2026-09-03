@@ -1,7 +1,7 @@
 ---
 id: native-engine-100
 scope: glass-browser/native-engine/text-align-logical
-status: ready
+status: complete
 depends-on: [native-engine-099]
 ---
 
@@ -84,21 +84,56 @@ conformance remain outside the contract and retain fail-closed fallback.
 
 ## Verification
 
-The implementation gate will include:
+Implementation checkpoint: `3380978c` (`feat(native-engine): support logical
+text alignment`); design checkpoint: `2dae80fc`. The focused and full local
+gates passed against the isolated `CARGO_TARGET_DIR=/tmp/glass-100-target`
+build root:
 
-- bounded parser, declaration, cascade, inheritance, inline precedence, and
-  unsupported-value diagnostics for `text-align:start|end`;
-- focused ltr/rtl start/end layout tests for direct text, wrapped lines, and
-  supported inline boxes, with physical left/right/center regressions;
-- display-list, software-raster, point-hit, overflow/viewport projection,
-  capture, scroll, semantic/source-order, and nested-direction consumers;
-- explicit tests proving direction-aware alignment does not reorder source text
-  or add normal-flow Unicode bidi behavior;
-- `cargo fmt --all -- --check`, focused and full native integration tests,
-  feature-enabled library tests with the documented explicit stack, strict
-  all-feature and no-default-feature Clippy, warning-denied rustdoc, locked
-  binaries, package/dependency gates, fuzz checking, documentation/release
-  validators, and exact isolated-target cleanup.
+- `cargo fmt --all -- --check` and `git diff --check` passed;
+- focused CSS parser/cascade tests: 3 passed;
+- focused logical alignment artifact test: 1 passed, covering ltr/rtl
+  start/end, wrapped lines, inline boxes, hit testing, display-list, raster,
+  and source order;
+- focused unsupported-value diagnostic regression: 1 passed;
+- full native integration suite: 136 passed, 0 failed;
+- feature-enabled browser library suite with `RUST_MIN_STACK=8388608`: 891
+  passed, 1 existing ignored, 0 failed;
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D
+  warnings` passed in 14m14s;
+- `cargo clippy -p glass-browser --no-default-features --all-targets --locked
+  -- -D warnings` passed in 6m28s;
+- warning-denied workspace rustdoc passed in 3m53s;
+- locked `glass-dev --bins` build passed in 12m49s;
+- direct `glass-browser` packaging and verification passed. A direct unpatched
+  `glass-dev` package verification correctly exposed that the published
+  crates.io `glass-browser 0.3.14` copy predates this checkout's CLI runtime
+  fields; the canonical paired-package path (`scripts/smoke-clean-install.sh`)
+  packages both archives with the local browser patch and passed clean
+  extraction, verification, core-only/full installs, `--version`, `--help`,
+  `capabilities`, and every ownership transition. The normalized dependency
+  validator also confirmed exact `glass-browser = 0.3.14`;
+- locked fuzz fetch and offline all-targets check passed in 8m15s;
+- static documentation/release validators passed:
+  - version and feature parity are synchronized at 0.3.14;
+  - release documentation truth: 514 Markdown documents, 83 current
+    documents, 57 previous-version hits, 578 semantic audit hits, and 0
+    current-claim failures;
+  - TUI shortcut inventory: 15 implementation help keys and 63 documentation
+    markers;
+  - documentation depth: 93 current guides and 19 substantive contracts;
+  - documentation coverage: 514 Markdown files, 345 full-product MCP tools
+    (100 browser-only), 17 examples, and 22 public modules;
+  - reliability matrix: 6 scenarios across 4 targets;
+  - public read-only adapter inventory: 5 adapters;
+  - Web IR corpus: 8 fixtures, 8 scenarios, and 11 categories with live
+    evidence verification.
+
+After all validation completed, process and open-file checks found no consumer
+of `/tmp/glass-100-target` or the clean-install temporary root. The validated
+non-symlink target resolved to `/tmp/glass-100-target` and measured 9.0G; the
+release-documentation report measured 160K. Both are disposable certification
+outputs and are removed in the final cleanup step. The repository target and
+other project-owned build outputs are not part of this cleanup.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this

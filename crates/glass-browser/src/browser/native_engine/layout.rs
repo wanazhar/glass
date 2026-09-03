@@ -581,6 +581,7 @@ struct FlexColumnLineContext {
     gap: u32,
     justify_content: JustifyContentValue,
     align_items: AlignItemsValue,
+    cross_reverse: bool,
     reverse: bool,
     depth: usize,
 }
@@ -1584,7 +1585,7 @@ impl<'a> LayoutBuilder<'a> {
             FlexDirectionValue::Column | FlexDirectionValue::ColumnReverse
         ) || !matches!(
             style.flex_wrap(),
-            FlexWrapValue::NoWrap | FlexWrapValue::Wrap
+            FlexWrapValue::NoWrap | FlexWrapValue::Wrap | FlexWrapValue::WrapReverse
         ) || Self::explicit_content_height(style).is_none()
             || !self.can_use_flex_layout(id)
         {
@@ -2236,6 +2237,23 @@ impl<'a> LayoutBuilder<'a> {
         } else {
             0
         };
+        let cross_axis_offset = |alignment: AlignItemsValue, remaining: u32| match alignment {
+            AlignItemsValue::FlexStart | AlignItemsValue::Stretch | AlignItemsValue::Normal => {
+                if context.cross_reverse {
+                    remaining
+                } else {
+                    0
+                }
+            }
+            AlignItemsValue::Center => remaining / 2,
+            AlignItemsValue::FlexEnd => {
+                if context.cross_reverse {
+                    0
+                } else {
+                    remaining
+                }
+            }
+        };
         let mut max_right = context.x.saturating_add(context.available_width);
         let mut max_bottom = context.y.saturating_add(context.available_height);
         if context.reverse {
@@ -2317,13 +2335,7 @@ impl<'a> LayoutBuilder<'a> {
                 let remaining = context
                     .available_width
                     .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
-                let cross_offset = match alignment {
-                    AlignItemsValue::FlexStart
-                    | AlignItemsValue::Stretch
-                    | AlignItemsValue::Normal => 0,
-                    AlignItemsValue::Center => remaining / 2,
-                    AlignItemsValue::FlexEnd => remaining,
-                };
+                let cross_offset = cross_axis_offset(alignment, remaining);
                 let item_x = context
                     .x
                     .saturating_add(item.margin.left())
@@ -2428,13 +2440,7 @@ impl<'a> LayoutBuilder<'a> {
                 let remaining = context
                     .available_width
                     .saturating_sub(item_width.saturating_add(item.margin.horizontal()));
-                let cross_offset = match alignment {
-                    AlignItemsValue::FlexStart
-                    | AlignItemsValue::Stretch
-                    | AlignItemsValue::Normal => 0,
-                    AlignItemsValue::Center => remaining / 2,
-                    AlignItemsValue::FlexEnd => remaining,
-                };
+                let cross_offset = cross_axis_offset(alignment, remaining);
                 let item_x = context
                     .x
                     .saturating_add(item.margin.left())
@@ -2480,6 +2486,7 @@ impl<'a> LayoutBuilder<'a> {
         y: u32,
         available_width: u32,
         depth: usize,
+        wrap_reverse: bool,
     ) -> FlowSize {
         let parent_style = self.document.computed_style_for_layout(parent);
         let available_height = Self::explicit_content_height(parent_style).unwrap_or_default();
@@ -2662,7 +2669,15 @@ impl<'a> LayoutBuilder<'a> {
                     .saturating_add(distributed_line_gap.saturating_mul(index))
                     .saturating_add(index.min(distributed_remainder))
             };
-            let line_x = line.provisional_x.saturating_add(line_offset);
+            let normal_line_x = line.provisional_x.saturating_add(line_offset);
+            let line_x = if wrap_reverse {
+                let line_start = normal_line_x.saturating_sub(x);
+                x.saturating_add(
+                    available_width.saturating_sub(line_start.saturating_add(line.width)),
+                )
+            } else {
+                normal_line_x
+            };
             let line_layout = self.layout_flex_column_line(
                 line.items,
                 FlexColumnLineContext {
@@ -2673,6 +2688,7 @@ impl<'a> LayoutBuilder<'a> {
                     gap: row_gap,
                     justify_content,
                     align_items,
+                    cross_reverse: wrap_reverse,
                     reverse,
                     depth,
                 },
@@ -2707,10 +2723,19 @@ impl<'a> LayoutBuilder<'a> {
                 FlexWrapValue::NoWrap if self.can_use_column_flex_layout(parent, parent_style) => {
                     self.layout_flex_column_children(parent, x, y, available_width, depth)
                 }
-                FlexWrapValue::Wrap if self.can_use_column_flex_layout(parent, parent_style) => {
-                    self.layout_flex_column_wrap_children(parent, x, y, available_width, depth)
+                FlexWrapValue::Wrap | FlexWrapValue::WrapReverse
+                    if self.can_use_column_flex_layout(parent, parent_style) =>
+                {
+                    self.layout_flex_column_wrap_children(
+                        parent,
+                        x,
+                        y,
+                        available_width,
+                        depth,
+                        parent_style.flex_wrap() == FlexWrapValue::WrapReverse,
+                    )
                 }
-                FlexWrapValue::WrapReverse | FlexWrapValue::NoWrap | FlexWrapValue::Wrap => {
+                FlexWrapValue::NoWrap | FlexWrapValue::Wrap | FlexWrapValue::WrapReverse => {
                     self.layout_children(parent, x, y, available_width, depth)
                 }
             };

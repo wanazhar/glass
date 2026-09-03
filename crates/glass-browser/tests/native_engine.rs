@@ -2746,7 +2746,7 @@ fn native_flex_column_wrap_forms_vertical_lines_and_maps_cross_axis_spacing() {
 }
 
 #[test]
-fn native_flex_column_wrap_sizes_each_line_and_preserves_wrap_reverse_fallback() {
+fn native_flex_column_wrap_sizes_each_line_and_supports_wrap_reverse() {
     let wrapped = NativeDocument::parse(
         "<div id='column' style='display:flex;width:20px;height:20px;flex-direction:column;flex-wrap:wrap;row-gap:2px;column-gap:1px;align-content:flex-start'><div id='first' style='width:5px;height:6px;flex-grow:1'>A</div><div id='second' style='width:5px;height:6px;flex-grow:1'>B</div><div id='third' style='width:5px;height:6px;flex-grow:1'>C</div></div>",
         &NativeEngineLimits::default(),
@@ -2782,15 +2782,13 @@ fn native_flex_column_wrap_sizes_each_line_and_preserves_wrap_reverse_fallback()
     );
 
     let wrap_reverse = NativeDocument::parse(
-        "<div id='column' style='display:flex;width:20px;height:20px;flex-direction:column;flex-wrap:wrap-reverse;row-gap:2px'><div id='first' style='display:block;width:5px;height:6px'>A</div><div id='second' style='display:block;width:5px;height:6px'>B</div><div id='third' style='display:block;width:5px;height:6px'>C</div></div>",
+        "<div id='column' style='display:flex;width:20px;height:20px;flex-direction:column;flex-wrap:wrap-reverse;row-gap:2px;column-gap:1px;align-items:flex-start;align-content:flex-start'><div id='first' style='display:block;width:5px;height:6px'>A</div><div id='second' style='display:block;width:5px;height:6px'>B</div><div id='third' style='display:block;width:5px;height:6px'>C</div></div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
-    let block = NativeDocument::parse(
-        "<div id='column' style='display:block;width:20px;height:20px;row-gap:2px'><div id='first' style='display:block;width:5px;height:6px'>A</div><div id='second' style='display:block;width:5px;height:6px'>B</div><div id='third' style='display:block;width:5px;height:6px'>C</div></div>",
-        &NativeEngineLimits::default(),
-    )
-    .unwrap();
+    let wrap_reverse_first = wrap_reverse.resolve_target("id=first").unwrap();
+    let wrap_reverse_second = wrap_reverse.resolve_target("id=second").unwrap();
+    let wrap_reverse_third = wrap_reverse.resolve_target("id=third").unwrap();
     let wrap_reverse_layout = wrap_reverse
         .layout(Viewport {
             width: 24,
@@ -2798,15 +2796,122 @@ fn native_flex_column_wrap_sizes_each_line_and_preserves_wrap_reverse_fallback()
             device_scale_factor_milli: 1000,
         })
         .unwrap();
-    let block_layout = block
-        .layout(Viewport {
-            width: 24,
-            height: 24,
-            device_scale_factor_milli: 1000,
-        })
-        .unwrap();
-    assert_eq!(wrap_reverse_layout.boxes, block_layout.boxes);
-    assert_eq!(wrap_reverse_layout.text_runs, block_layout.text_runs);
+    assert_eq!(
+        wrap_reverse_layout.box_for(wrap_reverse_first).map(|rect| (
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height
+        )),
+        Some((15, 0, 5, 6))
+    );
+    assert_eq!(
+        wrap_reverse_layout
+            .box_for(wrap_reverse_second)
+            .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+        Some((15, 8, 5, 6))
+    );
+    assert_eq!(
+        wrap_reverse_layout.box_for(wrap_reverse_third).map(|rect| (
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height
+        )),
+        Some((9, 0, 5, 6))
+    );
+}
+
+#[test]
+fn native_flex_column_wrap_reverse_reflects_cross_axis_alignment_and_artifacts() {
+    let source = |direction: &str| {
+        format!(
+            "<div id='column' style='display:flex;width:26px;height:20px;flex-direction:{direction};flex-wrap:wrap-reverse;row-gap:2px;column-gap:3px;align-items:flex-start;align-content:space-between'><button id='first' style='width:4px;height:8px;align-self:flex-end;background-color:red'><span id='nested' style='display:block;height:2px'>F</span></button><button id='second' style='width:8px;height:7px;background-color:green'>S</button><button id='third' style='width:6px;height:6px;background-color:blue'>T</button></div>"
+        )
+    };
+    let viewport = Viewport {
+        width: 32,
+        height: 28,
+        device_scale_factor_milli: 1000,
+    };
+
+    for (direction, expected) in [
+        ("column", [(18, 0, 4, 8), (18, 10, 8, 7), (0, 0, 6, 6)]),
+        (
+            "column-reverse",
+            [(18, 12, 4, 8), (18, 3, 8, 7), (0, 14, 6, 6)],
+        ),
+    ] {
+        let document =
+            NativeDocument::parse(&source(direction), &NativeEngineLimits::default()).unwrap();
+        let column = document.resolve_target("id=column").unwrap();
+        let first = document.resolve_target("id=first").unwrap();
+        let nested = document.resolve_target("id=nested").unwrap();
+        let second = document.resolve_target("id=second").unwrap();
+        let third = document.resolve_target("id=third").unwrap();
+        let layout = document.layout(viewport).unwrap();
+
+        assert_eq!(
+            layout.box_for(column).map(|rect| (rect.width, rect.height)),
+            Some((26, 20))
+        );
+        for (node_id, (x, y, width, height)) in [
+            (first, expected[0]),
+            (second, expected[1]),
+            (third, expected[2]),
+        ] {
+            assert_eq!(
+                layout
+                    .box_for(node_id)
+                    .map(|rect| (rect.x, rect.y, rect.width, rect.height)),
+                Some((x, y, width, height))
+            );
+        }
+        assert_eq!(
+            layout.box_for(nested).map(|rect| (rect.x, rect.y)),
+            Some((18, expected[0].1))
+        );
+        assert_eq!(
+            layout.hit_test(19.into(), (expected[0].1 + 1).into()),
+            Ok(Some(nested))
+        );
+
+        let list = document.display_list(viewport).unwrap();
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id, .. } if *node_id == first
+            )
+        }));
+        let surface = document.rasterize(viewport).unwrap();
+        assert_eq!(surface.width(), 32);
+        assert_eq!(surface.height(), 28);
+        assert_eq!(surface.pixel(18, expected[0].1 + 7), Some([255, 0, 0, 255]));
+    }
+}
+
+#[test]
+fn native_flex_column_wrap_reverse_ineligible_content_keeps_fallback() {
+    let wrapped = NativeDocument::parse(
+        "<div id='column' style='display:flex;width:20px;height:20px;flex-direction:column;flex-wrap:wrap-reverse'><div id='first' style='display:block;width:5px'>Alpha</div><div id='second' style='display:block;width:5px'>Beta</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let block = NativeDocument::parse(
+        "<div id='column' style='display:block;width:20px;height:20px'><div id='first' style='display:block;width:5px'>Alpha</div><div id='second' style='display:block;width:5px'>Beta</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+
+    let viewport = Viewport {
+        width: 24,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let wrapped_layout = wrapped.layout(viewport).unwrap();
+    let block_layout = block.layout(viewport).unwrap();
+    assert_eq!(wrapped_layout.boxes, block_layout.boxes);
+    assert_eq!(wrapped_layout.text_runs, block_layout.text_runs);
 }
 
 #[test]

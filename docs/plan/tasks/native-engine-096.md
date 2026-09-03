@@ -1,7 +1,7 @@
 ---
 id: native-engine-096
 scope: glass-browser/native-engine/flex-direction-column-wrap-reverse
-status: ready
+status: in-progress
 depends-on: [native-engine-095]
 ---
 
@@ -90,9 +90,9 @@ context:
 
 ## Verification
 
-Implementation and documentation closeout are pending. The design checkpoint
-is this task's initial ready commit; its hash will be recorded before the
-implementation checkpoint.
+Implementation and documentation closeout are in progress. The design
+checkpoint is `f5026f3c`; the implementation checkpoint and final evidence will
+be recorded after the focused and repository-wide gates pass.
 
 Required evidence:
 
@@ -108,4 +108,3 @@ Required evidence:
 
 Remote CI remains pending while `main` is local-only. No push, tag, release,
 registry publication, or browser-parity certification is part of this slice.
-

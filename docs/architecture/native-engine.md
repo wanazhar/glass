@@ -357,7 +357,7 @@ cross-axis `align-items`/`align-self` placement from the physical cross-end,
 reuses 095 line formation, `column-gap`, `align-content`, main-axis direction,
 and shared descendant/artifact consumers, and preserves source/semantic order.
 The contract is recorded in `docs/plan/tasks/native-engine-096.md`; the design
-checkpoint is the current ready commit and implementation remains pending.
+checkpoint is `f5026f3c` and implementation is in progress.
 Auto-height columns, intrinsic or percentage sizing, logical writing modes, and
 browser-wide Flexbox remain outside the contract. Remote CI remains pending
 because the branch is local-only.

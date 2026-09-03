@@ -601,7 +601,8 @@ row/column gap mapping, and complete artifact ownership, then reflects line
 boxes and cross-axis item alignment from the physical horizontal cross-end.
 Source, semantic, and keyboard order remain unchanged. The bounded contract,
 tradeoffs, exclusions, and required evidence are in
-`docs/plan/tasks/native-engine-096.md`; implementation is not yet claimed.
+`docs/plan/tasks/native-engine-096.md`; design is `f5026f3c` and implementation
+is in progress.
 Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The

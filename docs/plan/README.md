@@ -765,7 +765,8 @@ cross-axis item alignment while preserving 095 line formation, gaps,
 `align-content`, main-axis reversal, complete artifacts, and source/semantic
 order. Auto-height columns, intrinsic or percentage sizing, logical writing
 modes, and browser-wide Flexbox remain outside the contract. The design is
-ready locally; implementation and certification follow the task contract.
+committed locally in `f5026f3c`; implementation and certification follow the
+task contract.
 Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36

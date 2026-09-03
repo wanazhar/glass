@@ -698,9 +698,9 @@ fn flex_space_around_offset(free_space: u32, item_index: u32, item_count: usize)
     u32::try_from(numerator / denominator).unwrap_or(u32::MAX)
 }
 
-fn flex_space_evenly_line_offset(free_space: u32, line_index: u32, line_count: usize) -> u32 {
-    let numerator = u64::from(free_space).saturating_mul(u64::from(line_index).saturating_add(1));
-    let denominator = u64::try_from(line_count)
+fn flex_space_evenly_offset(free_space: u32, index: u32, count: usize) -> u32 {
+    let numerator = u64::from(free_space).saturating_mul(u64::from(index).saturating_add(1));
+    let denominator = u64::try_from(count)
         .unwrap_or(u64::MAX)
         .saturating_add(1)
         .max(1);
@@ -1444,15 +1444,19 @@ impl<'a> LayoutBuilder<'a> {
                 JustifyContentValue::FlexEnd => free_space,
                 JustifyContentValue::FlexStart
                 | JustifyContentValue::SpaceBetween
-                | JustifyContentValue::SpaceAround => 0,
+                | JustifyContentValue::SpaceAround
+                | JustifyContentValue::SpaceEvenly => 0,
             }
         };
-        let initial_offset =
-            if context.justify_content == JustifyContentValue::SpaceAround && item_count > 0 {
+        let initial_offset = match context.justify_content {
+            JustifyContentValue::SpaceAround if item_count > 0 => {
                 flex_space_around_offset(free_space, 0, item_count)
-            } else {
-                leading_offset
-            };
+            }
+            JustifyContentValue::SpaceEvenly if item_count > 0 => {
+                flex_space_evenly_offset(free_space, 0, item_count)
+            }
+            _ => leading_offset,
+        };
         let distributed_gap = if context.justify_content == JustifyContentValue::SpaceBetween {
             free_space.checked_div(gap_count).unwrap_or(0)
         } else {
@@ -1489,6 +1493,19 @@ impl<'a> LayoutBuilder<'a> {
                             item_count,
                         );
                         let previous_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_right = cursor_right
+                            .saturating_sub(current_offset.saturating_sub(previous_offset));
+                    } else if context.justify_content == JustifyContentValue::SpaceEvenly {
+                        let current_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_evenly_offset(
                             free_space,
                             u32::try_from(index - 1).unwrap_or(u32::MAX),
                             item_count,
@@ -1535,6 +1552,12 @@ impl<'a> LayoutBuilder<'a> {
                             u32::try_from(item_count.saturating_sub(1)).unwrap_or(u32::MAX),
                             item_count,
                         )
+                    } else if context.justify_content == JustifyContentValue::SpaceEvenly {
+                        flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(item_count.saturating_sub(1)).unwrap_or(u32::MAX),
+                            item_count,
+                        )
                     } else {
                         leading_offset
                     },
@@ -1559,6 +1582,19 @@ impl<'a> LayoutBuilder<'a> {
                             item_count,
                         );
                         let previous_offset = flex_space_around_offset(
+                            free_space,
+                            u32::try_from(index - 1).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        cursor_x =
+                            cursor_x.saturating_add(current_offset.saturating_sub(previous_offset));
+                    } else if context.justify_content == JustifyContentValue::SpaceEvenly {
+                        let current_offset = flex_space_evenly_offset(
+                            free_space,
+                            u32::try_from(index).unwrap_or(u32::MAX),
+                            item_count,
+                        );
+                        let previous_offset = flex_space_evenly_offset(
                             free_space,
                             u32::try_from(index - 1).unwrap_or(u32::MAX),
                             item_count,
@@ -1810,7 +1846,7 @@ impl<'a> LayoutBuilder<'a> {
             {
                 flex_space_around_offset(free_space, line_index, line_count)
             } else if wrapped && parent_style.align_content() == AlignContentValue::SpaceEvenly {
-                flex_space_evenly_line_offset(free_space, line_index, line_count)
+                flex_space_evenly_offset(free_space, line_index, line_count)
             } else {
                 leading_line_offset
                     .saturating_add(distributed_line_gap.saturating_mul(line_index))

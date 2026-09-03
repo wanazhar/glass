@@ -363,6 +363,14 @@ branch is local-only.
 Auto-height columns, intrinsic or percentage sizing, logical writing modes, and
 browser-wide Flexbox remain outside the contract. Remote CI remains pending
 because the branch is local-only.
+The active 097 design extends the existing no-wrap row and fixed-height column
+owners to bounded `margin:auto` edges. It preserves numeric margins while
+retaining auto-edge provenance, resolves positive main-axis space before
+`justify-content` and positive cross-axis space before item alignment, and
+keeps reverse directions and complete descendant/artifact consumers on the
+shared geometry path. Wrapped lines, auto-height columns, intrinsic or
+percentage sizing, and normal-flow auto margins remain outside the contract
+recorded in `docs/plan/tasks/native-engine-097.md`.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

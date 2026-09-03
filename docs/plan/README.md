@@ -808,6 +808,13 @@ remain outside the contract. The design checkpoint is `2f18abb4`, the
 implementation is `3bf658e8`, and the complete local gate evidence is recorded
 in the task file. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-100](tasks/native-engine-100.md)
+slice adds bounded inherited `text-align:start|end` to the fixed-cell
+inline-flow owner, resolving logical start/end through inherited
+`direction:ltr|rtl` while preserving physical `left|right`, center, source
+order, and the existing no-bidi/shaping boundary. The design is ready locally;
+remote CI remains pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

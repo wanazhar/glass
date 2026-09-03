@@ -899,6 +899,106 @@ fn native_text_align_last_resolves_final_lines_through_shared_artifacts() {
 }
 
 #[test]
+fn native_text_align_last_justifies_final_lines_without_changing_other_paths() {
+    let document = NativeDocument::parse(
+        "<style>.block { display:block; width:45px; text-align-last:justify; } #tight { width:40px; } #pre { white-space:pre; } #pre-wrap { white-space:pre-wrap; } #break { word-break:break-all; } #spacing { word-spacing:2px; }</style><div id='target' class='block'>A B C</div><div id='tight' class='block'>A B C</div><div id='hard' class='block'>A B<br>C D</div><div id='pre' class='block'>A B C</div><div id='pre-wrap' class='block'>A B C</div><div id='break' class='block'>A B C</div><div id='spacing' class='block'>A B C</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 45,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let target = document.resolve_target("id=target").unwrap();
+    let tight = document.resolve_target("id=tight").unwrap();
+    let hard = document.resolve_target("id=hard").unwrap();
+    let pre = document.resolve_target("id=pre").unwrap();
+    let pre_wrap = document.resolve_target("id=pre-wrap").unwrap();
+    let break_all = document.resolve_target("id=break").unwrap();
+    let spacing = document.resolve_target("id=spacing").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let runs_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| (run.origin, run.text.as_str(), run.justify_spacing))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        runs_for(target),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "A", 0),
+            (NativePoint { x: 8, y: 0 }, " B", 3),
+            (NativePoint { x: 27, y: 0 }, " C", 2),
+        ]
+    );
+    assert_eq!(
+        runs_for(tight),
+        vec![
+            (NativePoint { x: 0, y: 20 }, "A", 0),
+            (NativePoint { x: 8, y: 20 }, " B", 0),
+            (NativePoint { x: 24, y: 20 }, " C", 0),
+        ]
+    );
+    assert_eq!(
+        runs_for(hard),
+        vec![
+            (NativePoint { x: 0, y: 40 }, "A", 0),
+            (NativePoint { x: 8, y: 40 }, " B", 0),
+            (NativePoint { x: 0, y: 60 }, "C", 0),
+            (NativePoint { x: 8, y: 60 }, " D", 21),
+        ]
+    );
+    assert_eq!(
+        runs_for(pre),
+        vec![(NativePoint { x: 0, y: 80 }, "A B C", 0)]
+    );
+    assert_eq!(
+        runs_for(pre_wrap),
+        vec![(NativePoint { x: 0, y: 100 }, "A B C", 0)]
+    );
+    assert_eq!(
+        runs_for(break_all),
+        vec![
+            (NativePoint { x: 0, y: 120 }, "A", 0),
+            (NativePoint { x: 8, y: 120 }, " B", 0),
+            (NativePoint { x: 24, y: 120 }, " C", 0),
+        ]
+    );
+    assert_eq!(
+        runs_for(spacing),
+        vec![
+            (NativePoint { x: 0, y: 140 }, "A", 0),
+            (NativePoint { x: 8, y: 140 }, " B", 1),
+            (NativePoint { x: 27, y: 140 }, " C", 0),
+        ]
+    );
+    assert_eq!(layout.box_for(target).unwrap().height, 20);
+
+    let display_list = document.display_list(viewport).unwrap();
+    let target_commands = display_list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id,
+                origin,
+                text,
+                justify_spacing,
+                ..
+            } if *node_id == target => Some((*origin, text.as_str(), *justify_spacing)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(target_commands, runs_for(target));
+    let surface = display_list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 0), Some([0, 0, 0, 255]));
+}
+
+#[test]
 fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
     let document = NativeDocument::parse(
         "<style>#parent { display:block; width:32px; text-decoration:underline; color:rgba(0, 128, 0, 50%); } #clear { text-decoration:none; } #contents { display:contents; }</style><div id='parent'>A<span id='clear'>B</span><span id='contents'><span id='nested'>C</span></span></div>",
@@ -9051,7 +9151,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: justify; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

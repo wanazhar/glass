@@ -69,7 +69,7 @@ pub struct NativeTextLayout {
     pub text: String,
     pub truncated: bool,
     /// Extra fixed-cell advance applied to each eligible ASCII separator by
-    /// `text-align:justify` on a soft-wrapped line.
+    /// `text-align:justify` or `text-align-last:justify`.
     pub justify_spacing: u32,
 }
 
@@ -998,6 +998,7 @@ struct FlowStyle {
     text_align: TextAlignValue,
     text_align_last: TextAlignLastValue,
     justify_enabled: bool,
+    final_justify_enabled: bool,
     allow_soft_wrap: bool,
     text_indent: u32,
     word_spacing: u32,
@@ -1045,6 +1046,7 @@ struct FlowCursor {
     text_align: TextAlignValue,
     text_align_last: TextAlignLastValue,
     justify_enabled: bool,
+    final_justify_enabled: bool,
     allow_soft_wrap: bool,
     line_height: u32,
     line_has_content: bool,
@@ -1074,6 +1076,7 @@ impl FlowCursor {
             text_align: style.text_align,
             text_align_last: style.text_align_last,
             justify_enabled: style.justify_enabled,
+            final_justify_enabled: style.final_justify_enabled,
             allow_soft_wrap: style.allow_soft_wrap,
             line_height: 0,
             line_has_content: false,
@@ -1300,6 +1303,12 @@ impl<'a> LayoutBuilder<'a> {
                 WhiteSpaceValue::Normal | WhiteSpaceValue::PreLine
             )
             && style.word_break() == WordBreakValue::Normal;
+        let final_justify_enabled = text_align_last == TextAlignLastValue::Justify
+            && matches!(
+                white_space,
+                WhiteSpaceValue::Normal | WhiteSpaceValue::PreLine
+            )
+            && style.word_break() == WordBreakValue::Normal;
         let mut flow = FlowCursor::new(
             x,
             y,
@@ -1310,6 +1319,7 @@ impl<'a> LayoutBuilder<'a> {
                 text_align,
                 text_align_last,
                 justify_enabled,
+                final_justify_enabled,
                 allow_soft_wrap,
                 text_indent,
                 word_spacing,
@@ -1340,10 +1350,15 @@ impl<'a> LayoutBuilder<'a> {
     fn flush_line_with_reason(&mut self, flow: &mut FlowCursor, reason: FlowFlushReason) {
         if flow.line_has_content {
             let line_items = flow.take_line_items();
-            let eligible_spaces = if reason == FlowFlushReason::SoftWrap && flow.justify_enabled {
+            let justification_enabled = match reason {
+                FlowFlushReason::SoftWrap => flow.justify_enabled,
+                FlowFlushReason::Final => flow.final_justify_enabled,
+                FlowFlushReason::Normal => false,
+            };
+            let eligible_spaces = if justification_enabled {
                 line_items
                     .iter()
-                    .filter(|item| self.justifiable_text_run(**item).is_some())
+                    .filter(|item| self.justifiable_text_run(**item, reason).is_some())
                     .count()
             } else {
                 0
@@ -1385,7 +1400,7 @@ impl<'a> LayoutBuilder<'a> {
                     text_run.origin.x = text_run.origin.x.saturating_add(item_shift);
                     text_run.origin.y = text_run.origin.y.saturating_add(vertical_offset);
                 }
-                let justified_text = self.justifiable_text_run(item);
+                let justified_text = self.justifiable_text_run(item, reason);
                 if let Some(text_index) = justified_text {
                     let extra =
                         extra_per_space.saturating_add(u32::from(space_index < extra_remainder));
@@ -1402,7 +1417,7 @@ impl<'a> LayoutBuilder<'a> {
         flow.flush_line();
     }
 
-    fn justifiable_text_run(&self, item: FlowItem) -> Option<usize> {
+    fn justifiable_text_run(&self, item: FlowItem, reason: FlowFlushReason) -> Option<usize> {
         if item.box_start != item.box_end || item.text_end != item.text_start.saturating_add(1) {
             return None;
         }
@@ -1419,7 +1434,12 @@ impl<'a> LayoutBuilder<'a> {
             return None;
         }
         let style = self.document.computed_style_for_layout(text_run.node_id);
-        (style.text_align() == TextAlignValue::Justify
+        let alignment = match reason {
+            FlowFlushReason::SoftWrap => style.text_align() == TextAlignValue::Justify,
+            FlowFlushReason::Final => style.text_align_last() == TextAlignLastValue::Justify,
+            FlowFlushReason::Normal => false,
+        };
+        (alignment
             && matches!(
                 style.white_space(),
                 WhiteSpaceValue::Normal | WhiteSpaceValue::PreLine

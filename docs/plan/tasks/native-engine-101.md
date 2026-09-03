@@ -1,7 +1,7 @@
 ---
 id: native-engine-101
 scope: glass-browser/native-engine/text-align-justify
-status: ready
+status: complete
 depends-on: [native-engine-100]
 ---
 
@@ -98,23 +98,40 @@ outside the contract.
 
 ## Verification
 
-The implementation gate will include:
+Implementation checkpoint: `8ff29aa1` (`feat(native-engine): support
+justified text flow`); test checkpoint: `15cf0c85` (`test(native-engine): cover
+justified word spacing`); design checkpoint: `959cbbc9`. The focused and full
+local gates passed against the isolated `CARGO_TARGET_DIR=/tmp/glass-101-target`
+build root:
 
-- parser, declaration, cascade, inheritance, inline precedence, and typed
-  unsupported-value diagnostics for `text-align:justify`;
-- deterministic spacing for one and multiple soft-wrapped lines, uneven
-  integer remainder allocation, word-spacing composition, no-space and
-  negative/zero-free-space fallback, final-line and hard-break exclusion,
-  preformatted/break-all exclusion, and physical/logical alignment regressions;
-- display-list and software-raster assertions proving added space advance is
-  represented consistently, with source-order text and supported inline
-  subtree translations preserved through overflow, scrolling, capture, and
-  semantic projections;
-- `cargo fmt --all -- --check`, focused and full native integration tests,
-  feature-enabled library tests with the documented explicit stack, strict
-  all-feature and no-default-feature Clippy, warning-denied rustdoc, locked
-  binaries, paired package/dependency gates, fuzz checking,
-  documentation/release validators, and exact isolated-target cleanup.
+- `cargo fmt --all -- --check` and `git diff --check` passed;
+- CSS `text-align` parser/cascade tests: 3 passed, 889 filtered;
+- focused justification integration tests: 2 passed, 136 filtered, including
+  deterministic remainder allocation, hard/preformatted/break-all exclusion,
+  shared display-list/raster geometry, and authored `word-spacing` composition;
+- full native integration suite: 138 passed, 0 failed;
+- feature-enabled browser library suite with `RUST_MIN_STACK=8388608`: 891
+  passed, 1 existing ignored, 0 failed;
+- strict all-feature workspace Clippy passed in 14m19s; the final test-only
+  checkpoint rerun passed incrementally in 14.92s;
+- strict no-default-feature browser Clippy passed in 6m08s; the final
+  test-only checkpoint rerun passed incrementally in 2.03s;
+- warning-denied workspace rustdoc passed in 3m55s;
+- locked `glass-dev --bins` build passed in 11m49s;
+- locked browser and dev packages passed with the local browser patch, and the
+  packaged dependency validator confirmed `glass-browser` exactly at 0.3.14;
+  packaging emitted only the existing yanked `chacha20 v0.10.1` warning;
+- locked fuzz fetch and offline all-targets check passed in 8m49s;
+- static validators passed: version and feature parity at 0.3.14; release
+  documentation at 515 Markdown documents, 83 current documents, 57
+  previous-version hits, 580 semantic audit hits, and 0 current-claim
+  failures; TUI inventory 15/63; documentation depth 93/19; coverage
+  515/345/17/22; reliability 6/4; public adapters 5; Web IR 8/8/11.
+
+Exact isolated-target cleanup is recorded in the final cleanup checkpoint
+after the documentation closeout. Remote CI remains pending because `main` is
+local-only. No browser-parity, release, registry-publication, or
+remote-certification claim is part of this task.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this

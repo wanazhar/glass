@@ -652,7 +652,7 @@ line-flush owner. The design is `2dae80fc`, implementation is `3380978c`, and
 local gate and paired-package evidence is recorded in the task file. Remote CI
 remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-101` slice adds inherited
+The completed dependency-ordered `native-engine-101` slice adds inherited
 `text-align:justify` to the same fixed-cell inline-flow owner. It stretches
 only emitted collapsed ASCII separators on soft-wrapped non-final lines with
 positive free space, using deterministic source-order integer remainder
@@ -660,9 +660,11 @@ allocation and carrying the extra advance through text runs, display-list,
 raster, overflow, scrolling, capture, and existing inline-item translations.
 Preformatted flow, bidi/shaping, language-specific line breaking, logical
 properties, vertical writing, and full text conformance remain outside the
-bounded contract. The design is ready locally; implementation, certification,
-and exact-target cleanup remain pending. Remote CI remains pending because the
-branch is local-only.
+bounded contract. The design is `959cbbc9`, implementation is `8ff29aa1`, and
+the explicit word-spacing acceptance test is `15cf0c85`; complete local gate
+evidence is recorded in the task file, with exact isolated-target cleanup
+recorded in the final cleanup checkpoint. Remote CI remains pending because
+the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1296,8 +1298,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-101.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-100.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-101.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-100.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-099.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-098.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-095.md` is the preceding completed checkpoint;
@@ -1354,13 +1356,15 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
-The active next checkpoint is recorded for
-`docs/plan/tasks/native-engine-101.md`: it owns bounded inherited
-`text-align:justify` for collapsed ASCII separators on soft-wrapped non-final
-fixed-cell lines. The design is ready locally; implementation, certification,
-and exact isolated-target cleanup remain pending. Remote CI remains pending
-because the branch is local-only.
 The completed current checkpoint is recorded for
+`docs/plan/tasks/native-engine-101.md`: the design is `959cbbc9`, the
+implementation is `8ff29aa1`, and the explicit word-spacing acceptance test is
+`15cf0c85`. Focused/full native, feature-library, strict-Clippy, rustdoc,
+binary, paired-package, dependency, fuzz, and documentation/release evidence
+is recorded in the task file; exact isolated-target cleanup is recorded in the
+final cleanup checkpoint. Remote CI remains pending because the branch is
+local-only.
+The completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-100.md`: the design is `2dae80fc` and the
 implementation is `3380978c`. Focused/full native, feature-library,
 strict-Clippy, rustdoc, binary, paired-package, dependency, and fuzz evidence

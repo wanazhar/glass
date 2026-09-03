@@ -817,13 +817,15 @@ design checkpoint is `2dae80fc`, the implementation is `3380978c`, and the
 complete local gate and paired-package evidence is recorded in the task file.
 Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered [native-engine-101](tasks/native-engine-101.md)
+The completed dependency-ordered [native-engine-101](tasks/native-engine-101.md)
 slice adds bounded inherited `text-align:justify` to the fixed-cell inline-flow
 owner. Only eligible collapsed ASCII separators on soft-wrapped non-final
 lines receive deterministic integer expansion; preformatted flow, bidi,
 shaping, and the broader text-conformance matrix remain outside the contract.
-The design is ready locally; implementation, certification, and exact-target
-cleanup remain pending. Remote CI remains pending because the branch is
+The design is `959cbbc9`, implementation is `8ff29aa1`, and the explicit
+word-spacing acceptance test is `15cf0c85`; the complete local gate evidence is
+recorded in the task file. Exact isolated-target cleanup is recorded in the
+final cleanup checkpoint. Remote CI remains pending because the branch is
 local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36

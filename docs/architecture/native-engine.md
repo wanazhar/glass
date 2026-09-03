@@ -313,6 +313,12 @@ wrapping, and shared downstream artifacts. Its contract and evidence are
 recorded in `docs/plan/tasks/native-engine-092.md`; design is `4cbaf338` and
 implementation is `ce19db39`. Remote CI remains pending because the branch is
 local-only.
+The active 093 boundary adds explicit `justify-content:stretch` to that owner.
+The computed keyword will remain distinct while used placement reuses the
+completed `flex-start` path, including explicit gaps, margins, row-reverse,
+wrapping, and shared downstream artifacts. Its contract is recorded in
+`docs/plan/tasks/native-engine-093.md`; design is pending until this
+checkpoint. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

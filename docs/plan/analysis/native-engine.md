@@ -594,16 +594,15 @@ the contract in `docs/plan/tasks/native-engine-095.md`. Design is `598228a7`,
 implementation is `96ea62a3`, and local certification evidence is recorded in
 the task file. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-096` design extends the same
+The completed dependency-ordered `native-engine-096` slice extends the same
 fixed-height column/column-reverse owner to `flex-wrap:wrap-reverse`. It keeps
 095's order-sorted vertical line formation, per-line sizing and justification,
 row/column gap mapping, and complete artifact ownership, then reflects line
 boxes and cross-axis item alignment from the physical horizontal cross-end.
 Source, semantic, and keyboard order remain unchanged. The bounded contract,
-tradeoffs, exclusions, and required evidence are in
+tradeoffs, exclusions, and local evidence are in
 `docs/plan/tasks/native-engine-096.md`; design is `f5026f3c` and implementation
-is in progress.
-Remote CI remains pending because the branch is local-only.
+is `6862aff6`. Remote CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1229,8 +1228,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-095.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-094.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-096.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-095.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-094.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-093.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-092.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-085.md` is an earlier completed checkpoint;
@@ -1283,7 +1283,16 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
-A completed current checkpoint is recorded for
+The completed current checkpoint is recorded for
+`docs/plan/tasks/native-engine-096.md`: design is `f5026f3c`, implementation
+is `6862aff6`, and focused column-wrap-reverse, full-native, feature-library,
+strict-Clippy, fallback, documentation, package, fuzz, and exact-target
+evidence is recorded in that task file. The default-stack overflow in the
+pre-existing large-Clap parser test is reproduced with and without
+`native-engine`; the feature library suite passes with
+`RUST_MIN_STACK=33554432`. Remote CI remains pending because the branch is
+local-only.
+A completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-095.md`: design is `598228a7`, implementation
 is `96ea62a3`, and focused column-wrap, full-native, feature-library,
 strict-Clippy, fallback, and exact-target evidence is recorded in that task
@@ -1300,11 +1309,6 @@ that task file. The final local release-documentation audit reported 508
 Markdown documents, 83 current documents, 57 previous-version hits, 568
 semantic hits, and 0 current-claim failures; remote CI remains pending
 because the branch is local-only.
-The next active design checkpoint is
-`docs/plan/tasks/native-engine-096.md`; it is ready locally for implementation
-after the 095 dependency. Its contract explicitly covers physical cross-axis
-reflection for column `wrap-reverse`, including align-content and
-align-items/self behavior, while retaining the established fallback boundary.
 A completed checkpoint is also recorded for
 `docs/plan/tasks/native-engine-085.md`: design is `adc61a1f` and implementation
 is `02f866e6`. Focused CSS parser/cascade coverage passed 2/2 in 6m57s;

@@ -1,7 +1,7 @@
 ---
 id: native-engine-096
 scope: glass-browser/native-engine/flex-direction-column-wrap-reverse
-status: in-progress
+status: complete
 depends-on: [native-engine-095]
 ---
 
@@ -90,21 +90,47 @@ context:
 
 ## Verification
 
-Implementation and documentation closeout are in progress. The design
-checkpoint is `f5026f3c`; the implementation checkpoint and final evidence will
-be recorded after the focused and repository-wide gates pass.
+Implementation and documentation closeout are complete. The design checkpoint
+is `f5026f3c` and the implementation checkpoint is `6862aff6`.
 
-Required evidence:
+Passed locally:
 
-- focused column `wrap-reverse` integration for both `column` and
-  `column-reverse`, including `align-content`, `align-items`/`align-self`,
-  gaps, descendants, paint, and hit testing;
-- explicit fallback coverage for an ineligible/unsupported column shape;
-- full native integration and feature-enabled library coverage with the
-  documented non-default test stack where required;
-- lockfile-pinned Clippy, rustdoc, package, binary, fuzz, documentation, and
-  relevant static validators;
-- exact temporary-target and report cleanup after process/open-file checks.
+- `cargo fmt --all -- --check` and `git diff --check`;
+- focused column `wrap-reverse` integration: 4/4 passed;
+- full `cargo test -p glass-browser --features native-engine --test
+  native_engine`: 125/125 passed;
+- `RUST_MIN_STACK=33554432 cargo test -p glass-browser --features
+  native-engine --lib --no-fail-fast`: 887 passed, 1 ignored, 0 failed;
+- lockfile-pinned all-feature workspace Clippy passed for both crates with
+  warnings denied; no-default-feature `glass-browser` Clippy also passed;
+- warning-denied locked workspace rustdoc passed;
+- locked `glass-dev --bins` compilation passed;
+- locked `glass-browser` and patched locked `glass-dev` package assembly
+  passed, and the packaged dependency check confirmed exact `glass-browser`
+  0.3.14 resolution;
+- locked offline fuzz-target compilation passed;
+- version sync, feature parity, release documentation, TUI, documentation
+  depth, live coverage, reliability, public-adapter, and Web IR validators
+  passed. The pre-closeout release-doc audit reported 510 Markdown documents,
+  83 current documents, 57 previous-version hits, 570 semantic hits, and 0
+  current-claim failures; live coverage reported 510/345/17/22 and Web IR
+  reported 8/8/11;
+- the reflected line boxes, `align-content`, cross-axis item alignment,
+  `column`/`column-reverse` main placement, descendant artifacts, display-list
+  paint, raster output, hit testing, and explicit ineligible fallback are
+  covered by the native integration tests.
+
+The default 2 MiB Rust test-thread stack still overflows in the pre-existing
+`cli::args::tests::agent_readiness_commands_are_explicit` test. It reproduces
+with and without `native-engine`; the feature library passes with the explicit
+32 MiB stack. No native-engine path is exercised by that parser test.
+
+Cleanup removed the exact regenerable `/tmp/glass-096-target` tree and
+`/tmp/glass-096-release-documentation.json` only after process/open-file
+checks. No `/tmp/glass-*-target` directories remain, the repository
+`target/` remains 4.0K, `fuzz/target` is absent, and the final filesystem check
+reports 65G available at 67% use. Shared registries/toolchains, source,
+durable data, and long-lived Glass processes were retained.
 
 Remote CI remains pending while `main` is local-only. No push, tag, release,
 registry publication, or browser-parity certification is part of this slice.

@@ -121,7 +121,7 @@ certification and cleanup record below.
   `glass` (140,088,688 bytes) and `glass-browser` (90,867,448 bytes);
 - repository audits passed at version `0.3.14`: version sync; feature parity
   14 capabilities across 4 targets; release documentation 507 Markdown
-  files, 83 current documents, 57 previous-version hits, 566 semantic audit
+  files, 83 current documents, 57 previous-version hits, 567 semantic audit
   hits, and 0 current-claim failures; TUI 15/63; documentation depth 93/19;
   live documentation coverage 507/345/17/22; reliability 6/4; public
   read-only adapters 5; Web IR 8/8/11; formatting and diff checks;

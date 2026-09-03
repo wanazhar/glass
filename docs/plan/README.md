@@ -828,6 +828,15 @@ recorded in the task file. Exact isolated-target cleanup is recorded in the
 final cleanup checkpoint. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered [native-engine-102](tasks/native-engine-102.md)
+slice adds bounded inherited `text-align-last:auto|left|center|right|start|end`
+to the same fixed-cell inline-flow owner. Only the final non-empty line flushed
+by a block's normal completion path uses the explicit value; 101 soft-wrap
+justification, forced-break paths, bidi/shaping, and full text conformance
+remain bounded as documented. The design is ready locally; implementation,
+certification, and exact-target cleanup remain pending. Remote CI remains
+pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

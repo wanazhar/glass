@@ -128,10 +128,19 @@ build root:
   failures; TUI inventory 15/63; documentation depth 93/19; coverage
   515/345/17/22; reliability 6/4; public adapters 5; Web IR 8/8/11.
 
-Exact isolated-target cleanup is recorded in the final cleanup checkpoint
-after the documentation closeout. Remote CI remains pending because `main` is
-local-only. No browser-parity, release, registry-publication, or
-remote-certification claim is part of this task.
+After all validation completed, process and open-file checks found no consumer
+of `/tmp/glass-101-target`. The validated non-symlink target resolved to
+`/tmp/glass-101-target` and measured 5.9G; the release-documentation report
+measured 160K. The disposable target, report, and session logs were removed
+with bounded same-filesystem deletion. No `/tmp/glass-*-target` or
+`glass-clean-install.*` roots remain; the repository and ForgeBuild targets
+are each 4.0K, `fuzz/target` is absent, and disk usage changed from 59G
+available / 70% used to 65G available / 67% used. Shared registries,
+toolchains, source, and durable project data were preserved.
+
+Remote CI remains pending because `main` is local-only. No browser-parity,
+release, registry-publication, or remote-certification claim is part of this
+task.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this

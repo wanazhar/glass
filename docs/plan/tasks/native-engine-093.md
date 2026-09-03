@@ -1,7 +1,7 @@
 ---
 id: native-engine-093
 scope: glass-browser/native-engine/justify-content-stretch
-status: active
+status: complete
 depends-on: [native-engine-092]
 ---
 
@@ -97,10 +97,40 @@ order.
 
 ## Verification
 
-Validation evidence will be appended after implementation. The required gate
-set is focused parser/cascade and shared-layout coverage, the full native
-integration and feature-enabled library suites, strict all-feature and
-no-default-feature Clippy, warning-denied workspace rustdoc, locked
-`glass-dev` binary compilation, static documentation/release validators, and
-an exact isolated-target cleanup audit. Remote CI remains pending because the
-branch is local-only.
+Implementation checkpoint: `653f025e` (`feat(native-engine): support
+justify-content stretch`). Documentation closeout follows the complete local
+certification and cleanup record below.
+
+- focused CSS parser/cascade: 73/73 passed in 13m16.38s; peak RSS
+  2,467,176 KiB;
+- focused shared-layout integration:
+  `native_flex_row_justify_content_aliases_reuse_flex_start_geometry_and_artifacts`
+  passed 1/1 in 5m48.13s; peak RSS 2,105,432 KiB;
+- full native integration: 119/119 passed in 2.90s; peak RSS 82,236 KiB;
+- feature-enabled `glass-browser` library: 887 passed, 1 ignored, 0 failed
+  in 8.15s with the established `RUST_MIN_STACK=8388608`; peak RSS
+  82,164 KiB;
+- strict all-feature Clippy: warnings denied, passed in 8m48.23s; peak RSS
+  1,886,268 KiB;
+- strict no-default-feature Clippy: warnings denied, passed in 5m04.05s;
+  peak RSS 1,797,240 KiB;
+- warning-denied workspace rustdoc: passed in 6m38.76s; peak RSS
+  1,634,400 KiB;
+- locked `glass-dev --bins` build: passed in 10m44.80s; peak RSS
+  1,998,384 KiB. The generated AArch64 ELF debug binaries were
+  `glass` (140,088,688 bytes) and `glass-browser` (90,867,448 bytes);
+- repository audits passed at version `0.3.14`: version sync; feature parity
+  14 capabilities across 4 targets; release documentation 507 Markdown
+  files, 83 current documents, 57 previous-version hits, 566 semantic audit
+  hits, and 0 current-claim failures; TUI 15/63; documentation depth 93/19;
+  live documentation coverage 507/345/17/22; reliability 6/4; public
+  read-only adapters 5; Web IR 8/8/11; formatting and diff checks;
+- the exact isolated `/tmp/glass-093-target` tree reached 5.0G during the
+  gate set and was removed only after the build/coverage processes exited and
+  `lsof` reported no open files beneath it. The generated release report
+  `/tmp/glass-093-release-documentation.json` was also removed. The project
+  `target/` remains 4.0K and `fuzz/target` remains absent. Shared registries,
+  toolchains, source, and long-lived Glass processes were retained;
+- remote CI remains pending because `main` is local-only and has not been
+  pushed. No release, tag, registry publication, or browser-parity
+  certification is claimed.

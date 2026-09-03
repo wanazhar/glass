@@ -171,6 +171,7 @@ pub(crate) enum TextAlignValue {
 pub(crate) enum JustifyContentValue {
     #[default]
     FlexStart,
+    Normal,
     Center,
     FlexEnd,
     SpaceBetween,
@@ -2844,6 +2845,7 @@ fn parse_text_align(value: &str) -> Option<TextAlignValue> {
 fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
     match value.to_ascii_lowercase().as_str() {
         "flex-start" => Some(JustifyContentValue::FlexStart),
+        "normal" => Some(JustifyContentValue::Normal),
         "center" => Some(JustifyContentValue::Center),
         "flex-end" => Some(JustifyContentValue::FlexEnd),
         "space-between" => Some(JustifyContentValue::SpaceBetween),
@@ -4087,7 +4089,10 @@ mod tests {
             parse_justify_content("SPACE-EVENLY"),
             Some(JustifyContentValue::SpaceEvenly)
         );
-        assert_eq!(parse_justify_content("normal"), None);
+        assert_eq!(
+            parse_justify_content("NORMAL"),
+            Some(JustifyContentValue::Normal)
+        );
         assert_eq!(parse_justify_content("start"), None);
     }
 
@@ -4121,6 +4126,10 @@ mod tests {
                 AlignContentValue::SpaceEvenly,
                 JustifyContentValue::SpaceEvenly
             ))
+        );
+        assert_eq!(
+            parse_place_content("normal"),
+            Some((AlignContentValue::Normal, JustifyContentValue::Normal))
         );
         assert_eq!(
             parse_place_content("normal center"),
@@ -4995,13 +5004,14 @@ mod tests {
     #[test]
     fn justify_content_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { justify-content: space-between; } #explicit { justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='justify-content: center'>Explicit</span><span id='invalid' style='justify-content: normal'>Invalid</span></div>",
+            "<style>#parent { justify-content: space-between; } #explicit { justify-content: flex-end; } #normal { justify-content: normal; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='justify-content: center'>Explicit</span><span id='normal' style='justify-content: safe center'>Normal</span><span id='invalid' style='justify-content: safe center'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let child = document.resolve_target("id=child").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
+        let normal = document.resolve_target("id=normal").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
         assert_eq!(
@@ -5017,6 +5027,10 @@ mod tests {
                 .computed_style_for_layout(explicit)
                 .justify_content(),
             JustifyContentValue::Center
+        );
+        assert_eq!(
+            document.computed_style_for_layout(normal).justify_content(),
+            JustifyContentValue::Normal
         );
         assert_eq!(
             document
@@ -5124,7 +5138,7 @@ mod tests {
     #[test]
     fn place_content_is_expanded_with_component_precedence_and_no_inheritance() {
         let document = NativeDocument::parse(
-            "<style>#parent { place-content: space-around flex-end; } .shared { place-content: center; } #shared { place-content: flex-start; } #longhands { place-content: stretch center; justify-content: flex-start; align-content: flex-end; } #invalid { place-content: center center; place-content: stretch; } #order { align-content: flex-end; place-content: space-between center; justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='shared' class='shared'>Shared</span><span id='longhands'>Longhands</span><span id='invalid'>Invalid</span><span id='order'>Order</span><span id='inline' style='place-content: flex-start flex-end; place-content: center; justify-content: flex-start'>Inline</span></div>",
+            "<style>#parent { place-content: space-around flex-end; } .shared { place-content: center; } #shared { place-content: flex-start; } #longhands { place-content: stretch center; justify-content: flex-start; align-content: flex-end; } #invalid { place-content: center center; place-content: stretch; } #normal { place-content: normal; } #order { align-content: flex-end; place-content: space-between center; justify-content: flex-end; }</style><div id='parent'><span id='child'>Child</span><span id='shared' class='shared'>Shared</span><span id='longhands'>Longhands</span><span id='invalid'>Invalid</span><span id='normal'>Normal</span><span id='order'>Order</span><span id='inline' style='place-content: flex-start flex-end; place-content: center; justify-content: flex-start'>Inline</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5133,6 +5147,7 @@ mod tests {
         let shared = document.resolve_target("id=shared").unwrap();
         let longhands = document.resolve_target("id=longhands").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
+        let normal = document.resolve_target("id=normal").unwrap();
         let order = document.resolve_target("id=order").unwrap();
         let inline = document.resolve_target("id=inline").unwrap();
 
@@ -5181,6 +5196,14 @@ mod tests {
                 .computed_style_for_layout(invalid)
                 .justify_content(),
             JustifyContentValue::Center
+        );
+        assert_eq!(
+            document.computed_style_for_layout(normal).align_content(),
+            AlignContentValue::Normal
+        );
+        assert_eq!(
+            document.computed_style_for_layout(normal).justify_content(),
+            JustifyContentValue::Normal
         );
         assert_eq!(
             document.computed_style_for_layout(order).align_content(),

@@ -798,14 +798,15 @@ binary, package/dependency, fuzz, documentation, and exact-target cleanup
 evidence is recorded in the task file. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered [native-engine-099](tasks/native-engine-099.md)
+The completed dependency-ordered [native-engine-099](tasks/native-engine-099.md)
 slice adds inherited `direction:ltr|rtl` to the existing bounded Flexbox axis
 mapping. Rows use the current inline direction for their physical main start;
 columns preserve their vertical main axis while reflecting horizontal
 cross-axis alignment and wrapped line stacking. Source/semantic order,
 non-flex text bidi, vertical writing modes, and browser-wide directionality
-remain outside the contract. The design is ready locally; remote CI remains
-pending because the branch is local-only.
+remain outside the contract. The design checkpoint is `2f18abb4`, the
+implementation is `3bf658e8`, and the complete local gate evidence is recorded
+in the task file. Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

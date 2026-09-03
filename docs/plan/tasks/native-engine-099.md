@@ -1,7 +1,7 @@
 ---
 id: native-engine-099
 scope: glass-browser/native-engine/flex-directionality
-status: ready
+status: complete
 depends-on: [native-engine-098]
 ---
 
@@ -96,26 +96,62 @@ owners, under the current horizontal-tb and integer-pixel assumptions:
 
 ## Verification
 
-The implementation gate will include:
+Implementation checkpoint: `3bf658e8` (`feat(native-engine): map inherited
+flex directionality`). The focused and full local gates passed against the
+isolated `CARGO_TARGET_DIR=/tmp/glass-099-target` build root:
 
-- CSS parser, cascade, inheritance, inline precedence, and unsupported-value
-  diagnostics for `direction:ltr|rtl`;
-- focused row and row-reverse tests for `ltr`/`rtl`, with and without wrapping,
-  `wrap-reverse`, justify distribution, auto main margins, reverse physical
-  placement, and source/semantic order preservation;
-- focused column and column-reverse tests for `ltr`/`rtl`, with cross-axis
-  alignment, horizontal auto margins, wrapped line stacking, `wrap-reverse`,
-  `align-content`, and reverse physical placement;
-- nested descendant geometry, display-list paint, software raster, viewport
-  projection, capture, scroll, semantic, and point-hit consumers;
-- explicit non-flex and text fallback tests proving that direction does not
-  claim Unicode bidi or normal-flow text reordering;
-- `cargo fmt --all -- --check`, focused and full native integration tests,
-  feature-enabled library tests with the documented explicit stack, strict
-  all-feature and no-default-feature Clippy, warning-denied rustdoc, locked
-  binaries, package/dependency gates, fuzz checking, documentation/release
-  validators, and exact isolated-target cleanup.
+- `cargo fmt --all -- --check` and `git diff --check` passed;
+- CSS direction parser/cascade tests: 5 passed, 886 filtered;
+- focused direction integration tests: 1 non-flex fallback test and 5
+  direction/flex tests passed;
+- full native integration suite: 135 passed, 0 failed;
+- feature-enabled browser library suite with `RUST_MIN_STACK=8388608`: 890
+  passed, 1 existing ignored, 0 failed;
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D
+  warnings` passed;
+- `cargo clippy -p glass-browser --no-default-features --all-targets --locked
+  -- -D warnings` passed;
+- warning-denied workspace rustdoc passed;
+- locked `glass-dev` binary build passed;
+- documentation coverage passed at 513 Markdown files, 345 full-product MCP
+  tools (100 browser-only), 17 examples, and 22 public modules;
+- locked `glass-browser` and `glass-dev` packages passed, and the packaged
+  `glass-dev` archive resolves `glass-browser` exactly at 0.3.14;
+- locked fuzz fetch and offline all-targets check passed in 9m22s;
+- the package gate emitted only the pre-existing warning that `chacha20
+  v0.10.1` is yanked in the registry; it did not fail the gate.
 
-Remote CI remains pending because `main` is local-only. No browser-parity,
-release, registry-publication, or remote-certification claim is part of this
-task.
+The documentation/release validators also passed:
+
+- version and feature parity are synchronized at 0.3.14;
+- release documentation truth: 513 Markdown documents, 83 current documents,
+  57 previous-version hits, 576 semantic audit hits, and 0 current-claim
+  failures;
+- TUI shortcut inventory: 15 implementation help keys and 63 documentation
+  markers;
+- documentation depth: 93 current guides and 19 substantive contracts;
+- reliability matrix: 6 scenarios across 4 targets;
+- public read-only adapter inventory: 5 adapters;
+- Web IR corpus: 8 fixtures, 8 scenarios, and 11 categories with live
+  evidence verification.
+
+After all validation completed, exact process and open-file checks found no
+consumer of `/tmp/glass-099-target`. The validated non-symlink target was
+removed with bounded same-filesystem deletion, reclaiming 6.6G; the 160K
+`/tmp/glass-099-release-documentation.json` report was also removed. The
+workspace `/home/ubuntu/work/glass/target` and `/home/ubuntu/work/forgebuild/target`
+were preserved at 4.0K each, `fuzz/target` remained absent, and disk usage
+changed from 58G available / 70% used to 65G available / 67% used.
+
+The implementation covers typed inherited direction, selector and inline
+cascade precedence, unsupported-value diagnostics, row/row-reverse physical
+main-start mapping, column cross-axis and wrapped-line reflection, physical
+auto margins, nested artifacts, and non-flex/source-text fallback behavior.
+Direction remains bounded to the current horizontal-tb Flexbox owners; this
+task does not claim Unicode bidi/shaping, logical properties, text-align
+start/end, vertical writing, grid, or browser-wide directionality.
+
+Static documentation/release validators and exact isolated-target cleanup are
+complete. Remote CI remains pending because `main` is local-only. No
+browser-parity, release, registry-publication, or remote-certification claim is
+part of this task.

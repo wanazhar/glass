@@ -630,7 +630,7 @@ grid, and browser-wide Flexbox remain outside the bounded contract in
 `77a4b629`, and the final test-only checkpoint is `866a8862`; remote CI
 remains pending because the branch is local-only.
 
-The active dependency-ordered `native-engine-099` slice adds inherited
+The completed dependency-ordered `native-engine-099` slice adds inherited
 `direction:ltr|rtl` to the bounded Flexbox axis mapping. Rows use the inline
 direction for physical main-start placement; columns preserve their vertical
 main axis while reflecting horizontal cross-axis alignment and wrapped line
@@ -638,8 +638,9 @@ stacking. Reverse and wrap-reverse combinations, auto margins, and complete
 artifact consumers remain on the shared owner. Non-flex text bidi, logical
 properties, vertical writing modes, and browser-wide directionality remain
 outside the bounded contract in `docs/plan/tasks/native-engine-099.md`. The
-design is ready locally; remote CI remains pending because the branch is
-local-only.
+design is `2f18abb4`, the implementation is `3bf658e8`, and local gate
+evidence is recorded in the task file. Remote CI remains pending because the
+branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1270,8 +1271,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-098.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-097.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-099.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-098.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-095.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-094.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-093.md` is the preceding completed checkpoint;
@@ -1326,13 +1327,14 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
-The active next checkpoint is recorded for
-`docs/plan/tasks/native-engine-099.md`: it owns inherited `direction:ltr|rtl`
-for eligible Flexbox physical axis mapping, after 098 line-local auto margins
-and before any future logical-writing or general bidi work. The design is ready
-locally; implementation, certification, and exact-target cleanup remain
-pending. Remote CI remains pending because the branch is local-only.
 The completed current checkpoint is recorded for
+`docs/plan/tasks/native-engine-099.md`: the design is `2f18abb4` and the
+implementation is `3bf658e8`. Focused/full native, feature-library,
+strict-Clippy, rustdoc, binary, package/dependency, fuzz, documentation, and
+directionality fallback evidence is recorded in that task file. Static
+documentation/release validators and exact isolated-target cleanup are part of
+the final closeout. Remote CI remains pending because the branch is local-only.
+The completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-098.md`: design is `a4b05f07`, implementation
 is `77a4b629`, and the final test-only checkpoint is `866a8862`. Focused/full
 native, feature-library, strict-Clippy, rustdoc, binary, package/dependency,

@@ -409,14 +409,16 @@ unchanged. The contract is `docs/plan/tasks/native-engine-100.md`; its design
 is `2dae80fc`, implementation is `3380978c`, and local gate evidence is
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
-The active 101 boundary adds inherited `text-align:justify` to the same
+The completed 101 boundary adds inherited `text-align:justify` to the same
 fixed-cell inline-flow owner. Only emitted collapsed ASCII separators on
 soft-wrapped non-final lines receive deterministic source-order integer extra
 advance; final and hard-break lines, preformatted flow, bidi/shaping, and
-language-specific line breaking remain outside the contract. The active
-contract is `docs/plan/tasks/native-engine-101.md`; design is ready locally and
-implementation, certification, and exact-target cleanup remain pending.
-Remote CI remains pending because the branch is local-only.
+language-specific line breaking remain outside the contract. The contract is
+`docs/plan/tasks/native-engine-101.md`; design is `959cbbc9`, implementation is
+`8ff29aa1`, and the explicit word-spacing acceptance test is `15cf0c85`. Local
+gate evidence is recorded in the task file, with exact isolated-target cleanup
+recorded in the final cleanup checkpoint. Remote CI remains pending because
+the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

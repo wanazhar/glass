@@ -167,6 +167,7 @@ pub(crate) enum TextAlignValue {
     Right,
     Start,
     End,
+    Justify,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2997,6 +2998,7 @@ fn parse_text_align(value: &str) -> Option<TextAlignValue> {
         "right" => Some(TextAlignValue::Right),
         "start" => Some(TextAlignValue::Start),
         "end" => Some(TextAlignValue::End),
+        "justify" => Some(TextAlignValue::Justify),
         _ => None,
     }
 }
@@ -4327,7 +4329,7 @@ mod tests {
         assert_eq!(parse_text_align("right"), Some(TextAlignValue::Right));
         assert_eq!(parse_text_align("START"), Some(TextAlignValue::Start));
         assert_eq!(parse_text_align("end"), Some(TextAlignValue::End));
-        assert_eq!(parse_text_align("justify"), None);
+        assert_eq!(parse_text_align("JUSTIFY"), Some(TextAlignValue::Justify));
         assert_eq!(parse_text_align("match-parent"), None);
         assert_eq!(parse_text_align("start end"), None);
     }
@@ -4688,13 +4690,14 @@ mod tests {
         );
 
         let document = NativeDocument::parse(
-            "<style>#parent { text-align: center; } #explicit { text-align: right; } #invalid { text-align: justify; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span></div>",
+            "<style>#parent { text-align: center; } #explicit { text-align: right; } #justified { text-align: justify; } #invalid { text-align: match-parent; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='justified'>Justified</span><span id='invalid'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let child = document.resolve_target("id=child").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
+        let justified = document.resolve_target("id=justified").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
         assert_eq!(
@@ -4710,6 +4713,10 @@ mod tests {
             TextAlignValue::Right
         );
         assert_eq!(
+            document.computed_style_for_layout(justified).text_align(),
+            TextAlignValue::Justify
+        );
+        assert_eq!(
             document.computed_style_for_layout(invalid).text_align(),
             TextAlignValue::Center
         );
@@ -4718,7 +4725,7 @@ mod tests {
     #[test]
     fn logical_text_align_is_inherited_and_respects_direction_overrides() {
         let document = NativeDocument::parse(
-            "<style>#parent { direction: rtl; text-align: start; } #ltr { direction: ltr; } #end { text-align: end; } #physical { text-align: right; } #invalid { text-align: justify; }</style><div id='parent'><span id='child'>Child</span><span id='ltr'>Ltr</span><span id='end'>End</span><span id='physical'>Physical</span><span id='invalid'>Invalid</span></div>",
+            "<style>#parent { direction: rtl; text-align: start; } #ltr { direction: ltr; } #end { text-align: end; } #physical { text-align: right; } #invalid { text-align: match-parent; }</style><div id='parent'><span id='child'>Child</span><span id='ltr'>Ltr</span><span id='end'>End</span><span id='physical'>Physical</span><span id='invalid'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();

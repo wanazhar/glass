@@ -112,7 +112,7 @@ The completed local gate evidence is:
 - version sync, feature parity, release-documentation, TUI shortcut,
   documentation-depth, documentation-coverage, reliability, public-adapter,
   and Web IR validators all passed: 516 Markdown documents, 83 current
-  documents, 57 previous-version hits, 582 semantic hits, 0 current-claim
+  documents, 57 previous-version hits, 583 semantic hits, 0 current-claim
   failures; 15 implementation help keys/63 documentation markers; 93/19
   depth; 516/345/17/22 coverage; 6/4 reliability; 5 adapters; and 8/8/11
   Web IR fixtures/scenarios/categories;

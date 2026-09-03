@@ -3848,7 +3848,11 @@ mod tests {
                 left: 3,
             }
         );
-        assert!(!style.margin_auto().any());
+        let auto_margin = style.margin_auto();
+        assert!(!auto_margin.top());
+        assert!(!auto_margin.right());
+        assert!(!auto_margin.bottom());
+        assert!(!auto_margin.left());
 
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { margin: auto 2px; } #card { margin-left: 4px; }".into(),

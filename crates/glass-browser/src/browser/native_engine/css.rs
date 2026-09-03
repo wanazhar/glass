@@ -224,6 +224,13 @@ pub(crate) enum FlexDirectionValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum DirectionValue {
+    #[default]
+    Ltr,
+    Rtl,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum FlexWrapValue {
     #[default]
     NoWrap,
@@ -327,6 +334,7 @@ impl NativeMarginValue {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
+    pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
     pub(crate) text_align: TextAlignValue,
@@ -456,6 +464,7 @@ pub(crate) struct NativeComputedStyle {
     align_self: AlignSelfValue,
     align_content: AlignContentValue,
     flex_direction: FlexDirectionValue,
+    direction: DirectionValue,
     flex_wrap: FlexWrapValue,
     flex_item_order: NativeOrderValue,
     flex_grow: u32,
@@ -534,6 +543,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn flex_direction(self) -> FlexDirectionValue {
         self.flex_direction
+    }
+
+    pub(crate) const fn direction(self) -> DirectionValue {
+        self.direction
     }
 
     pub(crate) const fn flex_wrap(self) -> FlexWrapValue {
@@ -758,6 +771,7 @@ impl NativeStylesheet {
         let mut align_self = None;
         let mut align_content = None;
         let mut flex_direction = None;
+        let mut direction = None;
         let mut flex_wrap = None;
         let mut flex_item_order = None;
         let mut flex_grow = None;
@@ -1054,6 +1068,16 @@ impl NativeStylesheet {
                 && wins(rule.selector.specificity, rule.order, false, flex_direction)
             {
                 flex_direction = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.direction
+                && wins(rule.selector.specificity, rule.order, false, direction)
+            {
+                direction = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1479,6 +1503,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.direction
+                && wins(u16::MAX, usize::MAX, true, direction)
+            {
+                direction = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.flex_wrap
                 && wins(u16::MAX, usize::MAX, true, flex_wrap)
             {
@@ -1655,6 +1689,7 @@ impl NativeStylesheet {
             align_self: align_self.map_or(AlignSelfValue::Auto, |value| value.value),
             align_content: align_content.map_or(AlignContentValue::FlexStart, |value| value.value),
             flex_direction: flex_direction.map_or(FlexDirectionValue::Row, |value| value.value),
+            direction: direction.map_or(inherited.direction, |value| value.value),
             flex_wrap: flex_wrap.map_or(FlexWrapValue::NoWrap, |value| value.value),
             flex_item_order: flex_item_order
                 .map_or(NativeOrderValue::default(), |value| value.value),
@@ -1906,6 +1941,7 @@ struct NativeDeclarations {
     align_self: Option<AlignSelfValue>,
     align_content: Option<AlignContentValue>,
     flex_direction: Option<FlexDirectionValue>,
+    direction: Option<DirectionValue>,
     flex_wrap: Option<FlexWrapValue>,
     order: Option<NativeOrderValue>,
     flex_grow: Option<u32>,
@@ -2093,6 +2129,7 @@ fn parse_source(
             || declarations.align_self.is_some()
             || declarations.align_content.is_some()
             || declarations.flex_direction.is_some()
+            || declarations.direction.is_some()
             || declarations.flex_wrap.is_some()
             || declarations.order.is_some()
             || declarations.flex_grow.is_some()
@@ -2239,6 +2276,7 @@ fn parse_declarations_with_diagnostics(
             "align-self" => parse_align_self(value).is_some(),
             "align-content" => parse_align_content(value).is_some(),
             "flex-direction" => parse_flex_direction(value).is_some(),
+            "direction" => parse_direction(value).is_some(),
             "flex-wrap" => parse_flex_wrap(value).is_some(),
             "flex-flow" => parse_flex_flow(value).is_some(),
             "order" => parse_flex_item_order(value).is_some(),
@@ -2324,6 +2362,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "align-self"
             | "align-content"
             | "flex-direction"
+            | "direction"
             | "flex-wrap"
             | "flex-flow"
             | "order"
@@ -2447,6 +2486,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "flex-direction" => {
                 declarations.flex_direction = parse_flex_direction(value);
+            }
+            "direction" => {
+                declarations.direction = parse_direction(value);
             }
             "flex-wrap" => {
                 declarations.flex_wrap = parse_flex_wrap(value);
@@ -3032,6 +3074,14 @@ fn parse_flex_direction(value: &str) -> Option<FlexDirectionValue> {
     }
 }
 
+fn parse_direction(value: &str) -> Option<DirectionValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "ltr" => Some(DirectionValue::Ltr),
+        "rtl" => Some(DirectionValue::Rtl),
+        _ => None,
+    }
+}
+
 fn parse_flex_wrap(value: &str) -> Option<FlexWrapValue> {
     match value.to_ascii_lowercase().as_str() {
         "nowrap" => Some(FlexWrapValue::NoWrap),
@@ -3484,7 +3534,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -3502,6 +3552,7 @@ mod tests {
             declarations.flex_direction,
             Some(FlexDirectionValue::RowReverse)
         );
+        assert_eq!(declarations.direction, Some(DirectionValue::Rtl));
         assert_eq!(declarations.flex_wrap, Some(FlexWrapValue::WrapReverse));
         assert_eq!(declarations.order, Some(NativeOrderValue(-12)));
         assert_eq!(declarations.flex_grow, Some(2));
@@ -4273,6 +4324,15 @@ mod tests {
         assert_eq!(parse_text_align("justify"), None);
         assert_eq!(parse_text_align("start"), None);
         assert_eq!(parse_text_align("end"), None);
+    }
+
+    #[test]
+    fn direction_parser_accepts_only_bounded_inherited_values() {
+        assert_eq!(parse_direction("ltr"), Some(DirectionValue::Ltr));
+        assert_eq!(parse_direction("RTL"), Some(DirectionValue::Rtl));
+        assert_eq!(parse_direction("inherit"), None);
+        assert_eq!(parse_direction("vertical-rl"), None);
+        assert_eq!(parse_direction("rtl ltr"), None);
     }
 
     #[test]
@@ -5515,6 +5575,43 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).flex_direction(),
             FlexDirectionValue::Row
+        );
+    }
+
+    #[test]
+    fn direction_is_inherited_and_inline_cascade_can_override_it() {
+        let document = NativeDocument::parse(
+            "<style>#parent { direction: rtl; } #explicit { direction: rtl; } #invalid { direction: vertical-rl; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='direction: ltr'>Explicit</span><span id='invalid'>Invalid</span><span id='inline-invalid' style='direction: inherit'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let inline_invalid = document.resolve_target("id=inline-invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).direction(),
+            DirectionValue::Rtl
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).direction(),
+            DirectionValue::Rtl
+        );
+        assert_eq!(
+            document.computed_style_for_layout(explicit).direction(),
+            DirectionValue::Ltr
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).direction(),
+            DirectionValue::Rtl
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inline_invalid)
+                .direction(),
+            DirectionValue::Rtl
         );
     }
 

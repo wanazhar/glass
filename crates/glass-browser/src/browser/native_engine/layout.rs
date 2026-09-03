@@ -1,9 +1,9 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, Viewport};
 use super::css::{
-    AlignContentValue, AlignItemsValue, AlignSelfValue, DisplayValue, FlexBasisValue,
-    FlexDirectionValue, FlexWrapValue, JustifyContentValue, NativeAutoEdges, NativeBorderRadius,
-    NativeBoxEdges, NativeComputedStyle, TextAlignValue, TextOverflowValue, TextTransformValue,
-    VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+    AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, DisplayValue,
+    FlexBasisValue, FlexDirectionValue, FlexWrapValue, JustifyContentValue, NativeAutoEdges,
+    NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, TextAlignValue, TextOverflowValue,
+    TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -1994,6 +1994,7 @@ impl<'a> LayoutBuilder<'a> {
         let justify_content = parent_style.justify_content();
         let align_items = parent_style.align_items();
         let reverse = parent_style.flex_direction() == FlexDirectionValue::ColumnReverse;
+        let cross_reverse = parent_style.direction() == DirectionValue::Rtl;
         let children = self
             .document
             .node(parent)
@@ -2185,9 +2186,21 @@ impl<'a> LayoutBuilder<'a> {
                     match alignment {
                         AlignItemsValue::FlexStart
                         | AlignItemsValue::Stretch
-                        | AlignItemsValue::Normal => 0,
+                        | AlignItemsValue::Normal => {
+                            if cross_reverse {
+                                remaining
+                            } else {
+                                0
+                            }
+                        }
                         AlignItemsValue::Center => remaining / 2,
-                        AlignItemsValue::FlexEnd => remaining,
+                        AlignItemsValue::FlexEnd => {
+                            if cross_reverse {
+                                0
+                            } else {
+                                remaining
+                            }
+                        }
                     }
                 };
                 let item_x = x
@@ -2299,9 +2312,21 @@ impl<'a> LayoutBuilder<'a> {
                     match alignment {
                         AlignItemsValue::FlexStart
                         | AlignItemsValue::Stretch
-                        | AlignItemsValue::Normal => 0,
+                        | AlignItemsValue::Normal => {
+                            if cross_reverse {
+                                remaining
+                            } else {
+                                0
+                            }
+                        }
                         AlignItemsValue::Center => remaining / 2,
-                        AlignItemsValue::FlexEnd => remaining,
+                        AlignItemsValue::FlexEnd => {
+                            if cross_reverse {
+                                0
+                            } else {
+                                remaining
+                            }
+                        }
                     }
                 };
                 let item_x = x
@@ -2672,6 +2697,7 @@ impl<'a> LayoutBuilder<'a> {
         let align_items = parent_style.align_items();
         let align_content = parent_style.align_content();
         let reverse = parent_style.flex_direction() == FlexDirectionValue::ColumnReverse;
+        let cross_reverse = wrap_reverse ^ (parent_style.direction() == DirectionValue::Rtl);
         let children = self
             .document
             .node(parent)
@@ -2847,7 +2873,7 @@ impl<'a> LayoutBuilder<'a> {
                     .saturating_add(index.min(distributed_remainder))
             };
             let normal_line_x = line.provisional_x.saturating_add(line_offset);
-            let line_x = if wrap_reverse {
+            let line_x = if cross_reverse {
                 let line_start = normal_line_x.saturating_sub(x);
                 x.saturating_add(
                     available_width.saturating_sub(line_start.saturating_add(line.width)),
@@ -2865,7 +2891,7 @@ impl<'a> LayoutBuilder<'a> {
                     gap: row_gap,
                     justify_content,
                     align_items,
-                    cross_reverse: wrap_reverse,
+                    cross_reverse,
                     reverse,
                     depth,
                 },
@@ -3012,7 +3038,8 @@ impl<'a> LayoutBuilder<'a> {
         }
 
         let line_count = lines.len();
-        let reverse = parent_style.flex_direction() == FlexDirectionValue::RowReverse;
+        let reverse = (parent_style.flex_direction() == FlexDirectionValue::RowReverse)
+            ^ (parent_style.direction() == DirectionValue::Rtl);
         let mut row_width = 0u32;
         let mut line_y = y;
         let mut line_records = Vec::with_capacity(line_count);

@@ -758,6 +758,16 @@ The design is `598228a7`, implementation is `96ea62a3`, and focused/full
 native, feature-library, strict-Clippy, and exact fallback evidence is recorded
 in the task file. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-096](tasks/native-engine-096.md)
+slice extends that owner to fixed-height column and column-reverse
+`flex-wrap:wrap-reverse`. It reflects the formed horizontal line boxes and
+cross-axis item alignment while preserving 095 line formation, gaps,
+`align-content`, main-axis reversal, complete artifacts, and source/semantic
+order. Auto-height columns, intrinsic or percentage sizing, logical writing
+modes, and browser-wide Flexbox remain outside the contract. The design is
+ready locally; implementation and certification follow the task contract.
+Remote CI remains pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

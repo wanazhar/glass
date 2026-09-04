@@ -1,7 +1,7 @@
 ---
 id: native-engine-111
 scope: glass-browser/native-engine/text-underline-offset
-status: design-ready
+status: complete
 depends-on: [native-engine-110]
 ---
 
@@ -88,27 +88,55 @@ not extended with underline-offset components by this slice.
 
 ## Verification
 
-The implementation must provide parser, signed-range, computed-style
-inheritance, cascade, explicit override, declaration omission, negative-zero,
-and invalid-value diagnostic coverage. An integration fixture must prove
-negative, zero, and positive underline placement, inherited and inline
-override behavior, unchanged overline/line-through origins, thickness/style
-composition, x-origin anchoring, immutable display-command propagation,
-clipping, scroll translation, and unchanged layout geometry. Full native
-integration, feature-library, strict lint, warning-denied rustdoc, locked
-package/dependency, offline fuzz, documentation, static, and formatting gates
-remain required. Every gate uses an isolated target with a recorded purpose,
-and completed validation removes the exact regenerable target after process and
-open-file checks.
+Implementation commit: `215b02a8`. Current-claim documentation checkpoint:
+`e76a732a`.
 
-Remote CI, browser parity, release, registry publication, complete CSS
-decoration conformance, `auto`/percentage/font metrics, decoration-origin
-propagation, fragment continuity, and a third crate remain outside this local
-task.
+The parser/cascade unit tests pass for signed bounds, negative zero,
+inheritance, explicit zero, inline precedence, omission, and invalid values.
+The focused raster and diagnostics tests pass, and the native integration
+fixture passes negative, zero, and positive underline placement, inherited and
+inline override behavior, unchanged overline/line-through origins,
+thickness/style composition, x-origin anchoring, immutable display-command
+propagation, scroll translation, and unchanged layout geometry.
+
+Local gate evidence from the isolated `/tmp/glass-111-target` includes:
+
+- focused CSS units: 2 passed; clean compile `13:54.78`, peak RSS
+  `2,475,600 KiB`;
+- focused native integration: 1 passed; diagnostics: 1 passed; raster clamp:
+  1 passed;
+- full native integration: 148 passed in `4.03s`, peak RSS `83,200 KiB`;
+- all-feature browser package tests: 907 passed, 1 expected ignored, native
+  integration 148 passed, all other integration/doctest groups passed;
+- `glass-dev`: 365 unit, 4 integration, and 15 PTY tests passed in `20:24.66`,
+  peak RSS `1,995,964 KiB`;
+- browser all-target/all-feature Clippy: `8:46.33`, peak RSS `1,899,228 KiB`;
+  workspace Clippy: `10:18.86`, peak RSS `1,913,252 KiB`; no-default browser
+  Clippy: `6:15.65`, peak RSS `1,801,936 KiB`;
+- warning-denied workspace rustdoc: `3:07.41`, peak RSS `1,643,284 KiB`;
+- locked browser package verification: 196 files, 984,968-byte archive,
+  verified in `18:01.15`, peak RSS `2,186,932 KiB`; locked dev package:
+  69 files, 524,453-byte archive, packaged in `2.40s` without re-verification;
+- packaged dev dependency check resolves `glass-browser` exactly at `0.3.14`;
+  both non-uploading `cargo publish --dry-run` checks pass and confirm the
+  already-indexed 0.3.14 versions;
+- offline fuzz all-target check: 290 targets in `9:57.46`, peak RSS
+  `1,568,600 KiB`; `cargo deny check` passes with existing duplicate warnings;
+  `cargo audit` exits 0 with the four existing allowed findings;
+- static docs/feature/release/TUI/depth/coverage/reliability/adapter/Web IR
+  validators all pass: 525 Markdown documents, 0 current-claim failures,
+  14 capabilities across 4 targets, 15 TUI implementation keys, 93 guides,
+  345 full-product MCP tools, 6 reliability scenarios, 5 adapters, and 8
+  Web IR fixtures;
+- explicit binary refreshes pass: `glass-dev` in `3.10s` and native-feature
+  `glass-browser` in `2.07s`.
+
+Remote CI, browser parity, release, registry publication, and a third crate
+remain outside this local task. Remote CI is not claimed because this branch
+has not been pushed.
 
 ## Cleanup
 
-Record the exact isolated target and report paths, sizes, process/open-file
-checks, deletion counts, and post-removal filesystem state after certification.
-Do not remove shared Cargo registries, toolchains, source, durable user data,
-or other projects' non-regenerable artifacts.
+Cleanup is recorded after certification below. Do not remove shared Cargo
+registries, toolchains, source, durable user data, or other projects'
+non-regenerable artifacts.

@@ -528,16 +528,18 @@ outside the contract. The contract is recorded in
 `docs/plan/tasks/native-engine-110.md`; design is `1623c5f1`, implementation is
 `157da4ad`, and complete local gate and cleanup evidence are recorded in the
 task file. Remote CI remains pending because the branch is local-only.
-The active 111 design adds bounded inherited signed fixed-pixel
+The completed 111 boundary adds bounded inherited signed fixed-pixel
 `text-underline-offset` in the range `-4px` through `4px` to the existing
 underline raster owner. Negative values move only the underline toward
 decreasing y and positive values toward increasing y; overline and
 line-through origins remain unchanged, and the 110 thickness/style helper is
 reused. `auto`, percentages, fractional/font-derived metrics,
 decoration-origin propagation, fragment continuity, and full CSS conformance
-remain outside the design. The contract is recorded in
-`docs/plan/tasks/native-engine-111.md`; implementation and local evidence are
-pending. Remote CI remains pending because the branch is local-only.
+remain outside the contract. The contract is recorded in
+`docs/plan/tasks/native-engine-111.md`; design is `e2651dfd`, implementation is
+`215b02a8`, current-claim docs are `e76a732a`, and complete local gate and
+cleanup evidence are recorded in the task file. Remote CI remains pending
+because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

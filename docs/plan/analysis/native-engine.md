@@ -784,16 +784,18 @@ the contract. Design `1623c5f1`, implementation `157da4ad`, and complete local
 gate evidence are recorded in `docs/plan/tasks/native-engine-110.md`. Remote
 CI remains pending because the branch is local-only.
 
-The next dependency-ordered `native-engine-111` design adds bounded inherited
-`text-underline-offset` in signed fixed pixels from `-4px` through `4px` to
-the existing fixed-cell underline owner. Negative values move only the
+The completed dependency-ordered `native-engine-111` slice adds bounded
+inherited signed fixed-pixel `text-underline-offset` from `-4px` through `4px`
+to the existing fixed-cell underline owner. Negative values move only the
 underline toward decreasing y and positive values toward increasing y;
-overline and line-through keep their existing origins, while the 110 thickness
-band and style helper remain shared. `auto`, percentages, fractional and
-font-derived metrics, decoration-origin propagation, fragment continuity, and
-full CSS conformance remain outside the contract. The design is recorded in
-`docs/plan/tasks/native-engine-111.md`; implementation and local gate evidence
-are pending. Remote CI remains pending because the branch is local-only.
+overline and line-through keep their existing origins, while the 110
+thickness band and style helper remain shared. `auto`, percentages, fractional
+and font-derived metrics, decoration-origin propagation, fragment continuity,
+and full CSS conformance remain outside the contract. Design `e2651dfd`,
+implementation `215b02a8`, current-claim docs `e76a732a`, and complete local
+gate and cleanup evidence are recorded in
+`docs/plan/tasks/native-engine-111.md`. Remote CI remains pending because the
+branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1438,8 +1440,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-111.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-110.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-111.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-110.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-109.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-108.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-107.md` is the preceding completed checkpoint;

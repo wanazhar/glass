@@ -907,7 +907,7 @@ fn native_text_align_last_justifies_final_lines_without_changing_other_paths() {
     .unwrap();
     let viewport = Viewport {
         width: 45,
-        height: 180,
+        height: 240,
         device_scale_factor_milli: 1000,
     };
     let target = document.resolve_target("id=target").unwrap();
@@ -994,6 +994,107 @@ fn native_text_align_last_justifies_final_lines_without_changing_other_paths() {
         })
         .collect::<Vec<_>>();
     assert_eq!(target_commands, runs_for(target));
+    let surface = display_list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 0), Some([0, 0, 0, 255]));
+}
+
+#[test]
+fn native_text_justify_controls_both_justification_flushes() {
+    let document = NativeDocument::parse(
+        "<style>.soft { display:block; width:45px; text-align:justify; } #none-soft { text-justify:none; } #inter-word-soft { text-justify:inter-word; } .final { display:block; width:45px; text-align:left; text-align-last:justify; } #none-final { text-justify:none; } #alone { display:block; width:45px; text-align:left; text-justify:inter-word; } #spacing-none { display:block; width:45px; text-align:justify; word-spacing:2px; text-justify:none; }</style><div id='auto-soft' class='soft'>A B C D</div><div id='none-soft' class='soft'>A B C D</div><div id='inter-word-soft' class='soft'>A B C D</div><div id='auto-final' class='final'>A B C</div><div id='none-final' class='final'>A B C</div><div id='alone' >A B C</div><div id='spacing-none'>A B C</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 45,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let auto_soft = document.resolve_target("id=auto-soft").unwrap();
+    let none_soft = document.resolve_target("id=none-soft").unwrap();
+    let inter_word_soft = document.resolve_target("id=inter-word-soft").unwrap();
+    let auto_final = document.resolve_target("id=auto-final").unwrap();
+    let none_final = document.resolve_target("id=none-final").unwrap();
+    let alone = document.resolve_target("id=alone").unwrap();
+    let spacing_none = document.resolve_target("id=spacing-none").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let runs_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| (run.origin, run.text.as_str(), run.justify_spacing))
+            .collect::<Vec<_>>()
+    };
+    let first_line = |y: u32, spacing: [u32; 2]| {
+        vec![
+            (NativePoint { x: 0, y }, "A", 0),
+            (NativePoint { x: 8, y }, " B", spacing[0]),
+            (NativePoint { x: 27, y }, " C", spacing[1]),
+            (NativePoint { x: 0, y: y + 20 }, "D", 0),
+        ]
+    };
+
+    assert_eq!(runs_for(auto_soft), first_line(0, [3, 2]));
+    assert_eq!(
+        runs_for(none_soft),
+        vec![
+            (NativePoint { x: 0, y: 40 }, "A", 0),
+            (NativePoint { x: 8, y: 40 }, " B", 0),
+            (NativePoint { x: 24, y: 40 }, " C", 0),
+            (NativePoint { x: 0, y: 60 }, "D", 0),
+        ]
+    );
+    assert_eq!(runs_for(inter_word_soft), first_line(80, [3, 2]));
+    assert_eq!(
+        runs_for(auto_final),
+        first_line(120, [3, 2])
+            .into_iter()
+            .take(3)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        runs_for(none_final),
+        vec![
+            (NativePoint { x: 0, y: 140 }, "A", 0),
+            (NativePoint { x: 8, y: 140 }, " B", 0),
+            (NativePoint { x: 24, y: 140 }, " C", 0),
+        ]
+    );
+    assert_eq!(
+        runs_for(alone),
+        vec![
+            (NativePoint { x: 0, y: 160 }, "A", 0),
+            (NativePoint { x: 8, y: 160 }, " B", 0),
+            (NativePoint { x: 24, y: 160 }, " C", 0),
+        ]
+    );
+    assert_eq!(
+        runs_for(spacing_none),
+        vec![
+            (NativePoint { x: 0, y: 180 }, "A", 0),
+            (NativePoint { x: 8, y: 180 }, " B", 0),
+            (NativePoint { x: 26, y: 180 }, " C", 0),
+        ]
+    );
+
+    let display_list = document.display_list(viewport).unwrap();
+    let none_commands = display_list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id,
+                origin,
+                text,
+                justify_spacing,
+                ..
+            } if *node_id == none_final => Some((*origin, text.as_str(), *justify_spacing)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(none_commands, runs_for(none_final));
+
     let surface = display_list.rasterize().unwrap();
     assert_eq!(surface.pixel(1, 0), Some([0, 0, 0, 255]));
 }

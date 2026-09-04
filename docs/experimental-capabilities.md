@@ -146,7 +146,8 @@ bounded root horizontal scrolling, bounded local opacity subtree groups with
 inside-out transparent-layer compositing, bounded inherited physical
 `text-align:left|center|right` fixed-cell line placement, bounded functional
 `rgba(R, G, B, A)` alpha colors for background, border, and text paint, bounded
-inherited fixed-cell `text-decoration:none|underline` paint, bounded PNG
+inherited fixed-cell `text-decoration:none|underline|overline|line-through`
+paint, bounded PNG
 capture, and bounded inherited ASCII
 `text-transform:none|uppercase|lowercase` layout,
 bounded non-negative fixed-pixel first-line `text-indent` for block flow,

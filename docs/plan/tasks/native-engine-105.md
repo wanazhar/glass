@@ -1,7 +1,7 @@
 ---
 id: native-engine-105
 scope: glass-browser/native-engine/text-decoration-lines
-status: ready
+status: complete
 depends-on: [native-engine-104]
 ---
 
@@ -82,9 +82,46 @@ browser-wide text conformance remain outside the contract.
 - `crates/glass-browser/tests/native_engine.rs`
 - synchronized native-engine architecture, analysis, README, and plan docs
 
+## Implementation and verification
+
+Design was recorded in `9002ae13`; implementation is committed as
+`ebfefefa`. The implementation keeps the two-crate boundary and adds no
+dependency or feature-default change. Final focused gates passed as follows:
+
+- CSS parser/cascade: 2 passed; native decoration integration: 2 passed;
+  raster scroll/clip/alpha: 1 passed; unsupported-value diagnostic regression:
+  1 passed.
+- Full `native-engine` integration suite: 142 passed, 0 failed, 0 ignored.
+- Feature-enabled `glass-browser` library suite: 896 passed, 1 ignored.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Strict all-feature Clippy: passed in 13m37s; no-default-feature Clippy:
+  passed in 6m06s; warning-denied workspace rustdoc: passed in 3m11s.
+- Locked `glass-dev --bins`: passed in 12m44s. Locked browser and dev
+  packages passed; the existing yanked `chacha20 0.10.1` lockfile warning was
+  reported by Cargo. The packaged-dependency validator confirmed that the dev
+  package resolves `glass-browser` at exactly 0.3.14.
+- Locked offline fuzz all-target check: passed in 8m50s.
+- Static validators passed: version sync; feature parity (14 capabilities,
+  4 targets); TUI shortcut inventory (15 implementation keys, 63 markers);
+  documentation depth (93 current guides, 19 substantive contracts);
+  read-only adapters (5); reliability matrix (6 scenarios, 4 targets);
+  release documentation (519 Markdown files, 83 current documents, 57
+  previous-version hits, 589 semantic hits, 0 current-claim failures); and
+  Web IR (8 fixtures, 8 scenarios, 11 categories).
+- Fresh source-built documentation coverage passed with 519 Markdown files,
+  345 full-product MCP tools (100 browser-only), 17 examples, and 22 public
+  modules. The installed `/home/ubuntu/.cargo/bin/glass` binaries were not
+  used because they are stale 0.3.14 builds with 344 tools; coverage used the
+  current source-built binaries instead.
+
+The initial integration compile caught and corrected a test-only five-channel
+RGBA expectation before the final focused and full reruns. No production
+failure remained. Remote CI remains pending because `main` is local-only; no
+release, registry publication, or browser-parity claim is made by this task.
+
 ## Verification
 
-The implementation gate will include:
+The final implementation gate included:
 
 - parser, declaration, cascade, inheritance, inline precedence, and typed
   unsupported-value diagnostics for all four bounded keywords;
@@ -98,8 +135,24 @@ The implementation gate will include:
   feature-enabled library tests with the documented explicit stack, strict
   all-feature and no-default-feature Clippy, warning-denied rustdoc, locked
   binaries, paired package/dependency gates, fuzz checking,
-  documentation/release validators, and exact isolated-target cleanup.
+  documentation/release validators, and exact isolated-target cleanup. The
+  isolated `/tmp/glass-105-target` and
+  `/tmp/glass-105-coverage-target` trees were measured at 5.9G and 2.1G
+  respectively before final reclamation; both are regenerable and are removed
+  in the closeout cleanup recorded with this task.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this
 task.
+
+## Cleanup
+
+After all gates completed on 2026-09-04 UTC, the exact non-symlink paths
+`/tmp/glass-105-target` (5.9G) and
+`/tmp/glass-105-coverage-target` (2.1G) were checked for active processes and
+open files, then removed with bounded same-filesystem deletion. The exact
+regenerable reports `/tmp/glass-105-release-documentation.json` (164K) and
+`benchmarks/results/glass-105-web-ir.json` (4.0K) were removed as well. None
+remain; the repository and ForgeBuild target directories are 4.0K, the fuzz
+target is absent, and the final filesystem check reports 65G available (67%
+used).

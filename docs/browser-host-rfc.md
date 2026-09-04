@@ -119,7 +119,9 @@ bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
 text paint, bounded inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including
-distinct shorthand combinations, and bounded inherited ASCII
+distinct shorthand combinations, bounded local `text-decoration-color` using
+the existing fixed palette and alpha grammar with separate glyph and line
+paint, and bounded inherited ASCII
 `text-transform:none|uppercase|lowercase` layout, bounded non-negative
 fixed-pixel first-line `text-indent` for block flow,
 bounded inherited non-negative fixed-pixel `word-spacing` across collapsed and

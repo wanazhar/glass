@@ -745,6 +745,17 @@ plus the full workspace package tests, lint, docs, packaging, fuzz, and static
 validators. The ancillary bounded diagnostics-wait fix is `64247bd4`. Remote
 CI remains pending because the branch is local-only.
 
+The active dependency-ordered `native-engine-108` design exposes the same
+fixed-cell line bitset through the bounded `text-decoration-line` longhand.
+`none`, `underline`, `overline`, and `line-through` combinations reuse the
+shorthand's declaration-order-aware slot and one immutable text command,
+preserving the 107 glyph/decoration color path and shared geometry, clipping,
+scrolling, opacity, capture, hit-test, and semantic consumers. Full CSS
+longhand inheritance/decoration propagation, style/thickness/offset, and text
+conformance remain outside the bounded contract. The design is recorded in
+`docs/plan/tasks/native-engine-108.md`; implementation and local gate evidence
+are pending. Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -977,6 +988,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-105` | bounded inherited `text-decoration:none|underline|overline|line-through` single-line state through immutable text commands and fixed-pixel software replay | `native-engine-104` | decoration combinations, colors, thickness, style, offsets, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-106` | bounded inherited multi-token `text-decoration` shorthand combinations for underline/overline/line-through through one immutable three-bit text command state and fixed-pixel replay | `native-engine-105` | `text-decoration-line` longhand, duplicate/none combinations, colors, thickness, style, offsets, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-107` | bounded local `text-decoration-color` using the existing `NativeColor` grammar, carried separately from glyph color through one immutable text command and fixed-pixel replay | `native-engine-106` | decoration-origin propagation, `currentColor` syntax, shorthand color components, style/thickness/offset, color spaces, animations, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
+| `native-engine-108` | bounded `text-decoration-line` longhand alias for the existing underline/overline/line-through bitset with declaration-order-aware shorthand interaction and shared artifact consumers | `native-engine-107` | full CSS longhand inheritance and decoration propagation, style/thickness/offset, shorthand color components, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1384,6 +1396,7 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-108.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-107.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-106.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-105.md` is the preceding completed checkpoint;

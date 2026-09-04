@@ -118,7 +118,7 @@ Local evidence:
 - version, feature-parity, release-documentation, TUI-shortcut,
   documentation-depth, documentation-coverage, reliability, public-adapter,
   and Web IR validators passed: release docs 518 Markdown documents / 83
-  current / 57 previous-version hits / 586 semantic hits / 0 current-claim
+  current / 57 previous-version hits / 588 semantic hits / 0 current-claim
   failures; coverage 518/345/17/22; TUI 15/63; depth 93/19; reliability 6/4;
   adapters 5; Web IR 8/8/11;
 - `cargo fmt --all -- --check` and `git diff --check` passed.

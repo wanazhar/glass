@@ -62,6 +62,7 @@ pub enum NativeTextDecorationStyle {
     Dashed,
     Dotted,
     Double,
+    Wavy,
 }
 
 /// Bounded physical circular radii for the top-left, top-right, bottom-right,
@@ -3135,6 +3136,7 @@ fn parse_text_decoration_style(value: &str) -> Option<NativeTextDecorationStyle>
         "dashed" => Some(NativeTextDecorationStyle::Dashed),
         "dotted" => Some(NativeTextDecorationStyle::Dotted),
         "double" => Some(NativeTextDecorationStyle::Double),
+        "wavy" => Some(NativeTextDecorationStyle::Wavy),
         _ => None,
     }
 }
@@ -5143,7 +5145,11 @@ mod tests {
             parse_text_decoration_style("DoUbLe"),
             Some(NativeTextDecorationStyle::Double)
         );
-        assert_eq!(parse_text_decoration_style("wavy"), None);
+        assert_eq!(
+            parse_text_decoration_style("WaVy"),
+            Some(NativeTextDecorationStyle::Wavy)
+        );
+        assert_eq!(parse_text_decoration_style("zigzag"), None);
         assert_eq!(parse_text_decoration_style("solid double"), None);
         assert_eq!(parse_text_decoration_style(""), None);
     }
@@ -5151,7 +5157,7 @@ mod tests {
     #[test]
     fn text_decoration_style_is_inherited_and_cascaded() {
         let document = NativeDocument::parse(
-            "<style>div { text-decoration-style: dotted; } #parent { text-decoration-style: dashed; } #explicit { text-decoration-style: solid; } #double { text-decoration-style: double; } #invalid { text-decoration-style: wavy; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='double'>Double</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-style:dotted'>Inline</span></div>",
+            "<style>div { text-decoration-style: dotted; } #parent { text-decoration-style: dashed; } #explicit { text-decoration-style: solid; } #double { text-decoration-style: double; } #wavy { text-decoration-style: WaVy; } #invalid { text-decoration-style: zigzag; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='double'>Double</span><span id='wavy'>Wavy</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-style:dotted'>Inline</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5159,6 +5165,7 @@ mod tests {
         let inherited = document.resolve_target("id=inherited").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
         let double = document.resolve_target("id=double").unwrap();
+        let wavy = document.resolve_target("id=wavy").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
         let inline = document.resolve_target("id=inline").unwrap();
 
@@ -5185,6 +5192,12 @@ mod tests {
                 .computed_style_for_layout(double)
                 .text_decoration_style(),
             NativeTextDecorationStyle::Double
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(wavy)
+                .text_decoration_style(),
+            NativeTextDecorationStyle::Wavy
         );
         assert_eq!(
             document

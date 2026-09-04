@@ -1827,6 +1827,131 @@ fn native_text_double_decoration_preserves_style_inheritance_and_geometry() {
 }
 
 #[test]
+fn native_text_wavy_decoration_preserves_phase_inheritance_and_geometry() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:24px; line-height:20px; color:black; white-space:pre; text-decoration:underline; text-decoration-style:wavy; text-decoration-thickness:2px; text-underline-offset:1px; } #one { text-decoration-style:WaVy; text-decoration-thickness:1px; text-underline-offset:0px; } #two { text-decoration-style:wavy; text-decoration-thickness:2px; text-underline-offset:2px; } #parent { text-decoration-style:wavy; text-decoration-thickness:2px; }</style><div id='one' class='line'>        </div><div id='two' class='line'>        </div><div id='parent' class='line'><span id='inherited'>        </span><span id='override' style='text-decoration-style:solid'>        </span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let one = document.resolve_target("id=one").unwrap();
+    let two = document.resolve_target("id=two").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let override_node = document.resolve_target("id=override").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let text_command = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                decoration_style,
+                decoration_thickness,
+                underline_offset,
+                underline,
+                overline,
+                line_through,
+                ..
+            } if *command_node_id == node_id => Some((
+                *origin,
+                *decoration_style,
+                *decoration_thickness,
+                *underline_offset,
+                *underline,
+                *overline,
+                *line_through,
+            )),
+            _ => None,
+        })
+    };
+    let one_command = text_command(one).expect("one wavy-decoration command");
+    let two_command = text_command(two).expect("two wavy-decoration command");
+    let inherited_command = text_command(inherited).expect("inherited wavy-decoration command");
+    let override_command = text_command(override_node).expect("override decoration command");
+
+    for command in [
+        one_command,
+        two_command,
+        inherited_command,
+        override_command,
+    ] {
+        assert!(!command.5 && !command.6);
+        assert!(command.4);
+    }
+    assert_eq!(one_command.1, NativeTextDecorationStyle::Wavy);
+    assert_eq!(one_command.2, 1);
+    assert_eq!(one_command.3, 0);
+    assert_eq!(two_command.1, NativeTextDecorationStyle::Wavy);
+    assert_eq!(two_command.2, 2);
+    assert_eq!(two_command.3, 2);
+    assert_eq!(inherited_command.1, NativeTextDecorationStyle::Wavy);
+    assert_eq!(inherited_command.2, 2);
+    assert_eq!(inherited_command.3, 1);
+    assert_eq!(override_command.1, NativeTextDecorationStyle::Solid);
+    assert_eq!(override_command.2, 2);
+    assert_eq!(override_command.3, 1);
+
+    assert_eq!(
+        layout.box_for(one),
+        layout.box_for(two).map(|rect| NativeRect {
+            y: rect.y.saturating_sub(24),
+            ..rect
+        })
+    );
+    let surface = list.rasterize().unwrap();
+    let line_pixel = |command: (
+        NativePoint,
+        NativeTextDecorationStyle,
+        u32,
+        i32,
+        bool,
+        bool,
+        bool,
+    ),
+                      x: u32,
+                      y: u32| {
+        surface.pixel(command.0.x.saturating_add(x), command.0.y.saturating_add(y))
+    };
+    for (x, y) in [
+        (0, 7),
+        (1, 8),
+        (2, 9),
+        (3, 8),
+        (4, 7),
+        (5, 6),
+        (6, 5),
+        (7, 6),
+    ] {
+        assert_eq!(line_pixel(one_command, x, y), Some([0, 0, 0, 255]));
+    }
+    for (x, top) in [
+        (0, 9),
+        (1, 10),
+        (2, 11),
+        (3, 10),
+        (4, 9),
+        (5, 8),
+        (6, 7),
+        (7, 8),
+    ] {
+        assert_eq!(line_pixel(two_command, x, top), Some([0, 0, 0, 255]));
+        assert_eq!(line_pixel(two_command, x, top + 1), Some([0, 0, 0, 255]));
+    }
+    assert_eq!(line_pixel(inherited_command, 0, 8), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(inherited_command, 0, 9), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(override_command, 0, 8), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(override_command, 2, 8), Some([0, 0, 0, 255]));
+    assert_eq!(
+        line_pixel(override_command, 2, 7),
+        Some([255, 255, 255, 255])
+    );
+}
+
+#[test]
 fn native_text_transform_aligns_layout_and_display_with_source_text_preserved() {
     let document = NativeDocument::parse(
         "<style>#upper { display:block; width:80px; text-transform:uppercase; } #lower { display:block; width:80px; text-transform:lowercase; } #parent { display:block; width:80px; text-transform:uppercase; } #clear { text-transform:none; } #contents { display:contents; text-transform:lowercase; } #pre { display:block; width:80px; white-space:pre-wrap; text-transform:uppercase; } #nowrap { display:block; text-transform:uppercase; white-space:nowrap; }</style><button id='upper'>aBc dEf</button><div id='lower'>aBc dEf</div><div id='parent'>One <span id='clear'>aBc</span> <span id='contents'><span id='nested'>aBc</span></span></div><div id='pre'>aB\ncD</div><div id='nowrap'>aB cD</div>",
@@ -9904,7 +10029,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-style: wavy; text-decoration-thickness: 5px; text-underline-offset: 5px; text-decoration-color: currentColor; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-style: zigzag; text-decoration-thickness: 5px; text-underline-offset: 5px; text-decoration-color: currentColor; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

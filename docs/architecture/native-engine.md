@@ -29,7 +29,8 @@ bounded-flex-gap-family,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
-bounded-text-justification-control/bounded-text-decoration-lines,
+bounded-text-justification-control/bounded-text-decoration-lines/
+bounded-text-decoration-combinations,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -460,6 +461,17 @@ contract is `docs/plan/tasks/native-engine-105.md`; design is `9002ae13`,
 implementation is `ebfefefa`, and complete local gate plus exact-target
 cleanup evidence is recorded in the task file. Remote CI remains pending
 because the branch is local-only.
+The active 106 boundary extends that same inherited fixed-cell
+`text-decoration` owner to distinct multi-token combinations in the
+`text-decoration` shorthand. It carries one immutable three-bit line set
+through display commands and fixed-pixel replay while preserving layout,
+overflow, hit testing, and semantic/source order. `text-decoration-line`
+longhand semantics, decoration colors, thickness, style, offsets, font
+metrics, shaping, bidi, vertical writing, and full text conformance remain
+outside the contract. The active contract is
+`docs/plan/tasks/native-engine-106.md`; design, implementation, certification,
+and exact-target cleanup remain pending. Remote CI remains pending because the
+branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

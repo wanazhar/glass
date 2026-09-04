@@ -13,7 +13,10 @@ use std::{
 };
 
 const MAX_LSP_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
-const DIAGNOSTICS_EMPTY_GRACE: Duration = Duration::from_secs(15);
+// Some rust-analyzer versions publish an empty snapshot before their first
+// real check completes. Keep waiting within the existing bounded request
+// deadline so that the empty snapshot cannot mask a later diagnostic.
+const DIAGNOSTICS_EMPTY_GRACE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

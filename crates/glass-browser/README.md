@@ -243,7 +243,9 @@ agreement reports exact schema and capability status.
   for hostile remote content.
 - Its decoration surface also accepts bounded `text-decoration-line`
   combinations through the same inherited line-state owner; this longhand
-  does not claim full CSS decoration propagation.
+  does not claim full CSS decoration propagation. It also accepts inherited
+  `text-decoration-style:solid|dashed|dotted` values and reuses the existing
+  one-pixel integer line-pattern helper.
 - Native extensions require explicit opt-in and a platform sandbox gate.
 
 ## Documentation

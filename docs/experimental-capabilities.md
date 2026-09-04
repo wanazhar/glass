@@ -150,7 +150,8 @@ inherited fixed-cell `text-decoration:none|underline|overline|line-through`
 paint including distinct shorthand combinations, bounded local
 `text-decoration-color` using the existing fixed palette and alpha grammar
 with separate glyph and line paint, bounded `text-decoration-line` longhand
-combinations sharing the same line-state owner, bounded PNG
+combinations sharing the same line-state owner, bounded inherited
+`text-decoration-style:solid|dashed|dotted` presentation, bounded PNG
 capture, and bounded inherited ASCII
 `text-transform:none|uppercase|lowercase` layout,
 bounded non-negative fixed-pixel first-line `text-indent` for block flow,

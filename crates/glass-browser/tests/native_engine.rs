@@ -1424,6 +1424,62 @@ fn native_text_decoration_line_longhand_reuses_color_and_geometry() {
 }
 
 #[test]
+fn native_text_decoration_style_patterns_share_command_and_geometry() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; } #solid { text-decoration-style:solid; } #dashed { text-decoration-style:dashed; } #dotted { text-decoration-style:dotted; }</style><div id='solid' class='line'>A</div><div id='dashed' class='line'>A</div><div id='dotted' class='line'>A</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let solid = document.resolve_target("id=solid").unwrap();
+    let dashed = document.resolve_target("id=dashed").unwrap();
+    let dotted = document.resolve_target("id=dotted").unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let text_command = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                decoration_style,
+                underline,
+                ..
+            } if *command_node_id == node_id => Some((*origin, *decoration_style, *underline)),
+            _ => None,
+        })
+    };
+    let solid_command = text_command(solid).expect("solid text command");
+    let dashed_command = text_command(dashed).expect("dashed text command");
+    let dotted_command = text_command(dotted).expect("dotted text command");
+    assert_eq!(solid_command.1, NativeBorderStyle::Solid);
+    assert_eq!(dashed_command.1, NativeBorderStyle::Dashed);
+    assert_eq!(dotted_command.1, NativeBorderStyle::Dotted);
+    assert!(solid_command.2 && dashed_command.2 && dotted_command.2);
+
+    let surface = list.rasterize().unwrap();
+    let line_pixel = |command: (NativePoint, NativeBorderStyle, bool), offset: u32| {
+        surface.pixel(
+            command.0.x.saturating_add(offset),
+            command.0.y.saturating_add(7),
+        )
+    };
+    assert_eq!(line_pixel(solid_command, 0), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(solid_command, 5), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(dashed_command, 0), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(dashed_command, 2), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(dashed_command, 3), Some([255, 255, 255, 255]));
+    assert_eq!(line_pixel(dashed_command, 4), Some([255, 255, 255, 255]));
+    assert_eq!(line_pixel(dashed_command, 5), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(dotted_command, 0), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(dotted_command, 1), Some([255, 255, 255, 255]));
+    assert_eq!(line_pixel(dotted_command, 2), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(dotted_command, 3), Some([255, 255, 255, 255]));
+}
+
+#[test]
 fn native_text_transform_aligns_layout_and_display_with_source_text_preserved() {
     let document = NativeDocument::parse(
         "<style>#upper { display:block; width:80px; text-transform:uppercase; } #lower { display:block; width:80px; text-transform:lowercase; } #parent { display:block; width:80px; text-transform:uppercase; } #clear { text-transform:none; } #contents { display:contents; text-transform:lowercase; } #pre { display:block; width:80px; white-space:pre-wrap; text-transform:uppercase; } #nowrap { display:block; text-transform:uppercase; white-space:nowrap; }</style><button id='upper'>aBc dEf</button><div id='lower'>aBc dEf</div><div id='parent'>One <span id='clear'>aBc</span> <span id='contents'><span id='nested'>aBc</span></span></div><div id='pre'>aB\ncD</div><div id='nowrap'>aB cD</div>",
@@ -9501,7 +9557,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-color: currentColor; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-style: wavy; text-decoration-color: currentColor; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -9568,6 +9624,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-decoration-line"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-style"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

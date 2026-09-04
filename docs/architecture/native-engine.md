@@ -552,6 +552,16 @@ conformance remain outside the boundary. Implementation is `3bdd3b54`; final
 local gate and cleanup evidence are recorded in
 `docs/plan/tasks/native-engine-112.md`. Remote CI remains pending because the
 branch is local-only.
+The next dependency-ordered 113 design is recorded in
+`docs/plan/tasks/native-engine-113.md`. It adds inherited
+`text-decoration-style:wavy` through the dedicated text-decoration style type,
+painting a continuous eight-pixel fixed-cell wave with phase
+`[0,1,2,1,0,-1,-2,-1]` and resolved thickness at each x column. Phase resets
+at each immutable text run; the 112 double behavior, 111 underline offset,
+line origins, clipping, scrolling, opacity, capture, and semantic consumers
+remain shared. CSS metric centering, fragment continuity, and browser-wide
+conformance remain outside the design. Implementation, certification, cleanup,
+and remote CI remain pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

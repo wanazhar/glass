@@ -1,7 +1,7 @@
 ---
 id: native-engine-109
 scope: glass-browser/native-engine/text-decoration-style
-status: design-ready
+status: complete
 depends-on: [native-engine-108]
 ---
 
@@ -85,26 +85,71 @@ conformance are not claimed.
 - `crates/glass-browser/tests/native_engine.rs`
 - synchronized native-engine architecture, analysis, README, and plan docs
 
+## Implementation
+
+Designed in `93034cbf` (`docs(native-engine): define decoration style slice`),
+implemented in `81069084` (`feat(native-engine): support decoration styles`),
+and completed with the inherited-style integration fixture in `b8ae87dc`
+(`test(native-engine): cover inherited decoration styles`). `NativeBorderStyle`
+now supplies the defaulted bounded style value for the inherited native CSS
+cascade. `text-decoration-style` accepts only case-insensitive `solid`,
+`dashed`, and `dotted` tokens; unsupported values remain typed, bounded
+diagnostics. The resolved value travels from the DOM style chain through one
+immutable `TextRun` and is consumed by the existing one-pixel software
+decoration loop. Solid paints every selected line pixel, dashed uses the
+existing three-on/two-off integer pattern, and dotted uses one-on/one-off;
+each immutable run starts its pattern at its own x origin.
+
+The native integration fixture proves explicit solid/dashed/dotted output,
+run-origin anchoring, inherited dashed style, descendant solid override,
+display-command propagation, and unchanged line geometry. No crate,
+dependency, feature default, renderer, layout owner, or artifact schema was
+added.
+
 ## Verification
 
-The implementation must provide parser, computed-style inheritance, cascade,
-explicit-solid reset, invalid-value diagnostic, and declaration omission
-coverage. An integration fixture must prove solid, dashed, and dotted pixels,
-run-origin anchoring, inherited/overridden style, and the immutable display
-command while preserving the existing line geometry and 108 longhand/color
-consumers. Full native integration, feature-library, strict lint,
-warning-denied rustdoc, locked package/dependency, nightly/offline fuzz,
-documentation, static, and formatting gates remain required. Every gate uses
-an isolated target with a recorded purpose, and completed validation removes
-the exact regenerable target after process and open-file checks.
+The focused parser/cascade test passed 2/2, the focused decoration integration
+test passed 1/1, and the focused diagnostic-redaction test passed 1/1. Full
+native integration passed 146/146. The final all-feature `glass-browser`
+package suite passed 902 library tests with 1 expected ignored test, 146
+native integration tests, all browser/protocol/reliability/TUI/Web IR/workspace
+targets, and 4 doctests. The serial `glass-dev` suite passed 365 unit tests,
+4 integration tests, and 15 PTY tests. Its first full run had one transient
+rust-analyzer no-diagnostics result; the exact test rerun passed 1/1 and the
+clean serial rerun passed 365/365, so no production failure remained.
 
+The remaining local gates passed against the isolated
+`CARGO_TARGET_DIR=/tmp/glass-109-target`:
+
+- `cargo fmt --all -- --check` and `git diff --check`;
+- strict all-feature workspace Clippy, strict no-default-feature browser
+  Clippy, and warning-denied workspace rustdoc;
+- locked browser and dev package validation, including the exact paired
+  `glass-dev 0.3.14` dependency check and both publication dry-runs;
+- locked offline fuzz-workspace all-target checking;
+- version sync, feature parity, TUI shortcut, documentation-depth,
+  release-documentation, public-readonly, reliability, Web IR, and fresh
+  source-built documentation coverage validators;
+- `cargo deny check` and `cargo audit`, with only the repository's existing
+  duplicate-dependency, unmaintained/yanked advisory warnings.
+
+The final static audit measured 523 Markdown files, 83 current-release
+documents, 57 previous-version hits, 597 semantic hits, and 0 current-claim
+failures. Fresh binaries covered 523 Markdown files, 345 full-product MCP
+tools, 100 browser-only tools, 17 examples, and 22 public modules. The
+reliability matrix covered 6 scenarios and 4 targets; adapter coverage was 5;
+the Web IR corpus covered 8 fixtures, 8 scenarios, and 11 categories.
+
+Every gate used the isolated target named above with a recorded purpose.
 Remote CI, browser parity, release, registry publication, complete CSS
 decoration conformance, wavy/double styles, and a third crate remain outside
 this local task.
 
 ## Cleanup
 
-Record the exact isolated target and report paths, sizes, process/open-file
-checks, deletion counts, and post-removal filesystem state after certification.
-Do not remove shared Cargo registries, toolchains, source, durable user data,
-or other projects' non-regenerable artifacts.
+The final cleanup is recorded after certification: the exact isolated target
+and report paths are measured, process/open-file checks are performed, and
+only validated regenerable outputs are removed with bounded same-filesystem
+deletion. The record includes deletion counts and post-removal filesystem
+state. Shared Cargo registries, toolchains, source, durable user data, and
+other projects' non-regenerable artifacts are retained.

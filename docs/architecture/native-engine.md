@@ -501,16 +501,17 @@ recorded in the task file. The local native integration suite passed 145/145;
 the full browser and glass-dev suites plus the strict documentation, package,
 fuzz, and static gates also passed. Remote CI remains pending because the
 branch is local-only.
-The active 109 design exposes deterministic `solid`, `dashed`, and `dotted`
-presentation through the existing fixed-cell decoration owner. The longhand
-reuses `NativeBorderStyle` and the current integer pattern helper, carrying one
-style value in the immutable text command while preserving line origins,
-geometry, clipping, scrolling, opacity, capture, hit-test, semantic, and source
-order consumers. Wavy/double styles, thickness, offsets, decoration-origin
-propagation, and full CSS conformance remain outside the contract. The design
-is recorded in `docs/plan/tasks/native-engine-109.md`; implementation and
-local gate evidence are pending. Remote CI remains pending because the branch
-is local-only.
+The completed 109 boundary exposes deterministic `solid`, `dashed`, and
+`dotted` presentation through the existing fixed-cell decoration owner. The
+longhand reuses `NativeBorderStyle` and the current integer pattern helper,
+carrying one style value in the immutable text command while preserving line
+origins, geometry, clipping, scrolling, opacity, capture, hit-test, semantic,
+and source-order consumers. Wavy/double styles, thickness, offsets,
+decoration-origin propagation, and full CSS conformance remain outside the
+contract. Design `93034cbf`, implementation `81069084`, inherited-style
+coverage `b8ae87dc`, and local gate/cleanup evidence are recorded in
+`docs/plan/tasks/native-engine-109.md`. Remote CI remains pending because the
+branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

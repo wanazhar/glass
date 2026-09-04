@@ -906,14 +906,17 @@ the native integration suite passed 145/145 and the full browser/dev plus
 strict docs, package, fuzz, and static gates passed. Remote CI remains pending
 because the branch is local-only.
 
-The active dependency-ordered [native-engine-109](tasks/native-engine-109.md)
-design adds bounded inherited `text-decoration-style:solid|dashed|dotted` to
+The completed dependency-ordered [native-engine-109](tasks/native-engine-109.md)
+slice adds bounded inherited `text-decoration-style:solid|dashed|dotted` to
 the existing fixed-cell decoration owner. Solid remains the default; dashed
 and dotted reuse the existing integer border-pattern helper with one-pixel
 decoration lines anchored at each emitted run origin. Wavy/double styles,
 thickness, offsets, decoration-origin propagation, and browser-wide CSS
-conformance remain outside the contract. Implementation, local gate evidence,
-cleanup, and remote CI are pending because the branch is local-only.
+conformance remain outside the contract. Design `93034cbf`, implementation
+`81069084`, inherited-style coverage `b8ae87dc`, and docs closeout are recorded
+in the task file. Local native, browser/dev, package, fuzz, static, and
+formatting gates passed; exact-target cleanup is recorded there. Remote CI
+remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

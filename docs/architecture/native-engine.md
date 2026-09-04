@@ -77,7 +77,9 @@ text paint, bounded fixed-cell `text-decoration:none|underline|overline|line-thr
 paint including distinct shorthand combinations, bounded inherited
 `text-decoration-style:solid|dashed|dotted` presentation, bounded inherited
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
-thickness-scaled integer dash/dot periods, bounded
+thickness-scaled integer dash/dot periods, bounded inherited signed fixed-pixel
+`text-underline-offset:-4px..=4px` that moves only the underline toward
+decreasing or increasing y, bounded
 inherited ASCII `text-transform:none|uppercase|lowercase` layout, and
 bounded inherited non-negative fixed-pixel `word-spacing` across the supported
 fixed-cell whitespace modes, and

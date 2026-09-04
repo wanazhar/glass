@@ -136,8 +136,10 @@ border, and text paint, bounded inherited fixed-cell
 distinct shorthand combinations, bounded local `text-decoration-color` using
 the existing fixed palette and alpha grammar with separate glyph and line
 paint, bounded `text-decoration-line` longhand combinations sharing the same
-line-state owner, bounded inherited `text-decoration-style:solid|dashed|dotted`
-presentation, bounded inherited
+line-state owner, bounded inherited
+`text-decoration-style:solid|dashed|dotted|double` presentation, where
+`double` paints two thickness-preserving solid bands separated by one pixel,
+bounded inherited
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
 thickness-scaled integer dash/dot periods, bounded inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward

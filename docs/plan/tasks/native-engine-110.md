@@ -1,7 +1,7 @@
 ---
 id: native-engine-110
 scope: glass-browser/native-engine/text-decoration-thickness
-status: design-ready
+status: complete
 depends-on: [native-engine-109]
 ---
 
@@ -77,6 +77,19 @@ slice.
   clipping, scroll, opacity, capture, and raster replay on one immutable
   command. A separate decoration command would duplicate geometry.
 
+## Implementation
+
+- Design checkpoint: `1623c5f1`.
+- Implementation checkpoint: `157da4ad`.
+- `css.rs` parses and cascades the bounded `1px..=4px` value with a default of
+  `1px`; `dom.rs` carries it through inherited computed style; `paint.rs`
+  carries it in `TextRun`; and `raster.rs` paints the bounded positive-y band
+  through the existing style helper and clamps externally constructed commands.
+- Focused parser, cascade, display-command, raster, diagnostic, clipping, and
+  geometry coverage was added to the native unit/integration suites. The
+  integration fixture covers all four thicknesses, all three supported styles,
+  inheritance, inline override, x-origin anchoring, and unchanged line boxes.
+
 ## Path
 
 - `crates/glass-browser/src/browser/native_engine/css.rs`
@@ -103,6 +116,27 @@ target after process and open-file checks.
 Remote CI, browser parity, release, registry publication, complete CSS
 decoration conformance, arbitrary thickness/offset/font metrics, and a third
 crate remain outside this local task.
+
+Completed local evidence:
+
+- Native focused unit, integration, diagnostic, and raster-clamp checks passed
+  (2/2, 1/1, 1/1, and 1/1 respectively). The full native integration suite
+  passed 147/147.
+- `cargo test -p glass-browser --all-features --locked` passed 905 library
+  tests, all integration targets, and four doctests. `cargo test -p glass-dev
+  --locked --quiet` passed 365 unit tests, four integration tests, and 15 PTY
+  tests.
+- Strict browser/all-workspace Clippy, no-default-feature Clippy, and warning-
+  denied workspace rustdoc passed. Both binaries built successfully.
+- Locked browser package verification and both locked publish dry-runs passed;
+  the browser archive contained 196 files and the dev archive contained 69
+  files. The known yanked `chacha20 0.10.1` lockfile warning remains; no upload
+  was attempted.
+- Offline fuzz-workspace checking passed all 290 targets. Version, feature,
+  release-documentation, TUI, documentation-depth, documentation-coverage,
+  reliability, public-adapter, web-IR, format, and diff checks passed.
+- `cargo deny check` passed with duplicate-version warnings; `cargo audit`
+  exited successfully with four already-allowed dependency advisories.
 
 ## Cleanup
 

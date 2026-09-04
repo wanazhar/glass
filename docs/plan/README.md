@@ -942,6 +942,15 @@ current-claim docs are `e76a732a`, and complete local gate and cleanup evidence
 are recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
+The next dependency-ordered [native-engine-112](tasks/native-engine-112.md)
+design is recorded as a design-ready checkpoint. It adds inherited
+`text-decoration-style:double` through a dedicated text-decoration style type
+and the existing immutable text/raster path: two solid bands, each retaining
+the resolved `1px..=4px` thickness, separated by one pixel. Border styling,
+layout, line origins, and all existing artifact consumers remain unchanged.
+Implementation, certification, cleanup, and remote CI remain pending; the
+checkout is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

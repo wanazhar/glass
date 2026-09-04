@@ -540,6 +540,15 @@ remain outside the contract. The contract is recorded in
 `215b02a8`, current-claim docs are `e76a732a`, and complete local gate and
 cleanup evidence are recorded in the task file. Remote CI remains pending
 because the branch is local-only.
+The next dependency-ordered 112 design is recorded in
+`docs/plan/tasks/native-engine-112.md`. It adds inherited
+`text-decoration-style:double` through a dedicated text-decoration style type,
+painting two solid bands with the existing resolved thickness and one
+transparent separator pixel. The 111 underline offset, existing line origins,
+x anchoring, clipping, scrolling, opacity, capture, and immutable text command
+remain shared; border styling, layout, fragment continuity, and browser-wide
+conformance remain outside the design. Implementation, certification, cleanup,
+and remote CI remain pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

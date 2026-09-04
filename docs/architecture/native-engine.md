@@ -512,6 +512,15 @@ contract. Design `93034cbf`, implementation `81069084`, inherited-style
 coverage `b8ae87dc`, and local gate/cleanup evidence are recorded in
 `docs/plan/tasks/native-engine-109.md`. Remote CI remains pending because the
 branch is local-only.
+The active 110 design adds bounded inherited `text-decoration-thickness` in
+the fixed-pixel range `1px` through `4px`. Each selected decoration keeps the
+existing line y origin and paints a positive-y band through the same immutable
+`TextRun`; style patterns reuse the existing integer helper with periods scaled
+by thickness. Arbitrary lengths, font-derived values, centering, offsets,
+baseline metrics, fragment continuity, and full CSS conformance remain outside
+the contract. The design is recorded in
+`docs/plan/tasks/native-engine-110.md`; implementation and local gate evidence
+are pending. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

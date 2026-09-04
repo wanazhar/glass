@@ -857,17 +857,17 @@ expansion for ordinary soft-wrap and explicit final-line justification;
 exact-target cleanup evidence is recorded in the task file. Remote CI remains
 pending because the branch is local-only.
 
-The active dependency-ordered [native-engine-105](tasks/native-engine-105.md)
+The completed dependency-ordered [native-engine-105](tasks/native-engine-105.md)
 slice extends the inherited fixed-cell `text-decoration` owner from
 `none|underline` to the bounded single values
-`none|underline|overline|line-through`. The line state will flow through the
+`none|underline|overline|line-through`. The line state flows through the
 existing immutable text commands, clipping, scrolling, opacity replay, and
 software raster without changing layout or semantic/source order. Decoration
 colors, thickness, style, offsets, combinations, font metrics, shaping, bidi,
 vertical writing, and browser-wide text conformance remain outside the
-contract. Design is ready locally; implementation, certification, and
-exact-target cleanup remain pending. Remote CI remains pending because the
-branch is local-only.
+contract. Design is `9002ae13`, implementation is `ebfefefa`, and complete
+local gate plus exact-target cleanup evidence is recorded in the task file.
+Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

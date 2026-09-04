@@ -474,16 +474,20 @@ outside the contract. The completed contract is
 is `baf680ee`, and complete local gate plus exact-target cleanup evidence is
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
-The active 107 design extends the same fixed-cell decoration owner with a
+The completed 107 boundary extends the same fixed-cell decoration owner with a
 local `text-decoration-color` value. Existing bounded `NativeColor` parsing
 feeds a separate decoration color beside glyph color in one immutable text
 command, so line pixels remain coupled to the existing origin, width, clip,
-scroll, opacity, capture, and raster consumers. The design is recorded in
-`docs/plan/tasks/native-engine-107.md`; implementation and local gate evidence
-are pending. Explicit decoration-origin propagation, `currentColor` syntax,
-decoration style/thickness/offset, and full color/text conformance remain
-outside the contract. Remote CI remains pending because the branch is
-local-only.
+scroll, opacity, capture, and raster consumers while glyph pixels retain their
+resolved text color. Explicit `transparent` remains meaningful. The completed
+contract is `docs/plan/tasks/native-engine-107.md`; design is recorded in
+`c5177215`, implementation is `2474efe6`, and local documentation/gate
+closeout is recorded in the task file. The local implementation passed 144/144
+native integration tests and the full current workspace gates; an ancillary
+bounded diagnostics-wait fix is `64247bd4`. Explicit decoration-origin
+propagation, `currentColor` syntax, decoration style/thickness/offset, and
+full color/text conformance remain outside the contract. Remote CI remains
+pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

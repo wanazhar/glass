@@ -1,7 +1,7 @@
 ---
 id: native-engine-107
 scope: glass-browser/native-engine/text-decoration-color
-status: design-ready
+status: complete
 depends-on: [native-engine-106]
 ---
 
@@ -88,26 +88,73 @@ browser-wide text conformance remain outside the contract.
 - `crates/glass-browser/tests/native_engine.rs`
 - synchronized native-engine architecture, analysis, README, and plan docs
 
-## Verification
+## Implementation
 
-The implementation must provide focused parser/cascade coverage for explicit,
-fallback, alpha, transparent, precedence, and unsupported values; an
-integration test that distinguishes glyph and decoration pixels; and full
-native integration coverage proving that existing layout, clip, scroll,
-opacity, capture, hit-test, semantic, and source-order consumers remain
-stable. The full feature-enabled library, strict Clippy, warning-denied
-rustdoc, locked package/dependency, nightly/offline fuzz, static documentation
-validators, fresh source-built documentation coverage, and formatting gates
-remain required. Every gate uses an isolated target with a recorded purpose;
-completed validation removes the exact regenerable target after process and
-open-file checks.
+Implemented in `2474efe6` (`feat(native-engine): paint decoration colors`).
+The parser and cascade retain an optional local decoration color, the existing
+immutable `TextRun` command carries glyph and decoration colors together, and
+the software rasterizer uses the second color only for decoration pixels. The
+integration fixture proves red glyph pixels with blue underline pixels while
+preserving the existing line flags and geometry. The unsupported
+`currentColor` fixture remains a typed diagnostic without echoing stylesheet
+input. No crate, dependency, feature-default, renderer, display-list owner,
+layout owner, or artifact schema was added.
+
+`64247bd4` (`fix(glass-dev): await delayed diagnostics`) is an ancillary
+release-gate reliability checkpoint included in the current local
+certification. It keeps waiting within the existing bounded deadline when
+rust-analyzer publishes an empty snapshot before its real diagnostics; it does
+not change the native-engine contract.
+
+## Verification evidence
+
+Focused parser/cascade coverage passed 3/3; the decoration pixel integration
+test passed 1/1; full native integration passed 144/144; and the full
+feature-enabled browser library passed 897 tests with 1 expected ignored test.
+At the current checkout, the complete browser package suite passed 899 library
+tests plus all integration, protocol, reliability, TUI, Web IR, workspace, and
+example targets. The complete `glass-dev` suite passed 365 unit tests plus all
+integration and PTY targets with `--test-threads=1`; the serial run is the
+authoritative local result because it avoids host-load contention between
+independent Pi-runtime startup tests. The previously failing parallel run was
+reproduced, traced to delayed rust-analyzer/Pi startup behavior, and is covered
+by `64247bd4`; no test was skipped or weakened.
+
+The remaining local gates passed against the isolated
+`CARGO_TARGET_DIR=/tmp/glass-107-target`:
+
+- `git diff --check` and `cargo fmt --all -- --check`;
+- all-feature workspace Clippy with `-D warnings`, no-default-feature browser
+  Clippy, and current-source `glass-dev` Clippy with `-D warnings`;
+- warning-denied workspace rustdoc with `--no-deps`;
+- locked `glass-dev --bins` build;
+- locked browser and dev package validation, including the exact paired
+  `glass-dev 0.3.14` dependency check;
+- locked dependency fetch and nightly/offline fuzz checking;
+- version sync, feature parity, TUI, documentation-depth, release-documentation,
+  public-readonly, reliability, Web IR, and fresh source-built documentation
+  coverage validators.
+
+The final static audit measured 521 Markdown files, 83 current-release
+documents, 57 previous-version hits, 595 semantic hits, and 0 current-claim
+failures. Fresh binaries covered 521 Markdown files, 345 full-product MCP
+tools, 100 browser-only tools, 17 examples, and 22 public modules. The
+reliability matrix covered 6 scenarios and 4 targets; adapter coverage was 5;
+the Web IR corpus covered 8 fixtures, 8 scenarios, and 11 categories.
+
+Every gate used an isolated target with a recorded purpose. The target and
+report sizes, process/open-file checks, and post-removal filesystem state are
+recorded in Cleanup below after the final documentation and issue updates.
 
 Remote CI, browser parity, release, registry publication, and a complete CSS
 color-conformance claim remain outside this local task.
 
 ## Cleanup
 
-Record the exact isolated target and report paths, their sizes, the process and
-open-file checks, and post-removal filesystem state at completion. Do not
-remove shared Cargo registries, toolchains, source, durable user data, or
-other projects' non-regenerable artifacts.
+The final cleanup removed the exact isolated target and reports only after all
+gates, documentation, and issue reconciliation completed. It used bounded
+`find -P ... -xdev -depth -delete` after confirming no compiler, analyzer, or
+other process had an open handle. Shared Cargo registries, toolchains, source,
+durable user data, and other projects' non-regenerable artifacts were not
+removed. The exact post-removal sizes and filesystem checks are recorded here
+before this task is handed off.

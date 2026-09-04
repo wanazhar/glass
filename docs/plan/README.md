@@ -881,16 +881,17 @@ outside the contract. Design is `c0525afb`, implementation is `baf680ee`,
 and complete local gate plus exact-target cleanup evidence is recorded in the
 task file. Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered [native-engine-107](tasks/native-engine-107.md)
-design extends the inherited fixed-cell decoration owner with a local
+The completed dependency-ordered [native-engine-107](tasks/native-engine-107.md)
+slice extends the inherited fixed-cell decoration owner with a local
 `text-decoration-color` value. The existing bounded `NativeColor` grammar
-will feed a separate decoration color beside glyph color in one immutable text
+feeds a separate decoration color beside glyph color in one immutable text
 command, preserving shared geometry, clipping, scrolling, opacity, capture,
-and raster consumers. Explicit decoration-origin propagation, `currentColor`
-syntax, decoration style/thickness/offset, and full color/text conformance
-remain outside the contract. The design is ready locally; implementation and
-local gate evidence are pending. Remote CI remains pending because the branch
-is local-only.
+and raster consumers while separating glyph and line pixels. Explicit
+decoration-origin propagation, `currentColor` syntax, decoration
+style/thickness/offset, and full color/text conformance remain outside the
+contract. Design is `c5177215`, implementation is `2474efe6`, and the local
+144/144 native integration plus current workspace gate evidence is recorded in
+the task file. Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

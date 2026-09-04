@@ -299,6 +299,8 @@ pub(crate) enum TextDecorationValue {
     #[default]
     None,
     Underline,
+    Overline,
+    LineThrough,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3325,6 +3327,8 @@ fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
     match value.to_ascii_lowercase().as_str() {
         "none" => Some(TextDecorationValue::None),
         "underline" => Some(TextDecorationValue::Underline),
+        "overline" => Some(TextDecorationValue::Overline),
+        "line-through" => Some(TextDecorationValue::LineThrough),
         _ => None,
     }
 }
@@ -4747,10 +4751,17 @@ mod tests {
             Some(TextDecorationValue::Underline)
         );
         assert_eq!(
+            parse_text_decoration("OVERLINE"),
+            Some(TextDecorationValue::Overline)
+        );
+        assert_eq!(
+            parse_text_decoration("line-through"),
+            Some(TextDecorationValue::LineThrough)
+        );
+        assert_eq!(
             parse_text_decoration("none"),
             Some(TextDecorationValue::None)
         );
-        assert_eq!(parse_text_decoration("overline"), None);
         assert_eq!(parse_text_decoration("underline line-through"), None);
         assert_eq!(parse_text_decoration("underline red"), None);
     }
@@ -5045,23 +5056,25 @@ mod tests {
     #[test]
     fn text_decoration_is_inherited_and_child_none_clears_it() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "div { text-decoration: none; } #target { text-decoration: underline; }".into(),
+            "div { text-decoration: none; } #target { text-decoration: line-through; }".into(),
         ])
         .unwrap();
         let node = node("<div id='target'>Target</div>");
         assert_eq!(
             stylesheet.computed_for(&node).text_decoration(),
-            TextDecorationValue::Underline
+            TextDecorationValue::LineThrough
         );
 
         let document = NativeDocument::parse(
-            "<style>#parent { text-decoration: underline; } #clear { text-decoration: none; } #invalid { text-decoration: overline; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>",
+            "<style>#parent { text-decoration: underline; } #clear { text-decoration: none; } #over { text-decoration: overline; } #through { text-decoration: line-through; } #invalid { text-decoration: blink; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='over'>Over</span><span id='through'>Through</span><span id='invalid'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let child = document.resolve_target("id=child").unwrap();
         let clear = document.resolve_target("id=clear").unwrap();
+        let over = document.resolve_target("id=over").unwrap();
+        let through = document.resolve_target("id=through").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
         assert_eq!(
@@ -5075,6 +5088,16 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(clear).text_decoration(),
             TextDecorationValue::None
+        );
+        assert_eq!(
+            document.computed_style_for_layout(over).text_decoration(),
+            TextDecorationValue::Overline
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(through)
+                .text_decoration(),
+            TextDecorationValue::LineThrough
         );
         assert_eq!(
             document

@@ -78,6 +78,8 @@ pub enum NativeDisplayCommand {
         truncated: bool,
         color: NativeColor,
         underline: bool,
+        overline: bool,
+        line_through: bool,
         bold: bool,
         italic: bool,
         word_spacing: u32,
@@ -190,6 +192,9 @@ impl NativeDisplayList {
                             truncated: text_run.truncated,
                             color: style.color().unwrap_or(NativeColor::BLACK),
                             underline: style.text_decoration() == TextDecorationValue::Underline,
+                            overline: style.text_decoration() == TextDecorationValue::Overline,
+                            line_through: style.text_decoration()
+                                == TextDecorationValue::LineThrough,
                             bold: style.font_weight() == FontWeightValue::Bold,
                             italic: style.font_style() == FontStyleValue::Italic,
                             word_spacing: style.word_spacing(),

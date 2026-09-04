@@ -1426,18 +1426,20 @@ fn native_text_decoration_line_longhand_reuses_color_and_geometry() {
 #[test]
 fn native_text_decoration_style_patterns_share_command_and_geometry() {
     let document = NativeDocument::parse(
-        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; } #solid { text-decoration-style:solid; } #dashed { text-decoration-style:dashed; } #dotted { text-decoration-style:dotted; }</style><div id='solid' class='line'>A</div><div id='dashed' class='line'>A</div><div id='dotted' class='line'>A</div>",
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; } #solid { text-decoration-style:solid; } #dashed { text-decoration-style:dashed; } #dotted { text-decoration-style:dotted; } #parent { text-decoration-style:dashed; } #override { text-decoration-style:solid; }</style><div id='solid' class='line'>A</div><div id='dashed' class='line'>A</div><div id='dotted' class='line'>A</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override'>B</span></div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
     let viewport = Viewport {
         width: 32,
-        height: 64,
+        height: 84,
         device_scale_factor_milli: 1000,
     };
     let solid = document.resolve_target("id=solid").unwrap();
     let dashed = document.resolve_target("id=dashed").unwrap();
     let dotted = document.resolve_target("id=dotted").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let override_node = document.resolve_target("id=override").unwrap();
     let list = document.display_list(viewport).unwrap();
     let text_command = |node_id| {
         list.commands.iter().find_map(|command| match command {
@@ -1454,10 +1456,20 @@ fn native_text_decoration_style_patterns_share_command_and_geometry() {
     let solid_command = text_command(solid).expect("solid text command");
     let dashed_command = text_command(dashed).expect("dashed text command");
     let dotted_command = text_command(dotted).expect("dotted text command");
+    let inherited_command = text_command(inherited).expect("inherited text command");
+    let override_command = text_command(override_node).expect("override text command");
     assert_eq!(solid_command.1, NativeBorderStyle::Solid);
     assert_eq!(dashed_command.1, NativeBorderStyle::Dashed);
     assert_eq!(dotted_command.1, NativeBorderStyle::Dotted);
-    assert!(solid_command.2 && dashed_command.2 && dotted_command.2);
+    assert_eq!(inherited_command.1, NativeBorderStyle::Dashed);
+    assert_eq!(override_command.1, NativeBorderStyle::Solid);
+    assert!(
+        solid_command.2
+            && dashed_command.2
+            && dotted_command.2
+            && inherited_command.2
+            && override_command.2
+    );
 
     let surface = list.rasterize().unwrap();
     let line_pixel = |command: (NativePoint, NativeBorderStyle, bool), offset: u32| {
@@ -1477,6 +1489,10 @@ fn native_text_decoration_style_patterns_share_command_and_geometry() {
     assert_eq!(line_pixel(dotted_command, 1), Some([255, 255, 255, 255]));
     assert_eq!(line_pixel(dotted_command, 2), Some([0, 0, 0, 255]));
     assert_eq!(line_pixel(dotted_command, 3), Some([255, 255, 255, 255]));
+    assert_eq!(line_pixel(inherited_command, 0), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(inherited_command, 3), Some([255, 255, 255, 255]));
+    assert_eq!(line_pixel(override_command, 0), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(override_command, 5), Some([0, 0, 0, 255]));
 }
 
 #[test]

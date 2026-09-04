@@ -918,6 +918,16 @@ in the task file. Local native, browser/dev, package, fuzz, static, and
 formatting gates passed; exact-target cleanup is recorded there. Remote CI
 remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-110](tasks/native-engine-110.md)
+design adds bounded inherited `text-decoration-thickness:1px|2px|3px|4px`
+to the existing fixed-cell decoration owner. Each selected line keeps its
+existing y origin and paints a positive-y pixel band; dashed and dotted
+periods reuse the existing integer helper scaled by thickness. Arbitrary,
+font-derived, fractional, negative, zero, offset, baseline, and browser-wide
+CSS decoration semantics remain outside the contract. Implementation, local
+gate evidence, cleanup, and remote CI are pending because the branch is
+local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

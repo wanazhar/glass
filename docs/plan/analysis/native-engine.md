@@ -772,6 +772,17 @@ inherited-style coverage `b8ae87dc`, and local gate/cleanup evidence are
 recorded in `docs/plan/tasks/native-engine-109.md`. Remote CI remains pending
 because the branch is local-only.
 
+The next dependency-ordered `native-engine-110` design adds bounded inherited
+`text-decoration-thickness:1px|2px|3px|4px` to the existing fixed-cell
+decoration owner. Each selected line preserves its current y origin and paints
+a positive-y pixel band; dashed and dotted periods reuse the existing integer
+pattern helper scaled by thickness, while the value travels through one
+immutable text command. Arbitrary/font-derived/fractional values, centering,
+offsets, baseline metrics, fragment continuity, and full CSS conformance
+remain outside the contract. The design is recorded in
+`docs/plan/tasks/native-engine-110.md`; implementation and local gate evidence
+are pending. Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -1006,6 +1017,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-107` | bounded local `text-decoration-color` using the existing `NativeColor` grammar, carried separately from glyph color through one immutable text command and fixed-pixel replay | `native-engine-106` | decoration-origin propagation, `currentColor` syntax, shorthand color components, style/thickness/offset, color spaces, animations, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-108` | bounded `text-decoration-line` longhand alias for the existing underline/overline/line-through bitset with declaration-order-aware shorthand interaction and shared artifact consumers | `native-engine-107` | full CSS longhand inheritance and decoration propagation, style/thickness/offset, shorthand color components, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-109` | bounded inherited `text-decoration-style:solid|dashed|dotted` using the existing integer border-pattern helper through one immutable text command and fixed-pixel replay | `native-engine-108` | double/wavy styles, thickness, offsets, decoration-origin propagation, fragment continuity, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
+| `native-engine-110` | bounded inherited `text-decoration-thickness:1px|2px|3px|4px` as a positive-y fixed-pixel band through one immutable text command and the existing integer style-pattern helper | `native-engine-109` | arbitrary/font-derived/fractional values, zero/negative/percentage/auto/from-font syntax, centering, offsets, baseline metrics, fragment continuity, shaping, bidi, vertical writing, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1413,6 +1425,7 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-110.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-109.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-108.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-107.md` is the preceding completed checkpoint;

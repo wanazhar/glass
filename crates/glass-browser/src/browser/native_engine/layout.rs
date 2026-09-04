@@ -3,7 +3,8 @@ use super::css::{
     AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, DisplayValue,
     FlexBasisValue, FlexDirectionValue, FlexWrapValue, JustifyContentValue, NativeAutoEdges,
     NativeBorderRadius, NativeBoxEdges, NativeComputedStyle, TextAlignLastValue, TextAlignValue,
-    TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+    TextJustifyValue, TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue,
+    WordBreakValue,
 };
 use super::dom::{NativeDocument, NativeNodeId, NativeNodeKind};
 use super::error::NativeEngineError;
@@ -69,7 +70,8 @@ pub struct NativeTextLayout {
     pub text: String,
     pub truncated: bool,
     /// Extra fixed-cell advance applied to each eligible ASCII separator by
-    /// `text-align:justify` or `text-align-last:justify`.
+    /// `text-align:justify` or `text-align-last:justify`, when
+    /// `text-justify` permits expansion.
     pub justify_spacing: u32,
 }
 
@@ -1288,6 +1290,7 @@ impl<'a> LayoutBuilder<'a> {
         let direction = style.direction();
         let text_align = style.text_align();
         let text_align_last = style.text_align_last();
+        let text_justify = style.text_justify();
         let text_indent = if self.effective_display(parent) == DisplayValue::Block {
             style.text_indent()
         } else {
@@ -1298,12 +1301,14 @@ impl<'a> LayoutBuilder<'a> {
         let allow_soft_wrap =
             !matches!(white_space, WhiteSpaceValue::Pre | WhiteSpaceValue::NoWrap);
         let justify_enabled = text_align == TextAlignValue::Justify
+            && text_justify != TextJustifyValue::None
             && matches!(
                 white_space,
                 WhiteSpaceValue::Normal | WhiteSpaceValue::PreLine
             )
             && style.word_break() == WordBreakValue::Normal;
         let final_justify_enabled = text_align_last == TextAlignLastValue::Justify
+            && text_justify != TextJustifyValue::None
             && matches!(
                 white_space,
                 WhiteSpaceValue::Normal | WhiteSpaceValue::PreLine
@@ -1435,8 +1440,14 @@ impl<'a> LayoutBuilder<'a> {
         }
         let style = self.document.computed_style_for_layout(text_run.node_id);
         let alignment = match reason {
-            FlowFlushReason::SoftWrap => style.text_align() == TextAlignValue::Justify,
-            FlowFlushReason::Final => style.text_align_last() == TextAlignLastValue::Justify,
+            FlowFlushReason::SoftWrap => {
+                style.text_align() == TextAlignValue::Justify
+                    && style.text_justify() != TextJustifyValue::None
+            }
+            FlowFlushReason::Final => {
+                style.text_align_last() == TextAlignLastValue::Justify
+                    && style.text_justify() != TextJustifyValue::None
+            }
             FlowFlushReason::Normal => false,
         };
         (alignment

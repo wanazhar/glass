@@ -200,6 +200,14 @@ impl TextAlignLastValue {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TextJustifyValue {
+    #[default]
+    Auto,
+    None,
+    InterWord,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum JustifyContentValue {
     #[default]
     FlexStart,
@@ -371,6 +379,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) line_height: Option<u32>,
     pub(crate) text_align: TextAlignValue,
     pub(crate) text_align_last: TextAlignLastValue,
+    pub(crate) text_justify: TextJustifyValue,
     pub(crate) text_decoration: TextDecorationValue,
     pub(crate) text_transform: TextTransformValue,
     pub(crate) font_weight: FontWeightValue,
@@ -493,6 +502,7 @@ pub(crate) struct NativeComputedStyle {
     white_space: WhiteSpaceValue,
     text_align: TextAlignValue,
     text_align_last: TextAlignLastValue,
+    text_justify: TextJustifyValue,
     justify_content: JustifyContentValue,
     align_items: AlignItemsValue,
     align_self: AlignSelfValue,
@@ -561,6 +571,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_align_last(self) -> TextAlignLastValue {
         self.text_align_last
+    }
+
+    pub(crate) const fn text_justify(self) -> TextJustifyValue {
+        self.text_justify
     }
 
     pub(crate) const fn justify_content(self) -> JustifyContentValue {
@@ -805,6 +819,7 @@ impl NativeStylesheet {
         let mut white_space = None;
         let mut text_align = None;
         let mut text_align_last = None;
+        let mut text_justify = None;
         let mut justify_content = None;
         let mut align_items = None;
         let mut align_self = None;
@@ -908,6 +923,16 @@ impl NativeStylesheet {
                 )
             {
                 text_align_last = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_justify
+                && wins(rule.selector.specificity, rule.order, false, text_justify)
+            {
+                text_justify = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1368,6 +1393,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_justify
+                && wins(u16::MAX, usize::MAX, true, text_justify)
+            {
+                text_justify = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.text_decoration
                 && wins(u16::MAX, usize::MAX, true, text_decoration)
             {
@@ -1748,6 +1783,7 @@ impl NativeStylesheet {
             white_space: white_space.map_or(inherited.white_space, |value| value.value),
             text_align: text_align.map_or(inherited.text_align, |value| value.value),
             text_align_last: text_align_last.map_or(inherited.text_align_last, |value| value.value),
+            text_justify: text_justify.map_or(inherited.text_justify, |value| value.value),
             justify_content: justify_content
                 .map_or(JustifyContentValue::FlexStart, |value| value.value),
             align_items: align_items.map_or(AlignItemsValue::FlexStart, |value| value.value),
@@ -2002,6 +2038,7 @@ struct NativeDeclarations {
     white_space: Option<WhiteSpaceValue>,
     text_align: Option<TextAlignValue>,
     text_align_last: Option<TextAlignLastValue>,
+    text_justify: Option<TextJustifyValue>,
     justify_content: Option<JustifyContentValue>,
     align_items: Option<AlignItemsValue>,
     align_self: Option<AlignSelfValue>,
@@ -2191,6 +2228,7 @@ fn parse_source(
             || declarations.white_space.is_some()
             || declarations.text_align.is_some()
             || declarations.text_align_last.is_some()
+            || declarations.text_justify.is_some()
             || declarations.justify_content.is_some()
             || declarations.align_items.is_some()
             || declarations.align_self.is_some()
@@ -2338,6 +2376,7 @@ fn parse_declarations_with_diagnostics(
             "white-space" => parse_white_space(value).is_some(),
             "text-align" => parse_text_align(value).is_some(),
             "text-align-last" => parse_text_align_last(value).is_some(),
+            "text-justify" => parse_text_justify(value).is_some(),
             "justify-content" => parse_justify_content(value).is_some(),
             "place-content" => parse_place_content(value).is_some(),
             "align-items" => parse_align_items(value).is_some(),
@@ -2425,6 +2464,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "white-space"
             | "text-align"
             | "text-align-last"
+            | "text-justify"
             | "justify-content"
             | "place-content"
             | "align-items"
@@ -2531,6 +2571,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-align-last" => {
                 declarations.text_align_last = parse_text_align_last(value);
+            }
+            "text-justify" => {
+                declarations.text_justify = parse_text_justify(value);
             }
             "justify-content" => {
                 if let Some(parsed) = parse_justify_content(value) {
@@ -3085,6 +3128,15 @@ fn parse_text_align_last(value: &str) -> Option<TextAlignLastValue> {
     }
 }
 
+fn parse_text_justify(value: &str) -> Option<TextJustifyValue> {
+    match value.to_ascii_lowercase().as_str() {
+        "auto" => Some(TextJustifyValue::Auto),
+        "none" => Some(TextJustifyValue::None),
+        "inter-word" => Some(TextJustifyValue::InterWord),
+        _ => None,
+    }
+}
+
 fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
     match value.to_ascii_lowercase().as_str() {
         "flex-start" => Some(JustifyContentValue::FlexStart),
@@ -3622,7 +3674,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-align-last: end; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-align-last: end; text-justify: inter-word; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -3630,6 +3682,7 @@ mod tests {
         assert_eq!(declarations.white_space, Some(WhiteSpaceValue::PreLine));
         assert_eq!(declarations.text_align, Some(TextAlignValue::Center));
         assert_eq!(declarations.text_align_last, Some(TextAlignLastValue::End));
+        assert_eq!(declarations.text_justify, Some(TextJustifyValue::InterWord));
         assert_eq!(
             declarations.justify_content,
             Some(JustifyContentValue::SpaceBetween)
@@ -4449,6 +4502,19 @@ mod tests {
     }
 
     #[test]
+    fn text_justify_parser_accepts_bounded_inherited_values() {
+        assert_eq!(parse_text_justify("auto"), Some(TextJustifyValue::Auto));
+        assert_eq!(parse_text_justify("NONE"), Some(TextJustifyValue::None));
+        assert_eq!(
+            parse_text_justify("inter-word"),
+            Some(TextJustifyValue::InterWord)
+        );
+        assert_eq!(parse_text_justify("inter-character"), None);
+        assert_eq!(parse_text_justify("distribute"), None);
+        assert_eq!(parse_text_justify("auto none"), None);
+    }
+
+    #[test]
     fn direction_parser_accepts_only_bounded_inherited_values() {
         assert_eq!(parse_direction("ltr"), Some(DirectionValue::Ltr));
         assert_eq!(parse_direction("RTL"), Some(DirectionValue::Rtl));
@@ -4884,6 +4950,51 @@ mod tests {
                 .computed_style_for_layout(invalid)
                 .text_align_last(),
             TextAlignLastValue::Center
+        );
+    }
+
+    #[test]
+    fn text_justify_is_cascaded_and_inherited_with_child_precedence() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { text-justify: none; } #target { text-justify: inter-word; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='target' style='text-justify: auto'>Target</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).text_justify(),
+            TextJustifyValue::Auto
+        );
+
+        let document = NativeDocument::parse(
+            "<style>#parent { text-justify: none; } #explicit { text-justify: inter-word; } #auto { text-justify: auto; } #invalid { text-justify: inter-character; }</style><div id='parent'><span id='child'>Child</span><span id='explicit'>Explicit</span><span id='auto'>Auto</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let auto = document.resolve_target("id=auto").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).text_justify(),
+            TextJustifyValue::None
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).text_justify(),
+            TextJustifyValue::None
+        );
+        assert_eq!(
+            document.computed_style_for_layout(explicit).text_justify(),
+            TextJustifyValue::InterWord
+        );
+        assert_eq!(
+            document.computed_style_for_layout(auto).text_justify(),
+            TextJustifyValue::Auto
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).text_justify(),
+            TextJustifyValue::None
         );
     }
 

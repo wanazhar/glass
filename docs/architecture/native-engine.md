@@ -523,9 +523,9 @@ periods scaled by thickness, and replay clamps externally constructed values to
 the same 4px ceiling. Arbitrary lengths, font-derived values, centering,
 offsets, baseline metrics, fragment continuity, and full CSS conformance remain
 outside the contract. The contract is recorded in
-`docs/plan/tasks/native-engine-110.md`; implementation is `157da4ad`, and
-local gate and cleanup evidence will be recorded in the task file. Remote CI
-remains pending because the branch is local-only.
+`docs/plan/tasks/native-engine-110.md`; design is `1623c5f1`, implementation is
+`157da4ad`, and complete local gate and cleanup evidence are recorded in the
+task file. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -772,16 +772,17 @@ inherited-style coverage `b8ae87dc`, and local gate/cleanup evidence are
 recorded in `docs/plan/tasks/native-engine-109.md`. Remote CI remains pending
 because the branch is local-only.
 
-The next dependency-ordered `native-engine-110` design adds bounded inherited
-`text-decoration-thickness:1px|2px|3px|4px` to the existing fixed-cell
-decoration owner. Each selected line preserves its current y origin and paints
-a positive-y pixel band; dashed and dotted periods reuse the existing integer
-pattern helper scaled by thickness, while the value travels through one
-immutable text command. Arbitrary/font-derived/fractional values, centering,
-offsets, baseline metrics, fragment continuity, and full CSS conformance
-remain outside the contract. The design is recorded in
-`docs/plan/tasks/native-engine-110.md`; implementation and local gate evidence
-are pending. Remote CI remains pending because the branch is local-only.
+The completed dependency-ordered `native-engine-110` slice adds bounded
+inherited `text-decoration-thickness:1px|2px|3px|4px` to the existing
+fixed-cell decoration owner. Each selected line preserves its current line-y
+origin and paints a positive-y pixel band; dashed and dotted periods reuse the
+existing integer pattern helper scaled by thickness, while the value travels
+through one immutable text command and replay clamps externally constructed
+values to 4px. Arbitrary/font-derived/fractional values, centering, offsets,
+baseline metrics, fragment continuity, and full CSS conformance remain outside
+the contract. Design `1623c5f1`, implementation `157da4ad`, and complete local
+gate evidence are recorded in `docs/plan/tasks/native-engine-110.md`. Remote
+CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1425,8 +1426,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-110.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-109.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-110.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-109.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-108.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-107.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-106.md` is the preceding completed checkpoint;

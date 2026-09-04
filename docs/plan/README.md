@@ -893,6 +893,17 @@ contract. Design is `c5177215`, implementation is `2474efe6`, and the local
 144/144 native integration plus current workspace gate evidence is recorded in
 the task file. Remote CI remains pending because the branch is local-only.
 
+The active dependency-ordered [native-engine-108](tasks/native-engine-108.md)
+design exposes the same fixed-cell line bitset through the bounded
+`text-decoration-line` longhand. `none`, `underline`, `overline`, and
+`line-through` combinations reuse the shorthand's declaration-order-aware
+slot and one immutable text command, preserving the 107 glyph/decoration color
+path and all shared artifact consumers. Full CSS longhand
+inheritance/decoration propagation, style/thickness/offset, and text
+conformance remain outside the contract. Implementation and local gate
+evidence are pending. Remote CI remains pending because the branch is
+local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

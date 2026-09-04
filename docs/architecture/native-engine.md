@@ -488,6 +488,16 @@ bounded diagnostics-wait fix is `64247bd4`. Explicit decoration-origin
 propagation, `currentColor` syntax, decoration style/thickness/offset, and
 full color/text conformance remain outside the contract. Remote CI remains
 pending because the branch is local-only.
+The active 108 design exposes the same fixed-cell line bitset through the
+bounded `text-decoration-line` longhand. `none`, `underline`, `overline`, and
+`line-through` combinations reuse the existing declaration-order-aware
+shorthand slot and one immutable text command, preserving the 107 color path
+and all shared geometry, clipping, scrolling, opacity, capture, hit-test, and
+semantic consumers. Full CSS longhand inheritance/decoration propagation,
+style, thickness, offsets, and text conformance remain outside the contract.
+The design is recorded in `docs/plan/tasks/native-engine-108.md`;
+implementation and local gate evidence are pending. Remote CI remains pending
+because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

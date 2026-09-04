@@ -13,6 +13,7 @@ const GLYPH_WIDTH: u32 = 5;
 const GLYPH_ADVANCE: u32 = 6;
 const GLYPH_HEIGHT: u32 = 7;
 const ITALIC_ROW_SHIFTS: [u32; GLYPH_HEIGHT as usize] = [2, 2, 1, 1, 1, 0, 0];
+const WAVY_DECORATION_PHASE: [i64; 8] = [0, 1, 2, 1, 0, -1, -2, -1];
 
 #[derive(Debug, Clone, Copy)]
 struct TextPaint {
@@ -475,6 +476,21 @@ impl NativeSurface {
             NativeTextDecorationStyle::Dotted => {
                 Self::border_pattern_paints(NativeBorderStyle::Dotted, thickness, position)
             }
+            NativeTextDecorationStyle::Wavy => true,
+        }
+    }
+
+    fn text_decoration_vertical_offset(style: NativeTextDecorationStyle, position: i64) -> i64 {
+        match style {
+            NativeTextDecorationStyle::Wavy => {
+                let phase =
+                    usize::try_from(position).unwrap_or_default() % WAVY_DECORATION_PHASE.len();
+                WAVY_DECORATION_PHASE[phase]
+            }
+            NativeTextDecorationStyle::Solid
+            | NativeTextDecorationStyle::Dashed
+            | NativeTextDecorationStyle::Dotted
+            | NativeTextDecorationStyle::Double => 0,
         }
     }
 
@@ -615,13 +631,18 @@ impl NativeSurface {
                     } else {
                         i64::from(paint.decoration_thickness).saturating_add(1)
                     };
-                    let band_origin = line_y.saturating_add(band_offset);
-                    for thickness_offset in 0..paint.decoration_thickness {
-                        let y = band_origin.saturating_add(i64::from(thickness_offset));
-                        if y < 0 || y >= i64::from(self.height) {
-                            continue;
-                        }
-                        for offset in 0..run_width {
+                    for offset in 0..run_width {
+                        let band_origin = line_y.saturating_add(band_offset).saturating_add(
+                            Self::text_decoration_vertical_offset(
+                                paint.decoration_style,
+                                i64::from(offset),
+                            ),
+                        );
+                        for thickness_offset in 0..paint.decoration_thickness {
+                            let y = band_origin.saturating_add(i64::from(thickness_offset));
+                            if y < 0 || y >= i64::from(self.height) {
+                                continue;
+                            }
                             let x = origin_x.saturating_add(i64::from(offset));
                             if x >= 0
                                 && x < i64::from(self.width)
@@ -1857,6 +1878,70 @@ mod tests {
                 "gap row {y}"
             );
         }
+    }
+
+    #[test]
+    fn surface_replays_wavy_decoration_with_fixed_phase_and_run_reset() {
+        let node_id = NativeDocument::empty().root();
+        let text_run = |origin: NativePoint, text: &str, thickness| NativeDisplayCommand::TextRun {
+            node_id,
+            origin,
+            text: text.into(),
+            truncated: false,
+            color: NativeColor::BLACK,
+            decoration_color: NativeColor::BLACK,
+            decoration_style: NativeTextDecorationStyle::Wavy,
+            decoration_thickness: thickness,
+            underline_offset: 0,
+            underline: true,
+            overline: false,
+            line_through: false,
+            bold: false,
+            italic: false,
+            word_spacing: 0,
+            letter_spacing: 0,
+            justify_spacing: 0,
+            clip: None,
+        };
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                text_run(NativePoint { x: 0, y: 10 }, "  ", 2),
+                text_run(NativePoint { x: 3, y: 30 }, " ", 1),
+            ],
+            16,
+            48,
+        );
+        let surface = list.rasterize().unwrap();
+
+        for (x, top) in [
+            (0, 17),
+            (1, 18),
+            (2, 19),
+            (3, 18),
+            (4, 17),
+            (5, 16),
+            (6, 15),
+            (7, 16),
+            (8, 17),
+            (9, 18),
+            (10, 19),
+            (11, 18),
+        ] {
+            assert_eq!(surface.pixel(x, top), Some([0, 0, 0, 255]), "top x={x}");
+            assert_eq!(
+                surface.pixel(x, top + 1),
+                Some([0, 0, 0, 255]),
+                "thickness x={x}"
+            );
+            assert_eq!(surface.pixel(x, top - 1), Some([255, 255, 255, 255]));
+            assert_eq!(surface.pixel(x, top + 2), Some([255, 255, 255, 255]));
+        }
+
+        assert_eq!(surface.pixel(3, 37), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(3, 38), Some([255, 255, 255, 255]));
     }
 
     #[test]

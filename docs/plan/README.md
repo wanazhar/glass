@@ -848,6 +848,14 @@ is `be5757ae`, and complete local gate plus exact-target cleanup evidence is
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered [native-engine-104](tasks/native-engine-104.md)
+slice adds bounded inherited `text-justify:auto|none|inter-word` to the same
+fixed-cell text-spacing owner. `none` suppresses the existing separator
+expansion for ordinary soft-wrap and explicit final-line justification;
+`auto` and `inter-word` retain the bounded ASCII-space algorithm. The design
+is ready locally; implementation, certification, and exact-target cleanup
+remain pending. Remote CI remains pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

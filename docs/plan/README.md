@@ -869,17 +869,17 @@ contract. Design is `9002ae13`, implementation is `ebfefefa`, and complete
 local gate plus exact-target cleanup evidence is recorded in the task file.
 Remote CI remains pending because the branch is local-only.
 
-The active dependency-ordered [native-engine-106](tasks/native-engine-106.md)
+The completed dependency-ordered [native-engine-106](tasks/native-engine-106.md)
 slice extends the inherited fixed-cell `text-decoration` owner to distinct
 multi-token combinations in the `text-decoration` shorthand. The bounded
-three-bit line set will flow through the existing immutable text commands,
+three-bit line set flows through the existing immutable text commands,
 clipping, scrolling, opacity replay, capture, and software raster without
 changing layout or semantic/source order. `text-decoration-line` longhand
 semantics, decoration colors, thickness, style, offsets, font metrics,
 shaping, bidi, vertical writing, and browser-wide text conformance remain
-outside the contract. Design is ready locally; implementation, certification,
-and exact-target cleanup remain pending. Remote CI remains pending because the
-branch is local-only.
+outside the contract. Design is `c0525afb`, implementation is `baf680ee`,
+and complete local gate plus exact-target cleanup evidence is recorded in the
+task file. Remote CI remains pending because the branch is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

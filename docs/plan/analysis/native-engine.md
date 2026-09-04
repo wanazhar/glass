@@ -718,6 +718,18 @@ remain outside the contract. The completed task is
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
+The active dependency-ordered `native-engine-106` slice extends the inherited
+fixed-cell `text-decoration` owner to distinct multi-token combinations in
+the `text-decoration` shorthand. One immutable three-bit line set will reach
+display commands, clipping, scrolling, opacity replay, capture, and software
+raster without changing layout, overflow, hit testing, or semantic/source
+order. `text-decoration-line` longhand semantics, decoration colors,
+thickness, style, offsets, font metrics, shaping, bidi, vertical writing,
+and browser-wide text conformance remain outside the contract. The active task
+is `docs/plan/tasks/native-engine-106.md`; design is ready locally and
+implementation, certification, and exact-target cleanup remain pending.
+Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -948,6 +960,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-103` | explicit inherited `text-align-last:justify` for the final non-empty line of eligible fixed-cell blocks, reusing 101's deterministic separator spacing through 102's final-line flush | `native-engine-102` | inter-character justification, preformatted/break-all/truncated final-line spacing, forced-break ownership, Unicode bidi/shaping, language-specific line breaking, text-justify, logical properties, vertical writing modes, and browser-wide text conformance |
 | `native-engine-104` | bounded inherited `text-justify:auto|none|inter-word` control over the existing separator-spacing owner for soft-wrap and explicit final-line justification | `native-engine-103` | inter-character spacing, language-specific line breaking, Unicode bidi/shaping, glyph shaping/metrics, logical properties, vertical writing, fractional metrics, and browser-wide text conformance |
 | `native-engine-105` | bounded inherited `text-decoration:none|underline|overline|line-through` single-line state through immutable text commands and fixed-pixel software replay | `native-engine-104` | decoration combinations, colors, thickness, style, offsets, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
+| `native-engine-106` | bounded inherited multi-token `text-decoration` shorthand combinations for underline/overline/line-through through one immutable three-bit text command state and fixed-pixel replay | `native-engine-105` | `text-decoration-line` longhand, duplicate/none combinations, colors, thickness, style, offsets, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

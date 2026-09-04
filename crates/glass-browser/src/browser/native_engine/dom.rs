@@ -9,9 +9,10 @@ use super::raster::NativeSurface;
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
-        DirectionValue, FontStyleValue, FontWeightValue, NativeColor, NativeComputedStyle,
-        NativeInheritedStyle, TextAlignLastValue, TextAlignValue, TextDecorationValue,
-        TextJustifyValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        DirectionValue, FontStyleValue, FontWeightValue, NativeBorderStyle, NativeColor,
+        NativeComputedStyle, NativeInheritedStyle, TextAlignLastValue, TextAlignValue,
+        TextDecorationValue, TextJustifyValue, TextTransformValue, VerticalAlignValue,
+        WhiteSpaceValue, WordBreakValue,
     },
 };
 use std::collections::BTreeMap;
@@ -855,6 +856,7 @@ impl NativeDocument {
         let mut inherited_text_align_last = TextAlignLastValue::Auto;
         let mut inherited_text_justify = TextJustifyValue::Auto;
         let mut inherited_text_decoration = TextDecorationValue::none();
+        let mut inherited_text_decoration_style = NativeBorderStyle::Solid;
         let mut inherited_text_transform = TextTransformValue::None;
         let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_font_style = FontStyleValue::Normal;
@@ -878,6 +880,7 @@ impl NativeDocument {
                     text_align_last: inherited_text_align_last,
                     text_justify: inherited_text_justify,
                     text_decoration: inherited_text_decoration,
+                    text_decoration_style: inherited_text_decoration_style,
                     text_transform: inherited_text_transform,
                     font_weight: inherited_font_weight,
                     font_style: inherited_font_style,
@@ -895,6 +898,7 @@ impl NativeDocument {
             inherited_text_align_last = style.text_align_last();
             inherited_text_justify = style.text_justify();
             inherited_text_decoration = style.text_decoration();
+            inherited_text_decoration_style = style.text_decoration_style();
             inherited_text_transform = style.text_transform();
             inherited_font_weight = style.font_weight();
             inherited_font_style = style.font_style();

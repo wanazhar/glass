@@ -1,4 +1,4 @@
-use super::css::NativeBorderRadius;
+use super::css::{NativeBorderRadius, NativeBorderStyle};
 use super::error::NativeEngineError;
 use super::layout::{NativePoint, NativeRect, rounded_rect_contains};
 use super::paint::{MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList};
@@ -18,6 +18,7 @@ const ITALIC_ROW_SHIFTS: [u32; GLYPH_HEIGHT as usize] = [2, 2, 1, 1, 1, 0, 0];
 struct TextPaint {
     color: super::css::NativeColor,
     decoration_color: super::css::NativeColor,
+    decoration_style: NativeBorderStyle,
     underline: bool,
     overline: bool,
     line_through: bool,
@@ -160,6 +161,7 @@ impl NativeSurface {
                     text,
                     color,
                     decoration_color,
+                    decoration_style,
                     underline,
                     overline,
                     line_through,
@@ -187,6 +189,7 @@ impl NativeSurface {
                         TextPaint {
                             color: *color,
                             decoration_color: *decoration_color,
+                            decoration_style: *decoration_style,
                             underline: *underline,
                             overline: *overline,
                             line_through: *line_through,
@@ -574,6 +577,7 @@ impl NativeSurface {
                     let x = origin_x.saturating_add(i64::from(offset));
                     if x >= 0
                         && x < i64::from(self.width)
+                        && Self::border_pattern_paints(paint.decoration_style, 1, i64::from(offset))
                         && clip.is_none_or(|clip| {
                             clip.contains(NativePoint {
                                 x: u32::try_from(x).unwrap_or(u32::MAX),
@@ -1017,6 +1021,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::RED,
                     decoration_color: NativeColor::RED,
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1053,6 +1058,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1070,6 +1076,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1106,6 +1113,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1123,6 +1131,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1150,6 +1159,7 @@ mod tests {
                         blue: 0,
                         alpha: 128,
                     },
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1199,6 +1209,7 @@ mod tests {
                         blue: 0,
                         alpha: 128,
                     },
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: true,
                     overline: false,
                     line_through: false,
@@ -1241,6 +1252,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: false,
                     overline: true,
                     line_through: false,
@@ -1263,6 +1275,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::RED,
                     decoration_color: NativeColor::RED,
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: false,
                     overline: false,
                     line_through: true,
@@ -1290,6 +1303,7 @@ mod tests {
                         blue: 0,
                         alpha: 128,
                     },
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: true,
                     overline: false,
                     line_through: false,
@@ -1630,6 +1644,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
+                    decoration_style: NativeBorderStyle::Solid,
                     underline: false,
                     overline: false,
                     line_through: false,

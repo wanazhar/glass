@@ -43,8 +43,9 @@ impl NativeColor {
     };
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeBorderStyle {
+    #[default]
     Solid,
     Dashed,
     Dotted,
@@ -411,6 +412,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_align_last: TextAlignLastValue,
     pub(crate) text_justify: TextJustifyValue,
     pub(crate) text_decoration: TextDecorationValue,
+    pub(crate) text_decoration_style: NativeBorderStyle,
     pub(crate) text_transform: TextTransformValue,
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
@@ -545,6 +547,7 @@ pub(crate) struct NativeComputedStyle {
     flex_shrink: u32,
     flex_basis: FlexBasisValue,
     text_decoration: TextDecorationValue,
+    text_decoration_style: NativeBorderStyle,
     text_decoration_color: Option<NativeColor>,
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
@@ -654,6 +657,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_decoration(self) -> TextDecorationValue {
         self.text_decoration
+    }
+
+    pub(crate) const fn text_decoration_style(self) -> NativeBorderStyle {
+        self.text_decoration_style
     }
 
     pub(crate) const fn text_decoration_color(self) -> Option<NativeColor> {
@@ -867,6 +874,7 @@ impl NativeStylesheet {
         let mut flex_shrink = None;
         let mut flex_basis = None;
         let mut text_decoration = None;
+        let mut text_decoration_style = None;
         let mut text_decoration_color = None;
         let mut text_transform = None;
         let mut font_weight = None;
@@ -984,6 +992,21 @@ impl NativeStylesheet {
                 )
             {
                 text_decoration = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_decoration_style
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    text_decoration_style,
+                )
+            {
+                text_decoration_style = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1464,6 +1487,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_decoration_style
+                && wins(u16::MAX, usize::MAX, true, text_decoration_style)
+            {
+                text_decoration_style = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.text_decoration_color
                 && wins(u16::MAX, usize::MAX, true, text_decoration_color)
             {
@@ -1859,6 +1892,8 @@ impl NativeStylesheet {
             flex_shrink: flex_shrink.map_or(1, |value| value.value),
             flex_basis: flex_basis.map_or(FlexBasisValue::Auto, |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
+            text_decoration_style: text_decoration_style
+                .map_or(inherited.text_decoration_style, |value| value.value),
             text_decoration_color: text_decoration_color.map(|value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
@@ -2113,6 +2148,7 @@ struct NativeDeclarations {
     flex_shrink: Option<u32>,
     flex_basis: Option<FlexBasisValue>,
     text_decoration: Option<TextDecorationValue>,
+    text_decoration_style: Option<NativeBorderStyle>,
     text_decoration_color: Option<NativeColor>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
@@ -2304,6 +2340,7 @@ fn parse_source(
             || declarations.flex_shrink.is_some()
             || declarations.flex_basis.is_some()
             || declarations.text_decoration.is_some()
+            || declarations.text_decoration_style.is_some()
             || declarations.text_decoration_color.is_some()
             || declarations.text_transform.is_some()
             || declarations.font_weight.is_some()
@@ -2456,6 +2493,7 @@ fn parse_declarations_with_diagnostics(
             "flex-shrink" => parse_flex_shrink(value).is_some(),
             "flex-basis" => parse_flex_basis(value).is_some(),
             "text-decoration" | "text-decoration-line" => parse_text_decoration(value).is_some(),
+            "text-decoration-style" => parse_border_style(value).is_some(),
             "text-decoration-color" => parse_color(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
@@ -2546,6 +2584,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "flex-basis"
             | "text-decoration"
             | "text-decoration-line"
+            | "text-decoration-style"
             | "text-decoration-color"
             | "text-transform"
             | "font-weight"
@@ -2708,6 +2747,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-decoration" | "text-decoration-line" => {
                 declarations.text_decoration = parse_text_decoration(value);
+            }
+            "text-decoration-style" => {
+                declarations.text_decoration_style = parse_border_style(value);
             }
             "text-decoration-color" => {
                 declarations.text_decoration_color = parse_color(value);
@@ -4909,6 +4951,68 @@ mod tests {
         assert_eq!(
             parse_declarations("text-decoration-line: underline underline").text_decoration,
             None
+        );
+    }
+
+    #[test]
+    fn text_decoration_style_parser_accepts_only_bounded_patterns() {
+        assert_eq!(parse_border_style("SOLID"), Some(NativeBorderStyle::Solid));
+        assert_eq!(
+            parse_border_style("dashed"),
+            Some(NativeBorderStyle::Dashed)
+        );
+        assert_eq!(
+            parse_border_style("DOTTED"),
+            Some(NativeBorderStyle::Dotted)
+        );
+        assert_eq!(parse_border_style("double"), None);
+        assert_eq!(parse_border_style("wavy"), None);
+        assert_eq!(parse_border_style("solid dashed"), None);
+        assert_eq!(parse_border_style(""), None);
+    }
+
+    #[test]
+    fn text_decoration_style_is_inherited_and_cascaded() {
+        let document = NativeDocument::parse(
+            "<style>div { text-decoration-style: dotted; } #parent { text-decoration-style: dashed; } #explicit { text-decoration-style: solid; } #invalid { text-decoration-style: wavy; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-style:dotted'>Inline</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let inherited = document.resolve_target("id=inherited").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let inline = document.resolve_target("id=inline").unwrap();
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(parent)
+                .text_decoration_style(),
+            NativeBorderStyle::Dashed
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inherited)
+                .text_decoration_style(),
+            NativeBorderStyle::Dashed
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .text_decoration_style(),
+            NativeBorderStyle::Solid
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .text_decoration_style(),
+            NativeBorderStyle::Dashed
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inline)
+                .text_decoration_style(),
+            NativeBorderStyle::Dotted
         );
     }
 

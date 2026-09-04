@@ -784,6 +784,17 @@ the contract. Design `1623c5f1`, implementation `157da4ad`, and complete local
 gate evidence are recorded in `docs/plan/tasks/native-engine-110.md`. Remote
 CI remains pending because the branch is local-only.
 
+The next dependency-ordered `native-engine-111` design adds bounded inherited
+`text-underline-offset` in signed fixed pixels from `-4px` through `4px` to
+the existing fixed-cell underline owner. Negative values move only the
+underline toward decreasing y and positive values toward increasing y;
+overline and line-through keep their existing origins, while the 110 thickness
+band and style helper remain shared. `auto`, percentages, fractional and
+font-derived metrics, decoration-origin propagation, fragment continuity, and
+full CSS conformance remain outside the contract. The design is recorded in
+`docs/plan/tasks/native-engine-111.md`; implementation and local gate evidence
+are pending. Remote CI remains pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -1019,6 +1030,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-108` | bounded `text-decoration-line` longhand alias for the existing underline/overline/line-through bitset with declaration-order-aware shorthand interaction and shared artifact consumers | `native-engine-107` | full CSS longhand inheritance and decoration propagation, style/thickness/offset, shorthand color components, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-109` | bounded inherited `text-decoration-style:solid|dashed|dotted` using the existing integer border-pattern helper through one immutable text command and fixed-pixel replay | `native-engine-108` | double/wavy styles, thickness, offsets, decoration-origin propagation, fragment continuity, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-110` | bounded inherited `text-decoration-thickness:1px|2px|3px|4px` as a positive-y fixed-pixel band through one immutable text command and the existing integer style-pattern helper | `native-engine-109` | arbitrary/font-derived/fractional values, zero/negative/percentage/auto/from-font syntax, centering, offsets, baseline metrics, fragment continuity, shaping, bidi, vertical writing, and browser-wide text conformance |
+| `native-engine-111` | bounded inherited signed `text-underline-offset:-4px..=4px` for underline-only y translation through the immutable text command, preserving the 110 thickness/style raster owner | `native-engine-110` | auto/percentage/fractional/font-derived values, overline/line-through offsets, decoration-origin propagation, centering, baseline metrics, fragment continuity, shaping, bidi, vertical writing, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1426,6 +1438,7 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-111.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-110.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-109.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-108.md` is the preceding completed checkpoint;

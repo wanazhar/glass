@@ -930,6 +930,16 @@ implementation `157da4ad`, complete local gate evidence, and exact-target
 cleanup are recorded in the task file. Remote CI remains pending because the
 branch is local-only.
 
+The active dependency-ordered [native-engine-111](tasks/native-engine-111.md)
+design adds bounded inherited `text-underline-offset:-4px..=4px` to the
+existing fixed-cell underline owner. Negative offsets
+move the underline toward decreasing y and positive offsets toward increasing
+y; overline and line-through origins remain unchanged, and the 110 thickness
+band/style helper is reused. `auto`, percentages, fractional values,
+font-derived metrics, decoration-origin propagation, and browser-wide CSS
+semantics remain outside the contract. Implementation, local certification,
+cleanup, and remote CI are pending because the branch is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -106,7 +106,7 @@ dependency or feature-default change. Final focused gates passed as follows:
   documentation depth (93 current guides, 19 substantive contracts);
   read-only adapters (5); reliability matrix (6 scenarios, 4 targets);
   release documentation (519 Markdown files, 83 current documents, 57
-  previous-version hits, 589 semantic hits, 0 current-claim failures); and
+  previous-version hits, 591 semantic hits, 0 current-claim failures); and
   Web IR (8 fixtures, 8 scenarios, 11 categories).
 - Fresh source-built documentation coverage passed with 519 Markdown files,
   345 full-product MCP tools (100 browser-only), 17 examples, and 22 public

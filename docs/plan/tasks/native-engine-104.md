@@ -121,6 +121,10 @@ Local evidence:
   current / 57 previous-version hits / 588 semantic hits / 0 current-claim
   failures; coverage 518/345/17/22; TUI 15/63; depth 93/19; reliability 6/4;
   adapters 5; Web IR 8/8/11;
+- the coverage audit was rerun against fresh binaries built from this checkout
+  after the globally installed 0.3.14 binary was found to be an older
+  344-tool build; the source-built result remained 345 full-product tools and
+  matched the checked-in schema-budget measurement;
 - `cargo fmt --all -- --check` and `git diff --check` passed.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
@@ -130,10 +134,11 @@ task.
 ## Cleanup
 
 After process and open-file checks found no active consumers, the exact
-regenerable `/tmp/glass-104-target` measured 6.2G and the temporary reports
-and logs were removed. No `/tmp/glass-*-target` directories remain; the
-project and ForgeBuild targets remain 4.0K each; `fuzz/target` is absent; and
-the filesystem reports 65G available at 67% use.
+regenerable `/tmp/glass-104-target` measured 6.2G and the later
+`/tmp/glass-104-coverage-target` measured 2.1G; their temporary reports and
+logs were removed. No `/tmp/glass-*-target` directories remain; the project
+and ForgeBuild targets remain 4.0K each; `fuzz/target` is absent; and the
+filesystem reports 65G available at 67% use.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this

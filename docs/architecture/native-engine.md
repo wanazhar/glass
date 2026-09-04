@@ -74,7 +74,10 @@ bounded inherited `white-space: pre-line`, `white-space: pre`,
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
 text paint, bounded fixed-cell `text-decoration:none|underline|overline|line-through`
-paint including distinct shorthand combinations, bounded
+paint including distinct shorthand combinations, bounded inherited
+`text-decoration-style:solid|dashed|dotted` presentation, bounded inherited
+`text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
+thickness-scaled integer dash/dot periods, bounded
 inherited ASCII `text-transform:none|uppercase|lowercase` layout, and
 bounded inherited non-negative fixed-pixel `word-spacing` across the supported
 fixed-cell whitespace modes, and
@@ -512,15 +515,17 @@ contract. Design `93034cbf`, implementation `81069084`, inherited-style
 coverage `b8ae87dc`, and local gate/cleanup evidence are recorded in
 `docs/plan/tasks/native-engine-109.md`. Remote CI remains pending because the
 branch is local-only.
-The active 110 design adds bounded inherited `text-decoration-thickness` in
-the fixed-pixel range `1px` through `4px`. Each selected decoration keeps the
-existing line y origin and paints a positive-y band through the same immutable
-`TextRun`; style patterns reuse the existing integer helper with periods scaled
-by thickness. Arbitrary lengths, font-derived values, centering, offsets,
-baseline metrics, fragment continuity, and full CSS conformance remain outside
-the contract. The design is recorded in
-`docs/plan/tasks/native-engine-110.md`; implementation and local gate evidence
-are pending. Remote CI remains pending because the branch is local-only.
+The completed 110 boundary adds bounded inherited `text-decoration-thickness`
+in the fixed-pixel range `1px` through `4px`. Each selected decoration keeps
+the existing line y origin and paints a positive-y band through the same
+immutable `TextRun`; style patterns reuse the existing integer helper with
+periods scaled by thickness, and replay clamps externally constructed values to
+the same 4px ceiling. Arbitrary lengths, font-derived values, centering,
+offsets, baseline metrics, fragment continuity, and full CSS conformance remain
+outside the contract. The contract is recorded in
+`docs/plan/tasks/native-engine-110.md`; implementation is `157da4ad`, and
+local gate and cleanup evidence will be recorded in the task file. Remote CI
+remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -1,7 +1,7 @@
 ---
 id: native-engine-104
 scope: glass-browser/native-engine/text-justify
-status: ready
+status: complete
 depends-on: [native-engine-103]
 ---
 
@@ -91,25 +91,49 @@ conformance remain outside the contract.
 - `crates/glass-browser/tests/native_engine.rs`
 - synchronized native-engine architecture, analysis, and plan docs
 
-## Verification
+## Implementation and verification
 
-The implementation gate will include:
+Implementation checkpoint: `d83b24e4`. The CSS cascade and DOM style walk now
+carry inherited `text-justify:auto|none|inter-word`; the existing layout owner
+gates separator expansion for both soft-wrap and explicit final-line flushes.
+`auto` and `inter-word` preserve the existing bounded ASCII-space algorithm,
+while `none` removes only the positive justification advance. No new crate,
+dependency, artifact schema, geometry owner, or browser-wide conformance claim
+was introduced.
 
-- parser, declaration, cascade, inheritance, inline precedence, and typed
-  unsupported-value diagnostics for `text-justify:auto|none|inter-word`;
-- explicit `none` suppression and `auto`/`inter-word` equivalence for ordinary
-  soft-wrap and `text-align-last:justify` final-line spacing;
-- regressions proving `text-justify` does not enable justification by itself,
-  does not change authored `word-spacing`, and does not alter preformatted,
-  pre-wrap, break-all, truncated, forced-break, or no-positive-remainder
-  behavior;
-- shared box/display-list/raster/viewport/overflow/scroll/capture/hit-test and
-  semantic/source-order artifact assertions;
-- `cargo fmt --all -- --check`, focused and full native integration tests,
-  feature-enabled library tests with the documented explicit stack, strict
-  all-feature and no-default-feature Clippy, warning-denied rustdoc, locked
-  binaries, paired package/dependency gates, fuzz checking,
-  documentation/release validators, and exact isolated-target cleanup.
+Local evidence:
+
+- parser/declaration/cascade/inheritance tests: 2/2;
+- focused text-justify integration: 1/1; unsupported-diagnostic regression:
+  1/1; full native integration: 141/141;
+- feature-enabled `glass-browser` library: 895 passed, 1 ignored, 0 failed
+  with `RUST_MIN_STACK=8388608`;
+- strict all-feature workspace Clippy passed in 13m21s; strict no-default-
+  feature `glass-browser` Clippy in 5m53s; warning-denied workspace rustdoc in
+  3m10s; locked `glass-dev --bins` compilation in 11m19s;
+- locked paired packages passed; the packaged dependency validator confirmed
+  `glass-dev` resolves exactly to `glass-browser` `0.3.14`. Cargo emitted the
+  known non-fatal yanked `chacha20 v0.10.1` lockfile warning;
+- locked fuzz fetch and offline all-target checking passed in 8m29s;
+- version, feature-parity, release-documentation, TUI-shortcut,
+  documentation-depth, documentation-coverage, reliability, public-adapter,
+  and Web IR validators passed: release docs 518 Markdown documents / 83
+  current / 57 previous-version hits / 586 semantic hits / 0 current-claim
+  failures; coverage 518/345/17/22; TUI 15/63; depth 93/19; reliability 6/4;
+  adapters 5; Web IR 8/8/11;
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+
+Remote CI remains pending because `main` is local-only. No browser-parity,
+release, registry-publication, or remote-certification claim is part of this
+task.
+
+## Cleanup
+
+After process and open-file checks found no active consumers, the exact
+regenerable `/tmp/glass-104-target` measured 6.2G and the temporary reports
+and logs were removed. No `/tmp/glass-*-target` directories remain; the
+project and ForgeBuild targets remain 4.0K each; `fuzz/target` is absent; and
+the filesystem reports 65G available at 67% use.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this

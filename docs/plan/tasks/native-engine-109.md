@@ -147,9 +147,24 @@ this local task.
 
 ## Cleanup
 
-The final cleanup is recorded after certification: the exact isolated target
-and report paths are measured, process/open-file checks are performed, and
-only validated regenerable outputs are removed with bounded same-filesystem
-deletion. The record includes deletion counts and post-removal filesystem
-state. Shared Cargo registries, toolchains, source, durable user data, and
-other projects' non-regenerable artifacts are retained.
+After all local gates completed on 2026-09-04 UTC, the exact isolated target
+`/tmp/glass-109-target` measured 12G. The final release-documentation report
+`/tmp/glass-109-release-documentation-final.json` measured 164K. The complete
+top-level `/tmp/glass-*` inventory measured 158 entries and about 12G; there
+were no `/tmp/forgebuild-*` entries.
+
+The inventory contained only `ubuntu`-owned regular files and directories:
+there were no symlinks or non-user-owned entries. The process check found no
+`cargo`, `rustc`, `rustdoc`, `clippy-driver`, `cargo-fuzz`, or
+`rust-analyzer` process, and `lsof -nP` found no open handle under the
+validated temporary paths. Each exact top-level Glass path was removed with
+bounded `find -P ... -xdev -depth -delete`: 158 top-level paths were selected,
+with 0 deletion failures. Shared Cargo registries, toolchains, source,
+durable user data, and other projects' non-regenerable artifacts were not
+removed.
+
+Post-removal checks found no top-level `/tmp/glass-*` or
+`/tmp/forgebuild-*` entries, no `/home/ubuntu/work/glass/fuzz/target`, an
+8.0K repository target containing only regenerable `.rustc_info.json` metadata,
+and a 4.0K ForgeBuild target. Filesystem usage is 113G used, 80G available,
+59% on `/`.

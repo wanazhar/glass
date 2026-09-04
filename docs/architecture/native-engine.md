@@ -29,6 +29,7 @@ bounded-flex-gap-family,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
+bounded-text-justification-control,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -438,6 +439,15 @@ is `docs/plan/tasks/native-engine-103.md`; design is `f261773f`, implementation
 is `be5757ae`, and complete local gate plus exact-target cleanup evidence is
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
+The active 104 boundary adds inherited `text-justify:auto|none|inter-word` to
+that same fixed-cell text-spacing owner. `none` suppresses the existing
+separator expansion for both ordinary `text-align:justify` soft wraps and
+explicit `text-align-last:justify` final lines; `auto` and `inter-word` retain
+the bounded ASCII-space algorithm. Inter-character spacing, shaping, bidi,
+language-specific line breaking, and full text conformance remain outside the
+contract. The active contract is `docs/plan/tasks/native-engine-104.md`;
+design, implementation, certification, and exact-target cleanup remain
+pending. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

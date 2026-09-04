@@ -2455,7 +2455,7 @@ fn parse_declarations_with_diagnostics(
             "flex-grow" => parse_flex_grow(value).is_some(),
             "flex-shrink" => parse_flex_shrink(value).is_some(),
             "flex-basis" => parse_flex_basis(value).is_some(),
-            "text-decoration" => parse_text_decoration(value).is_some(),
+            "text-decoration" | "text-decoration-line" => parse_text_decoration(value).is_some(),
             "text-decoration-color" => parse_color(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
@@ -2545,6 +2545,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "flex-shrink"
             | "flex-basis"
             | "text-decoration"
+            | "text-decoration-line"
             | "text-decoration-color"
             | "text-transform"
             | "font-weight"
@@ -2705,7 +2706,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     declarations.flex_basis = Some(parsed);
                 }
             }
-            "text-decoration" => {
+            "text-decoration" | "text-decoration-line" => {
                 declarations.text_decoration = parse_text_decoration(value);
             }
             "text-decoration-color" => {
@@ -4885,6 +4886,33 @@ mod tests {
     }
 
     #[test]
+    fn text_decoration_line_longhand_shares_ordered_line_state() {
+        let shorthand_then_longhand = parse_declarations(
+            "text-decoration: underline; text-decoration-line: overline line-through",
+        );
+        assert_eq!(
+            shorthand_then_longhand.text_decoration,
+            Some(TextDecorationValue::new(false, true, true))
+        );
+
+        let longhand_then_shorthand = parse_declarations(
+            "text-decoration-line: overline line-through; text-decoration: underline",
+        );
+        assert_eq!(
+            longhand_then_shorthand.text_decoration,
+            Some(TextDecorationValue::new(true, false, false))
+        );
+        assert_eq!(
+            parse_declarations("text-decoration-line: none").text_decoration,
+            Some(TextDecorationValue::none())
+        );
+        assert_eq!(
+            parse_declarations("text-decoration-line: underline underline").text_decoration,
+            None
+        );
+    }
+
+    #[test]
     fn text_decoration_color_is_local_and_uses_existing_color_values() {
         let blue = NativeColor {
             red: 0,
@@ -5256,7 +5284,7 @@ mod tests {
         );
 
         let document = NativeDocument::parse(
-            "<style>#parent { text-decoration: underline; } #clear { text-decoration: none; } #over { text-decoration: overline; } #through { text-decoration: line-through; } #invalid { text-decoration: blink; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='over'>Over</span><span id='through'>Through</span><span id='invalid'>Invalid</span></div>",
+            "<style>#parent { text-decoration: underline; } #clear { text-decoration: none; } #over { text-decoration: overline; } #through { text-decoration: line-through; } #longhand { text-decoration-line: overline line-through; } #invalid { text-decoration: blink; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='over'>Over</span><span id='through'>Through</span><span id='longhand'>Longhand</span><span id='invalid'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5265,6 +5293,7 @@ mod tests {
         let clear = document.resolve_target("id=clear").unwrap();
         let over = document.resolve_target("id=over").unwrap();
         let through = document.resolve_target("id=through").unwrap();
+        let longhand = document.resolve_target("id=longhand").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
         assert_eq!(
@@ -5288,6 +5317,12 @@ mod tests {
                 .computed_style_for_layout(through)
                 .text_decoration(),
             TextDecorationValue::new(false, false, true)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(longhand)
+                .text_decoration(),
+            TextDecorationValue::new(false, true, true)
         );
         assert_eq!(
             document

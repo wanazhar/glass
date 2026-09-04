@@ -159,3 +159,18 @@ Record the exact isolated target and report paths, sizes, process/open-file
 checks, deletion counts, and post-removal filesystem state after
 certification. Do not remove shared Cargo registries, toolchains, source,
 durable user data, or other projects' non-regenerable artifacts.
+
+Cleanup completed on 2026-09-04 UTC after all gates finished. The exact
+user-owned `/tmp/glass-*` and `/tmp/forgebuild-*` inventory contained 81 roots
+and 12,350,939,136 allocated bytes, including the isolated
+`/tmp/glass-112-target`, test-created TUI/tool/context directories, and the
+two release-documentation reports. The writer scan for Cargo, rustc, rustdoc,
+clippy, cargo-fuzz, and rust-analyzer was empty; recursive `lsof` checks found
+no open handles. The paths were removed with `find -P ... -xdev -depth
+-delete`, without following symlinks. The repository's user-owned
+`target/.rustc_info.json` (1,298 logical bytes; 4,096 allocated bytes) was
+removed separately, leaving the `target` directory empty. Total allocated
+space reclaimed was 12,350,943,232 bytes (11.50 GiB). A post-removal scan found
+no matching temporary roots or target artifacts; `/dev/sda1` reported 113G
+used, 80G available, and 59% utilization. Shared Cargo registries, toolchains,
+source, durable data, and other projects were not touched.

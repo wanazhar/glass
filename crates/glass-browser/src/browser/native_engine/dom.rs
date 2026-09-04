@@ -854,7 +854,7 @@ impl NativeDocument {
         let mut inherited_text_align = TextAlignValue::Left;
         let mut inherited_text_align_last = TextAlignLastValue::Auto;
         let mut inherited_text_justify = TextJustifyValue::Auto;
-        let mut inherited_text_decoration = TextDecorationValue::None;
+        let mut inherited_text_decoration = TextDecorationValue::none();
         let mut inherited_text_transform = TextTransformValue::None;
         let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_font_style = FontStyleValue::Normal;

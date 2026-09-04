@@ -294,13 +294,41 @@ impl NativeOrderValue {
     }
 }
 
+/// The bounded line decorations supported by the native renderer.
+///
+/// The bit representation keeps the computed value compact while preserving
+/// independent inheritance and painting state for each supported line.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum TextDecorationValue {
-    #[default]
-    None,
-    Underline,
-    Overline,
-    LineThrough,
+pub(crate) struct TextDecorationValue(u8);
+
+impl TextDecorationValue {
+    const UNDERLINE: u8 = 1 << 0;
+    const OVERLINE: u8 = 1 << 1;
+    const LINE_THROUGH: u8 = 1 << 2;
+
+    pub(crate) const fn none() -> Self {
+        Self(0)
+    }
+
+    pub(crate) const fn new(underline: bool, overline: bool, line_through: bool) -> Self {
+        Self(
+            (if underline { Self::UNDERLINE } else { 0 })
+                | (if overline { Self::OVERLINE } else { 0 })
+                | (if line_through { Self::LINE_THROUGH } else { 0 }),
+        )
+    }
+
+    pub(crate) const fn underline(self) -> bool {
+        self.0 & Self::UNDERLINE != 0
+    }
+
+    pub(crate) const fn overline(self) -> bool {
+        self.0 & Self::OVERLINE != 0
+    }
+
+    pub(crate) const fn line_through(self) -> bool {
+        self.0 & Self::LINE_THROUGH != 0
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3324,12 +3352,47 @@ fn parse_flex_shorthand(value: &str) -> Option<(u32, u32, FlexBasisValue)> {
 }
 
 fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
-    match value.to_ascii_lowercase().as_str() {
-        "none" => Some(TextDecorationValue::None),
-        "underline" => Some(TextDecorationValue::Underline),
-        "overline" => Some(TextDecorationValue::Overline),
-        "line-through" => Some(TextDecorationValue::LineThrough),
-        _ => None,
+    let mut bits = 0;
+    let mut token_count = 0;
+    let mut saw_none = false;
+
+    for token in value.split_ascii_whitespace() {
+        token_count += 1;
+        if token.eq_ignore_ascii_case("none") {
+            if token_count != 1 {
+                return None;
+            }
+            saw_none = true;
+            continue;
+        }
+        if saw_none {
+            return None;
+        }
+        let bit = if token.eq_ignore_ascii_case("underline") {
+            TextDecorationValue::UNDERLINE
+        } else if token.eq_ignore_ascii_case("overline") {
+            TextDecorationValue::OVERLINE
+        } else if token.eq_ignore_ascii_case("line-through") {
+            TextDecorationValue::LINE_THROUGH
+        } else {
+            return None;
+        };
+        if bits & bit != 0 {
+            return None;
+        }
+        bits |= bit;
+    }
+
+    if token_count == 0 {
+        None
+    } else if saw_none {
+        Some(TextDecorationValue::none())
+    } else {
+        Some(TextDecorationValue::new(
+            bits & TextDecorationValue::UNDERLINE != 0,
+            bits & TextDecorationValue::OVERLINE != 0,
+            bits & TextDecorationValue::LINE_THROUGH != 0,
+        ))
     }
 }
 
@@ -3706,7 +3769,7 @@ mod tests {
         assert_eq!(declarations.flex_basis, Some(FlexBasisValue::Length(40)));
         assert_eq!(
             declarations.text_decoration,
-            Some(TextDecorationValue::Underline)
+            Some(TextDecorationValue::new(true, false, false))
         );
         assert_eq!(declarations.text_indent, Some(12));
         assert_eq!(declarations.word_spacing, Some(12));
@@ -4745,25 +4808,41 @@ mod tests {
     }
 
     #[test]
-    fn text_decoration_parser_accepts_only_bounded_lines() {
+    fn text_decoration_parser_accepts_bounded_line_sets() {
         assert_eq!(
             parse_text_decoration("UNDERLINE"),
-            Some(TextDecorationValue::Underline)
+            Some(TextDecorationValue::new(true, false, false))
         );
         assert_eq!(
             parse_text_decoration("OVERLINE"),
-            Some(TextDecorationValue::Overline)
+            Some(TextDecorationValue::new(false, true, false))
         );
         assert_eq!(
             parse_text_decoration("line-through"),
-            Some(TextDecorationValue::LineThrough)
+            Some(TextDecorationValue::new(false, false, true))
         );
         assert_eq!(
             parse_text_decoration("none"),
-            Some(TextDecorationValue::None)
+            Some(TextDecorationValue::none())
         );
-        assert_eq!(parse_text_decoration("underline line-through"), None);
+        assert_eq!(
+            parse_text_decoration("underline overline line-through"),
+            Some(TextDecorationValue::new(true, true, true))
+        );
+        assert_eq!(
+            parse_text_decoration("LINE-THROUGH underline OVERLINE"),
+            Some(TextDecorationValue::new(true, true, true))
+        );
+        assert_eq!(
+            parse_text_decoration("underline overline"),
+            Some(TextDecorationValue::new(true, true, false))
+        );
+        assert_eq!(parse_text_decoration("underline underline"), None);
+        assert_eq!(parse_text_decoration("none underline"), None);
+        assert_eq!(parse_text_decoration("underline none"), None);
+        assert_eq!(parse_text_decoration("none none"), None);
         assert_eq!(parse_text_decoration("underline red"), None);
+        assert_eq!(parse_text_decoration(""), None);
     }
 
     #[test]
@@ -5062,7 +5141,7 @@ mod tests {
         let node = node("<div id='target'>Target</div>");
         assert_eq!(
             stylesheet.computed_for(&node).text_decoration(),
-            TextDecorationValue::LineThrough
+            TextDecorationValue::new(false, false, true)
         );
 
         let document = NativeDocument::parse(
@@ -5079,31 +5158,31 @@ mod tests {
 
         assert_eq!(
             document.computed_style_for_layout(parent).text_decoration(),
-            TextDecorationValue::Underline
+            TextDecorationValue::new(true, false, false)
         );
         assert_eq!(
             document.computed_style_for_layout(child).text_decoration(),
-            TextDecorationValue::Underline
+            TextDecorationValue::new(true, false, false)
         );
         assert_eq!(
             document.computed_style_for_layout(clear).text_decoration(),
-            TextDecorationValue::None
+            TextDecorationValue::none()
         );
         assert_eq!(
             document.computed_style_for_layout(over).text_decoration(),
-            TextDecorationValue::Overline
+            TextDecorationValue::new(false, true, false)
         );
         assert_eq!(
             document
                 .computed_style_for_layout(through)
                 .text_decoration(),
-            TextDecorationValue::LineThrough
+            TextDecorationValue::new(false, false, true)
         );
         assert_eq!(
             document
                 .computed_style_for_layout(invalid)
                 .text_decoration(),
-            TextDecorationValue::Underline
+            TextDecorationValue::new(true, false, false)
         );
     }
 

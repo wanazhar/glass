@@ -1,4 +1,4 @@
-use super::css::{NativeBorderRadius, NativeBorderStyle};
+use super::css::{NativeBorderRadius, NativeBorderStyle, NativeTextDecorationStyle};
 use super::error::NativeEngineError;
 use super::layout::{NativePoint, NativeRect, rounded_rect_contains};
 use super::paint::{MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList};
@@ -18,7 +18,7 @@ const ITALIC_ROW_SHIFTS: [u32; GLYPH_HEIGHT as usize] = [2, 2, 1, 1, 1, 0, 0];
 struct TextPaint {
     color: super::css::NativeColor,
     decoration_color: super::css::NativeColor,
-    decoration_style: NativeBorderStyle,
+    decoration_style: NativeTextDecorationStyle,
     decoration_thickness: u32,
     underline_offset: i32,
     underline: bool,
@@ -462,6 +462,22 @@ impl NativeSurface {
         }
     }
 
+    fn text_decoration_pattern_paints(
+        style: NativeTextDecorationStyle,
+        thickness: u32,
+        position: i64,
+    ) -> bool {
+        match style {
+            NativeTextDecorationStyle::Solid | NativeTextDecorationStyle::Double => true,
+            NativeTextDecorationStyle::Dashed => {
+                Self::border_pattern_paints(NativeBorderStyle::Dashed, thickness, position)
+            }
+            NativeTextDecorationStyle::Dotted => {
+                Self::border_pattern_paints(NativeBorderStyle::Dotted, thickness, position)
+            }
+        }
+    }
+
     fn clipped_bounds(
         &self,
         rect: NativeRect,
@@ -587,32 +603,46 @@ impl NativeSurface {
             ),
         ] {
             if enabled {
-                for thickness_offset in 0..paint.decoration_thickness {
-                    let y = line_y.saturating_add(i64::from(thickness_offset));
-                    if y < 0 || y >= i64::from(self.height) {
-                        continue;
-                    }
-                    for offset in 0..run_width {
-                        let x = origin_x.saturating_add(i64::from(offset));
-                        if x >= 0
-                            && x < i64::from(self.width)
-                            && Self::border_pattern_paints(
-                                paint.decoration_style,
-                                paint.decoration_thickness,
-                                i64::from(offset),
-                            )
-                            && clip.is_none_or(|clip| {
-                                clip.contains(NativePoint {
-                                    x: u32::try_from(x).unwrap_or(u32::MAX),
-                                    y: u32::try_from(y).unwrap_or(u32::MAX),
+                let band_count =
+                    if matches!(paint.decoration_style, NativeTextDecorationStyle::Double) {
+                        2
+                    } else {
+                        1
+                    };
+                for band_index in 0..band_count {
+                    let band_offset = if band_index == 0 {
+                        0
+                    } else {
+                        i64::from(paint.decoration_thickness).saturating_add(1)
+                    };
+                    let band_origin = line_y.saturating_add(band_offset);
+                    for thickness_offset in 0..paint.decoration_thickness {
+                        let y = band_origin.saturating_add(i64::from(thickness_offset));
+                        if y < 0 || y >= i64::from(self.height) {
+                            continue;
+                        }
+                        for offset in 0..run_width {
+                            let x = origin_x.saturating_add(i64::from(offset));
+                            if x >= 0
+                                && x < i64::from(self.width)
+                                && Self::text_decoration_pattern_paints(
+                                    paint.decoration_style,
+                                    paint.decoration_thickness,
+                                    i64::from(offset),
+                                )
+                                && clip.is_none_or(|clip| {
+                                    clip.contains(NativePoint {
+                                        x: u32::try_from(x).unwrap_or(u32::MAX),
+                                        y: u32::try_from(y).unwrap_or(u32::MAX),
+                                    })
                                 })
-                            })
-                        {
-                            self.blend_pixel(
-                                u32::try_from(x).unwrap_or(u32::MAX),
-                                u32::try_from(y).unwrap_or(u32::MAX),
-                                paint.decoration_color,
-                            );
+                            {
+                                self.blend_pixel(
+                                    u32::try_from(x).unwrap_or(u32::MAX),
+                                    u32::try_from(y).unwrap_or(u32::MAX),
+                                    paint.decoration_color,
+                                );
+                            }
                         }
                     }
                 }
@@ -824,7 +854,8 @@ mod tests {
     use super::*;
     use crate::browser::native_engine::{
         NativeBorderPaint, NativeBorderPaintSide, NativeBorderStyle, NativeColor,
-        NativeDisplayCommand, NativeDisplayList, NativeDocument, NativePoint, Viewport,
+        NativeDisplayCommand, NativeDisplayList, NativeDocument, NativePoint,
+        NativeTextDecorationStyle, Viewport,
     };
     use std::io::Cursor;
 
@@ -1045,7 +1076,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::RED,
                     decoration_color: NativeColor::RED,
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1084,7 +1115,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1104,7 +1135,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1143,7 +1174,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1163,7 +1194,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1193,7 +1224,7 @@ mod tests {
                         blue: 0,
                         alpha: 128,
                     },
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1245,7 +1276,7 @@ mod tests {
                         blue: 0,
                         alpha: 128,
                     },
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: true,
@@ -1290,7 +1321,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1315,7 +1346,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::RED,
                     decoration_color: NativeColor::RED,
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1345,7 +1376,7 @@ mod tests {
                         blue: 0,
                         alpha: 128,
                     },
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: true,
@@ -1688,7 +1719,7 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
-                    decoration_style: NativeBorderStyle::Solid,
+                    decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1722,7 +1753,7 @@ mod tests {
                 truncated: false,
                 color: NativeColor::BLACK,
                 decoration_color: NativeColor::BLACK,
-                decoration_style: NativeBorderStyle::Solid,
+                decoration_style: NativeTextDecorationStyle::Solid,
                 decoration_thickness: u32::MAX,
                 underline_offset: 0,
                 underline: true,
@@ -1755,7 +1786,7 @@ mod tests {
                 truncated: false,
                 color: NativeColor::BLACK,
                 decoration_color: NativeColor::BLACK,
-                decoration_style: NativeBorderStyle::Solid,
+                decoration_style: NativeTextDecorationStyle::Solid,
                 decoration_thickness: 1,
                 underline_offset: i32::MAX,
                 underline: true,
@@ -1776,6 +1807,56 @@ mod tests {
         assert_eq!(surface.pixel(0, 7), Some([0, 0, 0, 0]));
         assert_eq!(surface.pixel(0, 10), Some([0, 0, 0, 0]));
         assert_eq!(surface.pixel(0, 11), Some([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn surface_replays_double_decoration_as_two_thick_bands() {
+        let node_id = NativeDocument::empty().root();
+        let text_run =
+            |origin: NativePoint, underline_offset: i32, line| NativeDisplayCommand::TextRun {
+                node_id,
+                origin,
+                text: " ".into(),
+                truncated: false,
+                color: NativeColor::BLACK,
+                decoration_color: NativeColor::BLACK,
+                decoration_style: NativeTextDecorationStyle::Double,
+                decoration_thickness: 2,
+                underline_offset,
+                underline: line == "underline",
+                overline: line == "overline",
+                line_through: line == "line-through",
+                bold: false,
+                italic: false,
+                word_spacing: 0,
+                letter_spacing: 0,
+                justify_spacing: 0,
+                clip: None,
+            };
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                text_run(NativePoint { x: 0, y: 10 }, 0, "overline"),
+                text_run(NativePoint { x: 0, y: 30 }, 0, "line-through"),
+                text_run(NativePoint { x: 0, y: 50 }, -2, "underline"),
+            ],
+            8,
+            64,
+        );
+        let surface = list.rasterize().unwrap();
+
+        for y in [9, 10, 12, 13, 33, 34, 36, 37, 55, 56, 58, 59] {
+            assert_eq!(surface.pixel(0, y), Some([0, 0, 0, 255]), "painted row {y}");
+        }
+        for y in [11, 35, 57] {
+            assert_eq!(
+                surface.pixel(0, y),
+                Some([255, 255, 255, 255]),
+                "gap row {y}"
+            );
+        }
     }
 
     #[test]

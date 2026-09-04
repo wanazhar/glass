@@ -1,6 +1,7 @@
 use super::config::MAX_NATIVE_NODES;
 use super::css::{
     FontStyleValue, FontWeightValue, NativeBorderRadius, NativeBorderStyle, NativeColor,
+    NativeTextDecorationStyle,
 };
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
@@ -77,7 +78,7 @@ pub enum NativeDisplayCommand {
         truncated: bool,
         color: NativeColor,
         decoration_color: NativeColor,
-        decoration_style: NativeBorderStyle,
+        decoration_style: NativeTextDecorationStyle,
         decoration_thickness: u32,
         underline_offset: i32,
         underline: bool,

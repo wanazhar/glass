@@ -9,8 +9,8 @@ use super::raster::NativeSurface;
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
-        DirectionValue, FontStyleValue, FontWeightValue, NativeBorderStyle, NativeColor,
-        NativeComputedStyle, NativeInheritedStyle, TextAlignLastValue, TextAlignValue,
+        DirectionValue, FontStyleValue, FontWeightValue, NativeColor, NativeComputedStyle,
+        NativeInheritedStyle, NativeTextDecorationStyle, TextAlignLastValue, TextAlignValue,
         TextDecorationValue, TextJustifyValue, TextTransformValue, VerticalAlignValue,
         WhiteSpaceValue, WordBreakValue,
     },
@@ -856,7 +856,7 @@ impl NativeDocument {
         let mut inherited_text_align_last = TextAlignLastValue::Auto;
         let mut inherited_text_justify = TextJustifyValue::Auto;
         let mut inherited_text_decoration = TextDecorationValue::none();
-        let mut inherited_text_decoration_style = NativeBorderStyle::Solid;
+        let mut inherited_text_decoration_style = NativeTextDecorationStyle::Solid;
         let mut inherited_text_decoration_thickness = 1;
         let mut inherited_text_underline_offset = 0;
         let mut inherited_text_transform = TextTransformValue::None;

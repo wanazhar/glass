@@ -18,6 +18,8 @@ const ITALIC_ROW_SHIFTS: [u32; GLYPH_HEIGHT as usize] = [2, 2, 1, 1, 1, 0, 0];
 struct TextPaint {
     color: super::css::NativeColor,
     underline: bool,
+    overline: bool,
+    line_through: bool,
     bold: bool,
     italic: bool,
     word_spacing: u32,
@@ -157,6 +159,8 @@ impl NativeSurface {
                     text,
                     color,
                     underline,
+                    overline,
+                    line_through,
                     bold,
                     italic,
                     word_spacing,
@@ -181,6 +185,8 @@ impl NativeSurface {
                         TextPaint {
                             color: *color,
                             underline: *underline,
+                            overline: *overline,
+                            line_through: *line_through,
                             bold: *bold,
                             italic: *italic,
                             word_spacing: *word_spacing,
@@ -552,9 +558,15 @@ impl NativeSurface {
                     0
                 });
         }
-        if paint.underline {
-            let underline_y = origin_y.saturating_add(i64::from(GLYPH_HEIGHT));
-            if underline_y >= 0 && underline_y < i64::from(self.height) {
+        for (enabled, line_y) in [
+            (paint.overline, origin_y.saturating_sub(1)),
+            (paint.line_through, origin_y.saturating_add(3)),
+            (
+                paint.underline,
+                origin_y.saturating_add(i64::from(GLYPH_HEIGHT)),
+            ),
+        ] {
+            if enabled && line_y >= 0 && line_y < i64::from(self.height) {
                 for offset in 0..run_width {
                     let x = origin_x.saturating_add(i64::from(offset));
                     if x >= 0
@@ -562,13 +574,13 @@ impl NativeSurface {
                         && clip.is_none_or(|clip| {
                             clip.contains(NativePoint {
                                 x: u32::try_from(x).unwrap_or(u32::MAX),
-                                y: u32::try_from(underline_y).unwrap_or(u32::MAX),
+                                y: u32::try_from(line_y).unwrap_or(u32::MAX),
                             })
                         })
                     {
                         self.blend_pixel(
                             u32::try_from(x).unwrap_or(u32::MAX),
-                            u32::try_from(underline_y).unwrap_or(u32::MAX),
+                            u32::try_from(line_y).unwrap_or(u32::MAX),
                             paint.color,
                         );
                     }
@@ -1002,6 +1014,8 @@ mod tests {
                     truncated: false,
                     color: NativeColor::RED,
                     underline: false,
+                    overline: false,
+                    line_through: false,
                     bold: false,
                     italic: false,
                     word_spacing: 0,
@@ -1035,6 +1049,8 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     underline: false,
+                    overline: false,
+                    line_through: false,
                     bold: false,
                     italic: false,
                     word_spacing: 0,
@@ -1049,6 +1065,8 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     underline: false,
+                    overline: false,
+                    line_through: false,
                     bold: true,
                     italic: false,
                     word_spacing: 0,
@@ -1082,6 +1100,8 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     underline: false,
+                    overline: false,
+                    line_through: false,
                     bold: false,
                     italic: false,
                     word_spacing: 0,
@@ -1096,6 +1116,8 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     underline: false,
+                    overline: false,
+                    line_through: false,
                     bold: false,
                     italic: true,
                     word_spacing: 0,
@@ -1115,6 +1137,8 @@ mod tests {
                         alpha: 128,
                     },
                     underline: false,
+                    overline: false,
+                    line_through: false,
                     bold: true,
                     italic: true,
                     word_spacing: 0,
@@ -1156,6 +1180,8 @@ mod tests {
                         alpha: 128,
                     },
                     underline: true,
+                    overline: false,
+                    line_through: false,
                     bold: false,
                     italic: false,
                     word_spacing: 0,
@@ -1178,6 +1204,89 @@ mod tests {
         assert_eq!(surface.pixel(2, 7), Some([127, 191, 127, 255]));
         assert_eq!(surface.pixel(5, 7), Some([127, 191, 127, 255]));
         assert_eq!(surface.pixel(6, 7), Some([255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn surface_draws_overline_and_line_through_with_scroll_translation() {
+        let root = NativeDocument::empty().root();
+        let mut list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: root,
+                    origin: NativePoint { x: 1, y: 10 },
+                    text: "A?".into(),
+                    truncated: false,
+                    color: NativeColor::BLACK,
+                    underline: false,
+                    overline: true,
+                    line_through: false,
+                    bold: false,
+                    italic: false,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    justify_spacing: 0,
+                    clip: Some(NativeRect {
+                        x: 2,
+                        y: 9,
+                        width: 4,
+                        height: 1,
+                    }),
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: root,
+                    origin: NativePoint { x: 1, y: 20 },
+                    text: "A?".into(),
+                    truncated: false,
+                    color: NativeColor::RED,
+                    underline: false,
+                    overline: false,
+                    line_through: true,
+                    bold: false,
+                    italic: false,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    justify_spacing: 0,
+                    clip: None,
+                },
+                NativeDisplayCommand::TextRun {
+                    node_id: root,
+                    origin: NativePoint { x: 1, y: 30 },
+                    text: "A?".into(),
+                    truncated: false,
+                    color: NativeColor {
+                        red: 0,
+                        green: 128,
+                        blue: 0,
+                        alpha: 128,
+                    },
+                    underline: true,
+                    overline: false,
+                    line_through: false,
+                    bold: false,
+                    italic: false,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    justify_spacing: 0,
+                    clip: None,
+                },
+            ],
+            16,
+            36,
+        );
+        list.scroll_offset = NativePoint { x: 0, y: 5 };
+
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(1, 4), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(2, 4), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(5, 4), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(6, 4), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(12, 18), Some([255, 0, 0, 255]));
+        assert_eq!(surface.pixel(13, 18), Some([255, 255, 255, 255]));
+        assert_eq!(surface.pixel(12, 32), Some([127, 191, 127, 255]));
     }
 
     #[test]
@@ -1493,6 +1602,8 @@ mod tests {
                     truncated: false,
                     color: NativeColor::BLACK,
                     underline: false,
+                    overline: false,
+                    line_through: false,
                     bold: false,
                     italic: false,
                     word_spacing: 0,

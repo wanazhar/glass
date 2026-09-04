@@ -1175,6 +1175,83 @@ fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
 }
 
 #[test]
+fn native_text_decoration_line_styles_share_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; } #plain { text-decoration:none; } #over { text-decoration:overline; } #through { text-decoration:line-through; } #under { text-decoration:underline; }</style><div id='plain' class='line'>A</div><div id='over' class='line'>A</div><div id='through' class='line'>A</div><div id='under' class='line'>A</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 80,
+        device_scale_factor_milli: 1000,
+    };
+    let plain = document.resolve_target("id=plain").unwrap();
+    let over = document.resolve_target("id=over").unwrap();
+    let through = document.resolve_target("id=through").unwrap();
+    let under = document.resolve_target("id=under").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let runs_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| {
+                (
+                    run.origin,
+                    run.text.as_str(),
+                    run.truncated,
+                    run.justify_spacing,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        runs_for(plain),
+        vec![(NativePoint { x: 0, y: 0 }, "A", false, 0)]
+    );
+    assert_eq!(
+        runs_for(over),
+        vec![(NativePoint { x: 0, y: 20 }, "A", false, 0)]
+    );
+    assert_eq!(
+        runs_for(through),
+        vec![(NativePoint { x: 0, y: 40 }, "A", false, 0)]
+    );
+    assert_eq!(
+        runs_for(under),
+        vec![(NativePoint { x: 0, y: 60 }, "A", false, 0)]
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let decoration_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                underline,
+                overline,
+                line_through,
+                ..
+            } if *command_node_id == node_id => Some((*underline, *overline, *line_through)),
+            _ => None,
+        })
+    };
+    assert_eq!(decoration_for(plain), Some((false, false, false)));
+    assert_eq!(decoration_for(over), Some((false, true, false)));
+    assert_eq!(decoration_for(through), Some((false, false, true)));
+    assert_eq!(decoration_for(under), Some((true, false, false)));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(5, 0), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(5, 19), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 43), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 67), Some([0, 0, 0, 255]));
+    assert_eq!(surface.pixel(6, 19), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(6, 43), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(6, 67), Some([255, 255, 255, 255]));
+}
+
+#[test]
 fn native_text_transform_aligns_layout_and_display_with_source_text_preserved() {
     let document = NativeDocument::parse(
         "<style>#upper { display:block; width:80px; text-transform:uppercase; } #lower { display:block; width:80px; text-transform:lowercase; } #parent { display:block; width:80px; text-transform:uppercase; } #clear { text-transform:none; } #contents { display:contents; text-transform:lowercase; } #pre { display:block; width:80px; white-space:pre-wrap; text-transform:uppercase; } #nowrap { display:block; text-transform:uppercase; white-space:nowrap; }</style><button id='upper'>aBc dEf</button><div id='lower'>aBc dEf</div><div id='parent'>One <span id='clear'>aBc</span> <span id='contents'><span id='nested'>aBc</span></span></div><div id='pre'>aB\ncD</div><div id='nowrap'>aB cD</div>",
@@ -9252,7 +9329,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: overline; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

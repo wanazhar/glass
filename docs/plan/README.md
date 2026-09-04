@@ -951,6 +951,17 @@ consumers remain unchanged. Implementation is `3bdd3b54`; final local gate and
 cleanup evidence are recorded in the task file. Remote CI remains pending; the
 checkout is local-only.
 
+The next dependency-ordered [native-engine-113](tasks/native-engine-113.md)
+design is recorded as a design-ready checkpoint. It adds inherited
+`text-decoration-style:wavy` through the existing dedicated text-decoration
+style type and immutable text/raster path: a continuous eight-pixel wave with
+the fixed phase `[0,1,2,1,0,-1,-2,-1]`, applying the resolved thickness at each
+x column. Run-origin phase resets, underline offset, line origins, clipping,
+scrolling, opacity, capture, hit testing, and semantic/source order remain
+shared; CSS metric centering, fragment continuity, and browser-wide conformance
+remain outside the contract. Implementation, certification, cleanup, and
+remote CI remain pending; the checkout is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

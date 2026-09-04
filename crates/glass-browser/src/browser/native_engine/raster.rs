@@ -20,6 +20,7 @@ struct TextPaint {
     decoration_color: super::css::NativeColor,
     decoration_style: NativeBorderStyle,
     decoration_thickness: u32,
+    underline_offset: i32,
     underline: bool,
     overline: bool,
     line_through: bool,
@@ -164,6 +165,7 @@ impl NativeSurface {
                     decoration_color,
                     decoration_style,
                     decoration_thickness,
+                    underline_offset,
                     underline,
                     overline,
                     line_through,
@@ -187,6 +189,10 @@ impl NativeSurface {
                     };
                     let decoration_thickness = (*decoration_thickness)
                         .min(super::css::MAX_NATIVE_TEXT_DECORATION_THICKNESS);
+                    let underline_offset = (*underline_offset).clamp(
+                        super::css::MIN_NATIVE_TEXT_UNDERLINE_OFFSET,
+                        super::css::MAX_NATIVE_TEXT_UNDERLINE_OFFSET,
+                    );
                     Self::current_surface_mut(&mut surfaces)?.draw_text(
                         *origin,
                         text,
@@ -195,6 +201,7 @@ impl NativeSurface {
                             decoration_color: *decoration_color,
                             decoration_style: *decoration_style,
                             decoration_thickness,
+                            underline_offset,
                             underline: *underline,
                             overline: *overline,
                             line_through: *line_through,
@@ -574,7 +581,9 @@ impl NativeSurface {
             (paint.line_through, origin_y.saturating_add(3)),
             (
                 paint.underline,
-                origin_y.saturating_add(i64::from(GLYPH_HEIGHT)),
+                origin_y
+                    .saturating_add(i64::from(GLYPH_HEIGHT))
+                    .saturating_add(i64::from(paint.underline_offset)),
             ),
         ] {
             if enabled {
@@ -1038,6 +1047,7 @@ mod tests {
                     decoration_color: NativeColor::RED,
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1076,6 +1086,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1095,6 +1106,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1133,6 +1145,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1152,6 +1165,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1181,6 +1195,7 @@ mod tests {
                     },
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1232,6 +1247,7 @@ mod tests {
                     },
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: true,
                     overline: false,
                     line_through: false,
@@ -1276,6 +1292,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: false,
                     overline: true,
                     line_through: false,
@@ -1300,6 +1317,7 @@ mod tests {
                     decoration_color: NativeColor::RED,
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: false,
                     overline: false,
                     line_through: true,
@@ -1329,6 +1347,7 @@ mod tests {
                     },
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: true,
                     overline: false,
                     line_through: false,
@@ -1671,6 +1690,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
                     decoration_thickness: 1,
+                    underline_offset: 0,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1704,6 +1724,7 @@ mod tests {
                 decoration_color: NativeColor::BLACK,
                 decoration_style: NativeBorderStyle::Solid,
                 decoration_thickness: u32::MAX,
+                underline_offset: 0,
                 underline: true,
                 overline: false,
                 line_through: false,
@@ -1722,6 +1743,39 @@ mod tests {
         assert_eq!(surface.pixel(0, 7), Some([0, 0, 0, 255]));
         assert_eq!(surface.pixel(0, 10), Some([0, 0, 0, 255]));
         assert_eq!(surface.pixel(0, 11), Some([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn surface_clamps_untrusted_underline_offset() {
+        let list = display_list(
+            vec![NativeDisplayCommand::TextRun {
+                node_id: NativeDocument::empty().root(),
+                origin: NativePoint { x: 0, y: 0 },
+                text: " ".into(),
+                truncated: false,
+                color: NativeColor::BLACK,
+                decoration_color: NativeColor::BLACK,
+                decoration_style: NativeBorderStyle::Solid,
+                decoration_thickness: 1,
+                underline_offset: i32::MAX,
+                underline: true,
+                overline: false,
+                line_through: false,
+                bold: false,
+                italic: false,
+                word_spacing: 0,
+                letter_spacing: 0,
+                justify_spacing: 0,
+                clip: None,
+            }],
+            8,
+            12,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(0, 7), Some([0, 0, 0, 0]));
+        assert_eq!(surface.pixel(0, 10), Some([0, 0, 0, 0]));
+        assert_eq!(surface.pixel(0, 11), Some([0, 0, 0, 255]));
     }
 
     #[test]

@@ -858,6 +858,7 @@ impl NativeDocument {
         let mut inherited_text_decoration = TextDecorationValue::none();
         let mut inherited_text_decoration_style = NativeBorderStyle::Solid;
         let mut inherited_text_decoration_thickness = 1;
+        let mut inherited_text_underline_offset = 0;
         let mut inherited_text_transform = TextTransformValue::None;
         let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_font_style = FontStyleValue::Normal;
@@ -883,6 +884,7 @@ impl NativeDocument {
                     text_decoration: inherited_text_decoration,
                     text_decoration_style: inherited_text_decoration_style,
                     text_decoration_thickness: inherited_text_decoration_thickness,
+                    text_underline_offset: inherited_text_underline_offset,
                     text_transform: inherited_text_transform,
                     font_weight: inherited_font_weight,
                     font_style: inherited_font_style,
@@ -902,6 +904,7 @@ impl NativeDocument {
             inherited_text_decoration = style.text_decoration();
             inherited_text_decoration_style = style.text_decoration_style();
             inherited_text_decoration_thickness = style.text_decoration_thickness();
+            inherited_text_underline_offset = style.text_underline_offset();
             inherited_text_transform = style.text_transform();
             inherited_font_weight = style.font_weight();
             inherited_font_style = style.font_style();

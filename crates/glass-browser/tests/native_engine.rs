@@ -1597,6 +1597,134 @@ fn native_text_decoration_thickness_shares_style_and_line_geometry() {
 }
 
 #[test]
+fn native_text_underline_offset_moves_only_underlines_through_shared_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline overline line-through; text-decoration-style:dashed; text-decoration-thickness:2px; } #negative { text-underline-offset:-2px; } #zero { text-underline-offset:0px; } #positive { text-underline-offset:3px; } #parent { text-decoration-style:dotted; text-underline-offset:-3px; }</style><div id='negative' class='line'>AB</div><div id='zero' class='line'>AB</div><div id='positive' class='line'>AB</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override' style='text-underline-offset:2px'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 100,
+        device_scale_factor_milli: 1000,
+    };
+    let negative = document.resolve_target("id=negative").unwrap();
+    let zero = document.resolve_target("id=zero").unwrap();
+    let positive = document.resolve_target("id=positive").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let override_node = document.resolve_target("id=override").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let text_command = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                decoration_style,
+                decoration_thickness,
+                underline_offset,
+                underline,
+                overline,
+                line_through,
+                ..
+            } if *command_node_id == node_id => Some((
+                *origin,
+                *decoration_style,
+                *decoration_thickness,
+                *underline_offset,
+                *underline,
+                *overline,
+                *line_through,
+            )),
+            _ => None,
+        })
+    };
+    let negative_command = text_command(negative).expect("negative-offset text command");
+    let zero_command = text_command(zero).expect("zero-offset text command");
+    let positive_command = text_command(positive).expect("positive-offset text command");
+    let inherited_command = text_command(inherited).expect("inherited-offset text command");
+    let override_command = text_command(override_node).expect("override-offset text command");
+
+    assert_eq!(negative_command.1, NativeBorderStyle::Dashed);
+    assert_eq!(zero_command.1, NativeBorderStyle::Dashed);
+    assert_eq!(positive_command.1, NativeBorderStyle::Dashed);
+    assert_eq!(inherited_command.1, NativeBorderStyle::Dotted);
+    assert_eq!(override_command.1, NativeBorderStyle::Dotted);
+    assert_eq!(negative_command.2, 2);
+    assert_eq!(zero_command.2, 2);
+    assert_eq!(positive_command.2, 2);
+    assert_eq!(inherited_command.2, 2);
+    assert_eq!(override_command.2, 2);
+    assert_eq!(negative_command.3, -2);
+    assert_eq!(zero_command.3, 0);
+    assert_eq!(positive_command.3, 3);
+    assert_eq!(inherited_command.3, -3);
+    assert_eq!(override_command.3, 2);
+    for command in [
+        negative_command,
+        zero_command,
+        positive_command,
+        inherited_command,
+        override_command,
+    ] {
+        assert!(command.4 && command.5 && command.6);
+    }
+    assert_eq!(
+        layout.box_for(negative),
+        layout.box_for(zero).map(|rect| NativeRect {
+            y: rect.y.saturating_sub(20),
+            ..rect
+        })
+    );
+    assert_eq!(
+        layout.box_for(positive),
+        layout.box_for(zero).map(|rect| NativeRect {
+            y: rect.y.saturating_add(20),
+            ..rect
+        })
+    );
+
+    let surface = list.rasterize().unwrap();
+    let line_pixel =
+        |command: (NativePoint, NativeBorderStyle, u32, i32, bool, bool, bool), x: u32, y: u32| {
+            surface.pixel(command.0.x.saturating_add(x), y)
+        };
+    for y in [5, 6] {
+        assert_eq!(line_pixel(negative_command, 2, y), Some([0, 0, 0, 255]));
+    }
+    for y in [27, 28] {
+        assert_eq!(line_pixel(zero_command, 2, y), Some([0, 0, 0, 255]));
+    }
+    for y in [50, 51] {
+        assert_eq!(line_pixel(positive_command, 2, y), Some([0, 0, 0, 255]));
+    }
+    for y in [19, 23, 39, 43] {
+        assert_eq!(surface.pixel(5, y), Some([0, 0, 0, 255]));
+    }
+    for (x, y) in [(7, 4), (0, 7), (5, 26), (0, 29), (0, 49), (0, 52)] {
+        assert_eq!(
+            surface.pixel(x, y),
+            Some([255, 255, 255, 255]),
+            "gap at x={x}, y={y}"
+        );
+    }
+    assert_eq!(
+        surface.pixel(inherited_command.0.x, 64),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(override_command.0.x, 69),
+        Some([0, 0, 0, 255])
+    );
+
+    let mut scrolled_list = list.clone();
+    scrolled_list.scroll_offset = NativePoint { x: 0, y: 10 };
+    let scrolled_surface = scrolled_list.rasterize().unwrap();
+    assert_eq!(scrolled_surface.pixel(0, 17), Some([0, 0, 0, 255]));
+    assert_eq!(scrolled_surface.pixel(0, 40), Some([0, 0, 0, 255]));
+}
+
+#[test]
 fn native_text_transform_aligns_layout_and_display_with_source_text_preserved() {
     let document = NativeDocument::parse(
         "<style>#upper { display:block; width:80px; text-transform:uppercase; } #lower { display:block; width:80px; text-transform:lowercase; } #parent { display:block; width:80px; text-transform:uppercase; } #clear { text-transform:none; } #contents { display:contents; text-transform:lowercase; } #pre { display:block; width:80px; white-space:pre-wrap; text-transform:uppercase; } #nowrap { display:block; text-transform:uppercase; white-space:nowrap; }</style><button id='upper'>aBc dEf</button><div id='lower'>aBc dEf</div><div id='parent'>One <span id='clear'>aBc</span> <span id='contents'><span id='nested'>aBc</span></span></div><div id='pre'>aB\ncD</div><div id='nowrap'>aB cD</div>",
@@ -9674,7 +9802,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-style: wavy; text-decoration-thickness: 5px; text-decoration-color: currentColor; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-style: wavy; text-decoration-thickness: 5px; text-underline-offset: 5px; text-decoration-color: currentColor; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -9749,6 +9877,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-decoration-thickness"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-underline-offset"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

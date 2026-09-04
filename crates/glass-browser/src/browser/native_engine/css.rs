@@ -9,6 +9,8 @@ pub(crate) const MAX_NATIVE_FLEX_ITEM_ORDER: i32 = 1024;
 pub(crate) const MAX_NATIVE_FLEX_GROW: u32 = 1024;
 pub(crate) const MAX_NATIVE_FLEX_SHRINK: u32 = 1024;
 pub(crate) const MAX_NATIVE_TEXT_DECORATION_THICKNESS: u32 = 4;
+pub(crate) const MIN_NATIVE_TEXT_UNDERLINE_OFFSET: i32 = -4;
+pub(crate) const MAX_NATIVE_TEXT_UNDERLINE_OFFSET: i32 = 4;
 const MAX_SELECTOR_BYTES: usize = 256;
 const MAX_SELECTOR_PARTS: usize = 8;
 
@@ -415,6 +417,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_decoration: TextDecorationValue,
     pub(crate) text_decoration_style: NativeBorderStyle,
     pub(crate) text_decoration_thickness: u32,
+    pub(crate) text_underline_offset: i32,
     pub(crate) text_transform: TextTransformValue,
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
@@ -437,6 +440,7 @@ impl Default for NativeInheritedStyle {
             text_decoration: TextDecorationValue::none(),
             text_decoration_style: NativeBorderStyle::Solid,
             text_decoration_thickness: 1,
+            text_underline_offset: 0,
             text_transform: TextTransformValue::None,
             font_weight: FontWeightValue::Normal,
             font_style: FontStyleValue::Normal,
@@ -575,6 +579,7 @@ pub(crate) struct NativeComputedStyle {
     text_decoration: TextDecorationValue,
     text_decoration_style: NativeBorderStyle,
     text_decoration_thickness: u32,
+    text_underline_offset: i32,
     text_decoration_color: Option<NativeColor>,
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
@@ -692,6 +697,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_decoration_thickness(self) -> u32 {
         self.text_decoration_thickness
+    }
+
+    pub(crate) const fn text_underline_offset(self) -> i32 {
+        self.text_underline_offset
     }
 
     pub(crate) const fn text_decoration_color(self) -> Option<NativeColor> {
@@ -907,6 +916,7 @@ impl NativeStylesheet {
         let mut text_decoration = None;
         let mut text_decoration_style = None;
         let mut text_decoration_thickness = None;
+        let mut text_underline_offset = None;
         let mut text_decoration_color = None;
         let mut text_transform = None;
         let mut font_weight = None;
@@ -1054,6 +1064,21 @@ impl NativeStylesheet {
                 )
             {
                 text_decoration_thickness = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_underline_offset
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    text_underline_offset,
+                )
+            {
+                text_underline_offset = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1554,6 +1579,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_underline_offset
+                && wins(u16::MAX, usize::MAX, true, text_underline_offset)
+            {
+                text_underline_offset = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.text_decoration_color
                 && wins(u16::MAX, usize::MAX, true, text_decoration_color)
             {
@@ -1953,6 +1988,8 @@ impl NativeStylesheet {
                 .map_or(inherited.text_decoration_style, |value| value.value),
             text_decoration_thickness: text_decoration_thickness
                 .map_or(inherited.text_decoration_thickness, |value| value.value),
+            text_underline_offset: text_underline_offset
+                .map_or(inherited.text_underline_offset, |value| value.value),
             text_decoration_color: text_decoration_color.map(|value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
@@ -2209,6 +2246,7 @@ struct NativeDeclarations {
     text_decoration: Option<TextDecorationValue>,
     text_decoration_style: Option<NativeBorderStyle>,
     text_decoration_thickness: Option<u32>,
+    text_underline_offset: Option<i32>,
     text_decoration_color: Option<NativeColor>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
@@ -2402,6 +2440,7 @@ fn parse_source(
             || declarations.text_decoration.is_some()
             || declarations.text_decoration_style.is_some()
             || declarations.text_decoration_thickness.is_some()
+            || declarations.text_underline_offset.is_some()
             || declarations.text_decoration_color.is_some()
             || declarations.text_transform.is_some()
             || declarations.font_weight.is_some()
@@ -2556,6 +2595,7 @@ fn parse_declarations_with_diagnostics(
             "text-decoration" | "text-decoration-line" => parse_text_decoration(value).is_some(),
             "text-decoration-style" => parse_border_style(value).is_some(),
             "text-decoration-thickness" => parse_text_decoration_thickness(value).is_some(),
+            "text-underline-offset" => parse_text_underline_offset(value).is_some(),
             "text-decoration-color" => parse_color(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
@@ -2648,6 +2688,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-decoration-line"
             | "text-decoration-style"
             | "text-decoration-thickness"
+            | "text-underline-offset"
             | "text-decoration-color"
             | "text-transform"
             | "font-weight"
@@ -2816,6 +2857,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-decoration-thickness" => {
                 declarations.text_decoration_thickness = parse_text_decoration_thickness(value);
+            }
+            "text-underline-offset" => {
+                declarations.text_underline_offset = parse_text_underline_offset(value);
             }
             "text-decoration-color" => {
                 declarations.text_decoration_color = parse_color(value);
@@ -3078,6 +3122,23 @@ fn parse_border_style(value: &str) -> Option<NativeBorderStyle> {
 fn parse_text_decoration_thickness(value: &str) -> Option<u32> {
     parse_dimension(value)
         .filter(|value| (1..=MAX_NATIVE_TEXT_DECORATION_THICKNESS).contains(value))
+}
+
+fn parse_text_underline_offset(value: &str) -> Option<i32> {
+    let value = value.trim().to_ascii_lowercase();
+    let value = value.strip_suffix("px")?.trim();
+    let (negative, magnitude) = match value.strip_prefix('-') {
+        Some(value) => (true, value),
+        None => (false, value),
+    };
+    if magnitude.is_empty() || !magnitude.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let magnitude = magnitude.parse::<i32>().ok()?;
+    if magnitude > MAX_NATIVE_TEXT_UNDERLINE_OFFSET {
+        return None;
+    }
+    Some(if negative { -magnitude } else { magnitude })
 }
 
 fn set_border_side(sides: &mut [Option<NativeBorderSide>; 4], index: usize, value: &str) {
@@ -3894,7 +3955,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-align-last: end; text-justify: inter-word; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-decoration-style: dotted; text-decoration-thickness: 2px; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-align-last: end; text-justify: inter-word; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-decoration-style: dotted; text-decoration-thickness: 2px; text-underline-offset: -2px; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -3929,6 +3990,7 @@ mod tests {
             Some(NativeBorderStyle::Dotted)
         );
         assert_eq!(declarations.text_decoration_thickness, Some(2));
+        assert_eq!(declarations.text_underline_offset, Some(-2));
         assert_eq!(declarations.text_indent, Some(12));
         assert_eq!(declarations.word_spacing, Some(12));
         assert_eq!(declarations.letter_spacing, Some(12));
@@ -5156,6 +5218,76 @@ mod tests {
             document
                 .computed_style_for_layout(inline)
                 .text_decoration_thickness(),
+            2
+        );
+    }
+
+    #[test]
+    fn text_underline_offset_parser_accepts_only_bounded_signed_pixels() {
+        assert_eq!(NativeInheritedStyle::default().text_underline_offset, 0);
+        assert_eq!(
+            parse_text_underline_offset("-4px"),
+            Some(MIN_NATIVE_TEXT_UNDERLINE_OFFSET)
+        );
+        assert_eq!(parse_text_underline_offset("-0PX"), Some(0));
+        assert_eq!(parse_text_underline_offset("0px"), Some(0));
+        assert_eq!(parse_text_underline_offset("4px"), Some(4));
+        assert_eq!(parse_text_underline_offset("-5px"), None);
+        assert_eq!(parse_text_underline_offset("5px"), None);
+        assert_eq!(parse_text_underline_offset("+1px"), None);
+        assert_eq!(parse_text_underline_offset("1.5px"), None);
+        assert_eq!(parse_text_underline_offset("auto"), None);
+        assert_eq!(parse_text_underline_offset("10%"), None);
+        assert_eq!(parse_text_underline_offset("2px 3px"), None);
+    }
+
+    #[test]
+    fn text_underline_offset_is_inherited_and_cascaded() {
+        let document = NativeDocument::parse(
+            "<style>div { text-underline-offset: 4px; } #parent { text-underline-offset: -3px; } #explicit { text-underline-offset: 0px; } #invalid { text-underline-offset: 5px; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span><span id='inline' style='text-underline-offset:2px'>Inline</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let inherited = document.resolve_target("id=inherited").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let inline = document.resolve_target("id=inline").unwrap();
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(document.root())
+                .text_underline_offset(),
+            0
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(parent)
+                .text_underline_offset(),
+            -3
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inherited)
+                .text_underline_offset(),
+            -3
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .text_underline_offset(),
+            0
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .text_underline_offset(),
+            -3
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inline)
+                .text_underline_offset(),
             2
         );
     }

@@ -545,6 +545,7 @@ pub(crate) struct NativeComputedStyle {
     flex_shrink: u32,
     flex_basis: FlexBasisValue,
     text_decoration: TextDecorationValue,
+    text_decoration_color: Option<NativeColor>,
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
     font_style: FontStyleValue,
@@ -653,6 +654,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_decoration(self) -> TextDecorationValue {
         self.text_decoration
+    }
+
+    pub(crate) const fn text_decoration_color(self) -> Option<NativeColor> {
+        self.text_decoration_color
     }
 
     pub(crate) const fn text_transform(self) -> TextTransformValue {
@@ -862,6 +867,7 @@ impl NativeStylesheet {
         let mut flex_shrink = None;
         let mut flex_basis = None;
         let mut text_decoration = None;
+        let mut text_decoration_color = None;
         let mut text_transform = None;
         let mut font_weight = None;
         let mut font_style = None;
@@ -978,6 +984,21 @@ impl NativeStylesheet {
                 )
             {
                 text_decoration = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_decoration_color
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    text_decoration_color,
+                )
+            {
+                text_decoration_color = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1443,6 +1464,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_decoration_color
+                && wins(u16::MAX, usize::MAX, true, text_decoration_color)
+            {
+                text_decoration_color = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.text_transform
                 && wins(u16::MAX, usize::MAX, true, text_transform)
             {
@@ -1828,6 +1859,7 @@ impl NativeStylesheet {
             flex_shrink: flex_shrink.map_or(1, |value| value.value),
             flex_basis: flex_basis.map_or(FlexBasisValue::Auto, |value| value.value),
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
+            text_decoration_color: text_decoration_color.map(|value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
             font_style: font_style.map_or(inherited.font_style, |value| value.value),
@@ -2081,6 +2113,7 @@ struct NativeDeclarations {
     flex_shrink: Option<u32>,
     flex_basis: Option<FlexBasisValue>,
     text_decoration: Option<TextDecorationValue>,
+    text_decoration_color: Option<NativeColor>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
     font_style: Option<FontStyleValue>,
@@ -2271,6 +2304,7 @@ fn parse_source(
             || declarations.flex_shrink.is_some()
             || declarations.flex_basis.is_some()
             || declarations.text_decoration.is_some()
+            || declarations.text_decoration_color.is_some()
             || declarations.text_transform.is_some()
             || declarations.font_weight.is_some()
             || declarations.font_style.is_some()
@@ -2422,6 +2456,7 @@ fn parse_declarations_with_diagnostics(
             "flex-shrink" => parse_flex_shrink(value).is_some(),
             "flex-basis" => parse_flex_basis(value).is_some(),
             "text-decoration" => parse_text_decoration(value).is_some(),
+            "text-decoration-color" => parse_color(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
             "font-style" => parse_font_style(value).is_some(),
@@ -2510,6 +2545,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "flex-shrink"
             | "flex-basis"
             | "text-decoration"
+            | "text-decoration-color"
             | "text-transform"
             | "font-weight"
             | "font-style"
@@ -2671,6 +2707,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-decoration" => {
                 declarations.text_decoration = parse_text_decoration(value);
+            }
+            "text-decoration-color" => {
+                declarations.text_decoration_color = parse_color(value);
             }
             "text-transform" => {
                 declarations.text_transform = parse_text_transform(value);
@@ -4843,6 +4882,78 @@ mod tests {
         assert_eq!(parse_text_decoration("none none"), None);
         assert_eq!(parse_text_decoration("underline red"), None);
         assert_eq!(parse_text_decoration(""), None);
+    }
+
+    #[test]
+    fn text_decoration_color_is_local_and_uses_existing_color_values() {
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        let transparent = NativeColor {
+            red: 0,
+            green: 0,
+            blue: 0,
+            alpha: 0,
+        };
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div { text-decoration-color: red; } #target { text-decoration-color: blue; }".into(),
+        ])
+        .unwrap();
+        let node = node("<div id='target' style='text-decoration-color: #010203'>Target</div>");
+        assert_eq!(
+            stylesheet.computed_for(&node).text_decoration_color(),
+            Some(NativeColor {
+                red: 1,
+                green: 2,
+                blue: 3,
+                alpha: u8::MAX,
+            })
+        );
+
+        let document = NativeDocument::parse(
+            "<style>#parent { text-decoration: underline; text-decoration-color: red; color: green; } #explicit { text-decoration-color: blue; } #transparent { text-decoration-color: transparent; } #invalid { text-decoration-color: currentColor; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='transparent'>Transparent</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let inherited = document.resolve_target("id=inherited").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let transparent_node = document.resolve_target("id=transparent").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(parent)
+                .text_decoration_color(),
+            Some(NativeColor::RED)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inherited)
+                .text_decoration_color(),
+            None
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .text_decoration_color(),
+            Some(blue)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(transparent_node)
+                .text_decoration_color(),
+            Some(transparent)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .text_decoration_color(),
+            None
+        );
     }
 
     #[test]

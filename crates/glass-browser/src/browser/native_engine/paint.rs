@@ -76,6 +76,7 @@ pub enum NativeDisplayCommand {
         text: String,
         truncated: bool,
         color: NativeColor,
+        decoration_color: NativeColor,
         underline: bool,
         overline: bool,
         line_through: bool,
@@ -182,6 +183,8 @@ impl NativeDisplayList {
                     }
                     let style = document.computed_style_for_layout(text_run.node_id);
                     let decoration = style.text_decoration();
+                    let color = style.color().unwrap_or(NativeColor::BLACK);
+                    let decoration_color = style.text_decoration_color().unwrap_or(color);
                     let clip = paint_clip(document, layout, text_run.node_id);
                     push_command(
                         &mut commands,
@@ -190,7 +193,8 @@ impl NativeDisplayList {
                             origin: text_run.origin,
                             text: text_run.text.clone(),
                             truncated: text_run.truncated,
-                            color: style.color().unwrap_or(NativeColor::BLACK),
+                            color,
+                            decoration_color,
                             underline: decoration.underline(),
                             overline: decoration.overline(),
                             line_through: decoration.line_through(),

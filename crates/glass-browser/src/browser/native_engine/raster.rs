@@ -17,6 +17,7 @@ const ITALIC_ROW_SHIFTS: [u32; GLYPH_HEIGHT as usize] = [2, 2, 1, 1, 1, 0, 0];
 #[derive(Debug, Clone, Copy)]
 struct TextPaint {
     color: super::css::NativeColor,
+    decoration_color: super::css::NativeColor,
     underline: bool,
     overline: bool,
     line_through: bool,
@@ -158,6 +159,7 @@ impl NativeSurface {
                     origin,
                     text,
                     color,
+                    decoration_color,
                     underline,
                     overline,
                     line_through,
@@ -184,6 +186,7 @@ impl NativeSurface {
                         text,
                         TextPaint {
                             color: *color,
+                            decoration_color: *decoration_color,
                             underline: *underline,
                             overline: *overline,
                             line_through: *line_through,
@@ -581,7 +584,7 @@ impl NativeSurface {
                         self.blend_pixel(
                             u32::try_from(x).unwrap_or(u32::MAX),
                             u32::try_from(line_y).unwrap_or(u32::MAX),
-                            paint.color,
+                            paint.decoration_color,
                         );
                     }
                 }
@@ -1013,6 +1016,7 @@ mod tests {
                     text: "A?".into(),
                     truncated: false,
                     color: NativeColor::RED,
+                    decoration_color: NativeColor::RED,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1048,6 +1052,7 @@ mod tests {
                     text: "A".into(),
                     truncated: false,
                     color: NativeColor::BLACK,
+                    decoration_color: NativeColor::BLACK,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1064,6 +1069,7 @@ mod tests {
                     text: "A".into(),
                     truncated: false,
                     color: NativeColor::BLACK,
+                    decoration_color: NativeColor::BLACK,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1099,6 +1105,7 @@ mod tests {
                     text: "A".into(),
                     truncated: false,
                     color: NativeColor::BLACK,
+                    decoration_color: NativeColor::BLACK,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1115,6 +1122,7 @@ mod tests {
                     text: "A".into(),
                     truncated: false,
                     color: NativeColor::BLACK,
+                    decoration_color: NativeColor::BLACK,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1131,6 +1139,12 @@ mod tests {
                     text: "A".into(),
                     truncated: false,
                     color: NativeColor {
+                        red: 0,
+                        green: 0,
+                        blue: 0,
+                        alpha: 128,
+                    },
+                    decoration_color: NativeColor {
                         red: 0,
                         green: 0,
                         blue: 0,
@@ -1179,6 +1193,12 @@ mod tests {
                         blue: 0,
                         alpha: 128,
                     },
+                    decoration_color: NativeColor {
+                        red: 0,
+                        green: 128,
+                        blue: 0,
+                        alpha: 128,
+                    },
                     underline: true,
                     overline: false,
                     line_through: false,
@@ -1220,6 +1240,7 @@ mod tests {
                     text: "A?".into(),
                     truncated: false,
                     color: NativeColor::BLACK,
+                    decoration_color: NativeColor::BLACK,
                     underline: false,
                     overline: true,
                     line_through: false,
@@ -1241,6 +1262,7 @@ mod tests {
                     text: "A?".into(),
                     truncated: false,
                     color: NativeColor::RED,
+                    decoration_color: NativeColor::RED,
                     underline: false,
                     overline: false,
                     line_through: true,
@@ -1257,6 +1279,12 @@ mod tests {
                     text: "A?".into(),
                     truncated: false,
                     color: NativeColor {
+                        red: 0,
+                        green: 128,
+                        blue: 0,
+                        alpha: 128,
+                    },
+                    decoration_color: NativeColor {
                         red: 0,
                         green: 128,
                         blue: 0,
@@ -1601,6 +1629,7 @@ mod tests {
                     text: "A".into(),
                     truncated: false,
                     color: NativeColor::BLACK,
+                    decoration_color: NativeColor::BLACK,
                     underline: false,
                     overline: false,
                     line_through: false,

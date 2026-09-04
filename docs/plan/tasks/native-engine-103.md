@@ -1,7 +1,7 @@
 ---
 id: native-engine-103
 scope: glass-browser/native-engine/text-align-last-justify
-status: ready
+status: complete
 depends-on: [native-engine-102]
 ---
 
@@ -95,25 +95,49 @@ outside the contract.
 - `crates/glass-browser/tests/native_engine.rs`
 - synchronized native-engine architecture, analysis, and plan docs
 
-## Verification
+## Implementation and verification evidence
 
-The implementation gate will include:
+The design checkpoint is `f261773f` (`docs(native-engine): define final-line
+justification slice`) and the implementation checkpoint is `be5757ae`
+(`feat(native-engine): support final-line justification`). The implementation
+keeps the feature inside `glass-browser`, adds no crate or dependency, and
+routes final-line spacing through the existing layout, display-list, raster,
+viewport, overflow, capture, hit-test, and semantic consumers.
 
-- parser, declaration, cascade, inheritance, inline precedence, and typed
-  unsupported-value diagnostics for `text-align-last:justify`;
-- final-line justification with ordinary left alignment, inherited and
-  overridden values, positive/non-positive free space, authored word spacing,
-  no-text/no-space fallback, and a final line after an explicit `<br>`;
-- regressions proving 101 soft-wrap justification remains limited to eligible
-  non-final lines and that preformatted, pre-wrap, break-all, truncated, and
-  intermediate/forced-break flushes do not gain final-line spacing;
-- shared box/display-list/raster/viewport/overflow/scroll/capture/hit-test and
-  semantic/source-order artifact assertions;
-- `cargo fmt --all -- --check`, focused and full native integration tests,
-  feature-enabled library tests with the documented explicit stack, strict
-  all-feature and no-default-feature Clippy, warning-denied rustdoc, locked
-  binaries, paired package/dependency gates, fuzz checking,
-  documentation/release validators, and exact isolated-target cleanup.
+The completed local gate evidence is:
+
+- focused final-line artifact coverage: 1/1;
+- focused parser/cascade coverage: 2/2 `text_align_last` tests;
+- unsupported-value diagnostic regression: 1/1;
+- full native integration suite: 140/140;
+- feature-enabled library suite with `RUST_MIN_STACK=8388608`: 893 passed,
+  1 ignored, 0 failed;
+- strict all-feature Clippy: passed in 14m03s; strict no-default-feature
+  Clippy: passed in 6m09s;
+- warning-denied workspace rustdoc: passed in 3m16s;
+- locked `glass-dev` binaries: passed in 11m43s;
+- locked paired packages: both crates packaged successfully and
+  `check-packaged-dependency.py` confirmed `glass-dev` resolves
+  `glass-browser` exactly at 0.3.14; Cargo emitted only the known yanked
+  `chacha20 v0.10.1` warning;
+- locked fuzz fetch and offline all-target check: passed in 8m22s;
+- version sync, feature parity, release-documentation, TUI shortcut,
+  documentation-depth, documentation-coverage, reliability, public-adapter,
+  and Web IR validators all passed: 517 Markdown documents, 83 current
+  documents, 57 previous-version hits, 585 semantic hits, 0 current-claim
+  failures; 15 implementation help keys/63 documentation markers; 93/19
+  depth; 517/345/17/22 coverage; 6/4 reliability; 5 adapters; and 8/8/11
+  Web IR fixtures/scenarios/categories;
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+
+The exact isolated cleanup gate ran after validation. `/tmp/glass-103-target`
+measured 6.2G and the generated release report measured 164K. Process and
+open-file checks were empty; the exact target, report, and 103 log files were
+removed with bounded `find -P ... -xdev -depth -delete`. No `/tmp/glass-103*`,
+`glass-clean-install.*`, or other temporary `glass-*-target` paths remain.
+The repository and ForgeBuild target directories remain only as 4.0K
+placeholders, the fuzz target is absent, and the final filesystem state is
+65G available at 67% use.
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this

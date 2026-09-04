@@ -8,6 +8,7 @@ pub(crate) const MIN_NATIVE_FLEX_ITEM_ORDER: i32 = -1024;
 pub(crate) const MAX_NATIVE_FLEX_ITEM_ORDER: i32 = 1024;
 pub(crate) const MAX_NATIVE_FLEX_GROW: u32 = 1024;
 pub(crate) const MAX_NATIVE_FLEX_SHRINK: u32 = 1024;
+pub(crate) const MAX_NATIVE_TEXT_DECORATION_THICKNESS: u32 = 4;
 const MAX_SELECTOR_BYTES: usize = 256;
 const MAX_SELECTOR_PARTS: usize = 8;
 
@@ -402,7 +403,7 @@ impl NativeMarginValue {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
     pub(crate) direction: DirectionValue,
@@ -413,6 +414,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_justify: TextJustifyValue,
     pub(crate) text_decoration: TextDecorationValue,
     pub(crate) text_decoration_style: NativeBorderStyle,
+    pub(crate) text_decoration_thickness: u32,
     pub(crate) text_transform: TextTransformValue,
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
@@ -420,6 +422,30 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) vertical_align: VerticalAlignValue,
     pub(crate) word_spacing: u32,
     pub(crate) letter_spacing: u32,
+}
+
+impl Default for NativeInheritedStyle {
+    fn default() -> Self {
+        Self {
+            color: None,
+            direction: DirectionValue::Ltr,
+            white_space: WhiteSpaceValue::Normal,
+            line_height: None,
+            text_align: TextAlignValue::Left,
+            text_align_last: TextAlignLastValue::Auto,
+            text_justify: TextJustifyValue::Auto,
+            text_decoration: TextDecorationValue::none(),
+            text_decoration_style: NativeBorderStyle::Solid,
+            text_decoration_thickness: 1,
+            text_transform: TextTransformValue::None,
+            font_weight: FontWeightValue::Normal,
+            font_style: FontStyleValue::Normal,
+            word_break: WordBreakValue::Normal,
+            vertical_align: VerticalAlignValue::Baseline,
+            word_spacing: 0,
+            letter_spacing: 0,
+        }
+    }
 }
 
 /// Bounded physical top, right, bottom, and left box values.
@@ -548,6 +574,7 @@ pub(crate) struct NativeComputedStyle {
     flex_basis: FlexBasisValue,
     text_decoration: TextDecorationValue,
     text_decoration_style: NativeBorderStyle,
+    text_decoration_thickness: u32,
     text_decoration_color: Option<NativeColor>,
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
@@ -661,6 +688,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_decoration_style(self) -> NativeBorderStyle {
         self.text_decoration_style
+    }
+
+    pub(crate) const fn text_decoration_thickness(self) -> u32 {
+        self.text_decoration_thickness
     }
 
     pub(crate) const fn text_decoration_color(self) -> Option<NativeColor> {
@@ -875,6 +906,7 @@ impl NativeStylesheet {
         let mut flex_basis = None;
         let mut text_decoration = None;
         let mut text_decoration_style = None;
+        let mut text_decoration_thickness = None;
         let mut text_decoration_color = None;
         let mut text_transform = None;
         let mut font_weight = None;
@@ -1007,6 +1039,21 @@ impl NativeStylesheet {
                 )
             {
                 text_decoration_style = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_decoration_thickness
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    text_decoration_thickness,
+                )
+            {
+                text_decoration_thickness = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1497,6 +1544,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_decoration_thickness
+                && wins(u16::MAX, usize::MAX, true, text_decoration_thickness)
+            {
+                text_decoration_thickness = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.text_decoration_color
                 && wins(u16::MAX, usize::MAX, true, text_decoration_color)
             {
@@ -1894,6 +1951,8 @@ impl NativeStylesheet {
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
             text_decoration_style: text_decoration_style
                 .map_or(inherited.text_decoration_style, |value| value.value),
+            text_decoration_thickness: text_decoration_thickness
+                .map_or(inherited.text_decoration_thickness, |value| value.value),
             text_decoration_color: text_decoration_color.map(|value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
@@ -2149,6 +2208,7 @@ struct NativeDeclarations {
     flex_basis: Option<FlexBasisValue>,
     text_decoration: Option<TextDecorationValue>,
     text_decoration_style: Option<NativeBorderStyle>,
+    text_decoration_thickness: Option<u32>,
     text_decoration_color: Option<NativeColor>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
@@ -2341,6 +2401,7 @@ fn parse_source(
             || declarations.flex_basis.is_some()
             || declarations.text_decoration.is_some()
             || declarations.text_decoration_style.is_some()
+            || declarations.text_decoration_thickness.is_some()
             || declarations.text_decoration_color.is_some()
             || declarations.text_transform.is_some()
             || declarations.font_weight.is_some()
@@ -2494,6 +2555,7 @@ fn parse_declarations_with_diagnostics(
             "flex-basis" => parse_flex_basis(value).is_some(),
             "text-decoration" | "text-decoration-line" => parse_text_decoration(value).is_some(),
             "text-decoration-style" => parse_border_style(value).is_some(),
+            "text-decoration-thickness" => parse_text_decoration_thickness(value).is_some(),
             "text-decoration-color" => parse_color(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
@@ -2585,6 +2647,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-decoration"
             | "text-decoration-line"
             | "text-decoration-style"
+            | "text-decoration-thickness"
             | "text-decoration-color"
             | "text-transform"
             | "font-weight"
@@ -2750,6 +2813,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-decoration-style" => {
                 declarations.text_decoration_style = parse_border_style(value);
+            }
+            "text-decoration-thickness" => {
+                declarations.text_decoration_thickness = parse_text_decoration_thickness(value);
             }
             "text-decoration-color" => {
                 declarations.text_decoration_color = parse_color(value);
@@ -3007,6 +3073,11 @@ fn parse_border_style(value: &str) -> Option<NativeBorderStyle> {
         "dotted" => Some(NativeBorderStyle::Dotted),
         _ => None,
     }
+}
+
+fn parse_text_decoration_thickness(value: &str) -> Option<u32> {
+    parse_dimension(value)
+        .filter(|value| (1..=MAX_NATIVE_TEXT_DECORATION_THICKNESS).contains(value))
 }
 
 fn set_border_side(sides: &mut [Option<NativeBorderSide>; 4], index: usize, value: &str) {
@@ -3823,7 +3894,7 @@ mod tests {
     #[test]
     fn declarations_parse_only_supported_presentation_properties() {
         let declarations = parse_declarations(
-            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-align-last: end; text-justify: inter-word; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
+            "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-align-last: end; text-justify: inter-word; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-decoration-style: dotted; text-decoration-thickness: 2px; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
@@ -3853,6 +3924,11 @@ mod tests {
             declarations.text_decoration,
             Some(TextDecorationValue::new(true, false, false))
         );
+        assert_eq!(
+            declarations.text_decoration_style,
+            Some(NativeBorderStyle::Dotted)
+        );
+        assert_eq!(declarations.text_decoration_thickness, Some(2));
         assert_eq!(declarations.text_indent, Some(12));
         assert_eq!(declarations.word_spacing, Some(12));
         assert_eq!(declarations.letter_spacing, Some(12));
@@ -5013,6 +5089,74 @@ mod tests {
                 .computed_style_for_layout(inline)
                 .text_decoration_style(),
             NativeBorderStyle::Dotted
+        );
+    }
+
+    #[test]
+    fn text_decoration_thickness_parser_accepts_only_bounded_pixels() {
+        assert_eq!(NativeInheritedStyle::default().text_decoration_thickness, 1);
+        assert_eq!(parse_text_decoration_thickness("1px"), Some(1));
+        assert_eq!(parse_text_decoration_thickness("2PX"), Some(2));
+        assert_eq!(
+            parse_text_decoration_thickness("4px"),
+            Some(MAX_NATIVE_TEXT_DECORATION_THICKNESS)
+        );
+        assert_eq!(parse_text_decoration_thickness("0px"), None);
+        assert_eq!(parse_text_decoration_thickness("5px"), None);
+        assert_eq!(parse_text_decoration_thickness("auto"), None);
+        assert_eq!(parse_text_decoration_thickness("1.5px"), None);
+        assert_eq!(parse_text_decoration_thickness("2px 3px"), None);
+        assert_eq!(parse_text_decoration_thickness("from-font"), None);
+    }
+
+    #[test]
+    fn text_decoration_thickness_is_inherited_and_cascaded() {
+        let document = NativeDocument::parse(
+            "<style>div { text-decoration-thickness: 4px; } #parent { text-decoration-thickness: 3px; } #explicit { text-decoration-thickness: 1px; } #invalid { text-decoration-thickness: 5px; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-thickness:2px'>Inline</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let inherited = document.resolve_target("id=inherited").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let inline = document.resolve_target("id=inline").unwrap();
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(document.root())
+                .text_decoration_thickness(),
+            1
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(parent)
+                .text_decoration_thickness(),
+            3
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inherited)
+                .text_decoration_thickness(),
+            3
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .text_decoration_thickness(),
+            1
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .text_decoration_thickness(),
+            3
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inline)
+                .text_decoration_thickness(),
+            2
         );
     }
 

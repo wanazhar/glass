@@ -19,6 +19,7 @@ struct TextPaint {
     color: super::css::NativeColor,
     decoration_color: super::css::NativeColor,
     decoration_style: NativeBorderStyle,
+    decoration_thickness: u32,
     underline: bool,
     overline: bool,
     line_through: bool,
@@ -162,6 +163,7 @@ impl NativeSurface {
                     color,
                     decoration_color,
                     decoration_style,
+                    decoration_thickness,
                     underline,
                     overline,
                     line_through,
@@ -183,6 +185,8 @@ impl NativeSurface {
                     let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
                         continue;
                     };
+                    let decoration_thickness = (*decoration_thickness)
+                        .min(super::css::MAX_NATIVE_TEXT_DECORATION_THICKNESS);
                     Self::current_surface_mut(&mut surfaces)?.draw_text(
                         *origin,
                         text,
@@ -190,6 +194,7 @@ impl NativeSurface {
                             color: *color,
                             decoration_color: *decoration_color,
                             decoration_style: *decoration_style,
+                            decoration_thickness,
                             underline: *underline,
                             overline: *overline,
                             line_through: *line_through,
@@ -572,24 +577,34 @@ impl NativeSurface {
                 origin_y.saturating_add(i64::from(GLYPH_HEIGHT)),
             ),
         ] {
-            if enabled && line_y >= 0 && line_y < i64::from(self.height) {
-                for offset in 0..run_width {
-                    let x = origin_x.saturating_add(i64::from(offset));
-                    if x >= 0
-                        && x < i64::from(self.width)
-                        && Self::border_pattern_paints(paint.decoration_style, 1, i64::from(offset))
-                        && clip.is_none_or(|clip| {
-                            clip.contains(NativePoint {
-                                x: u32::try_from(x).unwrap_or(u32::MAX),
-                                y: u32::try_from(line_y).unwrap_or(u32::MAX),
+            if enabled {
+                for thickness_offset in 0..paint.decoration_thickness {
+                    let y = line_y.saturating_add(i64::from(thickness_offset));
+                    if y < 0 || y >= i64::from(self.height) {
+                        continue;
+                    }
+                    for offset in 0..run_width {
+                        let x = origin_x.saturating_add(i64::from(offset));
+                        if x >= 0
+                            && x < i64::from(self.width)
+                            && Self::border_pattern_paints(
+                                paint.decoration_style,
+                                paint.decoration_thickness,
+                                i64::from(offset),
+                            )
+                            && clip.is_none_or(|clip| {
+                                clip.contains(NativePoint {
+                                    x: u32::try_from(x).unwrap_or(u32::MAX),
+                                    y: u32::try_from(y).unwrap_or(u32::MAX),
+                                })
                             })
-                        })
-                    {
-                        self.blend_pixel(
-                            u32::try_from(x).unwrap_or(u32::MAX),
-                            u32::try_from(line_y).unwrap_or(u32::MAX),
-                            paint.decoration_color,
-                        );
+                        {
+                            self.blend_pixel(
+                                u32::try_from(x).unwrap_or(u32::MAX),
+                                u32::try_from(y).unwrap_or(u32::MAX),
+                                paint.decoration_color,
+                            );
+                        }
                     }
                 }
             }
@@ -1022,6 +1037,7 @@ mod tests {
                     color: NativeColor::RED,
                     decoration_color: NativeColor::RED,
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1059,6 +1075,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1077,6 +1094,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1114,6 +1132,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1132,6 +1151,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1160,6 +1180,7 @@ mod tests {
                         alpha: 128,
                     },
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1210,6 +1231,7 @@ mod tests {
                         alpha: 128,
                     },
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: true,
                     overline: false,
                     line_through: false,
@@ -1253,6 +1275,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: false,
                     overline: true,
                     line_through: false,
@@ -1276,6 +1299,7 @@ mod tests {
                     color: NativeColor::RED,
                     decoration_color: NativeColor::RED,
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: false,
                     overline: false,
                     line_through: true,
@@ -1304,6 +1328,7 @@ mod tests {
                         alpha: 128,
                     },
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: true,
                     overline: false,
                     line_through: false,
@@ -1645,6 +1670,7 @@ mod tests {
                     color: NativeColor::BLACK,
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeBorderStyle::Solid,
+                    decoration_thickness: 1,
                     underline: false,
                     overline: false,
                     line_through: false,
@@ -1664,6 +1690,38 @@ mod tests {
         let surface = NativeSurface::from_display_list(&list).unwrap();
         assert_eq!(surface.pixel(8, 0), Some([255, 255, 255, 255]));
         assert_eq!(surface.pixel(8, 8), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn surface_clamps_untrusted_decoration_thickness() {
+        let list = display_list(
+            vec![NativeDisplayCommand::TextRun {
+                node_id: NativeDocument::empty().root(),
+                origin: NativePoint { x: 0, y: 0 },
+                text: "A".into(),
+                truncated: false,
+                color: NativeColor::BLACK,
+                decoration_color: NativeColor::BLACK,
+                decoration_style: NativeBorderStyle::Solid,
+                decoration_thickness: u32::MAX,
+                underline: true,
+                overline: false,
+                line_through: false,
+                bold: false,
+                italic: false,
+                word_spacing: 0,
+                letter_spacing: 0,
+                justify_spacing: 0,
+                clip: None,
+            }],
+            8,
+            12,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(0, 7), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(0, 10), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(0, 11), Some([0, 0, 0, 0]));
     }
 
     #[test]

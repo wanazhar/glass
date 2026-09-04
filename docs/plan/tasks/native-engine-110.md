@@ -140,7 +140,21 @@ Completed local evidence:
 
 ## Cleanup
 
-Record the exact isolated target and report paths, sizes, process/open-file
-checks, deletion counts, and post-removal filesystem state after certification.
-Do not remove shared Cargo registries, toolchains, source, durable user data,
-or other projects' non-regenerable artifacts.
+Certification used the isolated target `/tmp/glass-110-target` and the release
+documentation report `/tmp/glass-110-release-documentation-final.json`. The
+target measured `13G` with `du -x -sh`; the report measured `167680` bytes. The
+pre-removal candidate inventory contained exactly 80 top-level
+`/tmp/glass-*`/`/tmp/forgebuild-*` entries (75 directories and 5 files), all
+owned by `ubuntu`, with no symlinks. Their exact aggregate `du -x --bytes`
+measurement was `13151449699` bytes / `12.248` GiB. No cargo, rustc, rustdoc,
+Clippy, cargo-fuzz, or rust-analyzer process referenced a candidate, and an
+`lsof +D` sweep found no open handles.
+
+The 80 candidates and the repository-generated
+`/home/ubuntu/work/glass/target/.rustc_info.json` (1298 bytes) were deleted.
+Post-removal checks found no matching top-level temporary artifacts; the
+repository `target` directory remains empty at 4.0 KiB, while
+`fuzz/target` and `/home/ubuntu/work/ForgeBuild/target` are absent. Filesystem
+usage changed from 126G used / 68G available (65%) to 113G used / 80G
+available (59%). Shared Cargo registries, toolchains, source, durable user
+data, and other projects' artifacts were not touched.

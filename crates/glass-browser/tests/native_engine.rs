@@ -1102,7 +1102,7 @@ fn native_text_justify_controls_both_justification_flushes() {
 #[test]
 fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
     let document = NativeDocument::parse(
-        "<style>#parent { display:block; width:32px; text-decoration:underline; color:rgba(0, 128, 0, 50%); } #clear { text-decoration:none; } #contents { display:contents; }</style><div id='parent'>A<span id='clear'>B</span><span id='contents'><span id='nested'>C</span></span></div>",
+        "<style>#parent { display:block; width:32px; text-decoration:underline overline; color:rgba(0, 128, 0, 50%); } #clear { text-decoration:none; } #contents { display:contents; }</style><div id='parent'>A<span id='clear'>B</span><span id='contents'><span id='nested'>C</span></span></div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -1126,8 +1126,18 @@ fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
                 text,
                 color,
                 underline,
+                overline,
+                line_through,
                 ..
-            } => Some((*node_id, *origin, text.as_str(), *color, *underline)),
+            } => Some((
+                *node_id,
+                *origin,
+                text.as_str(),
+                *color,
+                *underline,
+                *overline,
+                *line_through,
+            )),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1137,36 +1147,42 @@ fn native_text_decoration_inherits_through_contents_and_reaches_raster() {
         blue: 0,
         alpha: 128,
     };
-    assert!(
-        text_runs
-            .iter()
-            .any(|(node_id, origin, text, color, underline)| {
-                *node_id == parent
-                    && *origin == NativePoint { x: 0, y: 0 }
-                    && *text == "A"
-                    && *color == expected_color
-                    && *underline
-            })
-    );
-    assert!(
-        text_runs
-            .iter()
-            .any(|(node_id, _, text, color, underline)| {
-                *node_id == clear && *text == "B" && *color == expected_color && !*underline
-            })
-    );
+    assert!(text_runs.iter().any(
+        |(node_id, origin, text, color, underline, overline, line_through)| {
+            *node_id == parent
+                && *origin == NativePoint { x: 0, y: 0 }
+                && *text == "A"
+                && *color == expected_color
+                && *underline
+                && *overline
+                && !*line_through
+        }
+    ));
+    assert!(text_runs.iter().any(
+        |(node_id, _, text, color, underline, overline, line_through)| {
+            *node_id == clear
+                && *text == "B"
+                && *color == expected_color
+                && !*underline
+                && !*overline
+                && !*line_through
+        }
+    ));
     assert!(
         !text_runs
             .iter()
-            .any(|(node_id, _, _, _, _)| *node_id == contents)
+            .any(|(node_id, _, _, _, _, _, _)| *node_id == contents)
     );
-    assert!(
-        text_runs
-            .iter()
-            .any(|(node_id, _, text, color, underline)| {
-                *node_id == nested && *text == "C" && *color == expected_color && *underline
-            })
-    );
+    assert!(text_runs.iter().any(
+        |(node_id, _, text, color, underline, overline, line_through)| {
+            *node_id == nested
+                && *text == "C"
+                && *color == expected_color
+                && *underline
+                && *overline
+                && !*line_through
+        }
+    ));
 
     let surface = list.rasterize().unwrap();
     assert_eq!(surface.pixel(0, 7), Some([127, 191, 127, 255]));
@@ -1249,6 +1265,61 @@ fn native_text_decoration_line_styles_share_layout_and_artifacts() {
     assert_eq!(surface.pixel(6, 19), Some([255, 255, 255, 255]));
     assert_eq!(surface.pixel(6, 43), Some([255, 255, 255, 255]));
     assert_eq!(surface.pixel(6, 67), Some([255, 255, 255, 255]));
+}
+
+#[test]
+fn native_text_decoration_combinations_share_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>.spacer { display:block; height:20px; } .line { display:block; width:24px; height:20px; line-height:20px; color:black; } #combo { text-decoration:underline overline; } #all { text-decoration:line-through underline overline; }</style><div class='spacer'></div><div id='combo' class='line'>A</div><div id='all' class='line'>A</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 60,
+        device_scale_factor_milli: 1000,
+    };
+    let combo = document.resolve_target("id=combo").unwrap();
+    let all = document.resolve_target("id=all").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let runs_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| (run.origin, run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        runs_for(combo),
+        vec![(NativePoint { x: 0, y: 20 }, "A", false)]
+    );
+    assert_eq!(
+        runs_for(all),
+        vec![(NativePoint { x: 0, y: 40 }, "A", false)]
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let decoration_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                underline,
+                overline,
+                line_through,
+                ..
+            } if *command_node_id == node_id => Some((*underline, *overline, *line_through)),
+            _ => None,
+        })
+    };
+    assert_eq!(decoration_for(combo), Some((true, true, false)));
+    assert_eq!(decoration_for(all), Some((true, true, true)));
+
+    let surface = list.rasterize().unwrap();
+    for y in [19, 27, 39, 43, 47] {
+        assert_eq!(surface.pixel(5, y), Some([0, 0, 0, 255]));
+        assert_eq!(surface.pixel(6, y), Some([255, 255, 255, 255]));
+    }
 }
 
 #[test]

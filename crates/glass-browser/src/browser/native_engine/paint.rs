@@ -1,7 +1,6 @@
 use super::config::MAX_NATIVE_NODES;
 use super::css::{
     FontStyleValue, FontWeightValue, NativeBorderRadius, NativeBorderStyle, NativeColor,
-    TextDecorationValue,
 };
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
@@ -182,6 +181,7 @@ impl NativeDisplayList {
                         continue;
                     }
                     let style = document.computed_style_for_layout(text_run.node_id);
+                    let decoration = style.text_decoration();
                     let clip = paint_clip(document, layout, text_run.node_id);
                     push_command(
                         &mut commands,
@@ -191,10 +191,9 @@ impl NativeDisplayList {
                             text: text_run.text.clone(),
                             truncated: text_run.truncated,
                             color: style.color().unwrap_or(NativeColor::BLACK),
-                            underline: style.text_decoration() == TextDecorationValue::Underline,
-                            overline: style.text_decoration() == TextDecorationValue::Overline,
-                            line_through: style.text_decoration()
-                                == TextDecorationValue::LineThrough,
+                            underline: decoration.underline(),
+                            overline: decoration.overline(),
+                            line_through: decoration.line_through(),
                             bold: style.font_weight() == FontWeightValue::Bold,
                             italic: style.font_style() == FontStyleValue::Italic,
                             word_spacing: style.word_spacing(),

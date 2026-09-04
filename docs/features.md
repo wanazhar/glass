@@ -78,8 +78,10 @@ source-behavior reference.
 distinct shorthand combinations, bounded local `text-decoration-color` using
 the existing fixed palette and alpha grammar with separate glyph and line
 paint, bounded `text-decoration-line` longhand combinations sharing the same
-line-state owner, bounded inherited `text-decoration-style:solid|dashed|dotted`
-presentation, bounded inherited
+line-state owner, bounded inherited
+`text-decoration-style:solid|dashed|dotted|double` presentation, where
+`double` paints two thickness-preserving solid bands separated by one pixel,
+bounded inherited
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
 thickness-scaled integer dash/dot periods, bounded inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
@@ -309,7 +311,7 @@ projection, and point hit-testing,
   shorthands and longhands, bounded physical min/max width/height constraints,
   explicit box sizing, and bounded root horizontal and vertical viewport scrolling,
   bounded inherited fixed-cell text-decoration lines with bounded
-  `text-decoration-style:solid|dashed|dotted` and
+  `text-decoration-style:solid|dashed|dotted|double` and
   `text-decoration-thickness:1px|2px|3px|4px` positive-y raster bands,
   bounded inherited signed fixed-pixel `text-underline-offset:-4px..=4px`
   that moves only the underline toward decreasing or increasing y,

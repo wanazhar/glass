@@ -797,15 +797,16 @@ gate and cleanup evidence are recorded in
 `docs/plan/tasks/native-engine-111.md`. Remote CI remains pending because the
 branch is local-only.
 
-The next dependency-ordered `native-engine-112` design is recorded in
+The completed dependency-ordered `native-engine-112` slice is recorded in
 `docs/plan/tasks/native-engine-112.md`. It adds inherited
 `text-decoration-style:double` through a dedicated text-decoration style type,
 painting two solid bands with the existing resolved thickness and one
 transparent separator pixel. The 111 underline offset, line origins, x
 anchoring, clipping, scrolling, opacity, capture, and immutable text command
 remain shared; border styling, layout, fragment continuity, and browser-wide
-conformance remain outside the design. Implementation, certification, cleanup,
-and remote CI remain pending because the branch is local-only.
+conformance remain outside the boundary. Implementation is `3bdd3b54`; final
+local gate and cleanup evidence are recorded in the task file. Remote CI
+remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1043,7 +1044,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-109` | bounded inherited `text-decoration-style:solid|dashed|dotted` using the existing integer border-pattern helper through one immutable text command and fixed-pixel replay | `native-engine-108` | double/wavy styles, thickness, offsets, decoration-origin propagation, fragment continuity, font metrics, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-110` | bounded inherited `text-decoration-thickness:1px|2px|3px|4px` as a positive-y fixed-pixel band through one immutable text command and the existing integer style-pattern helper | `native-engine-109` | arbitrary/font-derived/fractional values, zero/negative/percentage/auto/from-font syntax, centering, offsets, baseline metrics, fragment continuity, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-111` | bounded inherited signed `text-underline-offset:-4px..=4px` for underline-only y translation through the immutable text command, preserving the 110 thickness/style raster owner | `native-engine-110` | auto/percentage/fractional/font-derived values, overline/line-through offsets, decoration-origin propagation, centering, baseline metrics, fragment continuity, shaping, bidi, vertical writing, and browser-wide text conformance |
-| `native-engine-112` | design-ready bounded inherited `text-decoration-style:double` through a dedicated text-decoration style type, painting two solid thickness-preserving bands with one separator pixel through the immutable text command | `native-engine-111` | wavy styles, font-metric centering, decoration-origin propagation, fragment continuity, layout/geometry changes, shaping, bidi, vertical writing, and browser-wide text conformance |
+| `native-engine-112` | bounded inherited `text-decoration-style:double` through a dedicated text-decoration style type, painting two solid thickness-preserving bands with one separator pixel through the immutable text command | `native-engine-111` | wavy styles, font-metric centering, decoration-origin propagation, fragment continuity, layout/geometry changes, shaping, bidi, vertical writing, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1451,8 +1452,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-112.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-111.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-112.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-111.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-110.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-109.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-108.md` is the preceding completed checkpoint;

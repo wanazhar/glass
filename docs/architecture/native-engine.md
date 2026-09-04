@@ -75,7 +75,9 @@ bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
 text paint, bounded fixed-cell `text-decoration:none|underline|overline|line-through`
 paint including distinct shorthand combinations, bounded inherited
-`text-decoration-style:solid|dashed|dotted` presentation, bounded inherited
+`text-decoration-style:solid|dashed|dotted|double` presentation, where
+`double` paints two thickness-preserving solid bands separated by one pixel,
+bounded inherited
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
 thickness-scaled integer dash/dot periods, bounded inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
@@ -540,15 +542,16 @@ remain outside the contract. The contract is recorded in
 `215b02a8`, current-claim docs are `e76a732a`, and complete local gate and
 cleanup evidence are recorded in the task file. Remote CI remains pending
 because the branch is local-only.
-The next dependency-ordered 112 design is recorded in
-`docs/plan/tasks/native-engine-112.md`. It adds inherited
+The completed dependency-ordered 112 boundary adds inherited
 `text-decoration-style:double` through a dedicated text-decoration style type,
 painting two solid bands with the existing resolved thickness and one
 transparent separator pixel. The 111 underline offset, existing line origins,
 x anchoring, clipping, scrolling, opacity, capture, and immutable text command
 remain shared; border styling, layout, fragment continuity, and browser-wide
-conformance remain outside the design. Implementation, certification, cleanup,
-and remote CI remain pending because the branch is local-only.
+conformance remain outside the boundary. Implementation is `3bdd3b54`; final
+local gate and cleanup evidence are recorded in
+`docs/plan/tasks/native-engine-112.md`. Remote CI remains pending because the
+branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -1,7 +1,7 @@
 ---
 id: native-engine-112
 scope: glass-browser/native-engine/text-decoration-style-double
-status: design-ready
+status: complete
 depends-on: [native-engine-111]
 ---
 
@@ -99,21 +99,59 @@ slice.
 
 ## Verification
 
-The implementation must provide parser/cascade coverage for case-insensitive
-`double`, default solid behavior, inheritance, explicit override, omission,
-inline precedence, and unsupported `wavy` diagnostics. Native integration
-must prove two solid bands for underline, overline, and line-through, their
-composition with thickness and underline offset, unchanged line origins,
-x-origin anchoring, clipping, scroll translation, immutable command
-propagation, and unchanged layout geometry. Existing solid/dashed/dotted
-regressions must remain green. Full native integration, feature-library,
-strict lint, warning-denied rustdoc, locked package/dependency, offline fuzz,
-documentation, static, security, and formatting gates remain required.
+Implemented in `3bdd3b54` after the design checkpoint `b5668e87`. Parser and
+cascade coverage proves case-insensitive `double`, default solid behavior,
+inheritance, explicit override, omission, inline precedence, and unsupported
+`wavy` diagnostics. Native integration proves two solid bands for underline,
+overline, and line-through, composition with thickness and underline offset,
+unchanged line origins, x-origin anchoring, clipping, immutable command
+propagation, and unchanged layout geometry. Existing solid/dashed/dotted and
+underline-offset regressions remain green.
 
-Every local gate uses an isolated or intentionally shared target with a
-recorded purpose. Completed validation removes exact regenerable output only
-after active-writer and open-file checks. Remote CI, browser parity, release,
-registry publication, and a third crate are not claimed by this local task.
+The local certification matrix passed:
+
+- focused CSS parser/cascade tests: 2 passed;
+- focused double-decoration integration: 1 passed;
+- focused raster replay: 1 passed;
+- decoration regression family: 7 passed;
+- underline-offset regression: 1 passed;
+- complete native integration: 149 passed;
+- complete `glass-browser --all-features` library/integration/doctest suite:
+  908 passed, 1 ignored;
+- complete `glass-dev` unit/integration/PTy/doctest suite: 399 passed;
+- strict browser clippy, workspace clippy, and no-default-feature clippy;
+- warning-denied workspace rustdoc;
+- explicit `glass-dev` and feature-gated `glass-browser` binary builds;
+- locked `cargo package` for `glass-browser` with archive verification and
+  locked local-path `cargo package` for `glass-dev`;
+- locked publish dry-runs for both crates, with uploads aborted by dry-run;
+- packaged dependency check proving `glass-dev` resolves `glass-browser`
+  exactly at `0.3.14`;
+- offline locked fuzz workspace check across all targets;
+- `cargo deny check` and `cargo audit`;
+- version, feature-parity, TUI shortcut, documentation-depth, release-docs,
+  documentation-coverage, public-adapter, reliability, and Web IR validators;
+- `cargo fmt --all -- --check` and `git diff --check`.
+
+The release documentation audit reported 526 Markdown files, 83 current
+documents, 57 previous-version hits, 603 semantic audit hits, and zero
+current-claim failures. The native integration and full crate suites use the
+isolated `/tmp/glass-112-target` target. Representative measured gate costs
+were:
+
+| Gate | Elapsed | Peak RSS |
+|---|---:|---:|
+| `glass-browser --all-features` tests | 16:38.83 | 2,425,564 KiB |
+| `glass-dev` tests | 20:21.38 | 1,997,588 KiB |
+| workspace clippy | 10:53.60 | 1,908,668 KiB |
+| browser clippy | 9:00.84 | 1,911,240 KiB |
+| no-default-feature clippy | 4:44.92 | 1,797,956 KiB |
+| warning-denied rustdoc | 4:35.42 | 1,633,028 KiB |
+| browser package verification | 15:22.64 | 2,218,596 KiB |
+| offline fuzz workspace check | 9:04.54 | 1,569,076 KiB |
+
+Remote CI, browser parity, release, registry publication, and a third crate
+are not claimed by this local task.
 
 ## Cleanup
 

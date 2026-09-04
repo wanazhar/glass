@@ -151,10 +151,25 @@ color-conformance claim remain outside this local task.
 
 ## Cleanup
 
-The final cleanup removed the exact isolated target and reports only after all
-gates, documentation, and issue reconciliation completed. It used bounded
-`find -P ... -xdev -depth -delete` after confirming no compiler, analyzer, or
-other process had an open handle. Shared Cargo registries, toolchains, source,
-durable user data, and other projects' non-regenerable artifacts were not
-removed. The exact post-removal sizes and filesystem checks are recorded here
-before this task is handed off.
+The final cleanup removed the exact isolated target and reports after all
+local gates and documentation closeout completed. Before removal:
+
+- `/tmp/glass-107-target` measured 9.1G;
+- `/tmp/glass-107-release-documentation.json` and
+  `/tmp/glass-107-release-documentation-final.json` measured 164K each;
+- `/tmp/glass-107-public-readonly.json` and
+  `/tmp/glass-107-reliability.json` measured 4.0K each.
+
+`lsof -nP` found no open handle under `/tmp/glass-*` or
+`/tmp/forgebuild-*`, and the compiler/analyzer process check was idle. The
+exact user-owned top-level `/tmp/glass-*` set (13,328 directories) was removed
+with bounded `find -P ... -xdev -depth -delete`, with 0 failures and 0 skips.
+The broader stale `/tmp/forgebuild-*` set (1,172 directories, about 4.0G) was
+removed by the same guarded operation. Shared Cargo registries, toolchains,
+source, durable user data, and other projects' non-regenerable artifacts were
+not removed.
+
+Post-removal checks found no top-level `/tmp/glass-*` or `/tmp/forgebuild-*`,
+no accessible temporary `target` directory, an absent `fuzz/target`, and
+4.0K repository and ForgeBuild targets. Filesystem usage is 113G used, 80G
+available, 59% on `/`.

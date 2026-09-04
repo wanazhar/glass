@@ -74,7 +74,8 @@ source-behavior reference.
   software layers, and inherited physical `text-align:left|center|right`
   fixed-cell line placement, bounded functional `rgba(R, G, B, A)` alpha
   colors for background, border, and text paint, bounded inherited fixed-cell
-  `text-decoration:none|underline|overline|line-through` paint,
+  `text-decoration:none|underline|overline|line-through` paint, including
+  distinct shorthand combinations,
   bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
   bounded non-negative fixed-pixel first-line `text-indent` for block flow,
   bounded inherited non-negative fixed-pixel `word-spacing` across collapsed

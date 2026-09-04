@@ -1,7 +1,7 @@
 ---
 id: native-engine-106
 scope: glass-browser/native-engine/text-decoration-combinations
-status: ready
+status: complete
 depends-on: [native-engine-105]
 ---
 
@@ -85,26 +85,59 @@ writing, and browser-wide text conformance remain outside the contract.
 
 ## Verification
 
-The implementation gate will include:
+Implementation checkpoint: `baf680ee` (design checkpoint: `c0525afb`). The
+implementation keeps the two-crate boundary and adds no dependency, feature,
+renderer, geometry owner, or artifact schema. The existing display-list and
+fixed-cell raster paths now consume a compact three-bit line set.
 
-- parser and declaration tests for all single keywords, every two-line and
-  three-line combination, case-insensitive input, token-order invariance,
-  duplicate rejection, `none`-combination rejection, and unsupported-value
-  diagnostics;
-- cascade/inheritance tests proving a combined parent, child `none` clearing,
-  inline precedence, and invalid-value fallback;
-- display-list assertions proving one text command carries exactly the
-  expected combination bits;
-- raster golden assertions for every combined line at its fixed position,
-  clipping, scroll translation, and alpha replay;
-- regressions proving combinations do not change text layout, wrapping,
-  overflow, hit testing, or semantic/source order;
-- `cargo fmt --all -- --check`, focused and full native integration tests,
-  feature-enabled library tests with the documented explicit stack, strict
-  all-feature and no-default-feature Clippy, warning-denied rustdoc, locked
-  binaries, paired package/dependency gates, fuzz checking,
-  documentation/release validators, fresh current-source documentation
-  coverage, and exact isolated-target cleanup.
+The completed local gate evidence is:
+
+- focused CSS parser/cascade coverage: 2/2 passed;
+- focused native decoration integration: 3/3 passed;
+- existing scroll/clip/raster regression: 1/1 passed;
+- unsupported-value diagnostic regression: 1/1 passed;
+- full `native-engine` integration suite: 143 passed, 0 failed, 0 ignored;
+- feature-enabled `glass-browser` library suite with
+  `RUST_MIN_STACK=8388608`: 896 passed, 0 failed, 1 ignored;
+- `cargo fmt --all -- --check` and `git diff --check`: passed;
+- strict all-feature workspace Clippy: passed in 13m31s; strict
+  no-default-feature `glass-browser` Clippy: passed in 5m50s;
+- warning-denied workspace rustdoc: passed in 3m17s;
+- locked `glass-dev --bins` build: passed in 11m36s;
+- locked packages passed for both crates. Cargo emitted only the known
+  non-fatal yanked `chacha20 v0.10.1` warning; the packaged-dependency
+  validator confirmed `glass-dev` resolves `glass-browser` exactly at
+  `0.3.14`;
+- locked fuzz fetch completed and nightly/offline all-target checking passed
+  in 9m54s. The first stable cargo-fuzz invocation was correctly rejected
+  because sanitizer `-Z` flags require nightly; no source failure resulted;
+- version sync, feature parity, TUI shortcut inventory, documentation depth,
+  read-only adapters, reliability matrix, Web IR, and release documentation
+  validators passed. Release documentation reported 520 Markdown files, 83
+  current documents, 57 previous-version hits, 594 semantic hits, and 0
+  current-claim failures;
+- fresh source-built documentation coverage passed with 520 Markdown files,
+  345 full-product MCP tools (100 browser-only), 17 examples, and 22 public
+  modules. The installed `/home/ubuntu/.cargo/bin/glass` was not used because
+  it is a stale 0.3.14 build; coverage used the current source-built
+  binaries.
+
+The default 2 MiB test-thread stack still overflows in the pre-existing
+`cli::args::tests::agent_readiness_commands_are_explicit` test; the failure
+reproduced in the focused run and the documented 8 MiB stack passed the full
+suite. Remote CI remains pending because `main` is local-only. No
+browser-parity, release, registry-publication, or remote-certification claim
+is part of this task.
+
+## Cleanup
+
+After all gates completed on 2026-09-04 UTC, the exact non-symlink path
+`/tmp/glass-106-target` (6.5G) and exact regenerable report
+`/tmp/glass-106-release-documentation.json` (164K) were checked for active
+processes and open files, then removed with bounded same-filesystem deletion.
+Neither remains; the repository and ForgeBuild target directories are 4.0K,
+`fuzz/target` is absent, and the final filesystem check reports 64G available
+(67% used).
 
 Remote CI remains pending because `main` is local-only. No browser-parity,
 release, registry-publication, or remote-certification claim is part of this

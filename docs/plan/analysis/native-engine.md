@@ -718,17 +718,18 @@ remain outside the contract. The completed task is
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
-The active dependency-ordered `native-engine-106` slice extends the inherited
-fixed-cell `text-decoration` owner to distinct multi-token combinations in
-the `text-decoration` shorthand. One immutable three-bit line set will reach
-display commands, clipping, scrolling, opacity replay, capture, and software
-raster without changing layout, overflow, hit testing, or semantic/source
-order. `text-decoration-line` longhand semantics, decoration colors,
-thickness, style, offsets, font metrics, shaping, bidi, vertical writing,
-and browser-wide text conformance remain outside the contract. The active task
-is `docs/plan/tasks/native-engine-106.md`; design is ready locally and
-implementation, certification, and exact-target cleanup remain pending.
-Remote CI remains pending because the branch is local-only.
+The completed dependency-ordered `native-engine-106` slice extends the
+inherited fixed-cell `text-decoration` owner to distinct multi-token
+combinations in the `text-decoration` shorthand. One immutable three-bit line
+set reaches display commands, clipping, scrolling, opacity replay, capture,
+and software raster without changing layout, overflow, hit testing, or
+semantic/source order. `text-decoration-line` longhand semantics, decoration
+colors, thickness, style, offsets, font metrics, shaping, bidi, vertical
+writing, and browser-wide text conformance remain outside the contract. The
+completed task is `docs/plan/tasks/native-engine-106.md`; design is
+`c0525afb`, implementation is `baf680ee`, and complete local gate plus
+exact-target cleanup evidence is recorded in the task file. Remote CI remains
+pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1368,8 +1369,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-105.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-104.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-106.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-105.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-103.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-102.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-101.md` is the preceding completed checkpoint;

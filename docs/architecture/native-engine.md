@@ -73,7 +73,8 @@ bounded inherited `white-space: pre-line`, `white-space: pre`,
 `white-space: pre-wrap`, and `white-space: nowrap` source whitespace flow, and
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
-text paint, bounded fixed-cell `text-decoration:none|underline|overline|line-through` paint, bounded
+text paint, bounded fixed-cell `text-decoration:none|underline|overline|line-through`
+paint including distinct shorthand combinations, bounded
 inherited ASCII `text-transform:none|uppercase|lowercase` layout, and
 bounded inherited non-negative fixed-pixel `word-spacing` across the supported
 fixed-cell whitespace modes, and
@@ -461,17 +462,18 @@ contract is `docs/plan/tasks/native-engine-105.md`; design is `9002ae13`,
 implementation is `ebfefefa`, and complete local gate plus exact-target
 cleanup evidence is recorded in the task file. Remote CI remains pending
 because the branch is local-only.
-The active 106 boundary extends that same inherited fixed-cell
+The completed 106 boundary extends that same inherited fixed-cell
 `text-decoration` owner to distinct multi-token combinations in the
 `text-decoration` shorthand. It carries one immutable three-bit line set
 through display commands and fixed-pixel replay while preserving layout,
 overflow, hit testing, and semantic/source order. `text-decoration-line`
 longhand semantics, decoration colors, thickness, style, offsets, font
 metrics, shaping, bidi, vertical writing, and full text conformance remain
-outside the contract. The active contract is
-`docs/plan/tasks/native-engine-106.md`; design, implementation, certification,
-and exact-target cleanup remain pending. Remote CI remains pending because the
-branch is local-only.
+outside the contract. The completed contract is
+`docs/plan/tasks/native-engine-106.md`; design is `c0525afb`, implementation
+is `baf680ee`, and complete local gate plus exact-target cleanup evidence is
+recorded in the task file. Remote CI remains pending because the branch is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1386,8 +1388,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   and text colors, with shared fixed-point quantization, display-list color
   ownership, and integer source-over replay.
 - bounded inherited `text-decoration:none|underline|overline|line-through`
-  parsing and cascade, mutually exclusive immutable text-command decoration
-  bits, and deterministic clipped alpha-aware fixed-cell line replay.
+  parsing and cascade, including distinct shorthand combinations, compact
+  immutable text-command decoration bits, and deterministic clipped
+  alpha-aware fixed-cell line replay.
 - bounded inherited ASCII `text-transform:none|uppercase|lowercase` parsing and
   cascade, transformed fixed-cell layout fragments, and consistent wrapping,
   text-fragment, display-list, and root-overflow consumers.

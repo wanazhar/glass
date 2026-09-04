@@ -760,16 +760,17 @@ browser/dev suites, strict lint and rustdoc, locked packaging, nightly/offline
 fuzz, and static documentation validators. Remote CI remains pending because
 the branch is local-only.
 
-The next dependency-ordered `native-engine-109` design adds bounded inherited
-`text-decoration-style:solid|dashed|dotted` to the existing fixed-cell
-decoration owner. Solid remains the default; dashed and dotted reuse the
-existing integer `NativeBorderStyle` pattern helper with one-pixel lines
-anchored at each emitted run origin, preserving the 108 longhand/color path
-and all shared artifact consumers. Wavy/double styles, thickness, offsets,
-decoration-origin propagation, and full CSS conformance remain outside the
-contract. The design is recorded in
-`docs/plan/tasks/native-engine-109.md`; implementation and local gate evidence
-are pending. Remote CI remains pending because the branch is local-only.
+The completed dependency-ordered `native-engine-109` slice adds bounded
+inherited `text-decoration-style:solid|dashed|dotted` to the existing
+fixed-cell decoration owner. Solid remains the default; dashed and dotted
+reuse the existing integer `NativeBorderStyle` pattern helper with one-pixel
+lines anchored at each emitted run origin, preserving the 108 longhand/color
+path and all shared artifact consumers. Wavy/double styles, thickness,
+offsets, decoration-origin propagation, and full CSS conformance remain
+outside the contract. Design `93034cbf`, implementation `81069084`,
+inherited-style coverage `b8ae87dc`, and local gate/cleanup evidence are
+recorded in `docs/plan/tasks/native-engine-109.md`. Remote CI remains pending
+because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1412,8 +1413,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-109.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-108.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-109.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-108.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-107.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-106.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-105.md` is the preceding completed checkpoint;

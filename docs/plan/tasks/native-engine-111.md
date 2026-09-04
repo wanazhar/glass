@@ -137,6 +137,22 @@ has not been pushed.
 
 ## Cleanup
 
-Cleanup is recorded after certification below. Do not remove shared Cargo
-registries, toolchains, source, durable user data, or other projects'
-non-regenerable artifacts.
+Cleanup evidence (2026-09-04):
+
+- The isolated `/tmp/glass-111-target` and the documentation report were
+  validated as user-owned regenerable outputs. The complete candidate set was
+  80 top-level `/tmp` entries matching `glass-*`/`forgebuild-*`: 75
+  directories and 5 files, totaling `12,379,303,936` bytes (about 11.53 GiB).
+  No compiler/test process was running, and `lsof +D` on the isolated target
+  plus exact leftover roots reported no open handles.
+- The repository `target` contained only user-owned `.rustc_info.json` at
+  `1,298` bytes after the isolated target was retired. Its exact file handle
+  check was empty, so that metadata was deleted as well.
+- The deletion used bounded `find -P` traversal on the exact candidate roots;
+  shared Cargo registries, toolchains, source, durable user data, and other
+  projects were not touched. An unrelated `/tmp/openclaw-*` entry disappeared
+  concurrently while `find` scanned `/tmp`; it was not a deletion target.
+- Post-removal checks found no matching `/tmp/glass-*` or
+  `/tmp/forgebuild-*` entries. The repository `target` directory is empty
+  apart from its directory entry. `/dev/sda1` reports 113 GiB used, 80 GiB
+  available, 59% used.

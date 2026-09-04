@@ -6,7 +6,7 @@ use glass_browser::browser::native_engine::{
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
     NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeNodeId, NativePoint,
-    NativeRect, NativeSurface, Viewport,
+    NativeRect, NativeSurface, NativeTextDecorationStyle, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -1458,11 +1458,11 @@ fn native_text_decoration_style_patterns_share_command_and_geometry() {
     let dotted_command = text_command(dotted).expect("dotted text command");
     let inherited_command = text_command(inherited).expect("inherited text command");
     let override_command = text_command(override_node).expect("override text command");
-    assert_eq!(solid_command.1, NativeBorderStyle::Solid);
-    assert_eq!(dashed_command.1, NativeBorderStyle::Dashed);
-    assert_eq!(dotted_command.1, NativeBorderStyle::Dotted);
-    assert_eq!(inherited_command.1, NativeBorderStyle::Dashed);
-    assert_eq!(override_command.1, NativeBorderStyle::Solid);
+    assert_eq!(solid_command.1, NativeTextDecorationStyle::Solid);
+    assert_eq!(dashed_command.1, NativeTextDecorationStyle::Dashed);
+    assert_eq!(dotted_command.1, NativeTextDecorationStyle::Dotted);
+    assert_eq!(inherited_command.1, NativeTextDecorationStyle::Dashed);
+    assert_eq!(override_command.1, NativeTextDecorationStyle::Solid);
     assert!(
         solid_command.2
             && dashed_command.2
@@ -1472,7 +1472,7 @@ fn native_text_decoration_style_patterns_share_command_and_geometry() {
     );
 
     let surface = list.rasterize().unwrap();
-    let line_pixel = |command: (NativePoint, NativeBorderStyle, bool), offset: u32| {
+    let line_pixel = |command: (NativePoint, NativeTextDecorationStyle, bool), offset: u32| {
         surface.pixel(
             command.0.x.saturating_add(offset),
             command.0.y.saturating_add(7),
@@ -1539,17 +1539,17 @@ fn native_text_decoration_thickness_shares_style_and_line_geometry() {
     let four_command = text_command(four).expect("four-pixel text command");
     let inherited_command = text_command(inherited).expect("inherited text command");
     let override_command = text_command(override_node).expect("override text command");
-    assert_eq!(one_command.1, NativeBorderStyle::Solid);
+    assert_eq!(one_command.1, NativeTextDecorationStyle::Solid);
     assert_eq!(one_command.2, 1);
-    assert_eq!(two_command.1, NativeBorderStyle::Dashed);
+    assert_eq!(two_command.1, NativeTextDecorationStyle::Dashed);
     assert_eq!(two_command.2, 2);
-    assert_eq!(three_command.1, NativeBorderStyle::Dotted);
+    assert_eq!(three_command.1, NativeTextDecorationStyle::Dotted);
     assert_eq!(three_command.2, 3);
-    assert_eq!(four_command.1, NativeBorderStyle::Solid);
+    assert_eq!(four_command.1, NativeTextDecorationStyle::Solid);
     assert_eq!(four_command.2, 4);
-    assert_eq!(inherited_command.1, NativeBorderStyle::Dotted);
+    assert_eq!(inherited_command.1, NativeTextDecorationStyle::Dotted);
     assert_eq!(inherited_command.2, 3);
-    assert_eq!(override_command.1, NativeBorderStyle::Dotted);
+    assert_eq!(override_command.1, NativeTextDecorationStyle::Dotted);
     assert_eq!(override_command.2, 1);
     assert!(one_command.3 && two_command.3 && three_command.3 && four_command.3);
     assert_eq!(
@@ -1561,9 +1561,10 @@ fn native_text_decoration_thickness_shares_style_and_line_geometry() {
     );
 
     let surface = list.rasterize().unwrap();
-    let line_pixel = |command: (NativePoint, NativeBorderStyle, u32, bool), x: u32, y: u32| {
-        surface.pixel(command.0.x.saturating_add(x), command.0.y.saturating_add(y))
-    };
+    let line_pixel =
+        |command: (NativePoint, NativeTextDecorationStyle, u32, bool), x: u32, y: u32| {
+            surface.pixel(command.0.x.saturating_add(x), command.0.y.saturating_add(y))
+        };
     for y in 7..8 {
         assert_eq!(line_pixel(one_command, 0, y), Some([0, 0, 0, 255]));
         assert_eq!(line_pixel(one_command, 7, y), Some([0, 0, 0, 255]));
@@ -1645,11 +1646,11 @@ fn native_text_underline_offset_moves_only_underlines_through_shared_artifacts()
     let inherited_command = text_command(inherited).expect("inherited-offset text command");
     let override_command = text_command(override_node).expect("override-offset text command");
 
-    assert_eq!(negative_command.1, NativeBorderStyle::Dashed);
-    assert_eq!(zero_command.1, NativeBorderStyle::Dashed);
-    assert_eq!(positive_command.1, NativeBorderStyle::Dashed);
-    assert_eq!(inherited_command.1, NativeBorderStyle::Dotted);
-    assert_eq!(override_command.1, NativeBorderStyle::Dotted);
+    assert_eq!(negative_command.1, NativeTextDecorationStyle::Dashed);
+    assert_eq!(zero_command.1, NativeTextDecorationStyle::Dashed);
+    assert_eq!(positive_command.1, NativeTextDecorationStyle::Dashed);
+    assert_eq!(inherited_command.1, NativeTextDecorationStyle::Dotted);
+    assert_eq!(override_command.1, NativeTextDecorationStyle::Dotted);
     assert_eq!(negative_command.2, 2);
     assert_eq!(zero_command.2, 2);
     assert_eq!(positive_command.2, 2);
@@ -1686,9 +1687,17 @@ fn native_text_underline_offset_moves_only_underlines_through_shared_artifacts()
 
     let surface = list.rasterize().unwrap();
     let line_pixel =
-        |command: (NativePoint, NativeBorderStyle, u32, i32, bool, bool, bool), x: u32, y: u32| {
-            surface.pixel(command.0.x.saturating_add(x), y)
-        };
+        |command: (
+            NativePoint,
+            NativeTextDecorationStyle,
+            u32,
+            i32,
+            bool,
+            bool,
+            bool,
+        ),
+         x: u32,
+         y: u32| { surface.pixel(command.0.x.saturating_add(x), y) };
     for y in [5, 6] {
         assert_eq!(line_pixel(negative_command, 2, y), Some([0, 0, 0, 255]));
     }
@@ -1722,6 +1731,99 @@ fn native_text_underline_offset_moves_only_underlines_through_shared_artifacts()
     let scrolled_surface = scrolled_list.rasterize().unwrap();
     assert_eq!(scrolled_surface.pixel(0, 17), Some([0, 0, 0, 255]));
     assert_eq!(scrolled_surface.pixel(0, 40), Some([0, 0, 0, 255]));
+}
+
+#[test]
+fn native_text_double_decoration_preserves_style_inheritance_and_geometry() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:24px; line-height:20px; color:black; text-decoration:underline overline line-through; text-decoration-style:double; text-decoration-thickness:2px; text-underline-offset:1px; } #one { text-decoration-style:DoUbLe; text-decoration-thickness:1px; text-underline-offset:0px; } #two { text-decoration-style:double; text-decoration-thickness:2px; text-underline-offset:2px; } #parent { text-decoration-style:double; text-decoration-thickness:2px; }</style><div id='one' class='line'>AB</div><div id='two' class='line'>AB</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override' style='text-decoration-style:solid'>B</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let one = document.resolve_target("id=one").unwrap();
+    let two = document.resolve_target("id=two").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let override_node = document.resolve_target("id=override").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let text_command = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                decoration_style,
+                decoration_thickness,
+                underline_offset,
+                underline,
+                overline,
+                line_through,
+                ..
+            } if *command_node_id == node_id => Some((
+                *origin,
+                *decoration_style,
+                *decoration_thickness,
+                *underline_offset,
+                *underline,
+                *overline,
+                *line_through,
+            )),
+            _ => None,
+        })
+    };
+    let one_command = text_command(one).expect("one double-decoration command");
+    let two_command = text_command(two).expect("two double-decoration command");
+    let inherited_command = text_command(inherited).expect("inherited double-decoration command");
+    let override_command = text_command(override_node).expect("override decoration command");
+
+    assert_eq!(one_command.1, NativeTextDecorationStyle::Double);
+    assert_eq!(one_command.2, 1);
+    assert_eq!(one_command.3, 0);
+    assert!(one_command.4 && one_command.5 && one_command.6);
+    assert_eq!(two_command.1, NativeTextDecorationStyle::Double);
+    assert_eq!(two_command.2, 2);
+    assert_eq!(two_command.3, 2);
+    assert!(two_command.4 && two_command.5 && two_command.6);
+    assert_eq!(inherited_command.1, NativeTextDecorationStyle::Double);
+    assert_eq!(inherited_command.2, 2);
+    assert_eq!(inherited_command.3, 1);
+    assert!(inherited_command.4 && inherited_command.5 && inherited_command.6);
+    assert_eq!(override_command.1, NativeTextDecorationStyle::Solid);
+    assert_eq!(override_command.2, 2);
+    assert_eq!(override_command.3, 1);
+    assert!(override_command.4 && override_command.5 && override_command.6);
+
+    assert_eq!(
+        layout.box_for(one),
+        layout.box_for(two).map(|rect| NativeRect {
+            y: rect.y.saturating_sub(24),
+            ..rect
+        })
+    );
+    let surface = list.rasterize().unwrap();
+    let line_pixel =
+        |command: (
+            NativePoint,
+            NativeTextDecorationStyle,
+            u32,
+            i32,
+            bool,
+            bool,
+            bool,
+        ),
+         y: u32| surface.pixel(command.0.x, command.0.y.saturating_add(y));
+    assert_eq!(line_pixel(one_command, 7), Some([0, 0, 0, 255]));
+    assert_eq!(line_pixel(one_command, 8), Some([255, 255, 255, 255]));
+    assert_eq!(line_pixel(one_command, 9), Some([0, 0, 0, 255]));
+    for y in [9, 10, 12, 13] {
+        assert_eq!(line_pixel(two_command, y), Some([0, 0, 0, 255]));
+    }
+    assert_eq!(line_pixel(two_command, 11), Some([255, 255, 255, 255]));
+    assert_eq!(line_pixel(override_command, 10), Some([255, 255, 255, 255]));
 }
 
 #[test]

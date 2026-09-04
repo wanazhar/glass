@@ -28,7 +28,7 @@ pub use config::{
     MAX_NATIVE_VIEWPORT_DIMENSION, NativeEngineConfig, NativeEngineLimits, NativeFixture, Viewport,
 };
 pub use css::NativeColor;
-pub use css::{NativeBorderRadius, NativeBorderStyle};
+pub use css::{NativeBorderRadius, NativeBorderStyle, NativeTextDecorationStyle};
 pub use diagnostics::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeDiagnostic,
     NativeDiagnosticCode, NativeDiagnosticSource,

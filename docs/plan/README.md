@@ -1005,6 +1005,14 @@ is checkpointed at `a671a559` and `db7585f7`; local native/dev, strict, package,
 fuzz, security, formatting, and static certification is recorded in the task
 file. Remote CI remains pending because the checkout is local-only.
 
+The dependency-ordered [native-engine-117](tasks/native-engine-117.md) design is
+ready for implementation. It extends the 116 decoration replay classifier to
+Rust's bounded Unicode `char::is_whitespace()` property for literal and
+preformatted fixed-cell text, so tabs and non-breaking spaces can participate
+in `all` or selected line-edge skipping. Normal collapsing, line provenance,
+geometry, spacing arithmetic, and the explicit omission fallback remain
+unchanged. Implementation and certification are not yet claimed.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

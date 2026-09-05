@@ -614,6 +614,14 @@ Nested inline temporary flows cannot claim a line edge. Implementation is
 checkpointed at `a671a559` and `db7585f7`; focused, full-native, dev, strict,
 package, fuzz, security, formatting, and static local gates are recorded in
 the task file. Remote CI remains pending because the checkout is local-only.
+The dependency-ordered 117 design is now ready in
+`docs/plan/tasks/native-engine-117.md`. It narrows the next implementation to
+Unicode whitespace classification at the existing decoration replay owner:
+literal/preformatted tabs and non-breaking spaces can participate in `all` or
+the selected 116 line edges, while normal collapsing, fixed-cell geometry,
+line provenance, and the explicit omission fallback remain unchanged. The
+implementation and certification are not yet claimed; remote CI remains
+pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

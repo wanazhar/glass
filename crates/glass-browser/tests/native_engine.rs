@@ -1656,6 +1656,58 @@ fn native_text_decoration_skip_spaces_marks_line_edges_in_layout_and_raster() {
 }
 
 #[test]
+fn native_text_decoration_skip_spaces_uses_unicode_whitespace_at_line_edges() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; white-space:pre; text-decoration:underline overline line-through; text-decoration-skip-ink:none; } #start { text-decoration-skip-spaces:start; } #end { text-decoration-skip-spaces:end; } #both { text-decoration-skip-spaces:start end; } #none { text-decoration-skip-spaces:none; } #all { text-decoration-skip-spaces:all; }</style><div id='start' class='line'>\tA\u{00a0}</div><div id='end' class='line'>\tA\u{00a0}</div><div id='both' class='line'>\tA\u{00a0}</div><div id='none' class='line'>\tA\u{00a0}</div><div id='all' class='line'>\tA\u{00a0}</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let white = [u8::MAX, u8::MAX, u8::MAX, u8::MAX];
+    let black = [0, 0, 0, u8::MAX];
+    let run_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id)
+            .unwrap()
+    };
+    let start = run_for("start");
+    let end = run_for("end");
+    let both = run_for("both");
+    let none = run_for("none");
+    let all = run_for("all");
+
+    for run in [start, end, both, none, all] {
+        assert_eq!(run.text, "\tA\u{00a0}");
+        assert!(run.starts_line && run.ends_line);
+    }
+    let assert_mode = |run: &glass_browser::browser::native_engine::NativeTextLayout,
+                       expected: [bool; 2]| {
+        for row in [run.origin.y + 3, run.origin.y + 7] {
+            for (x, expected_space) in [(0, expected[0]), (8, false), (16, expected[1])] {
+                let pixel = surface.pixel(x, row).unwrap();
+                let expected_color = if expected_space { white } else { black };
+                assert_eq!(pixel, expected_color, "x {x}, row {row}");
+            }
+        }
+    };
+    assert_mode(start, [true, false]);
+    assert_mode(end, [false, true]);
+    assert_mode(both, [true, true]);
+    assert_mode(none, [false, false]);
+    assert_mode(all, [true, true]);
+}
+
+#[test]
 fn native_text_decoration_thickness_shares_style_and_line_geometry() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; } #one { text-decoration-style:solid; text-decoration-thickness:1px; } #two { text-decoration-style:dashed; text-decoration-thickness:2px; } #three { text-decoration-style:dotted; text-decoration-thickness:3px; } #four { text-decoration-style:solid; text-decoration-thickness:4px; } #parent { text-decoration-style:dotted; text-decoration-thickness:3px; }</style><div id='one' class='line'>AB</div><div id='two' class='line'>AB</div><div id='three' class='line'>AB</div><div id='four' class='line'>AB</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override' style='text-decoration-thickness:1px'>B</span></div>",

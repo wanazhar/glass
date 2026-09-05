@@ -149,7 +149,7 @@ depth 93/19, reliability 6/4, adapters 5, and Web IR 8/8/11.
 
 The final exact inventory found `/tmp/glass-117-target` at 10,862,782,300
 bytes across 15,528 files, containing only regenerable Cargo/test/package
-output, plus `/tmp/glass-117-release-doc.json` (170,564 bytes),
+output, plus `/tmp/glass-117-release-doc.json` (170,983 bytes),
 `/tmp/glass-117-adapters.json` (1,418 bytes), and
 `/tmp/glass-117-reliability.json` (3,482 bytes). No Cargo, rustc, rustdoc,
 Clippy, fuzz, rust-analyzer, or Glass test writer and no open descriptor

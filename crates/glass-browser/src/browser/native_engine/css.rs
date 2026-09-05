@@ -79,6 +79,9 @@ pub enum NativeTextDecorationSkipSpaces {
     #[default]
     None,
     All,
+    Start,
+    End,
+    StartAndEnd,
 }
 
 /// Bounded physical circular radii for the top-left, top-right, bottom-right,
@@ -3250,9 +3253,27 @@ fn parse_text_decoration_skip_ink(value: &str) -> Option<NativeTextDecorationSki
 }
 
 fn parse_text_decoration_skip_spaces(value: &str) -> Option<NativeTextDecorationSkipSpaces> {
-    match value.to_ascii_lowercase().as_str() {
-        "none" => Some(NativeTextDecorationSkipSpaces::None),
-        "all" => Some(NativeTextDecorationSkipSpaces::All),
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    match tokens.as_slice() {
+        [token] => match token.to_ascii_lowercase().as_str() {
+            "none" => Some(NativeTextDecorationSkipSpaces::None),
+            "all" => Some(NativeTextDecorationSkipSpaces::All),
+            "start" => Some(NativeTextDecorationSkipSpaces::Start),
+            "end" => Some(NativeTextDecorationSkipSpaces::End),
+            _ => None,
+        },
+        [first, second] => {
+            let first = first.to_ascii_lowercase();
+            let second = second.to_ascii_lowercase();
+            if matches!(first.as_str(), "start" | "end")
+                && matches!(second.as_str(), "start" | "end")
+                && first != second
+            {
+                Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -5357,7 +5378,7 @@ mod tests {
     }
 
     #[test]
-    fn text_decoration_skip_spaces_parser_accepts_only_bounded_values() {
+    fn text_decoration_skip_spaces_parser_accepts_bounded_edge_values() {
         assert_eq!(
             NativeInheritedStyle::default().text_decoration_skip_spaces,
             NativeTextDecorationSkipSpaces::None
@@ -5370,8 +5391,25 @@ mod tests {
             parse_text_decoration_skip_spaces("AlL"),
             Some(NativeTextDecorationSkipSpaces::All)
         );
-        assert_eq!(parse_text_decoration_skip_spaces("start"), None);
-        assert_eq!(parse_text_decoration_skip_spaces("end"), None);
+        assert_eq!(
+            parse_text_decoration_skip_spaces("start"),
+            Some(NativeTextDecorationSkipSpaces::Start)
+        );
+        assert_eq!(
+            parse_text_decoration_skip_spaces("END"),
+            Some(NativeTextDecorationSkipSpaces::End)
+        );
+        assert_eq!(
+            parse_text_decoration_skip_spaces("start end"),
+            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+        );
+        assert_eq!(
+            parse_text_decoration_skip_spaces("END start"),
+            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+        );
+        assert_eq!(parse_text_decoration_skip_spaces("start start"), None);
+        assert_eq!(parse_text_decoration_skip_spaces("none start"), None);
+        assert_eq!(parse_text_decoration_skip_spaces("all end"), None);
         assert_eq!(parse_text_decoration_skip_spaces("inherit"), None);
         assert_eq!(parse_text_decoration_skip_spaces(""), None);
         assert_eq!(
@@ -5379,15 +5417,16 @@ mod tests {
             Some(NativeTextDecorationSkipSpaces::All)
         );
         assert_eq!(
-            parse_declarations("text-decoration-skip-spaces: start").text_decoration_skip_spaces,
-            None
+            parse_declarations("text-decoration-skip-spaces: start end")
+                .text_decoration_skip_spaces,
+            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
         );
     }
 
     #[test]
     fn text_decoration_skip_spaces_is_inherited_and_cascaded() {
         let document = NativeDocument::parse(
-            "<style>div { text-decoration-skip-spaces: none; } #parent { text-decoration-skip-spaces: ALL; } #explicit { text-decoration-skip-spaces: none; } #invalid { text-decoration-skip-spaces: start; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-skip-spaces:none'>Inline</span></div>",
+            "<style>div { text-decoration-skip-spaces: none; } #parent { text-decoration-skip-spaces: START END; } #explicit { text-decoration-skip-spaces: end; } #invalid { text-decoration-skip-spaces: start start; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-skip-spaces:start'>Inline</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5407,31 +5446,31 @@ mod tests {
             document
                 .computed_style_for_layout(parent)
                 .text_decoration_skip_spaces(),
-            NativeTextDecorationSkipSpaces::All
+            NativeTextDecorationSkipSpaces::StartAndEnd
         );
         assert_eq!(
             document
                 .computed_style_for_layout(inherited)
                 .text_decoration_skip_spaces(),
-            NativeTextDecorationSkipSpaces::All
+            NativeTextDecorationSkipSpaces::StartAndEnd
         );
         assert_eq!(
             document
                 .computed_style_for_layout(explicit)
                 .text_decoration_skip_spaces(),
-            NativeTextDecorationSkipSpaces::None
+            NativeTextDecorationSkipSpaces::End
         );
         assert_eq!(
             document
                 .computed_style_for_layout(invalid)
                 .text_decoration_skip_spaces(),
-            NativeTextDecorationSkipSpaces::All
+            NativeTextDecorationSkipSpaces::StartAndEnd
         );
         assert_eq!(
             document
                 .computed_style_for_layout(inline)
                 .text_decoration_skip_spaces(),
-            NativeTextDecorationSkipSpaces::None
+            NativeTextDecorationSkipSpaces::Start
         );
     }
 

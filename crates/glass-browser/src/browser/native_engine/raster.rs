@@ -4,7 +4,9 @@ use super::css::{
 };
 use super::error::NativeEngineError;
 use super::layout::{NativePoint, NativeRect, rounded_rect_contains};
-use super::paint::{MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList};
+use super::paint::{
+    MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList, NativeTextLineBoundary,
+};
 
 /// Maximum number of logical pixels retained by one native software surface.
 pub const MAX_NATIVE_SURFACE_PIXELS: usize = 4 * 1024 * 1024;
@@ -85,6 +87,7 @@ impl NativeSurface {
         }];
         let mut opacity_groups = Vec::new();
         let scroll_offset = display_list.scroll_offset;
+        let mut text_run_index = 0usize;
         for command in &display_list.commands {
             match command {
                 NativeDisplayCommand::BeginOpacityGroup { node_id, opacity } => {
@@ -185,6 +188,12 @@ impl NativeSurface {
                     clip,
                     ..
                 } => {
+                    let line_boundary = display_list
+                        .text_run_boundaries
+                        .get(text_run_index)
+                        .copied()
+                        .unwrap_or_default();
+                    text_run_index = text_run_index.saturating_add(1);
                     if text.len() > crate::browser_backend::MAX_TEXT_BYTES {
                         return Err(NativeEngineError::limit(
                             "display text",
@@ -221,6 +230,7 @@ impl NativeSurface {
                             letter_spacing: *letter_spacing,
                             justify_spacing: *justify_spacing,
                         },
+                        line_boundary,
                         clip,
                         scroll_offset,
                     );
@@ -554,12 +564,45 @@ impl NativeSurface {
         origin: super::layout::NativePoint,
         text: &str,
         paint: TextPaint,
+        line_boundary: NativeTextLineBoundary,
         clip: Option<NativeRect>,
         scroll_offset: NativePoint,
     ) {
         let origin_x = i64::from(origin.x) - i64::from(scroll_offset.x);
         let origin_y = i64::from(origin.y) - i64::from(scroll_offset.y);
         let mut run_width = 0u32;
+        let characters = text.chars().collect::<Vec<_>>();
+        let skip_all = matches!(
+            paint.decoration_skip_spaces,
+            NativeTextDecorationSkipSpaces::All
+        );
+        let skip_start = matches!(
+            paint.decoration_skip_spaces,
+            NativeTextDecorationSkipSpaces::Start | NativeTextDecorationSkipSpaces::StartAndEnd
+        ) && line_boundary.starts_line;
+        let skip_end = matches!(
+            paint.decoration_skip_spaces,
+            NativeTextDecorationSkipSpaces::End | NativeTextDecorationSkipSpaces::StartAndEnd
+        ) && line_boundary.ends_line;
+        let leading_space_count = if skip_start {
+            characters
+                .iter()
+                .take_while(|character| **character == ' ')
+                .count()
+        } else {
+            0
+        };
+        let trailing_space_start = if skip_end {
+            characters.len().saturating_sub(
+                characters
+                    .iter()
+                    .rev()
+                    .take_while(|character| **character == ' ')
+                    .count(),
+            )
+        } else {
+            characters.len()
+        };
         let mut glyph_ink =
             if matches!(paint.decoration_skip_ink, NativeTextDecorationSkipInk::Auto)
                 && (paint.overline || paint.underline)
@@ -569,7 +612,7 @@ impl NativeSurface {
                 None
             };
         let mut skip_space_ranges = Vec::new();
-        for character in text.chars() {
+        for (character_index, character) in characters.into_iter().enumerate() {
             let offset = i64::from(run_width);
             let glyph_origin_x = origin_x.saturating_add(offset);
             let character_advance = GLYPH_ADVANCE
@@ -579,12 +622,10 @@ impl NativeSurface {
                 } else {
                     0
                 });
-            if character == ' '
-                && matches!(
-                    paint.decoration_skip_spaces,
-                    NativeTextDecorationSkipSpaces::All
-                )
-            {
+            let edge_space = character == ' '
+                && ((skip_start && character_index < leading_space_count)
+                    || (skip_end && character_index >= trailing_space_start));
+            if character == ' ' && (skip_all || edge_space) {
                 skip_space_ranges.push((
                     offset.saturating_sub(i64::from(paint.letter_spacing)),
                     offset.saturating_add(i64::from(character_advance)),
@@ -686,10 +727,7 @@ impl NativeSurface {
                             if y < 0 || y >= i64::from(self.height) {
                                 continue;
                             }
-                            let skips_space = matches!(
-                                paint.decoration_skip_spaces,
-                                NativeTextDecorationSkipSpaces::All
-                            ) && skip_space_ranges.iter().any(|(start, end)| {
+                            let skips_space = skip_space_ranges.iter().any(|(start, end)| {
                                 let offset = i64::from(offset);
                                 offset >= *start && offset < *end
                             });
@@ -970,6 +1008,7 @@ mod tests {
             },
             scroll_offset: NativePoint { x: 0, y: 0 },
             commands,
+            text_run_boundaries: Vec::new(),
         }
     }
 

@@ -69,6 +69,10 @@ pub struct NativeTextLayout {
     pub origin: NativePoint,
     pub text: String,
     pub truncated: bool,
+    /// Whether this text run is the first text item in its flushed line.
+    pub starts_line: bool,
+    /// Whether this text run is the last text item in its flushed line.
+    pub ends_line: bool,
     /// Extra fixed-cell advance applied to each eligible ASCII separator by
     /// `text-align:justify` or `text-align-last:justify`, when
     /// `text-justify` permits expansion.
@@ -1355,6 +1359,24 @@ impl<'a> LayoutBuilder<'a> {
     fn flush_line_with_reason(&mut self, flow: &mut FlowCursor, reason: FlowFlushReason) {
         if flow.line_has_content {
             let line_items = flow.take_line_items();
+            let text_indices = line_items
+                .iter()
+                .flat_map(|item| {
+                    let end = item.text_end.min(self.text_runs.len());
+                    let start = item.text_start.min(end);
+                    start..end
+                })
+                .collect::<Vec<_>>();
+            if let Some(first_text_index) = text_indices.first().copied()
+                && let Some(text_run) = self.text_runs.get_mut(first_text_index)
+            {
+                text_run.starts_line = true;
+            }
+            if let Some(last_text_index) = text_indices.last().copied()
+                && let Some(text_run) = self.text_runs.get_mut(last_text_index)
+            {
+                text_run.ends_line = true;
+            }
             let justification_enabled = match reason {
                 FlowFlushReason::SoftWrap => flow.justify_enabled,
                 FlowFlushReason::Final => flow.final_justify_enabled,
@@ -3609,6 +3631,8 @@ impl<'a> LayoutBuilder<'a> {
             origin,
             text: value,
             truncated: false,
+            starts_line: false,
+            ends_line: false,
             justify_spacing: 0,
         });
         self.paint_order
@@ -3958,6 +3982,8 @@ impl<'a> LayoutBuilder<'a> {
             origin,
             text: fragment.to_owned(),
             truncated,
+            starts_line: false,
+            ends_line: false,
             justify_spacing: 0,
         });
         self.paint_order

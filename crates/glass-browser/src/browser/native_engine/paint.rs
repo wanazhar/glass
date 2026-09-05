@@ -98,6 +98,12 @@ pub enum NativeDisplayCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NativeTextLineBoundary {
+    pub starts_line: bool,
+    pub ends_line: bool,
+}
+
 /// Immutable display-list projection for one native document revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeDisplayList {
@@ -106,6 +112,8 @@ pub struct NativeDisplayList {
     /// The root viewport offset used when replaying document-space commands.
     pub scroll_offset: NativePoint,
     pub commands: Vec<NativeDisplayCommand>,
+    /// Immutable line-edge metadata in text-command order.
+    pub(crate) text_run_boundaries: Vec<NativeTextLineBoundary>,
 }
 
 impl NativeDisplayList {
@@ -126,6 +134,7 @@ impl NativeDisplayList {
                 .saturating_add(layout.text_runs.len())
                 .saturating_add(1),
         );
+        let mut text_run_boundaries = Vec::with_capacity(layout.text_runs.len());
         push_command(
             &mut commands,
             NativeDisplayCommand::Clear {
@@ -217,6 +226,10 @@ impl NativeDisplayList {
                             clip,
                         },
                     )?;
+                    text_run_boundaries.push(NativeTextLineBoundary {
+                        starts_line: text_run.starts_line,
+                        ends_line: text_run.ends_line,
+                    });
                 }
                 NativeLayoutPaintOrder::EndOpacityGroup { node_id } => {
                     push_command(
@@ -231,6 +244,7 @@ impl NativeDisplayList {
             viewport: layout.viewport,
             scroll_offset: layout.scroll_offset,
             commands,
+            text_run_boundaries,
         })
     }
 }

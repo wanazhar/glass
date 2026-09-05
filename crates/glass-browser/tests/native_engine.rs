@@ -1544,7 +1544,7 @@ fn native_text_decoration_skip_ink_cascades_to_display_commands() {
 #[test]
 fn native_text_decoration_skip_spaces_cascades_to_display_commands() {
     let document = NativeDocument::parse(
-        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; text-decoration:underline; } #all { text-decoration-skip-spaces:ALL; } #parent { text-decoration-skip-spaces:none; } #invalid { text-decoration-skip-spaces:start; }</style><div id='default' class='line'>A B</div><div id='all' class='line'>A B</div><div id='parent' class='line'><span id='inherited'>A B</span></div><div id='invalid' class='line'>A B</div><div id='inline' class='line' style='text-decoration-skip-spaces:all'>A B</div>",
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; text-decoration:underline; } #all { text-decoration-skip-spaces:ALL; } #parent { text-decoration-skip-spaces:none; } #invalid { text-decoration-skip-spaces:start start; }</style><div id='default' class='line'>A B</div><div id='all' class='line'>A B</div><div id='parent' class='line'><span id='inherited'>A B</span></div><div id='invalid' class='line'>A B</div><div id='inline' class='line' style='text-decoration-skip-spaces:all'>A B</div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -1595,6 +1595,64 @@ fn native_text_decoration_skip_spaces_cascades_to_display_commands() {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-decoration-skip-spaces"
     }));
+}
+
+#[test]
+fn native_text_decoration_skip_spaces_marks_line_edges_in_layout_and_raster() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; white-space:pre; text-decoration:underline overline line-through; text-decoration-skip-ink:none; } #start { text-decoration-skip-spaces:start; } #end { text-decoration-skip-spaces:end; } #both { text-decoration-skip-spaces:start end; } #none { text-decoration-skip-spaces:none; } #all { text-decoration-skip-spaces:all; }</style><div id='start' class='line'> A </div><div id='end' class='line'> A </div><div id='both' class='line'> A </div><div id='none' class='line'> A </div><div id='all' class='line'> A </div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let white = [u8::MAX, u8::MAX, u8::MAX, u8::MAX];
+    let black = [0, 0, 0, u8::MAX];
+    let run_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id)
+            .unwrap()
+    };
+    let start = run_for("start");
+    let end = run_for("end");
+    let both = run_for("both");
+    let none = run_for("none");
+    let all = run_for("all");
+    assert!(start.starts_line && start.ends_line);
+    assert!(end.starts_line && end.ends_line);
+    assert!(both.starts_line && both.ends_line);
+    assert!(none.starts_line && none.ends_line);
+    assert!(all.starts_line && all.ends_line);
+
+    let assert_mode = |run: &glass_browser::browser::native_engine::NativeTextLayout,
+                       expected: [bool; 3]| {
+        for (label, row) in [
+            ("overline", run.origin.y.checked_sub(1)),
+            ("line-through", run.origin.y.checked_add(3)),
+            ("underline", run.origin.y.checked_add(7)),
+        ] {
+            let Some(row) = row else { continue };
+            for (x, expected_space) in [(0, expected[0]), (6, expected[1]), (12, expected[2])] {
+                let pixel = surface.pixel(x, row).unwrap();
+                let expected_color = if expected_space { white } else { black };
+                assert_eq!(pixel, expected_color, "{label}, x {x}");
+            }
+        }
+    };
+    assert_mode(start, [true, false, false]);
+    assert_mode(end, [false, false, true]);
+    assert_mode(both, [true, false, true]);
+    assert_mode(none, [false, false, false]);
+    assert_mode(all, [true, false, true]);
 }
 
 #[test]

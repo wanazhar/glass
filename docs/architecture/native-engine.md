@@ -644,13 +644,15 @@ fallback remain unchanged. Focused, full-native, two-crate, strict, package,
 fuzz, security, formatting, and static local certification passed; exact
 evidence and cleanup are recorded in the task. Remote CI remains pending
 because the checkout is local-only.
-The dependency-ordered 120 design is recorded in
-`docs/plan/tasks/native-engine-120.md`. It will accept explicit,
+The dependency-ordered 120 implementation is complete at `897bd648` and
+recorded in `docs/plan/tasks/native-engine-120.md`. It accepts explicit,
 case-insensitive `text-decoration-skip-spaces: unset` through the same private
-declaration-only boundary and resolve it as inherited parent state; the public
+declaration-only boundary and resolves it as inherited parent state; the public
 finite paint enum, display-list schema, rasterizer, and omitted fallback remain
-unchanged. Implementation and certification are pending; remote CI remains
-pending because the checkout is local-only.
+unchanged. Focused, full-native, two-crate, strict, package, fuzz, security,
+formatting, and static local certification passed; exact evidence and cleanup
+are recorded in the task. Remote CI remains pending because the checkout is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

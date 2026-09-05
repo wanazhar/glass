@@ -1036,14 +1036,17 @@ crate-boundary changes remain outside this slice. Focused, full-native,
 two-crate, strict, package, fuzz, security, formatting, and static local
 certification passed; exact evidence and cleanup are recorded in the task.
 
-The dependency-ordered [native-engine-120](tasks/native-engine-120.md) design
-is now active. It will accept explicit case-insensitive
-`text-decoration-skip-spaces: unset` through the same private
-declaration-only value and resolve it as inherited parent state, keeping the
+The dependency-ordered [native-engine-120](tasks/native-engine-120.md)
+implementation is complete at `897bd648`. It accepts explicit
+case-insensitive `text-decoration-skip-spaces: unset` through the same private
+declaration-only value and resolves it as inherited parent state, keeping the
 public finite paint enum and all artifact consumers unchanged. `revert`,
 `revert-layer`, general CSS-wide keyword machinery, layout/raster changes, new
 dependencies, default-feature changes, and crate-boundary changes remain
-outside this slice; implementation and certification are pending.
+outside this slice. Focused, full-native, two-crate, strict, package, fuzz,
+security, formatting, and static local certification passed; exact evidence
+and cleanup are recorded in the task. Remote CI remains pending because the
+checkout is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

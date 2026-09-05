@@ -890,13 +890,15 @@ private declaration-only representation and resolves it against the existing
 omitted fallback remain unchanged. Focused, full-native, two-crate, strict,
 package, fuzz, security, formatting, and static local certification passed;
 exact evidence and cleanup are recorded in the task.
-The dependency-ordered `native-engine-120` design is recorded in
-`docs/plan/tasks/native-engine-120.md`. It will accept explicit,
-case-insensitive `text-decoration-skip-spaces: unset` through the same private
-declaration-only representation and resolve it as inherited parent state for
-this inherited property. The resolved paint enum, display-list, raster, layout,
-and omitted fallback remain unchanged; implementation and certification are
-pending.
+The dependency-ordered `native-engine-120` implementation is complete at
+`897bd648` and recorded in `docs/plan/tasks/native-engine-120.md`. It accepts
+explicit, case-insensitive `text-decoration-skip-spaces: unset` through the
+same private declaration-only representation and resolves it as inherited
+parent state for this inherited property. The resolved paint enum, display-list,
+raster, layout, and omitted fallback remain unchanged. Focused, full-native,
+two-crate, strict, package, fuzz, security, formatting, and static local
+certification passed; exact evidence and cleanup are recorded in the task.
+Remote CI remains pending because the checkout is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1142,7 +1144,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-117` | completed bounded Unicode `char::is_whitespace()` classification for `text-decoration-skip-spaces` replay across literal/preformatted fixed-cell runs, reusing 116 line-edge provenance and preserving ASCII spacing arithmetic | `native-engine-116` | CSS whitespace-mode conformance, Unicode line breaking, tab stops, initial-value changes, atomic-inline and ancestor propagation, cross-fragment continuity, font metrics, shaping, bidi, vertical writing, antialiasing, layout/geometry changes, and browser-wide text conformance |
 | `native-engine-118` | completed explicit case-insensitive `text-decoration-skip-spaces:initial` keyword mapped to the existing `start end` computed value while preserving the deliberate omitted-property `none` fallback | `native-engine-117` | general CSS-wide keyword machinery, `inherit`/`unset`/`revert` semantics, omitted-value initial-default changes, atomic-inline and ancestor propagation, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
 | `native-engine-119` | completed explicit case-insensitive `text-decoration-skip-spaces:inherit` through a private declaration-only value resolved at the existing parent-style boundary, keeping the public paint enum finite | `native-engine-118` | `unset`/`revert`/`revert-layer`, general CSS-wide keyword machinery, changed omitted-value behavior, atomic-inline and ancestor propagation beyond the existing DOM walk, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
-| `native-engine-120` | planned explicit case-insensitive `text-decoration-skip-spaces:unset` resolved as inherited parent state through the existing private declaration-only boundary, keeping the public paint enum finite | `native-engine-119` | `revert`/`revert-layer`, general CSS-wide keyword machinery, changed omitted-value behavior, atomic-inline and ancestor propagation beyond the existing DOM walk, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
+| `native-engine-120` | completed explicit case-insensitive `text-decoration-skip-spaces:unset` resolved as inherited parent state through the existing private declaration-only boundary, keeping the public paint enum finite | `native-engine-119` | `revert`/`revert-layer`, general CSS-wide keyword machinery, changed omitted-value behavior, atomic-inline and ancestor propagation beyond the existing DOM walk, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1550,7 +1552,7 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-120.md` is the active next task contract;
+`docs/plan/tasks/native-engine-120.md` is the latest completed task;
 `docs/plan/tasks/native-engine-119.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-118.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-117.md` is the preceding completed checkpoint;

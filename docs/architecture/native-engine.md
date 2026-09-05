@@ -623,6 +623,13 @@ provenance, and the explicit omission fallback remain unchanged. Focused,
 full-native, two-crate, package, fuzz, security, and static local
 certification passed; exact evidence and cleanup are recorded in the task.
 Remote CI remains pending because the checkout is local-only.
+The dependency-ordered 118 design is recorded in
+`docs/plan/tasks/native-engine-118.md`. It will accept only the explicit,
+case-insensitive `text-decoration-skip-spaces: initial` keyword and resolve it
+through the existing `StartAndEnd` value. The established omitted-declaration
+fallback remains `none`; no general CSS-wide keyword machinery, layout owner,
+display-list field, dependency, default-feature, or crate-boundary change is
+planned. Implementation and full local certification remain pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

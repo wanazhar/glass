@@ -1015,6 +1015,14 @@ fallback remain unchanged. Focused, full-native, two-crate, package, fuzz,
 security, and static local certification passed; exact evidence and cleanup
 are recorded in the task.
 
+The dependency-ordered [native-engine-118](tasks/native-engine-118.md) design
+is recorded and implementation is pending. It scopes the next change to the
+explicit case-insensitive `text-decoration-skip-spaces: initial` keyword,
+which maps to the existing `start end` computed value while preserving the
+deliberate omitted-property `none` fallback. General CSS-wide keyword
+machinery and all layout, raster, dependency, feature-default, and crate
+boundary changes remain outside this slice.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

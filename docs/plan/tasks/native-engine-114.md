@@ -1,7 +1,7 @@
 ---
 id: native-engine-114
 scope: glass-browser/native-engine/text-decoration-skip-ink
-status: implementation-in-progress
+status: complete
 depends-on: [native-engine-113]
 ---
 
@@ -100,9 +100,43 @@ recorded purpose. Completed validation removes exact regenerable output only
 after active-writer and open-file checks. Remote CI, browser parity, release,
 registry publication, and a third crate are not claimed by this local task.
 
+## Certification results
+
+Implementation is checkpointed at `ceedf1d8`; synchronized documentation is
+checkpointed at `d276d7b1`. Local certification completed on 2026-09-05:
+
+- focused parser/raster/integration coverage passed (10, 3, and 1 tests);
+- native library and integration suites passed (911 tests plus 1 ignored, and
+  151 tests); all-features browser library passed (912 tests plus 1 ignored);
+- glass-dev passed its serial unit, integration, and PTY suites (365, 4, and
+  15 tests);
+- strict workspace Clippy, no-default browser Clippy, warning-denied
+  workspace rustdoc, and both explicit package builds passed;
+- locked package checks passed for both crates, including the exact
+  glass-dev-to-glass-browser `0.3.14` packaged dependency check, and both
+  no-upload dry-publish checks passed;
+- offline fuzz-workspace checking passed for all targets;
+- `cargo deny check`, `cargo audit`, formatting, diff, documentation depth,
+  version/feature/TUI parity, release-documentation, documentation coverage,
+  public-adapter, reliability, and Web IR corpus checks passed. Security
+  output remains limited to the four repository-allowed warnings.
+
 ## Cleanup
 
 Record the exact isolated target and report paths, sizes, process/open-file
 checks, deletion counts, and post-removal filesystem state after
 certification. Do not remove shared Cargo registries, toolchains, source,
 durable user data, or other projects' non-regenerable artifacts.
+
+Certification cleanup completed on 2026-09-05. The isolated
+`/tmp/glass-114-target` and the generated `/tmp/glass-114-release-documentation-final.json`
+report were included in 80 exact user-owned `glass-*`/`forgebuild-*` roots;
+their measured pre-cleanup footprint was 10,687,500,288 bytes. The generated
+`target/package` directory and `target/.rustc_info.json` were the two exact
+repository outputs removed, measuring 1,531,904 bytes. A process scan found
+no open descriptors for any candidate before deletion; no Cargo/Rust writer
+was active. Bounded `find -P ... -xdev -depth -delete` removal reclaimed
+10,688,868,352 bytes. Verification found no matching temp roots,
+`target/package`, `.rustc_info.json`, or `fuzz/target`; available disk grew
+from 74,913,574,912 to 85,602,443,264 bytes (74 GiB to 85 GiB). The active
+repository `target/debug` Glass processes were intentionally preserved.

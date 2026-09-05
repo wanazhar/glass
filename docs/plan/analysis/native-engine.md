@@ -821,8 +821,8 @@ Implementation is `0c6a9ddc`; complete local gate and cleanup evidence are
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
-The active dependency-ordered `native-engine-114` implementation is recorded in
-`docs/plan/tasks/native-engine-114.md`. It adds inherited
+The dependency-ordered `native-engine-114` implementation is complete and
+recorded in `docs/plan/tasks/native-engine-114.md`. It adds inherited
 `text-decoration-skip-ink:auto|none` through a dedicated value in the existing
 immutable text command. `auto` suppresses underline and overline pixels only
 where the same fixed-cell text run emits glyph ink; `none` preserves existing
@@ -830,8 +830,9 @@ replay and line-through remains unchanged. Wavy, thickness, offset, clipping,
 scroll, opacity, capture, hit testing, semantics, source order, and layout
 remain shared. Font metrics, shaping, fragment continuity, and browser-wide
 conformance remain outside the design. Implementation is checkpointed at
-`ceedf1d8`; strict certification, cleanup, and remote CI remain pending because
-the branch is local-only.
+`ceedf1d8` and synchronized documentation at `d276d7b1`; all required local
+certification gates pass. Exact cleanup evidence and the local-only remote-CI
+boundary are recorded in the task file.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1071,7 +1072,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-111` | bounded inherited signed `text-underline-offset:-4px..=4px` for underline-only y translation through the immutable text command, preserving the 110 thickness/style raster owner | `native-engine-110` | auto/percentage/fractional/font-derived values, overline/line-through offsets, decoration-origin propagation, centering, baseline metrics, fragment continuity, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-112` | bounded inherited `text-decoration-style:double` through a dedicated text-decoration style type, painting two solid thickness-preserving bands with one separator pixel through the immutable text command | `native-engine-111` | wavy styles, font-metric centering, decoration-origin propagation, fragment continuity, layout/geometry changes, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-113` | bounded inherited `text-decoration-style:wavy` through the dedicated text-decoration style type, painting a continuous eight-pixel fixed-cell phase `[0,1,2,1,0,-1,-2,-1]` with resolved thickness through the immutable text command | `native-engine-112` | CSS metric centering, decoration-origin propagation, fragment continuity, antialiasing, layout/geometry changes, shaping, bidi, vertical writing, and browser-wide text conformance |
-| `native-engine-114` | implementation-in-progress bounded inherited `text-decoration-skip-ink:auto|none` through a dedicated value in the immutable text command, suppressing matching same-run glyph intersections for underline and overline replay while leaving line-through unchanged | `native-engine-113` | `all`, font metrics, shaping, bidi, vertical writing, decoration-origin propagation, cross-fragment continuity, antialiasing, layout/geometry changes, and browser-wide text conformance |
+| `native-engine-114` | completed bounded inherited `text-decoration-skip-ink:auto|none` through a dedicated value in the immutable text command, suppressing matching same-run glyph intersections for underline and overline replay while leaving line-through unchanged | `native-engine-113` | `all`, font metrics, shaping, bidi, vertical writing, decoration-origin propagation, cross-fragment continuity, antialiasing, layout/geometry changes, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1479,8 +1480,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-114.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-113.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-114.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-113.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-112.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-111.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-110.md` is the preceding completed checkpoint;

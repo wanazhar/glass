@@ -653,16 +653,17 @@ unchanged. Focused, full-native, two-crate, strict, package, fuzz, security,
 formatting, and static local certification passed; exact evidence and cleanup
 are recorded in the task. Remote CI remains pending because the checkout is
 local-only.
-The dependency-ordered 121 design is recorded in
-`docs/plan/tasks/native-engine-121.md`. It will accept explicit,
+The dependency-ordered 121 implementation is complete at `f361415a` and
+recorded in `docs/plan/tasks/native-engine-121.md`. It accepts explicit,
 case-insensitive `text-decoration-skip-spaces: revert` through a distinct
-private declaration-only state and resolve it at the existing one-author-origin
+private declaration-only state and resolves it at the existing one-author-origin
 inherited fallback boundary; the public finite paint enum, display-list,
 rasterizer, and omitted fallback remain unchanged. `revert-layer`, cascade
 layers, multiple style origins, general CSS-wide keyword machinery, and all
-layout/raster changes remain outside this slice; implementation and
-certification are pending. Remote CI remains pending because the checkout is
-local-only.
+layout/raster changes remain outside this slice. Focused, full-native,
+two-crate, strict, package, fuzz, security, formatting, and static local
+certification passed; exact evidence and cleanup are recorded in the task.
+Remote CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -665,13 +665,18 @@ layout/raster changes remain outside this slice. Focused, full-native,
 two-crate, strict, package, fuzz, security, formatting, and static local
 certification passed; exact evidence and cleanup are recorded in the task.
 Remote CI remains pending because the checkout is local-only.
-The next dependency-ordered 122 boundary is designed in
-`docs/plan/tasks/native-engine-122.md`: bounded top-level named cascade layers
-with private layer priority metadata and explicit
-`text-decoration-skip-spaces: revert-layer` rollback. It is limited to 15
-named layers, keeps the unlayered bucket above named layers, and does not claim
-layer statements, nesting, multiple origins, or general CSS-wide keyword
-machinery. Implementation and certification are pending.
+The dependency-ordered 122 implementation is complete at `1291fc2c`, with the
+strict-Clippy parser-context follow-up at `efb5bdfc`, and is recorded in
+`docs/plan/tasks/native-engine-122.md`. It adds bounded top-level named
+cascade layers with private first-appearance ordering, a 15-layer limit, an
+unlayered/inline bucket above named layers, and explicit
+`text-decoration-skip-spaces: revert-layer` rollback through lower candidates
+and the existing inherited/root fallback. Invalid layer forms remain typed
+diagnostics; layer metadata never reaches public paint, layout, display-list,
+or raster artifacts. Focused, full-native, two-crate, strict, package, fuzz,
+security, formatting, and static local certification passed; exact evidence
+and cleanup are recorded in the task. Remote CI remains pending because the
+checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

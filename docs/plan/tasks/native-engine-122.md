@@ -1,7 +1,7 @@
 ---
 id: native-engine-122
 scope: glass-browser/native-engine/cascade-layers-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-121]
 ---
 
@@ -122,46 +122,88 @@ browser-wide CSS conformance, or browser parity.
 
 ## Implementation
 
-Pending. The implementation must add the bounded layer parser/registry, private
-cascade priority encoding, `revert-layer` candidate rollback, and focused
-parser/cascade plus display-list/raster regressions without changing package
-dependencies, feature defaults, crate boundaries, or unrelated style owners.
+Complete at `1291fc2c`, with the strict-Clippy parser-context follow-up at
+`efb5bdfc`. The native stylesheet parser now registers first-appearance named
+layers, reopens an existing layer at its original rank, and encodes the
+private layer rank ahead of selector specificity without changing the public
+style or display-list types. It accepts only bounded top-level named layer
+blocks, keeps the unlayered bucket above the 15 named-layer bound, and emits
+typed diagnostics for statements, anonymous/comma-separated names, nested
+layers, malformed preludes, and over-limit layers. The private
+`RevertLayer` declaration state rolls back candidates from the unlayered or
+winning named layer through lower layers before reaching the established
+inherited/root fallback. Focused parser/cascade, display-list, and decoded
+raster regressions cover ordering, reopening, invalid forms, rollback, and
+case-insensitive parsing. No package dependency, feature default, crate
+boundary, public paint value, layout owner, or unrelated style owner changed.
 
 ## Verification
 
-The focused gate must cover:
+The focused native feature gates passed after the initial clean compile
+(`CARGO_TARGET_DIR=/tmp/glass-122-focused`, 13:21):
 
-- named-layer parsing, repeated-name reopening, first-appearance ordering,
-  layer-vs-specificity precedence, unlayered/inline precedence, and layer
-  limit/invalid-form diagnostics;
-- case-insensitive `revert-layer` parsing and rejection for unrelated
-  properties;
-- rollback from a named layer to the preceding named layer, rollback from the
-  unlayered bucket to the highest named layer, repeated rollback, and root
-  inherited fallback;
-- display-list and decoded-raster evidence showing the resolved finite value
-  rather than an unresolved keyword.
+- `RUST_MIN_STACK=33554432 CARGO_TARGET_DIR=/tmp/glass-122-focused cargo test -p glass-browser --features native-engine --lib` — 918 passed, 0 failed, 1 ignored; 7.43s test body.
+- `CARGO_TARGET_DIR=/tmp/glass-122-focused cargo test -p glass-browser --features native-engine --test native_engine` — 159 passed, 0 failed; 3.68s test body.
+- `CARGO_TARGET_DIR=/tmp/glass-122-focused cargo test -p glass-dev` — 365 unit tests, 4 development-runtime integration tests, 15 PTY tests, and 1 doctest passed; 171.38s test body and 12.07s doctest phase.
 
-Then run the established native feature library/integration suites, locked
-`glass-dev` tests, strict Clippy, no-default-feature Clippy, warnings-denied
-rustdoc, locked package/fuzz/deny/audit checks, and the repository's static
-documentation/reliability/adapter/Web IR validators. Record exact commands,
-counts, durations, warnings, commit checkpoints, and cleanup evidence here.
-Remote CI, browser parity, release, registry publication, and a third crate
-remain outside local task evidence unless separately executed and verified.
+The first unqualified native library run reproduced the pre-existing large
+Clap parser stack overflow in `cli::args::tests::agent_readiness_commands_are_explicit`.
+The explicit `RUST_MIN_STACK=33554432` rerun passed all 918 tests; this is an
+environmental test-runner limitation, not a 122 failure.
+
+Strict lint and documentation gates passed with isolated targets:
+
+- `CARGO_TARGET_DIR=/tmp/glass-122-focused cargo clippy -p glass-browser --all-targets --all-features -- -D warnings` — passed in 5m35s.
+- `CARGO_TARGET_DIR=/tmp/glass-122-focused cargo clippy -p glass-dev --all-targets --all-features -- -D warnings` — passed in 6m56s.
+- `CARGO_TARGET_DIR=/tmp/glass-122-focused cargo clippy -p glass-browser --no-default-features --all-targets -- -D warnings` — passed in 4m43s.
+- `RUSTDOCFLAGS="-D warnings" CARGO_TARGET_DIR=/tmp/glass-122-focused cargo doc --workspace --all-features --no-deps` — passed in 3m25s.
+- Fresh default-feature documentation binaries built in `/tmp/glass-122-doc-target` (browser 12m10s, dev 12m34s), then `python3 scripts/check-documentation-coverage.py --glass /tmp/glass-122-doc-target/debug/glass --glass-browser /tmp/glass-122-doc-target/debug/glass-browser` passed with 536 Markdown files, 345 full-product MCP tools, 100 browser-only tools, 17 examples, and 22 public modules.
+
+Locked packaging and supply-chain gates passed using `/tmp/glass-122-gates`:
+
+- `CARGO_TARGET_DIR=/tmp/glass-122-gates cargo package -p glass-browser --locked --no-verify` — 196 files, 5.1 MiB.
+- `CARGO_TARGET_DIR=/tmp/glass-122-gates cargo package -p glass-dev --locked --no-verify --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'` — 69 files, 2.6 MiB.
+- `python3 scripts/check-packaged-dependency.py /tmp/glass-122-gates/package/glass-dev-0.3.14.crate --version 0.3.14` — exact `glass-browser` 0.3.14 dependency confirmed.
+- `cargo fetch --manifest-path fuzz/Cargo.toml --locked && CARGO_TARGET_DIR=/tmp/glass-122-gates cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets` — passed in 8m16s.
+- `cargo deny check` — passed with the existing duplicate dependency warnings.
+- `cargo audit` — passed with the four configured warnings: unmaintained `bincode`, unmaintained `yaml-rust`, the allowed `lru` unsoundness advisory, and yanked `chacha20`.
+
+Formatting and repository validators passed: `cargo fmt --all -- --check`;
+version sync; feature parity (14 capabilities / 4 targets); TUI shortcuts
+(15 implementation keys / 63 documentation markers); documentation depth (93
+guides / 19 contracts); release documentation truth (536 Markdown documents,
+83 current documents, 57 previous-version hits, 625 semantic hits, 0 current
+claim failures); documentation coverage (above); reliability (6 scenarios / 4
+targets); public read-only adapters (5); and Web IR (8 fixtures / 8 scenarios
+/ 11 categories). The release, browser-parity, remote-CI, registry-
+publication, and third-crate boundaries remain unclaimed.
 
 ## Cleanup
 
-All expensive gates must use an isolated task target where practical. Before
-deleting generated output, verify no Cargo/rustc/rustdoc/Clippy/fuzz/test
-writer owns it and no open file handle remains. Remove only the exact task
-target, reports, scratch entries, and generated repository evidence created by
-this task; preserve source, durable fixtures, active processes, and unrelated
-workloads. Final evidence must show no repository `target/`, no current task
-target/report candidates, no open handles, and the before/after available-byte
-delta.
+All expensive gates used isolated task targets. The first focused target
+`/tmp/glass-122-focused` measured 6,629,189,574 bytes across 10,639 files and
+was removed before the package/static rerun after confirming no active
+Cargo/rustc/rustdoc/Clippy/fuzz/test writer and no open handle. The later
+package/fuzz target `/tmp/glass-122-gates` measured 679,050,614 bytes and the
+documentation binary target `/tmp/glass-122-doc-target` measured
+2,898,338,235 bytes. Exact generated reports were
+`/tmp/glass-122-release-doc.json` (173,575 bytes),
+`/tmp/glass-122-reliability.json` (3,482 bytes), and
+`/tmp/glass-122-adapters.json` (1,418 bytes). The second cleanup observed a
+3,596,587,008-byte filesystem availability increase. Both isolated targets
+and all three reports were deleted with bounded `find -P` cleanup after fresh
+process/open-handle checks; no process was terminated. The three pre-existing
+Glass processes (PIDs 590083, 610599, and 611107) reference historical
+`target/debug/glass` paths and remained outside this task's cleanup scope.
+Final verification found no `/tmp/glass-122-*` candidates and no repository
+`target/`; the task target and reports are not left behind.
 
 ## Certification
 
-Pending local certification after implementation, full validation, issue #40
-synchronization, and exact regenerable-output cleanup.
+Locally certified at `efb5bdfc` after implementation, native/two-crate tests,
+strict lint, rustdoc, packaging, fuzz, dependency, formatting, documentation,
+reliability, adapter, Web IR, and exact regenerable-output cleanup. The
+public resolved value remains finite and unchanged; layer rank and
+`revert-layer` rollback remain private to the CSS cascade. Issue #40 must be
+synchronized with this evidence, while remote CI, browser parity, release,
+and registry publication remain explicitly unclaimed from this local checkout.

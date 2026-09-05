@@ -81,6 +81,9 @@ paint including distinct shorthand combinations, bounded inherited
 bounded inherited
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
 thickness-scaled integer dash/dot periods, bounded inherited signed fixed-pixel
+`text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
+underline and overline while preserving line-through, bounded inherited signed
+fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
 decreasing or increasing y, bounded
 inherited ASCII `text-transform:none|uppercase|lowercase` layout, and
@@ -565,7 +568,7 @@ browser-wide conformance remain outside the boundary. Implementation is
 `docs/plan/tasks/native-engine-113.md`. Remote CI remains pending because the
 branch is local-only.
 
-The next dependency-ordered 114 design is recorded in
+The active dependency-ordered 114 implementation is recorded in
 `docs/plan/tasks/native-engine-114.md`. It adds inherited
 `text-decoration-skip-ink:auto|none` through a dedicated value carried by the
 existing immutable text command. `auto` suppresses underline and overline
@@ -574,6 +577,8 @@ preserves the existing replay, and line-through remains unchanged. Wavy,
 thickness, offset, clipping, scroll, opacity, capture, hit testing, semantics,
 source order, and layout remain shared. Font metrics, shaping, fragment
 continuity, and browser-wide conformance remain outside the bounded design.
+Implementation is checkpointed at `ceedf1d8`; focused and full native tests
+pass, while strict package/security/static certification remains in progress.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -872,14 +872,15 @@ omission fallback remain unchanged. Focused, full-native, two-crate, package,
 fuzz, security, and static local certification passed; exact evidence and
 cleanup are recorded in the task.
 
-The dependency-ordered `native-engine-118` design is recorded in
-`docs/plan/tasks/native-engine-118.md`. It scopes the next parser/cascade
-boundary to the explicit, case-insensitive
-`text-decoration-skip-spaces: initial` keyword, mapping it to the existing
-`StartAndEnd` computed value while preserving the deliberate omitted-property
-`None` fallback. Other CSS-wide keywords, layout/raster changes, new
-dependencies, default-feature changes, and crate-boundary changes remain out
-of scope until separately designed and verified.
+The dependency-ordered `native-engine-118` implementation is complete at
+`6f8e89fc` and recorded in `docs/plan/tasks/native-engine-118.md`. It accepts
+only the explicit, case-insensitive `text-decoration-skip-spaces: initial`
+keyword and maps it to the existing `StartAndEnd` computed value while
+preserving the deliberate omitted-property `None` fallback. Other CSS-wide
+keywords, layout/raster changes, new dependencies, default-feature changes,
+and crate-boundary changes remain outside this slice. Focused, full-native,
+two-crate, strict, package, fuzz, security, formatting, and static local
+certification passed; exact evidence and cleanup are recorded in the task.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1123,7 +1124,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-115` | completed bounded inherited `text-decoration-skip-spaces:none|all` through a dedicated value in the immutable text command, suppressing decoration pixels over same-run ASCII-space intervals including word/letter/justification spacing for underline, overline, and line-through | `native-engine-114` | `start`/`end`, Unicode whitespace, line-boundary semantics, font metrics, shaping, bidi, vertical writing, decoration-origin propagation, cross-fragment continuity, antialiasing, layout/geometry changes, and browser-wide text conformance |
 | `native-engine-116` | completed bounded inherited `text-decoration-skip-spaces:start|end|start end` through block-owned flow-flushed line-edge provenance beside immutable text commands, suppressing only leading/trailing ASCII-space intervals | `native-engine-115` | Unicode whitespace, initial-value changes, atomic-inline and ancestor propagation, cross-fragment continuity, font metrics, shaping, bidi, vertical writing, antialiasing, layout/geometry changes, and browser-wide text conformance |
 | `native-engine-117` | completed bounded Unicode `char::is_whitespace()` classification for `text-decoration-skip-spaces` replay across literal/preformatted fixed-cell runs, reusing 116 line-edge provenance and preserving ASCII spacing arithmetic | `native-engine-116` | CSS whitespace-mode conformance, Unicode line breaking, tab stops, initial-value changes, atomic-inline and ancestor propagation, cross-fragment continuity, font metrics, shaping, bidi, vertical writing, antialiasing, layout/geometry changes, and browser-wide text conformance |
-| `native-engine-118` | planned explicit case-insensitive `text-decoration-skip-spaces:initial` keyword mapped to the existing `start end` computed value while preserving the deliberate omitted-property `none` fallback | `native-engine-117` | general CSS-wide keyword machinery, `inherit`/`unset`/`revert` semantics, omitted-value initial-default changes, atomic-inline and ancestor propagation, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
+| `native-engine-118` | completed explicit case-insensitive `text-decoration-skip-spaces:initial` keyword mapped to the existing `start end` computed value while preserving the deliberate omitted-property `none` fallback | `native-engine-117` | general CSS-wide keyword machinery, `inherit`/`unset`/`revert` semantics, omitted-value initial-default changes, atomic-inline and ancestor propagation, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1531,7 +1532,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-117.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-118.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-117.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-116.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-115.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-114.md` is the preceding completed checkpoint;

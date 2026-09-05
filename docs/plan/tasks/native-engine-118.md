@@ -1,7 +1,7 @@
 ---
 id: native-engine-118
 scope: glass-browser/native-engine/text-decoration-skip-spaces-initial
-status: planned
+status: complete
 depends-on: [native-engine-117]
 ---
 
@@ -86,10 +86,11 @@ browser text-paint parity, or browser-wide CSS conformance.
 
 ## Implementation
 
-The parser and diagnostic support will recognize the case-insensitive single
-token `initial` and map it to `StartAndEnd`. Parser, inheritance/cascade, and
-native raster integration regressions will prove that explicit `initial`
-overrides inherited values while omitted declarations preserve `None`.
+The parser and diagnostic support recognize the case-insensitive single token
+`initial` and map it to `StartAndEnd`. Parser, inheritance/cascade, and native
+raster integration regressions prove that explicit `initial` overrides
+inherited values while omitted declarations preserve `None`. The
+implementation checkpoint is `6f8e89fc`.
 
 ## Verification
 
@@ -109,14 +110,54 @@ registry publication, and a third crate are not claimed by this local task.
 
 ## Certification
 
-To be filled after implementation and the complete local gate pass. The task
-must record exact test counts, package/dependency evidence, static audit
-results, known non-fatal warnings, and cleanup inventory. The epic remains
-local-only unless the branch is explicitly pushed and remote CI is observed.
+The focused CSS parser/cascade filter passed 2/2 tests and the focused native
+integration filter passed 4/4 tests. The final feature-enabled browser
+library passed 915 tests with 1 ignored and 0 failures; the full native
+integration suite passed 155/155 tests. The serial `glass-dev` suite passed
+365 unit tests, 4 integration tests, 15 PTY tests, and 1 doctest.
+
+Workspace all-feature Clippy and no-default-feature browser Clippy passed with
+warnings denied. Warning-denied workspace rustdoc and the all-feature debug
+workspace build passed; the build emitted the existing non-fatal duplicate
+`glass-browser`/`.dwp` output-name warning between the two packages.
+
+Locked `glass-browser` packaging passed with 196 files and a 5.1 MiB archive.
+A local no-verify `glass-dev` archive passed with 69 files and a 2.6 MiB
+archive; the packaged dependency validator confirmed an exact
+`glass-browser 0.3.14` dependency. The public-registry verification
+limitation is unchanged: immutable published `glass-browser 0.3.14` lacks the
+current `BrowserRuntime`, `browser_runtime`, and `browser_endpoint` API
+required by `glass-dev 0.3.14`; no upload was attempted. The known yanked
+`chacha20 0.10.1` lockfile warning remained non-fatal.
+
+Locked fuzz fetch plus offline all-target checking passed. `cargo deny check`
+passed with the existing duplicate-dependency warnings, and `cargo audit`
+passed with the repository's four already-allowed warnings: unmaintained
+`bincode`, unmaintained `yaml-rust`, the recorded `lru` unsoundness advisory,
+and yanked `chacha20`. Formatting and diff checks passed.
+
+The final static audit passed with 532 Markdown files, 83 current-version
+documents, 57 previous-version hits, 615 semantic hits, and zero current-claim
+failures. Coverage passed with 345 full-product MCP tools, 100 browser-only
+tools, 17 examples, and 22 public modules; TUI passed 15/63, depth 93/19,
+reliability 6/4, adapters 5, and Web IR 8/8/11. Remote CI, browser parity,
+release, registry publication, and a third crate are not claimed by this
+local checkpoint.
 
 ## Cleanup
 
-To be filled after final certification. Only exact regenerable targets and
-reports created for this slice may be removed, after process and open-file
-checks. Shared Cargo registries, toolchains, source, durable data, other
-projects, and pre-existing Glass processes must be preserved.
+The final exact inventory found the single `/tmp/glass-118-focused` target at
+10,488,023,187 bytes across 15,389 files (about 9.77 GiB), plus
+`/tmp/glass-118-release-doc.json` (171,674 bytes),
+`/tmp/glass-118-reliability.json` (3,482 bytes),
+`/tmp/glass-118-adapters.json` (1,418 bytes), and
+`/tmp/glass-118-web-ir.txt` (3,934 bytes). No Cargo, rustc, rustdoc, Clippy,
+fuzz, rust-analyzer, or Glass test writer and no open descriptor referenced
+those exact candidates. Bounded deletion removed the target and reports after
+the writer/open-file checks, and the empty repository `target` directory was
+absent. Two unrelated already-removed OpenClaw temporary entries raced with
+the bounded `/tmp` scan; no Glass candidate was affected. Shared Cargo
+registries, toolchains, source, durable data, and other projects were not
+touched. The three pre-existing Glass processes were preserved. After cleanup,
+all exact candidates were absent and `/` was 59% used with 85,520,547,840
+bytes available (about 80 GiB).

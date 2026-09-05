@@ -32,6 +32,7 @@ bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-just
 bounded-text-justification-control/bounded-text-decoration-lines/
 bounded-text-decoration-combinations,
 bounded-text-decoration-skip-spaces-line-edges,
+bounded-text-decoration-skip-spaces-initial,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -623,13 +624,16 @@ provenance, and the explicit omission fallback remain unchanged. Focused,
 full-native, two-crate, package, fuzz, security, and static local
 certification passed; exact evidence and cleanup are recorded in the task.
 Remote CI remains pending because the checkout is local-only.
-The dependency-ordered 118 design is recorded in
-`docs/plan/tasks/native-engine-118.md`. It will accept only the explicit,
-case-insensitive `text-decoration-skip-spaces: initial` keyword and resolve it
-through the existing `StartAndEnd` value. The established omitted-declaration
-fallback remains `none`; no general CSS-wide keyword machinery, layout owner,
-display-list field, dependency, default-feature, or crate-boundary change is
-planned. Implementation and full local certification remain pending.
+The dependency-ordered 118 implementation is complete at `6f8e89fc` and
+recorded in `docs/plan/tasks/native-engine-118.md`. The parser accepts only the
+explicit, case-insensitive `text-decoration-skip-spaces: initial` keyword and
+resolves it through the existing `StartAndEnd` value. The established
+omitted-declaration fallback remains `none`; no general CSS-wide keyword
+machinery, layout owner, display-list field, dependency, default-feature, or
+crate-boundary change was made. Focused, full-native, two-crate, strict,
+package, fuzz, security, formatting, and static local certification passed;
+exact evidence and cleanup are recorded in the task. Remote CI remains
+pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -1803,7 +1803,7 @@ fn native_text_decoration_skip_spaces_initial_resets_to_both_edges() {
                     && diagnostic.detail == "text-decoration-skip-spaces"
             })
             .count()
-            >= 2
+            == 1
     );
 }
 
@@ -1933,6 +1933,79 @@ fn native_text_decoration_skip_spaces_unset_resolves_parent_value() {
     let white = [u8::MAX, u8::MAX, u8::MAX, u8::MAX];
     let black = [0, 0, 0, u8::MAX];
     for run in [stylesheet_unset, inline_unset] {
+        for row in [run.origin.y + 3, run.origin.y + 7] {
+            assert_eq!(surface.pixel(run.origin.x, row), Some(white));
+            assert_eq!(surface.pixel(run.origin.x + 8, row), Some(black));
+            assert_eq!(surface.pixel(run.origin.x + 16, row), Some(white));
+        }
+    }
+    for row in [explicit_none.origin.y + 3, explicit_none.origin.y + 7] {
+        assert_eq!(surface.pixel(explicit_none.origin.x, row), Some(black));
+        assert_eq!(surface.pixel(explicit_none.origin.x + 16, row), Some(black));
+    }
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-skip-spaces"
+    }));
+}
+
+#[test]
+fn native_text_decoration_skip_spaces_revert_resolves_parent_value() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; white-space:pre; text-decoration:underline overline line-through; text-decoration-skip-ink:none; } .child { display:block; } #parent { text-decoration-skip-spaces:all; } #stylesheet-revert { text-decoration-skip-spaces:ReVeRt; } #inline-revert { text-decoration-skip-spaces:none; }</style><div id='parent' class='line'><span id='stylesheet-revert' class='child'>\tA\u{00a0}</span><span id='inline-revert' class='child' style='text-decoration-skip-spaces:revert'>\tA\u{00a0}</span><span id='explicit-none' class='child' style='text-decoration-skip-spaces:none'>\tA\u{00a0}</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let node_for = |id| document.resolve_target(&format!("id={id}")).unwrap();
+    let run_for = |id| {
+        let node_id = node_for(id);
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id)
+            .unwrap()
+    };
+    let stylesheet_revert = run_for("stylesheet-revert");
+    let inline_revert = run_for("inline-revert");
+    let explicit_none = run_for("explicit-none");
+    for run in [stylesheet_revert, inline_revert, explicit_none] {
+        assert_eq!(run.text, "\tA\u{00a0}");
+        assert!(run.starts_line && run.ends_line);
+    }
+    let skip_spaces_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                decoration_skip_spaces,
+                ..
+            } if *command_node_id == node_id => Some(*decoration_skip_spaces),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        skip_spaces_for(node_for("stylesheet-revert")),
+        Some(NativeTextDecorationSkipSpaces::All)
+    );
+    assert_eq!(
+        skip_spaces_for(node_for("inline-revert")),
+        Some(NativeTextDecorationSkipSpaces::All)
+    );
+    assert_eq!(
+        skip_spaces_for(node_for("explicit-none")),
+        Some(NativeTextDecorationSkipSpaces::None)
+    );
+
+    let white = [u8::MAX, u8::MAX, u8::MAX, u8::MAX];
+    let black = [0, 0, 0, u8::MAX];
+    for run in [stylesheet_revert, inline_revert] {
         for row in [run.origin.y + 3, run.origin.y + 7] {
             assert_eq!(surface.pixel(run.origin.x, row), Some(white));
             assert_eq!(surface.pixel(run.origin.x + 8, row), Some(black));

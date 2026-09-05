@@ -88,6 +88,7 @@ pub enum NativeTextDecorationSkipSpaces {
 enum NativeTextDecorationSkipSpacesDeclaration {
     Value(NativeTextDecorationSkipSpaces),
     Inherit,
+    Unset,
 }
 
 impl NativeTextDecorationSkipSpacesDeclaration {
@@ -97,7 +98,7 @@ impl NativeTextDecorationSkipSpacesDeclaration {
     ) -> NativeTextDecorationSkipSpaces {
         match self {
             Self::Value(value) => value,
-            Self::Inherit => inherited,
+            Self::Inherit | Self::Unset => inherited,
         }
     }
 }
@@ -3282,6 +3283,7 @@ fn parse_text_decoration_skip_spaces(
                 NativeTextDecorationSkipSpaces::StartAndEnd,
             )),
             "inherit" => Some(NativeTextDecorationSkipSpacesDeclaration::Inherit),
+            "unset" => Some(NativeTextDecorationSkipSpacesDeclaration::Unset),
             "none" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
                 NativeTextDecorationSkipSpaces::None,
             )),
@@ -5465,10 +5467,13 @@ mod tests {
             parse_text_decoration_skip_spaces("InHeRiT"),
             Some(NativeTextDecorationSkipSpacesDeclaration::Inherit)
         );
+        assert_eq!(
+            parse_text_decoration_skip_spaces("uNsEt"),
+            Some(NativeTextDecorationSkipSpacesDeclaration::Unset)
+        );
         assert_eq!(parse_text_decoration_skip_spaces("start start"), None);
         assert_eq!(parse_text_decoration_skip_spaces("none start"), None);
         assert_eq!(parse_text_decoration_skip_spaces("all end"), None);
-        assert_eq!(parse_text_decoration_skip_spaces("unset"), None);
         assert_eq!(parse_text_decoration_skip_spaces("revert"), None);
         assert_eq!(parse_text_decoration_skip_spaces("revert-layer"), None);
         assert_eq!(parse_text_decoration_skip_spaces(""), None);
@@ -5495,12 +5500,16 @@ mod tests {
             parse_declarations("text-decoration-skip-spaces: inherit").text_decoration_skip_spaces,
             Some(NativeTextDecorationSkipSpacesDeclaration::Inherit)
         );
+        assert_eq!(
+            parse_declarations("text-decoration-skip-spaces: unset").text_decoration_skip_spaces,
+            Some(NativeTextDecorationSkipSpacesDeclaration::Unset)
+        );
     }
 
     #[test]
     fn text_decoration_skip_spaces_is_inherited_and_cascaded() {
         let document = NativeDocument::parse(
-            "<style>div { text-decoration-skip-spaces: none; } #parent { text-decoration-skip-spaces: START END; } #explicit { text-decoration-skip-spaces: end; } #inherit { text-decoration-skip-spaces: INHERIT; } #inline-inherit { text-decoration-skip-spaces: end; } #invalid { text-decoration-skip-spaces: start start; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='inherit'>Inherit</span><span id='inline-inherit' style='text-decoration-skip-spaces:inherit'>Inline inherit</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-skip-spaces:start'>Inline</span></div>",
+            "<style>div { text-decoration-skip-spaces: none; } #parent { text-decoration-skip-spaces: START END; } #explicit { text-decoration-skip-spaces: end; } #inherit { text-decoration-skip-spaces: INHERIT; } #unset { text-decoration-skip-spaces: UNSET; } #inline-inherit { text-decoration-skip-spaces: end; } #invalid { text-decoration-skip-spaces: start start; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='inherit'>Inherit</span><span id='unset'>Unset</span><span id='inline-inherit' style='text-decoration-skip-spaces:inherit'>Inline inherit</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-skip-spaces:start'>Inline</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -5508,6 +5517,7 @@ mod tests {
         let inherited = document.resolve_target("id=inherited").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
         let inherit = document.resolve_target("id=inherit").unwrap();
+        let unset = document.resolve_target("id=unset").unwrap();
         let inline_inherit = document.resolve_target("id=inline-inherit").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
         let inline = document.resolve_target("id=inline").unwrap();
@@ -5539,6 +5549,12 @@ mod tests {
         assert_eq!(
             document
                 .computed_style_for_layout(inherit)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::StartAndEnd
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(unset)
                 .text_decoration_skip_spaces(),
             NativeTextDecorationSkipSpaces::StartAndEnd
         );

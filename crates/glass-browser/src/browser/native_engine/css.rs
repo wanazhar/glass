@@ -79,6 +79,21 @@ pub enum NativeTextDecorationSkipInk {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeTextDecorationSkipInkDeclaration {
+    Value(NativeTextDecorationSkipInk),
+    RevertLayer,
+}
+
+impl NativeTextDecorationSkipInkDeclaration {
+    const fn resolve(self, inherited: NativeTextDecorationSkipInk) -> NativeTextDecorationSkipInk {
+        match self {
+            Self::Value(value) => value,
+            Self::RevertLayer => inherited,
+        }
+    }
+}
+
 /// Bounded inherited fixed-cell whitespace behavior for text decorations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeTextDecorationSkipSpaces {
@@ -988,7 +1003,9 @@ impl NativeStylesheet {
         let mut flex_basis = None;
         let mut text_decoration = None;
         let mut text_decoration_style = None;
-        let mut text_decoration_skip_ink = None;
+        let mut text_decoration_skip_ink: [Option<
+            CascadeValue<NativeTextDecorationSkipInkDeclaration>,
+        >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration_skip_spaces: [Option<
             CascadeValue<NativeTextDecorationSkipSpacesDeclaration>,
         >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
@@ -1132,20 +1149,21 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.text_decoration_skip_ink
-                && wins(
+            if let Some(value) = rule.declarations.text_decoration_skip_ink {
+                let layer = cascade_layer_index(rule.selector.specificity);
+                if wins(
                     rule.selector.specificity,
                     rule.order,
                     false,
-                    text_decoration_skip_ink,
-                )
-            {
-                text_decoration_skip_ink = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
+                    text_decoration_skip_ink[layer],
+                ) {
+                    text_decoration_skip_ink[layer] = Some(CascadeValue {
+                        value,
+                        specificity: rule.selector.specificity,
+                        order: rule.order,
+                        inline: false,
+                    });
+                }
             }
             if let Some(value) = rule.declarations.text_decoration_skip_spaces {
                 let layer = cascade_layer_index(rule.selector.specificity);
@@ -1677,15 +1695,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.text_decoration_skip_ink
-                && wins(u16::MAX, usize::MAX, true, text_decoration_skip_ink)
-            {
-                text_decoration_skip_ink = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
+            if let Some(value) = declarations.text_decoration_skip_ink {
+                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
+                if wins(u16::MAX, usize::MAX, true, text_decoration_skip_ink[layer]) {
+                    text_decoration_skip_ink[layer] = Some(CascadeValue {
+                        value,
+                        specificity: u16::MAX,
+                        order: usize::MAX,
+                        inline: true,
+                    });
+                }
             }
             if let Some(value) = declarations.text_decoration_skip_spaces {
                 let layer = usize::from(UNLAYERED_CASCADE_LAYER);
@@ -2120,8 +2139,10 @@ impl NativeStylesheet {
             text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
             text_decoration_style: text_decoration_style
                 .map_or(inherited.text_decoration_style, |value| value.value),
-            text_decoration_skip_ink: text_decoration_skip_ink
-                .map_or(inherited.text_decoration_skip_ink, |value| value.value),
+            text_decoration_skip_ink: resolve_text_decoration_skip_ink(
+                text_decoration_skip_ink,
+                inherited.text_decoration_skip_ink,
+            ),
             text_decoration_skip_spaces: resolve_text_decoration_skip_spaces(
                 text_decoration_skip_spaces,
                 inherited.text_decoration_skip_spaces,
@@ -2250,6 +2271,39 @@ fn resolve_text_decoration_skip_spaces(
         if matches!(
             candidate.value,
             NativeTextDecorationSkipSpacesDeclaration::RevertLayer
+        ) {
+            blocked[layer] = true;
+            continue;
+        }
+        return candidate.value.resolve(inherited);
+    }
+}
+
+fn resolve_text_decoration_skip_ink(
+    candidates: [Option<CascadeValue<NativeTextDecorationSkipInkDeclaration>>;
+        MAX_NATIVE_CASCADE_LAYERS],
+    inherited: NativeTextDecorationSkipInk,
+) -> NativeTextDecorationSkipInk {
+    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    loop {
+        let Some((layer, candidate)) =
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(layer, candidate)| {
+                    if blocked[layer] {
+                        None
+                    } else {
+                        candidate.map(|candidate| (layer, candidate))
+                    }
+                })
+        else {
+            return inherited;
+        };
+        if matches!(
+            candidate.value,
+            NativeTextDecorationSkipInkDeclaration::RevertLayer
         ) {
             blocked[layer] = true;
             continue;
@@ -2432,7 +2486,7 @@ struct NativeDeclarations {
     flex_basis: Option<FlexBasisValue>,
     text_decoration: Option<TextDecorationValue>,
     text_decoration_style: Option<NativeTextDecorationStyle>,
-    text_decoration_skip_ink: Option<NativeTextDecorationSkipInk>,
+    text_decoration_skip_ink: Option<NativeTextDecorationSkipInkDeclaration>,
     text_decoration_skip_spaces: Option<NativeTextDecorationSkipSpacesDeclaration>,
     text_decoration_thickness: Option<u32>,
     text_underline_offset: Option<i32>,
@@ -3488,10 +3542,15 @@ fn parse_text_decoration_style(value: &str) -> Option<NativeTextDecorationStyle>
     }
 }
 
-fn parse_text_decoration_skip_ink(value: &str) -> Option<NativeTextDecorationSkipInk> {
+fn parse_text_decoration_skip_ink(value: &str) -> Option<NativeTextDecorationSkipInkDeclaration> {
     match value.to_ascii_lowercase().as_str() {
-        "auto" => Some(NativeTextDecorationSkipInk::Auto),
-        "none" => Some(NativeTextDecorationSkipInk::None),
+        "auto" => Some(NativeTextDecorationSkipInkDeclaration::Value(
+            NativeTextDecorationSkipInk::Auto,
+        )),
+        "none" => Some(NativeTextDecorationSkipInkDeclaration::Value(
+            NativeTextDecorationSkipInk::None,
+        )),
+        "revert-layer" => Some(NativeTextDecorationSkipInkDeclaration::RevertLayer),
         _ => None,
     }
 }
@@ -4805,6 +4864,51 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_skip_ink_candidates() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { text-decoration-skip-ink: none; } #unlayered { text-decoration-skip-ink: auto; } } @layer theme { .named { text-decoration-skip-ink: auto; } #unlayered { text-decoration-skip-ink: none; } } #named { text-decoration-skip-ink: revert-layer; } #unlayered { text-decoration-skip-ink: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named' class='named'>Named</div>");
+        let unlayered = node(
+            "<div id='unlayered' style='text-decoration-skip-ink:revert-layer'>Unlayered</div>",
+        );
+        assert_eq!(
+            stylesheet.computed_for(&named).text_decoration_skip_ink(),
+            NativeTextDecorationSkipInk::Auto
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for(&unlayered)
+                .text_decoration_skip_ink(),
+            NativeTextDecorationSkipInk::None
+        );
+
+        let repeated = NativeStylesheet::from_sources(vec![
+            "@layer base { #target { text-decoration-skip-ink: none; } } @layer theme { #target { text-decoration-skip-ink: auto; } } @layer top { #target { text-decoration-skip-ink: revert-layer; } }"
+                .into(),
+        ])
+        .unwrap();
+        let target = node("<div id='target'>Target</div>");
+        assert_eq!(
+            repeated.computed_for(&target).text_decoration_skip_ink(),
+            NativeTextDecorationSkipInk::Auto
+        );
+
+        let root_fallback = NativeStylesheet::from_sources(vec![
+            "@layer base { #target { text-decoration-skip-ink: revert-layer; } }".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            root_fallback
+                .computed_for(&target)
+                .text_decoration_skip_ink(),
+            NativeTextDecorationSkipInk::Auto
+        );
+    }
+
+    #[test]
     fn stylesheet_cascade_resolves_uniform_border_with_inline_precedence() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { border: 1px solid red; } #card { border: 2px solid blue; }".into(),
@@ -5743,22 +5847,37 @@ mod tests {
         );
         assert_eq!(
             parse_text_decoration_skip_ink("AUTO"),
-            Some(NativeTextDecorationSkipInk::Auto)
+            Some(NativeTextDecorationSkipInkDeclaration::Value(
+                NativeTextDecorationSkipInk::Auto
+            ))
         );
         assert_eq!(
             parse_text_decoration_skip_ink("NoNe"),
-            Some(NativeTextDecorationSkipInk::None)
+            Some(NativeTextDecorationSkipInkDeclaration::Value(
+                NativeTextDecorationSkipInk::None
+            ))
+        );
+        assert_eq!(
+            parse_text_decoration_skip_ink("ReVeRt-LaYeR"),
+            Some(NativeTextDecorationSkipInkDeclaration::RevertLayer)
         );
         assert_eq!(parse_text_decoration_skip_ink("all"), None);
         assert_eq!(parse_text_decoration_skip_ink("inherit"), None);
+        assert_eq!(parse_text_decoration_skip_ink("revert"), None);
         assert_eq!(parse_text_decoration_skip_ink(""), None);
         assert_eq!(
             parse_declarations("text-decoration-skip-ink: none").text_decoration_skip_ink,
-            Some(NativeTextDecorationSkipInk::None)
+            Some(NativeTextDecorationSkipInkDeclaration::Value(
+                NativeTextDecorationSkipInk::None
+            ))
         );
         assert_eq!(
             parse_declarations("text-decoration-skip-ink: all").text_decoration_skip_ink,
             None
+        );
+        assert_eq!(
+            parse_declarations("text-decoration-skip-ink: revert-layer").text_decoration_skip_ink,
+            Some(NativeTextDecorationSkipInkDeclaration::RevertLayer)
         );
     }
 

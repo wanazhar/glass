@@ -1,7 +1,7 @@
 ---
 id: native-engine-116
 scope: glass-browser/native-engine/text-decoration-skip-spaces-line-edges
-status: design-ready
+status: complete
 depends-on: [native-engine-115]
 ---
 
@@ -97,6 +97,22 @@ their current owners.
 - `crates/glass-browser/tests/native_engine.rs`
 - synchronized native-engine architecture, analysis, README, and issue docs
 
+## Implementation
+
+The parser now accepts the bounded case-insensitive edge grammar and keeps
+`none` as the omission fallback. The existing flow flush marks only the
+authoritative block-owned first and last text items; nested inline temporary
+flows cannot claim a line edge. Paint carries that provenance as immutable
+sidecar metadata in text-command order, and raster replay applies the selected
+leading/trailing interval suppression to every decoration line. The fixed-cell
+spacing calculation is shared with the 115 `all` path, so letter, word, and
+final-line justification advances remain covered without introducing another
+geometry owner.
+
+Implementation checkpoints are `a671a559` and `db7585f7`; synchronized
+documentation is completed in this task and its architecture, analysis, and
+plan README records. The implementation remains default-off and local-only.
+
 ## Verification
 
 The implementation must provide parser/cascade coverage for case-insensitive
@@ -117,9 +133,60 @@ recorded purpose. Completed validation removes exact regenerable output only
 after active-writer and open-file checks. Remote CI, browser parity, release,
 registry publication, and a third crate are not claimed by this local task.
 
+## Certification
+
+The focused CSS parser/cascade selection passed 2/2 tests; the focused native
+decoration selection passed 2/2 tests; and the exact line-edge layout/raster
+regression passed 1/1. The final serial native integration suite passed 153/153
+tests. The feature-enabled browser library passed 914 tests with 1 ignored and
+0 failures. The first native-library invocation had one existing cancellation
+timing failure under parallel scheduling; the exact test passed on an isolated
+serial rerun, and the required final serial library run was green.
+
+The serial `glass-dev` suite passed 365 unit tests, 4 integration tests, 15
+PTY tests, and 1 doctest. Workspace all-feature Clippy and no-default-feature
+browser Clippy passed with warnings denied. Warning-denied workspace rustdoc,
+the all-feature debug workspace build, native-enabled optimized
+`glass-browser`, and optimized `glass-dev` binary builds all passed. The
+optimized package builds measured 18m21s for native-enabled `glass-browser`
+and 22m45s for `glass-dev`; the repository release profile uses `opt-level=z`,
+thin LTO, and one codegen unit. Cargo also emitted its existing non-fatal
+duplicate `glass-browser`/`.dwp` output-name collision when the workspace was
+built; package-specific builds completed without treating that warning as a
+failure.
+
+Locked browser packaging and its registry-backed publish dry-run passed. The
+dev archive was produced and its local `--no-verify` publish dry-run passed;
+registry-backed package/publish verification failed only because immutable
+published `glass-browser 0.3.14` lacks the current `BrowserRuntime`,
+`browser_runtime`, and `browser_endpoint` API required by `glass-dev 0.3.14`.
+The packaged dependency validator still resolved `glass-browser` exactly at
+0.3.14. No upload was attempted. The known yanked `chacha20 0.10.1` lockfile
+warning remained non-fatal.
+
+Locked fuzz fetch plus offline all-target checking passed in 8m32s. `cargo
+deny check` passed with its existing duplicate-dependency warnings, and
+`cargo audit` passed with the repository's four allowed warnings. Formatting
+and diff checks passed. The final static audit passed with 530 Markdown files,
+83 current-version hits, 57 previous-version hits, 610 semantic hits, and
+zero current-claim failures; documentation coverage passed with 345
+full-product MCP tools, 100 browser-only tools, 17 examples, and 22 public
+modules; TUI passed 15/63, depth 93/19, reliability 6/4, adapters 5, and Web
+IR 8/8/11. Coverage used the freshly validated isolated binaries from
+`/tmp/glass-116-target` because the repository target was intentionally kept
+empty.
+
 ## Cleanup
 
-Record the exact isolated target and report paths, sizes, process/open-file
-checks, deletion counts, and post-removal filesystem state after
-certification. Do not remove shared Cargo registries, toolchains, source,
-durable user data, or other projects' non-regenerable artifacts.
+The final inventory found 149 directories and 10 files under the exact
+`/tmp/glass-*`/`/tmp/forgebuild-*` test-output pattern totaling
+16,211,804,369 bytes, including the 16,211,626,970-byte
+`/tmp/glass-116-target`, the 170,095-byte release-documentation report, and
+the 1,418-byte adapter report. No Cargo, rustc, rustdoc, Clippy, fuzz,
+rust-analyzer, or Glass test writer and no open descriptor referenced a
+candidate. Bounded `find -P ... -xdev -depth -delete` removed the exact
+inventory; a fresh scan found no matching roots or reports. The repository
+`target` and `fuzz/target` contain no generated build output, and the
+filesystem returned to 80 GB available at 59% use. Three pre-existing Glass
+processes were preserved; shared Cargo registries, toolchains, source,
+durable data, and other projects were not touched.

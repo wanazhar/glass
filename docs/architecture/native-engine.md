@@ -33,7 +33,7 @@ bounded-text-justification-control/bounded-text-decoration-lines/
 bounded-text-decoration-combinations,
 bounded-text-decoration-skip-spaces-line-edges,
 bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit/
-bounded-text-decoration-skip-spaces-unset,
+bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-revert,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -652,6 +652,16 @@ finite paint enum, display-list schema, rasterizer, and omitted fallback remain
 unchanged. Focused, full-native, two-crate, strict, package, fuzz, security,
 formatting, and static local certification passed; exact evidence and cleanup
 are recorded in the task. Remote CI remains pending because the checkout is
+local-only.
+The dependency-ordered 121 design is recorded in
+`docs/plan/tasks/native-engine-121.md`. It will accept explicit,
+case-insensitive `text-decoration-skip-spaces: revert` through a distinct
+private declaration-only state and resolve it at the existing one-author-origin
+inherited fallback boundary; the public finite paint enum, display-list,
+rasterizer, and omitted fallback remain unchanged. `revert-layer`, cascade
+layers, multiple style origins, general CSS-wide keyword machinery, and all
+layout/raster changes remain outside this slice; implementation and
+certification are pending. Remote CI remains pending because the checkout is
 local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

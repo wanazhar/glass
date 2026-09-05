@@ -1048,6 +1048,16 @@ security, formatting, and static local certification passed; exact evidence
 and cleanup are recorded in the task. Remote CI remains pending because the
 checkout is local-only.
 
+The dependency-ordered [native-engine-121](tasks/native-engine-121.md) design
+is now active. It will accept explicit case-insensitive
+`text-decoration-skip-spaces: revert` through a distinct private
+declaration-only value and resolve it at the current one-author-origin
+inherited fallback boundary, keeping the public finite paint enum and all
+artifact consumers unchanged. `revert-layer`, cascade layers, multiple style
+origins, general CSS-wide keyword machinery, layout/raster changes, new
+dependencies, default-feature changes, and crate-boundary changes remain
+outside this slice; implementation and certification are pending.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

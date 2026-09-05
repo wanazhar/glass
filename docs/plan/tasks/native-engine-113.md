@@ -1,7 +1,7 @@
 ---
 id: native-engine-113
 scope: glass-browser/native-engine/text-decoration-style-wavy
-status: design-ready
+status: complete
 depends-on: [native-engine-112]
 ---
 
@@ -95,18 +95,56 @@ extended with style components by this slice.
 
 ## Verification
 
-The implementation must provide parser/cascade coverage for case-insensitive
-`wavy`, default solid behavior, inheritance, explicit override, omission,
-inline precedence, and unsupported syntax diagnostics. Native integration must
-prove the exact eight-pixel phase, thickness-scaled vertical strokes, run-origin
-phase reset, all three decoration lines, composition with underline offset,
-unchanged line origins, clipping, scroll translation, immutable command
-propagation, and unchanged layout geometry. Existing solid/dashed/dotted and
-double regressions must remain green. Full native integration, feature-library,
-strict lint, warning-denied rustdoc, locked package/dependency, offline fuzz,
-documentation, static, security, and formatting gates remain required.
+Parser/cascade coverage accepts case-insensitive `wavy`, preserves default
+solid behavior, inheritance, explicit override, omission, inline precedence,
+and unsupported syntax diagnostics. Native integration proves the exact
+eight-pixel phase, thickness-scaled vertical strokes, run-origin phase reset,
+all three decoration lines, composition with underline offset, unchanged line
+origins, clipping, scroll translation, immutable command propagation, and
+unchanged layout geometry. Existing solid/dashed/dotted and double regressions
+remain green.
 
-Every local gate uses an isolated or intentionally shared target with a
+The implementation checkpoint is `0c6a9ddc`; synchronized current-claim
+documentation is `ebab6def`. Local certification used
+`RUST_MIN_STACK=8388608` and an isolated `/tmp/glass-113-target`:
+
+- focused CSS parser/cascade coverage: 2/2; focused wavy native integration:
+  1/1; direct raster phase replay: 1/1; decoration-family regression: 7/7;
+  double regression: 1/1; diagnostics regression: 3/3; full native
+  integration: 150/150;
+- all-feature `glass-browser` library: 909 passed, 1 ignored, 0 failed, with
+  all integration targets and doctests passing;
+- serial `glass-dev --locked` certification: 365 unit tests, 4 integration
+  tests, 15 PTY tests, and all doctests passed; elapsed 4:50.05, peak RSS
+  387,576 KiB. A prior parallel run exposed the existing load-sensitive
+  `rust_analyzer_publishes_real_diagnostics_when_available` timeout; its
+  isolated rerun passed, and the final certification used one test thread.
+- strict browser Clippy passed in 8:08.78 with peak RSS 1,913,748 KiB;
+  strict workspace Clippy passed in 9:25.47 with peak RSS 1,924,520 KiB;
+  strict no-default-feature browser Clippy passed in 4:41.02 with peak RSS
+  1,800,168 KiB; warning-denied workspace rustdoc passed in 3:10.21 with peak
+  RSS 1,644,868 KiB;
+- both explicit native/dev binaries built; the locked browser package
+  verification passed in 14:57.17 with peak RSS 2,200,796 KiB, and the dev
+  package was built with the local browser patch. The package validator
+  confirmed `glass-dev` resolves `glass-browser` exactly at `0.3.14`;
+  both publish dry-runs completed without upload because `0.3.14` already
+  exists in the registry;
+- locked offline fuzz all-target checking passed for 290 targets in 8:04.26
+  with peak RSS 1,568,392 KiB;
+- `cargo deny check` passed with existing duplicate-version warnings, and
+  `cargo audit` passed with the four already-allowed findings: unmaintained
+  `bincode`, unmaintained `yaml-rust`, the allowed `lru` advisory, and the
+  yanked `chacha20` lock entry;
+- version, feature-parity, TUI-shortcut, documentation-depth,
+  release-documentation, documentation-coverage, public-adapter,
+  reliability, and Web IR validators passed: 527 Markdown documents, 83
+  current documents, 57 previous-version hits, 604 semantic hits, 0
+  current-claim failures; coverage 527/345/100/17/22; TUI 15/63; depth
+  93/19; reliability 6/4; adapters 5; Web IR 8/8/11;
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+
+Every local gate used an isolated or intentionally shared target with a
 recorded purpose. Completed validation removes exact regenerable output only
 after active-writer and open-file checks. Remote CI, browser parity, release,
 registry publication, and a third crate are not claimed by this local task.

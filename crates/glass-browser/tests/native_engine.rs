@@ -6,7 +6,7 @@ use glass_browser::browser::native_engine::{
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
     NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeNodeId, NativePoint,
-    NativeRect, NativeSurface, NativeTextDecorationStyle, Viewport,
+    NativeRect, NativeSurface, NativeTextDecorationSkipInk, NativeTextDecorationStyle, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -1493,6 +1493,51 @@ fn native_text_decoration_style_patterns_share_command_and_geometry() {
     assert_eq!(line_pixel(inherited_command, 3), Some([255, 255, 255, 255]));
     assert_eq!(line_pixel(override_command, 0), Some([0, 0, 0, 255]));
     assert_eq!(line_pixel(override_command, 5), Some([0, 0, 0, 255]));
+}
+
+#[test]
+fn native_text_decoration_skip_ink_cascades_to_display_commands() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; text-decoration-style:wavy; } #none { text-decoration-skip-ink:none; } #parent { text-decoration-skip-ink:auto; } #invalid { text-decoration-skip-ink:all; }</style><div id='auto' class='line'>A</div><div id='none' class='line'>A</div><div id='parent' class='line'><span id='inherited'>A</span></div><div id='invalid' class='line'>A</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let auto = document.resolve_target("id=auto").unwrap();
+    let none = document.resolve_target("id=none").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 32,
+            height: 100,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let skip_ink_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                decoration_skip_ink,
+                ..
+            } if *command_node_id == node_id => Some(*decoration_skip_ink),
+            _ => None,
+        })
+    };
+
+    assert_eq!(skip_ink_for(auto), Some(NativeTextDecorationSkipInk::Auto));
+    assert_eq!(skip_ink_for(none), Some(NativeTextDecorationSkipInk::None));
+    assert_eq!(
+        skip_ink_for(inherited),
+        Some(NativeTextDecorationSkipInk::Auto)
+    );
+    assert_eq!(
+        skip_ink_for(invalid),
+        Some(NativeTextDecorationSkipInk::Auto)
+    );
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-skip-ink"
+    }));
 }
 
 #[test]
@@ -10029,7 +10074,7 @@ fn native_descendant_styles_flow_through_visibility_layout_and_paint() {
 #[test]
 fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     let document = NativeDocument::parse(
-        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-style: zigzag; text-decoration-thickness: 5px; text-underline-offset: 5px; text-decoration-color: currentColor; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
+        "<style>button:hover, main > button, #ok { color: red; width: 10%; display: grid; opacity: 1.1; text-align: start; text-align: match-parent; text-align-last: match-parent; justify-content: safe center; order: 1025; flex: 1.5 1 8px; flex-flow: column wrap wrap; flex-grow: 1.5; flex-shrink: 1.5; flex-basis: 1.5px; align-items: baseline; align-self: baseline; align-content: safe center; place-content: stretch stretch stretch; flex-direction: column reverse; direction: vertical-rl; flex-wrap: wrap reverse; text-decoration: blink; text-decoration-line: blink; text-decoration-style: zigzag; text-decoration-skip-ink: all; text-decoration-thickness: 5px; text-underline-offset: 5px; text-decoration-color: currentColor; text-transform: capitalize; font-weight: 500; font-style: oblique; word-break: keep-all; text-overflow: fade; overflow: visible; white-space: break-spaces; gap: 1px 2px 3px; row-gap: 4px 5px; column-gap: 5px 6px; custom-property: url(secret); broken; }</style><style>.unclosed { color: blue; </style><button id='ok' style='background-image: url(secret); padding: -1px'>OK</button>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -10100,6 +10145,10 @@ fn native_css_diagnostics_identify_unsupported_input_without_raw_echo() {
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-decoration-style"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-skip-ink"
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

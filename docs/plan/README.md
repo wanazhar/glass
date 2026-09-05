@@ -977,6 +977,16 @@ checkpointed at `ceedf1d8` and synchronized documentation at `d276d7b1`; all
 required local certification gates pass. Exact cleanup evidence is recorded in
 the task file; remote CI remains pending because the checkout is local-only.
 
+The active dependency-ordered [native-engine-115](tasks/native-engine-115.md)
+design adds inherited `text-decoration-skip-spaces:none|all` through the
+existing immutable text/raster path. `all` skips decoration pixels over
+same-run ASCII-space intervals, including word, letter, and final-line
+justification spacing, for underline, overline, and line-through; `none`
+preserves replay. `start`/`end`, Unicode whitespace, line-boundary semantics,
+fragment continuity, and browser-wide text conformance remain outside the
+bounded design. Implementation, certification, cleanup, and remote CI remain
+pending; the checkout is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

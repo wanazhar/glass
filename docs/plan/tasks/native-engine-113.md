@@ -151,7 +151,17 @@ registry publication, and a third crate are not claimed by this local task.
 
 ## Cleanup
 
-Record the exact isolated target and report paths, sizes, process/open-file
-checks, deletion counts, and post-removal filesystem state after
-certification. Do not remove shared Cargo registries, toolchains, source,
-durable user data, or other projects' non-regenerable artifacts.
+After certification, the exact `/tmp/glass-113-target` and all generated
+113 reports/logs were measured as part of 156 user-owned, non-symlink
+`glass-*`/`forgebuild-*` temporary roots totaling 12,352,401,408 allocated
+bytes (11.504 GiB). The repository `target/.rustc_info.json` measured 4,096
+allocated bytes. Final process and recursive `/tmp` open-file checks found no
+Cargo/Rust writer and no open Glass/ForgeBuild candidate. The exact 156 roots
+and the metadata file were removed with bounded `find -P ... -xdev -depth
+-delete` operations; no shared Cargo registries, toolchains, source, durable
+user data, or other projects' non-regenerable artifacts were touched.
+
+Post-cleanup verification found no matching `/tmp/glass-*` or
+`/tmp/forgebuild-*` entries, an empty repository `target` (4.0 KiB directory
+allocation), and no `fuzz/target`. Filesystem state is 80 GiB available and
+59% used on `/dev/sda1` (`df -h / /tmp`).

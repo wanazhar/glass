@@ -568,7 +568,7 @@ browser-wide conformance remain outside the boundary. Implementation is
 `docs/plan/tasks/native-engine-113.md`. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered 114 implementation is recorded in
+The dependency-ordered 114 implementation is complete and recorded in
 `docs/plan/tasks/native-engine-114.md`. It adds inherited
 `text-decoration-skip-ink:auto|none` through a dedicated value carried by the
 existing immutable text command. `auto` suppresses underline and overline
@@ -577,8 +577,11 @@ preserves the existing replay, and line-through remains unchanged. Wavy,
 thickness, offset, clipping, scroll, opacity, capture, hit testing, semantics,
 source order, and layout remain shared. Font metrics, shaping, fragment
 continuity, and browser-wide conformance remain outside the bounded design.
-Implementation is checkpointed at `ceedf1d8`; focused and full native tests
-pass, while strict package/security/static certification remains in progress.
+Implementation is checkpointed at `ceedf1d8` and synchronized documentation at
+`d276d7b1`; focused, full-native, strict, package, fuzz, security, and static
+local gates pass. Exact target reclamation and the remaining local-only
+boundary are recorded in the task file. Remote CI remains pending because the
+branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

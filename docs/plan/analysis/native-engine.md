@@ -899,15 +899,17 @@ raster, layout, and omitted fallback remain unchanged. Focused, full-native,
 two-crate, strict, package, fuzz, security, formatting, and static local
 certification passed; exact evidence and cleanup are recorded in the task.
 Remote CI remains pending because the checkout is local-only.
-The dependency-ordered `native-engine-121` design is recorded in
-`docs/plan/tasks/native-engine-121.md`. It will accept explicit,
-case-insensitive `text-decoration-skip-spaces: revert` through a distinct
-private declaration-only representation and resolve it at the existing
-one-author-origin inherited fallback boundary. The resolved paint enum,
-display-list, raster, layout, and omitted fallback remain unchanged;
+The dependency-ordered `native-engine-121` implementation is complete at
+`f361415a` and recorded in `docs/plan/tasks/native-engine-121.md`. It accepts
+explicit, case-insensitive `text-decoration-skip-spaces: revert` through a
+distinct private declaration-only representation and resolves it at the
+existing one-author-origin inherited fallback boundary. The resolved paint
+enum, display-list, raster, layout, and omitted fallback remain unchanged;
 `revert-layer`, cascade layers, multiple style origins, and general CSS-wide
-keyword machinery remain outside this slice. Implementation and certification
-are pending.
+keyword machinery remain outside this slice. Focused, full-native, two-crate,
+strict, package, fuzz, security, formatting, and static local certification
+passed; exact evidence and cleanup are recorded in the task. Remote CI remains
+pending because the checkout is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1154,7 +1156,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-118` | completed explicit case-insensitive `text-decoration-skip-spaces:initial` keyword mapped to the existing `start end` computed value while preserving the deliberate omitted-property `none` fallback | `native-engine-117` | general CSS-wide keyword machinery, `inherit`/`unset`/`revert` semantics, omitted-value initial-default changes, atomic-inline and ancestor propagation, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
 | `native-engine-119` | completed explicit case-insensitive `text-decoration-skip-spaces:inherit` through a private declaration-only value resolved at the existing parent-style boundary, keeping the public paint enum finite | `native-engine-118` | `unset`/`revert`/`revert-layer`, general CSS-wide keyword machinery, changed omitted-value behavior, atomic-inline and ancestor propagation beyond the existing DOM walk, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
 | `native-engine-120` | completed explicit case-insensitive `text-decoration-skip-spaces:unset` resolved as inherited parent state through the existing private declaration-only boundary, keeping the public paint enum finite | `native-engine-119` | `revert`/`revert-layer`, general CSS-wide keyword machinery, changed omitted-value behavior, atomic-inline and ancestor propagation beyond the existing DOM walk, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
-| `native-engine-121` | planned explicit case-insensitive `text-decoration-skip-spaces:revert` resolved at the current one-author-origin inherited fallback boundary through a distinct private declaration-only state, keeping the public paint enum finite | `native-engine-120` | `revert-layer`, cascade layers, multiple style origins, general CSS-wide keyword machinery, changed omitted-value behavior, atomic-inline and ancestor propagation beyond the existing DOM walk, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
+| `native-engine-121` | completed explicit case-insensitive `text-decoration-skip-spaces:revert` resolved at the current one-author-origin inherited fallback boundary through a distinct private declaration-only state, keeping the public paint enum finite | `native-engine-120` | `revert-layer`, cascade layers, multiple style origins, general CSS-wide keyword machinery, changed omitted-value behavior, atomic-inline and ancestor propagation beyond the existing DOM walk, cross-fragment continuity, layout/geometry changes, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1562,9 +1564,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-121.md` is the active next task contract;
-`docs/plan/tasks/native-engine-120.md` is the latest completed task;
-`docs/plan/tasks/native-engine-119.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-121.md` is the latest completed task;
+`docs/plan/tasks/native-engine-120.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-119.md` is the earlier completed task;
 `docs/plan/tasks/native-engine-118.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-117.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-116.md` is the preceding completed checkpoint;

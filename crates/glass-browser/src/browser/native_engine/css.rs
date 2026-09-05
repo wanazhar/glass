@@ -13,6 +13,12 @@ pub(crate) const MIN_NATIVE_TEXT_UNDERLINE_OFFSET: i32 = -4;
 pub(crate) const MAX_NATIVE_TEXT_UNDERLINE_OFFSET: i32 = 4;
 const MAX_SELECTOR_BYTES: usize = 256;
 const MAX_SELECTOR_PARTS: usize = 8;
+const MAX_NATIVE_NAMED_CASCADE_LAYERS: usize = 15;
+const UNLAYERED_CASCADE_LAYER: u16 = MAX_NATIVE_NAMED_CASCADE_LAYERS as u16;
+const CASCADE_SPECIFICITY_BITS: u32 = 12;
+const CASCADE_SPECIFICITY_STRIDE: u16 = 1 << CASCADE_SPECIFICITY_BITS;
+const MAX_NATIVE_SELECTOR_SPECIFICITY: u16 = CASCADE_SPECIFICITY_STRIDE - 1;
+const MAX_NATIVE_CASCADE_LAYERS: usize = MAX_NATIVE_NAMED_CASCADE_LAYERS + 1;
 
 /// A bounded RGBA color used by the native display-list seed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +96,7 @@ enum NativeTextDecorationSkipSpacesDeclaration {
     Inherit,
     Unset,
     Revert,
+    RevertLayer,
 }
 
 impl NativeTextDecorationSkipSpacesDeclaration {
@@ -99,7 +106,7 @@ impl NativeTextDecorationSkipSpacesDeclaration {
     ) -> NativeTextDecorationSkipSpaces {
         match self {
             Self::Value(value) => value,
-            Self::Inherit | Self::Unset | Self::Revert => inherited,
+            Self::Inherit | Self::Unset | Self::Revert | Self::RevertLayer => inherited,
         }
     }
 }
@@ -904,6 +911,7 @@ impl NativeStylesheet {
     ) -> Result<Self, NativeEngineError> {
         let mut stylesheet = Self::default();
         let mut order = 0;
+        let mut layers = Vec::new();
         for (index, source) in sources.into_iter().enumerate() {
             parse_source(
                 &source,
@@ -911,6 +919,7 @@ impl NativeStylesheet {
                 &mut order,
                 NativeDiagnosticSource::Stylesheet { index },
                 diagnostics,
+                &mut layers,
             )?;
         }
         Ok(stylesheet)
@@ -980,7 +989,9 @@ impl NativeStylesheet {
         let mut text_decoration = None;
         let mut text_decoration_style = None;
         let mut text_decoration_skip_ink = None;
-        let mut text_decoration_skip_spaces = None;
+        let mut text_decoration_skip_spaces: [Option<
+            CascadeValue<NativeTextDecorationSkipSpacesDeclaration>,
+        >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration_thickness = None;
         let mut text_underline_offset = None;
         let mut text_decoration_color = None;
@@ -1136,20 +1147,21 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.text_decoration_skip_spaces
-                && wins(
+            if let Some(value) = rule.declarations.text_decoration_skip_spaces {
+                let layer = cascade_layer_index(rule.selector.specificity);
+                if wins(
                     rule.selector.specificity,
                     rule.order,
                     false,
-                    text_decoration_skip_spaces,
-                )
-            {
-                text_decoration_skip_spaces = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
+                    text_decoration_skip_spaces[layer],
+                ) {
+                    text_decoration_skip_spaces[layer] = Some(CascadeValue {
+                        value,
+                        specificity: rule.selector.specificity,
+                        order: rule.order,
+                        inline: false,
+                    });
+                }
             }
             if let Some(value) = rule.declarations.text_decoration_thickness
                 && wins(
@@ -1675,15 +1687,21 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.text_decoration_skip_spaces
-                && wins(u16::MAX, usize::MAX, true, text_decoration_skip_spaces)
-            {
-                text_decoration_skip_spaces = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
+            if let Some(value) = declarations.text_decoration_skip_spaces {
+                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
+                if wins(
+                    u16::MAX,
+                    usize::MAX,
+                    true,
+                    text_decoration_skip_spaces[layer],
+                ) {
+                    text_decoration_skip_spaces[layer] = Some(CascadeValue {
+                        value,
+                        specificity: u16::MAX,
+                        order: usize::MAX,
+                        inline: true,
+                    });
+                }
             }
             if let Some(value) = declarations.text_decoration_thickness
                 && wins(u16::MAX, usize::MAX, true, text_decoration_thickness)
@@ -2104,10 +2122,10 @@ impl NativeStylesheet {
                 .map_or(inherited.text_decoration_style, |value| value.value),
             text_decoration_skip_ink: text_decoration_skip_ink
                 .map_or(inherited.text_decoration_skip_ink, |value| value.value),
-            text_decoration_skip_spaces: text_decoration_skip_spaces
-                .map_or(inherited.text_decoration_skip_spaces, |value| {
-                    value.value.resolve(inherited.text_decoration_skip_spaces)
-                }),
+            text_decoration_skip_spaces: resolve_text_decoration_skip_spaces(
+                text_decoration_skip_spaces,
+                inherited.text_decoration_skip_spaces,
+            ),
             text_decoration_thickness: text_decoration_thickness
                 .map_or(inherited.text_decoration_thickness, |value| value.value),
             text_underline_offset: text_underline_offset
@@ -2191,6 +2209,53 @@ fn wins<T>(specificity: u16, order: usize, inline: bool, current: Option<Cascade
     current.is_none_or(|current| {
         (inline, specificity, order) > (current.inline, current.specificity, current.order)
     })
+}
+
+fn cascade_layer_index(specificity: u16) -> usize {
+    usize::from(specificity / CASCADE_SPECIFICITY_STRIDE).min(usize::from(UNLAYERED_CASCADE_LAYER))
+}
+
+fn encode_cascade_specificity(specificity: u16, layer: Option<usize>) -> u16 {
+    let layer = layer
+        .and_then(|layer| u16::try_from(layer).ok())
+        .unwrap_or(UNLAYERED_CASCADE_LAYER)
+        .min(UNLAYERED_CASCADE_LAYER);
+    layer
+        .saturating_mul(CASCADE_SPECIFICITY_STRIDE)
+        .saturating_add(specificity.min(MAX_NATIVE_SELECTOR_SPECIFICITY))
+}
+
+fn resolve_text_decoration_skip_spaces(
+    candidates: [Option<CascadeValue<NativeTextDecorationSkipSpacesDeclaration>>;
+        MAX_NATIVE_CASCADE_LAYERS],
+    inherited: NativeTextDecorationSkipSpaces,
+) -> NativeTextDecorationSkipSpaces {
+    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    loop {
+        let Some((layer, candidate)) =
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(layer, candidate)| {
+                    if blocked[layer] {
+                        None
+                    } else {
+                        candidate.map(|candidate| (layer, candidate))
+                    }
+                })
+        else {
+            return inherited;
+        };
+        if matches!(
+            candidate.value,
+            NativeTextDecorationSkipSpacesDeclaration::RevertLayer
+        ) {
+            blocked[layer] = true;
+            continue;
+        }
+        return candidate.value.resolve(inherited);
+    }
 }
 
 fn gap_precedes<T, U>(candidate: &GapCascadeValue<T>, current: &GapCascadeValue<U>) -> bool {
@@ -2520,128 +2585,305 @@ fn parse_source(
     next_order: &mut usize,
     diagnostic_source: NativeDiagnosticSource,
     diagnostics: &mut NativeDiagnosticSink,
+    layers: &mut Vec<String>,
 ) -> Result<(), NativeEngineError> {
     let source = strip_comments(source);
-    let mut cursor = 0;
-    let mut unclosed_rule = false;
-    while let Some(open_relative) = source[cursor..].find('{') {
+    parse_source_block(
+        &source,
+        0,
+        source.len(),
+        rules,
+        next_order,
+        diagnostic_source,
+        diagnostics,
+        None,
+        layers,
+    )
+}
+
+fn parse_source_block(
+    source: &str,
+    start: usize,
+    end: usize,
+    rules: &mut Vec<NativeStyleRule>,
+    next_order: &mut usize,
+    diagnostic_source: NativeDiagnosticSource,
+    diagnostics: &mut NativeDiagnosticSink,
+    current_layer: Option<usize>,
+    layers: &mut Vec<String>,
+) -> Result<(), NativeEngineError> {
+    let mut cursor = start;
+    while cursor < end {
+        let remaining = &source[cursor..end];
+        let Some(open_relative) = remaining.find('{') else {
+            let trailing = remaining.trim();
+            if !trailing.is_empty() {
+                if parse_layer_header(trailing).is_some() {
+                    diagnostics.push(
+                        NativeDiagnosticCode::UnsupportedCssValue,
+                        diagnostic_source,
+                        cursor,
+                        "layer-statement",
+                    );
+                } else {
+                    diagnostics.push(
+                        NativeDiagnosticCode::MalformedCss,
+                        diagnostic_source,
+                        cursor,
+                        "missing-rule",
+                    );
+                }
+            }
+            return Ok(());
+        };
+        if let Some(semicolon_relative) = remaining[..open_relative].find(';') {
+            let semicolon = cursor + semicolon_relative;
+            if parse_layer_header(&source[cursor..semicolon]).is_some() {
+                diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    diagnostic_source,
+                    cursor,
+                    "layer-statement",
+                );
+                cursor = semicolon + 1;
+                continue;
+            }
+        }
         let open = cursor + open_relative;
-        let Some(close_relative) = source[open + 1..].find('}') else {
+        let Some(close) = find_matching_brace(source, open, end) else {
             diagnostics.push(
                 NativeDiagnosticCode::MalformedCss,
                 diagnostic_source,
                 open,
                 "unclosed-rule",
             );
-            unclosed_rule = true;
-            break;
+            return Ok(());
         };
-        let close = open + 1 + close_relative;
-        let declarations = parse_declarations_with_diagnostics(
-            &source[open + 1..close],
-            diagnostic_source,
-            open.saturating_add(1),
-            diagnostics,
-        );
-        let has_supported_declaration = declarations.display.is_some()
-            || declarations.visibility.is_some()
-            || declarations.opacity.is_some()
-            || declarations.white_space.is_some()
-            || declarations.text_align.is_some()
-            || declarations.text_align_last.is_some()
-            || declarations.text_justify.is_some()
-            || declarations.justify_content.is_some()
-            || declarations.align_items.is_some()
-            || declarations.align_self.is_some()
-            || declarations.align_content.is_some()
-            || declarations.flex_direction.is_some()
-            || declarations.direction.is_some()
-            || declarations.flex_wrap.is_some()
-            || declarations.order.is_some()
-            || declarations.flex_grow.is_some()
-            || declarations.flex_shrink.is_some()
-            || declarations.flex_basis.is_some()
-            || declarations.text_decoration.is_some()
-            || declarations.text_decoration_style.is_some()
-            || declarations.text_decoration_skip_ink.is_some()
-            || declarations.text_decoration_skip_spaces.is_some()
-            || declarations.text_decoration_thickness.is_some()
-            || declarations.text_underline_offset.is_some()
-            || declarations.text_decoration_color.is_some()
-            || declarations.text_transform.is_some()
-            || declarations.font_weight.is_some()
-            || declarations.font_style.is_some()
-            || declarations.word_break.is_some()
-            || declarations.text_overflow.is_some()
-            || declarations.vertical_align.is_some()
-            || declarations.text_indent.is_some()
-            || declarations.word_spacing.is_some()
-            || declarations.letter_spacing.is_some()
-            || declarations.gap.is_some()
-            || declarations.row_gap.is_some()
-            || declarations.column_gap.is_some()
-            || declarations.width.is_some()
-            || declarations.height.is_some()
-            || declarations.min_width.is_some()
-            || declarations.max_width.is_some()
-            || declarations.min_height.is_some()
-            || declarations.max_height.is_some()
-            || declarations.line_height.is_some()
-            || declarations.background_color.is_some()
-            || declarations.border.iter().any(Option::is_some)
-            || declarations.border_radius.is_some()
-            || declarations.padding.iter().any(Option::is_some)
-            || declarations.margin.iter().any(Option::is_some)
-            || declarations.box_sizing.is_some()
-            || declarations.color.is_some()
-            || declarations.overflow.is_some()
-            || declarations.overflow_x.is_some()
-            || declarations.overflow_y.is_some();
-        let selector_source = &source[cursor..open];
-        let mut selector_offset = cursor;
-        for selector_text in selector_source.split(',') {
-            let Some(selector) = parse_selector(selector_text) else {
+        let header = &source[cursor..open];
+        if let Some(layer_header) = parse_layer_header(header) {
+            if current_layer.is_some() {
                 diagnostics.push(
-                    NativeDiagnosticCode::UnsupportedCssSelector,
+                    NativeDiagnosticCode::UnsupportedCssValue,
                     diagnostic_source,
-                    selector_offset.saturating_add(
-                        selector_text
-                            .len()
-                            .saturating_sub(selector_text.trim_start().len()),
-                    ),
-                    selector_diagnostic_detail(selector_text),
+                    cursor,
+                    "nested-layer",
                 );
-                selector_offset = selector_offset.saturating_add(selector_text.len() + 1);
-                continue;
-            };
-            if has_supported_declaration {
-                if rules.len() >= MAX_NATIVE_STYLE_RULES {
-                    return Err(NativeEngineError::limit(
-                        "CSS style rules",
-                        MAX_NATIVE_STYLE_RULES,
-                        rules.len().saturating_add(1),
-                    ));
+            } else {
+                match layer_header {
+                    Ok(name) => {
+                        let Some(layer) = register_named_layer(layers, &name) else {
+                            diagnostics.push(
+                                NativeDiagnosticCode::UnsupportedCssValue,
+                                diagnostic_source,
+                                cursor,
+                                "too-many-layers",
+                            );
+                            cursor = close + 1;
+                            continue;
+                        };
+                        parse_source_block(
+                            source,
+                            open + 1,
+                            close,
+                            rules,
+                            next_order,
+                            diagnostic_source,
+                            diagnostics,
+                            Some(layer),
+                            layers,
+                        )?;
+                    }
+                    Err(detail) => diagnostics.push(
+                        NativeDiagnosticCode::UnsupportedCssValue,
+                        diagnostic_source,
+                        cursor,
+                        detail,
+                    ),
                 }
-                rules.push(NativeStyleRule {
-                    selector,
-                    declarations,
-                    order: *next_order,
-                });
-                *next_order = next_order.saturating_add(1);
             }
-            selector_offset = selector_offset.saturating_add(selector_text.len() + 1);
+        } else {
+            parse_style_rule(
+                source,
+                cursor,
+                open,
+                close,
+                rules,
+                next_order,
+                diagnostic_source,
+                diagnostics,
+                current_layer,
+            )?;
         }
         cursor = close + 1;
     }
-    if !unclosed_rule && !source[cursor..].trim().is_empty() {
-        diagnostics.push(
-            NativeDiagnosticCode::MalformedCss,
-            diagnostic_source,
-            cursor,
-            "missing-rule",
-        );
+    Ok(())
+}
+
+fn parse_style_rule(
+    source: &str,
+    selector_start: usize,
+    open: usize,
+    close: usize,
+    rules: &mut Vec<NativeStyleRule>,
+    next_order: &mut usize,
+    diagnostic_source: NativeDiagnosticSource,
+    diagnostics: &mut NativeDiagnosticSink,
+    layer: Option<usize>,
+) -> Result<(), NativeEngineError> {
+    let declarations = parse_declarations_with_diagnostics(
+        &source[open + 1..close],
+        diagnostic_source,
+        open.saturating_add(1),
+        diagnostics,
+    );
+    let has_supported_declaration = declarations.display.is_some()
+        || declarations.visibility.is_some()
+        || declarations.opacity.is_some()
+        || declarations.white_space.is_some()
+        || declarations.text_align.is_some()
+        || declarations.text_align_last.is_some()
+        || declarations.text_justify.is_some()
+        || declarations.justify_content.is_some()
+        || declarations.align_items.is_some()
+        || declarations.align_self.is_some()
+        || declarations.align_content.is_some()
+        || declarations.flex_direction.is_some()
+        || declarations.direction.is_some()
+        || declarations.flex_wrap.is_some()
+        || declarations.order.is_some()
+        || declarations.flex_grow.is_some()
+        || declarations.flex_shrink.is_some()
+        || declarations.flex_basis.is_some()
+        || declarations.text_decoration.is_some()
+        || declarations.text_decoration_style.is_some()
+        || declarations.text_decoration_skip_ink.is_some()
+        || declarations.text_decoration_skip_spaces.is_some()
+        || declarations.text_decoration_thickness.is_some()
+        || declarations.text_underline_offset.is_some()
+        || declarations.text_decoration_color.is_some()
+        || declarations.text_transform.is_some()
+        || declarations.font_weight.is_some()
+        || declarations.font_style.is_some()
+        || declarations.word_break.is_some()
+        || declarations.text_overflow.is_some()
+        || declarations.vertical_align.is_some()
+        || declarations.text_indent.is_some()
+        || declarations.word_spacing.is_some()
+        || declarations.letter_spacing.is_some()
+        || declarations.gap.is_some()
+        || declarations.row_gap.is_some()
+        || declarations.column_gap.is_some()
+        || declarations.width.is_some()
+        || declarations.height.is_some()
+        || declarations.min_width.is_some()
+        || declarations.max_width.is_some()
+        || declarations.min_height.is_some()
+        || declarations.max_height.is_some()
+        || declarations.line_height.is_some()
+        || declarations.background_color.is_some()
+        || declarations.border.iter().any(Option::is_some)
+        || declarations.border_radius.is_some()
+        || declarations.padding.iter().any(Option::is_some)
+        || declarations.margin.iter().any(Option::is_some)
+        || declarations.box_sizing.is_some()
+        || declarations.color.is_some()
+        || declarations.overflow.is_some()
+        || declarations.overflow_x.is_some()
+        || declarations.overflow_y.is_some();
+    let selector_source = &source[selector_start..open];
+    let mut selector_offset = selector_start;
+    for selector_text in selector_source.split(',') {
+        let Some(mut selector) = parse_selector(selector_text) else {
+            diagnostics.push(
+                NativeDiagnosticCode::UnsupportedCssSelector,
+                diagnostic_source,
+                selector_offset.saturating_add(
+                    selector_text
+                        .len()
+                        .saturating_sub(selector_text.trim_start().len()),
+                ),
+                selector_diagnostic_detail(selector_text),
+            );
+            selector_offset = selector_offset.saturating_add(selector_text.len() + 1);
+            continue;
+        };
+        if has_supported_declaration {
+            if rules.len() >= MAX_NATIVE_STYLE_RULES {
+                return Err(NativeEngineError::limit(
+                    "CSS style rules",
+                    MAX_NATIVE_STYLE_RULES,
+                    rules.len().saturating_add(1),
+                ));
+            }
+            selector.specificity = encode_cascade_specificity(selector.specificity, layer);
+            rules.push(NativeStyleRule {
+                selector,
+                declarations,
+                order: *next_order,
+            });
+            *next_order = next_order.saturating_add(1);
+        }
+        selector_offset = selector_offset.saturating_add(selector_text.len() + 1);
     }
     Ok(())
+}
+
+fn find_matching_brace(source: &str, open: usize, end: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, byte) in source[open..end].bytes().enumerate() {
+        match byte {
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_layer_header(source: &str) -> Option<Result<String, &'static str>> {
+    let source = source.trim();
+    let keyword = "@layer";
+    if source.len() < keyword.len()
+        || !source
+            .as_bytes()
+            .get(..keyword.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(keyword.as_bytes()))
+        || !source
+            .as_bytes()
+            .get(keyword.len())
+            .is_none_or(|byte| byte.is_ascii_whitespace())
+    {
+        return None;
+    }
+    let rest = source[keyword.len()..].trim();
+    if rest.is_empty() {
+        return Some(Err("layer-name"));
+    }
+    let Some((name, next)) = read_identifier(rest, 0) else {
+        return Some(Err("layer-name"));
+    };
+    if next != rest.len() {
+        Some(Err("layer-prelude"))
+    } else {
+        Some(Ok(name))
+    }
+}
+
+fn register_named_layer(layers: &mut Vec<String>, name: &str) -> Option<usize> {
+    if let Some(index) = layers.iter().position(|layer| layer == name) {
+        return Some(index);
+    }
+    if layers.len() >= MAX_NATIVE_NAMED_CASCADE_LAYERS {
+        return None;
+    }
+    let index = layers.len();
+    layers.push(name.to_owned());
+    Some(index)
 }
 
 fn parse_declarations_with_diagnostics(
@@ -3286,6 +3528,7 @@ fn parse_text_decoration_skip_spaces(
             "inherit" => Some(NativeTextDecorationSkipSpacesDeclaration::Inherit),
             "unset" => Some(NativeTextDecorationSkipSpacesDeclaration::Unset),
             "revert" => Some(NativeTextDecorationSkipSpacesDeclaration::Revert),
+            "revert-layer" => Some(NativeTextDecorationSkipSpacesDeclaration::RevertLayer),
             "none" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
                 NativeTextDecorationSkipSpaces::None,
             )),
@@ -3890,9 +4133,13 @@ fn parse_selector(source: &str) -> Option<NativeSelector> {
         .into_iter()
         .map(parse_compound_selector)
         .collect::<Option<Vec<_>>>()?;
-    let specificity = compounds.iter().fold(0u16, |specificity, compound| {
-        specificity.saturating_add(compound.specificity)
-    });
+    let specificity = compounds.iter().try_fold(0u32, |specificity, compound| {
+        specificity.checked_add(u32::from(compound.specificity))
+    })?;
+    let specificity = u16::try_from(specificity).ok()?;
+    if specificity > MAX_NATIVE_SELECTOR_SPECIFICITY {
+        return None;
+    }
     Some(NativeSelector {
         compounds,
         specificity,
@@ -4457,6 +4704,124 @@ mod tests {
         .unwrap();
         let node = node("<button id='shown' style='display:none'>Shown</button>");
         assert!(stylesheet.computed_for(&node).hidden());
+    }
+
+    #[test]
+    fn stylesheet_cascade_layers_precede_specificity_and_reopen_by_source_order() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #target { color: red; } } @layer theme { .target { color: blue; } }"
+                .into(),
+            "@layer base { #target { color: green; } }".into(),
+        ])
+        .unwrap();
+        let target = node("<div id='target' class='target'>Target</div>");
+        assert_eq!(
+            stylesheet.computed_for(&target).color(),
+            Some(NativeColor {
+                red: 0,
+                green: 0,
+                blue: 255,
+                alpha: 255,
+            })
+        );
+
+        let reopened = NativeStylesheet::from_sources(vec![
+            "@layer base { #target { color: red; } } @layer base { #target { color: green; } }"
+                .into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            reopened.computed_for(&target).color(),
+            Some(NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: 255,
+            })
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_named_and_unlayered_candidates() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { text-decoration-skip-spaces: all; } #unlayered { text-decoration-skip-spaces: all; } } @layer theme { .named { text-decoration-skip-spaces: end; } #unlayered { text-decoration-skip-spaces: end; } } #named { text-decoration-skip-spaces: revert-layer; } #unlayered { text-decoration-skip-spaces: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named' class='named'>Named</div>");
+        let unlayered = node(
+            "<div id='unlayered' style='text-decoration-skip-spaces:revert-layer'>Unlayered</div>",
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for(&named)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::End
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for(&unlayered)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::End
+        );
+
+        let repeated = NativeStylesheet::from_sources(vec![
+            "@layer base { #target { text-decoration-skip-spaces: all; } } @layer theme { #target { text-decoration-skip-spaces: revert-layer; } } @layer top { #target { text-decoration-skip-spaces: revert-layer; } }"
+                .into(),
+        ])
+        .unwrap();
+        let target = node("<div id='target'>Target</div>");
+        assert_eq!(
+            repeated.computed_for(&target).text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::All
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_layers_bound_invalid_forms_and_layer_count() {
+        let mut source = String::from(
+            "@layer { #anonymous { color: red; } } @layer base, theme { #comma { color: red; } } @layer outer { @layer inner { #nested { color: red; } } } @layer statement;",
+        );
+        for index in 0..=MAX_NATIVE_NAMED_CASCADE_LAYERS {
+            source.push_str(&format!(
+                " @layer limit-{index} {{ #limit-{index} {{ color: red; }} }}"
+            ));
+        }
+        let mut diagnostics = NativeDiagnosticSink::default();
+        let stylesheet =
+            NativeStylesheet::from_sources_with_diagnostics(vec![source], &mut diagnostics)
+                .unwrap();
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.detail == "layer-name")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.detail == "layer-prelude")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.detail == "nested-layer")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.detail == "layer-statement")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.detail == "too-many-layers")
+        );
+        assert_eq!(
+            stylesheet.rules.len(),
+            MAX_NATIVE_NAMED_CASCADE_LAYERS.saturating_sub(1)
+        );
     }
 
     #[test]
@@ -5484,7 +5849,10 @@ mod tests {
             parse_text_decoration_skip_spaces("revert"),
             Some(NativeTextDecorationSkipSpacesDeclaration::Revert)
         );
-        assert_eq!(parse_text_decoration_skip_spaces("revert-layer"), None);
+        assert_eq!(
+            parse_text_decoration_skip_spaces("ReVeRt-LaYeR"),
+            Some(NativeTextDecorationSkipSpacesDeclaration::RevertLayer)
+        );
         assert_eq!(parse_text_decoration_skip_spaces(""), None);
         assert_eq!(
             parse_declarations("text-decoration-skip-spaces: all").text_decoration_skip_spaces,
@@ -5516,6 +5884,11 @@ mod tests {
         assert_eq!(
             parse_declarations("text-decoration-skip-spaces: revert").text_decoration_skip_spaces,
             Some(NativeTextDecorationSkipSpacesDeclaration::Revert)
+        );
+        assert_eq!(
+            parse_declarations("text-decoration-skip-spaces: revert-layer")
+                .text_decoration_skip_spaces,
+            Some(NativeTextDecorationSkipSpacesDeclaration::RevertLayer)
         );
     }
 

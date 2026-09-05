@@ -29,7 +29,8 @@ pub use config::{
 };
 pub use css::NativeColor;
 pub use css::{
-    NativeBorderRadius, NativeBorderStyle, NativeTextDecorationSkipInk, NativeTextDecorationStyle,
+    NativeBorderRadius, NativeBorderStyle, NativeTextDecorationSkipInk,
+    NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
 };
 pub use diagnostics::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeDiagnostic,

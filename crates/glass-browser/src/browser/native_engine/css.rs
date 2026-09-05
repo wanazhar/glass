@@ -73,6 +73,14 @@ pub enum NativeTextDecorationSkipInk {
     None,
 }
 
+/// Bounded inherited fixed-cell whitespace behavior for text decorations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NativeTextDecorationSkipSpaces {
+    #[default]
+    None,
+    All,
+}
+
 /// Bounded physical circular radii for the top-left, top-right, bottom-right,
 /// and bottom-left corners of one native box.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -436,6 +444,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_decoration: TextDecorationValue,
     pub(crate) text_decoration_style: NativeTextDecorationStyle,
     pub(crate) text_decoration_skip_ink: NativeTextDecorationSkipInk,
+    pub(crate) text_decoration_skip_spaces: NativeTextDecorationSkipSpaces,
     pub(crate) text_decoration_thickness: u32,
     pub(crate) text_underline_offset: i32,
     pub(crate) text_transform: TextTransformValue,
@@ -460,6 +469,7 @@ impl Default for NativeInheritedStyle {
             text_decoration: TextDecorationValue::none(),
             text_decoration_style: NativeTextDecorationStyle::Solid,
             text_decoration_skip_ink: NativeTextDecorationSkipInk::Auto,
+            text_decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
             text_decoration_thickness: 1,
             text_underline_offset: 0,
             text_transform: TextTransformValue::None,
@@ -600,6 +610,7 @@ pub(crate) struct NativeComputedStyle {
     text_decoration: TextDecorationValue,
     text_decoration_style: NativeTextDecorationStyle,
     text_decoration_skip_ink: NativeTextDecorationSkipInk,
+    text_decoration_skip_spaces: NativeTextDecorationSkipSpaces,
     text_decoration_thickness: u32,
     text_underline_offset: i32,
     text_decoration_color: Option<NativeColor>,
@@ -719,6 +730,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_decoration_skip_ink(self) -> NativeTextDecorationSkipInk {
         self.text_decoration_skip_ink
+    }
+
+    pub(crate) const fn text_decoration_skip_spaces(self) -> NativeTextDecorationSkipSpaces {
+        self.text_decoration_skip_spaces
     }
 
     pub(crate) const fn text_decoration_thickness(self) -> u32 {
@@ -942,6 +957,7 @@ impl NativeStylesheet {
         let mut text_decoration = None;
         let mut text_decoration_style = None;
         let mut text_decoration_skip_ink = None;
+        let mut text_decoration_skip_spaces = None;
         let mut text_decoration_thickness = None;
         let mut text_underline_offset = None;
         let mut text_decoration_color = None;
@@ -1091,6 +1107,21 @@ impl NativeStylesheet {
                 )
             {
                 text_decoration_skip_ink = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.text_decoration_skip_spaces
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    text_decoration_skip_spaces,
+                )
+            {
+                text_decoration_skip_spaces = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1621,6 +1652,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            if let Some(value) = declarations.text_decoration_skip_spaces
+                && wins(u16::MAX, usize::MAX, true, text_decoration_skip_spaces)
+            {
+                text_decoration_skip_spaces = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
             if let Some(value) = declarations.text_decoration_thickness
                 && wins(u16::MAX, usize::MAX, true, text_decoration_thickness)
             {
@@ -2040,6 +2081,8 @@ impl NativeStylesheet {
                 .map_or(inherited.text_decoration_style, |value| value.value),
             text_decoration_skip_ink: text_decoration_skip_ink
                 .map_or(inherited.text_decoration_skip_ink, |value| value.value),
+            text_decoration_skip_spaces: text_decoration_skip_spaces
+                .map_or(inherited.text_decoration_skip_spaces, |value| value.value),
             text_decoration_thickness: text_decoration_thickness
                 .map_or(inherited.text_decoration_thickness, |value| value.value),
             text_underline_offset: text_underline_offset
@@ -2300,6 +2343,7 @@ struct NativeDeclarations {
     text_decoration: Option<TextDecorationValue>,
     text_decoration_style: Option<NativeTextDecorationStyle>,
     text_decoration_skip_ink: Option<NativeTextDecorationSkipInk>,
+    text_decoration_skip_spaces: Option<NativeTextDecorationSkipSpaces>,
     text_decoration_thickness: Option<u32>,
     text_underline_offset: Option<i32>,
     text_decoration_color: Option<NativeColor>,
@@ -2495,6 +2539,7 @@ fn parse_source(
             || declarations.text_decoration.is_some()
             || declarations.text_decoration_style.is_some()
             || declarations.text_decoration_skip_ink.is_some()
+            || declarations.text_decoration_skip_spaces.is_some()
             || declarations.text_decoration_thickness.is_some()
             || declarations.text_underline_offset.is_some()
             || declarations.text_decoration_color.is_some()
@@ -2651,6 +2696,7 @@ fn parse_declarations_with_diagnostics(
             "text-decoration" | "text-decoration-line" => parse_text_decoration(value).is_some(),
             "text-decoration-style" => parse_text_decoration_style(value).is_some(),
             "text-decoration-skip-ink" => parse_text_decoration_skip_ink(value).is_some(),
+            "text-decoration-skip-spaces" => parse_text_decoration_skip_spaces(value).is_some(),
             "text-decoration-thickness" => parse_text_decoration_thickness(value).is_some(),
             "text-underline-offset" => parse_text_underline_offset(value).is_some(),
             "text-decoration-color" => parse_color(value).is_some(),
@@ -2745,6 +2791,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-decoration-line"
             | "text-decoration-style"
             | "text-decoration-skip-ink"
+            | "text-decoration-skip-spaces"
             | "text-decoration-thickness"
             | "text-underline-offset"
             | "text-decoration-color"
@@ -2915,6 +2962,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "text-decoration-skip-ink" => {
                 declarations.text_decoration_skip_ink = parse_text_decoration_skip_ink(value);
+            }
+            "text-decoration-skip-spaces" => {
+                declarations.text_decoration_skip_spaces = parse_text_decoration_skip_spaces(value);
             }
             "text-decoration-thickness" => {
                 declarations.text_decoration_thickness = parse_text_decoration_thickness(value);
@@ -3195,6 +3245,14 @@ fn parse_text_decoration_skip_ink(value: &str) -> Option<NativeTextDecorationSki
     match value.to_ascii_lowercase().as_str() {
         "auto" => Some(NativeTextDecorationSkipInk::Auto),
         "none" => Some(NativeTextDecorationSkipInk::None),
+        _ => None,
+    }
+}
+
+fn parse_text_decoration_skip_spaces(value: &str) -> Option<NativeTextDecorationSkipSpaces> {
+    match value.to_ascii_lowercase().as_str() {
+        "none" => Some(NativeTextDecorationSkipSpaces::None),
+        "all" => Some(NativeTextDecorationSkipSpaces::All),
         _ => None,
     }
 }
@@ -5295,6 +5353,85 @@ mod tests {
         assert_eq!(
             parse_declarations("text-decoration-skip-ink: all").text_decoration_skip_ink,
             None
+        );
+    }
+
+    #[test]
+    fn text_decoration_skip_spaces_parser_accepts_only_bounded_values() {
+        assert_eq!(
+            NativeInheritedStyle::default().text_decoration_skip_spaces,
+            NativeTextDecorationSkipSpaces::None
+        );
+        assert_eq!(
+            parse_text_decoration_skip_spaces("NONE"),
+            Some(NativeTextDecorationSkipSpaces::None)
+        );
+        assert_eq!(
+            parse_text_decoration_skip_spaces("AlL"),
+            Some(NativeTextDecorationSkipSpaces::All)
+        );
+        assert_eq!(parse_text_decoration_skip_spaces("start"), None);
+        assert_eq!(parse_text_decoration_skip_spaces("end"), None);
+        assert_eq!(parse_text_decoration_skip_spaces("inherit"), None);
+        assert_eq!(parse_text_decoration_skip_spaces(""), None);
+        assert_eq!(
+            parse_declarations("text-decoration-skip-spaces: all").text_decoration_skip_spaces,
+            Some(NativeTextDecorationSkipSpaces::All)
+        );
+        assert_eq!(
+            parse_declarations("text-decoration-skip-spaces: start").text_decoration_skip_spaces,
+            None
+        );
+    }
+
+    #[test]
+    fn text_decoration_skip_spaces_is_inherited_and_cascaded() {
+        let document = NativeDocument::parse(
+            "<style>div { text-decoration-skip-spaces: none; } #parent { text-decoration-skip-spaces: ALL; } #explicit { text-decoration-skip-spaces: none; } #invalid { text-decoration-skip-spaces: start; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-skip-spaces:none'>Inline</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let inherited = document.resolve_target("id=inherited").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let inline = document.resolve_target("id=inline").unwrap();
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(document.root())
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::None
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(parent)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::All
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inherited)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::All
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::None
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::All
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inline)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::None
         );
     }
 

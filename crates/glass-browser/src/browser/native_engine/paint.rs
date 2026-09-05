@@ -1,7 +1,7 @@
 use super::config::MAX_NATIVE_NODES;
 use super::css::{
     FontStyleValue, FontWeightValue, NativeBorderRadius, NativeBorderStyle, NativeColor,
-    NativeTextDecorationSkipInk, NativeTextDecorationStyle,
+    NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
 };
 use super::dom::{NativeDocument, NativeNodeId};
 use super::error::NativeEngineError;
@@ -80,6 +80,7 @@ pub enum NativeDisplayCommand {
         decoration_color: NativeColor,
         decoration_style: NativeTextDecorationStyle,
         decoration_skip_ink: NativeTextDecorationSkipInk,
+        decoration_skip_spaces: NativeTextDecorationSkipSpaces,
         decoration_thickness: u32,
         underline_offset: i32,
         underline: bool,
@@ -202,6 +203,7 @@ impl NativeDisplayList {
                             decoration_color,
                             decoration_style: style.text_decoration_style(),
                             decoration_skip_ink: style.text_decoration_skip_ink(),
+                            decoration_skip_spaces: style.text_decoration_skip_spaces(),
                             decoration_thickness: style.text_decoration_thickness(),
                             underline_offset: style.text_underline_offset(),
                             underline: decoration.underline(),

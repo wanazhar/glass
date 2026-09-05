@@ -6,7 +6,8 @@ use glass_browser::browser::native_engine::{
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
     NativeEngineLimits, NativeEventKind, NativeLifecycleState, NativeNodeId, NativePoint,
-    NativeRect, NativeSurface, NativeTextDecorationSkipInk, NativeTextDecorationStyle, Viewport,
+    NativeRect, NativeSurface, NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces,
+    NativeTextDecorationStyle, Viewport,
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
@@ -1537,6 +1538,62 @@ fn native_text_decoration_skip_ink_cascades_to_display_commands() {
     assert!(document.diagnostics().iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "text-decoration-skip-ink"
+    }));
+}
+
+#[test]
+fn native_text_decoration_skip_spaces_cascades_to_display_commands() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; text-decoration:underline; } #all { text-decoration-skip-spaces:ALL; } #parent { text-decoration-skip-spaces:none; } #invalid { text-decoration-skip-spaces:start; }</style><div id='default' class='line'>A B</div><div id='all' class='line'>A B</div><div id='parent' class='line'><span id='inherited'>A B</span></div><div id='invalid' class='line'>A B</div><div id='inline' class='line' style='text-decoration-skip-spaces:all'>A B</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let default = document.resolve_target("id=default").unwrap();
+    let all = document.resolve_target("id=all").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 40,
+            height: 120,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let skip_spaces_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                decoration_skip_spaces,
+                ..
+            } if *command_node_id == node_id => Some(*decoration_skip_spaces),
+            _ => None,
+        })
+    };
+
+    assert_eq!(
+        skip_spaces_for(default),
+        Some(NativeTextDecorationSkipSpaces::None)
+    );
+    assert_eq!(
+        skip_spaces_for(all),
+        Some(NativeTextDecorationSkipSpaces::All)
+    );
+    assert_eq!(
+        skip_spaces_for(inherited),
+        Some(NativeTextDecorationSkipSpaces::None)
+    );
+    assert_eq!(
+        skip_spaces_for(invalid),
+        Some(NativeTextDecorationSkipSpaces::None)
+    );
+    assert_eq!(
+        skip_spaces_for(inline),
+        Some(NativeTextDecorationSkipSpaces::All)
+    );
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-skip-spaces"
     }));
 }
 

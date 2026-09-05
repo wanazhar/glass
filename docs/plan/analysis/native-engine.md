@@ -881,14 +881,15 @@ keywords, layout/raster changes, new dependencies, default-feature changes,
 and crate-boundary changes remain outside this slice. Focused, full-native,
 two-crate, strict, package, fuzz, security, formatting, and static local
 certification passed; exact evidence and cleanup are recorded in the task.
-The dependency-ordered `native-engine-119` design is recorded in
-`docs/plan/tasks/native-engine-119.md`. It will accept explicit,
-case-insensitive `text-decoration-skip-spaces: inherit` through a private
-declaration-only representation and resolve it against the existing
+The dependency-ordered `native-engine-119` implementation is complete at
+`1118bf2b` and recorded in `docs/plan/tasks/native-engine-119.md`. It accepts
+explicit, case-insensitive `text-decoration-skip-spaces: inherit` through a
+private declaration-only representation and resolves it against the existing
 `NativeInheritedStyle` at computed-style construction. The resolved
 `NativeTextDecorationSkipSpaces` enum, display-list, raster, layout, and
-omitted fallback remain unchanged; implementation and certification are
-pending.
+omitted fallback remain unchanged. Focused, full-native, two-crate, strict,
+package, fuzz, security, formatting, and static local certification passed;
+exact evidence and cleanup are recorded in the task.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic

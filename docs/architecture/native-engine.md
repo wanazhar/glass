@@ -84,8 +84,10 @@ bounded inherited
 thickness-scaled integer dash/dot periods, bounded inherited
 `text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
 underline and overline while preserving line-through, bounded inherited
-`text-decoration-skip-spaces:none|all` fixed-cell ASCII-space interval skipping
-across underline, overline, and line-through, and bounded inherited signed
+`text-decoration-skip-spaces:none|all|start|end|start end` fixed-cell
+ASCII-space interval skipping across underline, overline, and line-through,
+with line-edge provenance assigned during block-owned flow flush, and bounded
+inherited signed
 fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
 decreasing or increasing y, bounded
@@ -601,14 +603,17 @@ dry-run passed; the dev registry-backed verification is blocked by the
 immutable public `glass-browser 0.3.14` API surface, while the local dev
 no-verify packaging dry-run passed. No upload was attempted. Remote CI remains
 pending because the checkout is local-only.
-The design-ready dependency-ordered 116 boundary extends inherited
-`text-decoration-skip-spaces` with explicit `start`, `end`, and `start end`
-line-edge modes. It will mark line-edge text during the existing flow flush and
-carry that immutable provenance beside the display-list text commands, so only
-leading/trailing fixed-cell ASCII-space intervals are skipped without changing
-the 115 `none|all` behavior. The contract is recorded in
-`docs/plan/tasks/native-engine-116.md`; implementation and certification remain
-pending. Remote CI remains pending because the checkout is local-only.
+The dependency-ordered 116 implementation is complete and recorded in
+`docs/plan/tasks/native-engine-116.md`. It extends inherited
+`text-decoration-skip-spaces` with explicit `start`, `end`, and unordered
+`start end` line-edge modes. The authoritative block-owned flow flush marks
+the first and last text items and carries immutable provenance beside the
+display-list text commands, so raster replay skips only leading/trailing
+fixed-cell ASCII-space intervals without changing the 115 `none|all` behavior.
+Nested inline temporary flows cannot claim a line edge. Implementation is
+checkpointed at `a671a559` and `db7585f7`; focused, full-native, dev, strict,
+package, fuzz, security, formatting, and static local gates are recorded in
+the task file. Remote CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

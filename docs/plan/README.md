@@ -1025,14 +1025,16 @@ outside this slice. Focused, full-native, two-crate, strict, package, fuzz,
 security, formatting, and static local certification passed; exact evidence
 and cleanup are recorded in the task.
 
-The dependency-ordered [native-engine-119](tasks/native-engine-119.md) design
-is now active. It will accept explicit case-insensitive
-`text-decoration-skip-spaces: inherit` through a private declaration-only
-value resolved at the existing parent-style boundary, keeping the public
-finite paint enum and all artifact consumers unchanged. `unset`, `revert`,
-`revert-layer`, general CSS-wide keyword machinery, layout/raster changes, new
-dependencies, default-feature changes, and crate-boundary changes remain
-outside this slice; implementation and certification are pending.
+The dependency-ordered [native-engine-119](tasks/native-engine-119.md)
+implementation is complete at `1118bf2b`. It accepts explicit,
+case-insensitive `text-decoration-skip-spaces: inherit` through a private
+declaration-only value resolved at the existing parent-style boundary,
+keeping the public finite paint enum and all artifact consumers unchanged.
+`unset`, `revert`, `revert-layer`, general CSS-wide keyword machinery,
+layout/raster changes, new dependencies, default-feature changes, and
+crate-boundary changes remain outside this slice. Focused, full-native,
+two-crate, strict, package, fuzz, security, formatting, and static local
+certification passed; exact evidence and cleanup are recorded in the task.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

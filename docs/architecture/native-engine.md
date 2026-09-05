@@ -634,13 +634,15 @@ crate-boundary change was made. Focused, full-native, two-crate, strict,
 package, fuzz, security, formatting, and static local certification passed;
 exact evidence and cleanup are recorded in the task. Remote CI remains
 pending because the checkout is local-only.
-The dependency-ordered 119 design is recorded in
-`docs/plan/tasks/native-engine-119.md`. It will accept explicit,
+The dependency-ordered 119 implementation is complete at `1118bf2b` and
+recorded in `docs/plan/tasks/native-engine-119.md`. It accepts explicit,
 case-insensitive `text-decoration-skip-spaces: inherit` through a private
-declaration-only value and resolve it at the existing parent-style boundary;
+declaration-only value and resolves it at the existing parent-style boundary;
 the public finite paint enum, display-list schema, rasterizer, and omitted
-fallback remain unchanged. Implementation and certification are pending;
-remote CI remains pending because the checkout is local-only.
+fallback remain unchanged. Focused, full-native, two-crate, strict, package,
+fuzz, security, formatting, and static local certification passed; exact
+evidence and cleanup are recorded in the task. Remote CI remains pending
+because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -1,7 +1,7 @@
 ---
 id: native-engine-119
 scope: glass-browser/native-engine/text-decoration-skip-spaces-inherit
-status: planned
+status: complete
 depends-on: [native-engine-118]
 ---
 
@@ -95,21 +95,22 @@ browser-wide CSS conformance.
 
 ## Implementation
 
-Pending. The parser, declaration storage, cascade resolution, and focused
-regressions will be updated together. Tests must cover case-insensitive
-parser acceptance, stylesheet and inline precedence, parent-value resolution,
-and the continued rejection/diagnostic behavior for the remaining unsupported
-CSS-wide keywords.
+The parser, declaration storage, and cascade now use
+`NativeTextDecorationSkipSpacesDeclaration` to keep `Inherit` private to CSS
+declaration state. The computed-style owner resolves that state against the
+supplied `NativeInheritedStyle`, while the public resolved enum and display
+list remain finite. Parser/cascade and native raster regressions are recorded
+at implementation checkpoint `1118bf2b`.
 
 ## Verification
 
-Focused tests must prove declaration parsing and parent/inline cascade
-resolution. Native integration must prove an inherited `all`, `start`, `end`,
-or `start end` value survives an explicit child `inherit` declaration through
-display-list construction and raster replay, while a winning explicit value
-still overrides it. Full native, feature-library, strict lint,
-warning-denied rustdoc, locked package, dependency, offline fuzz,
-documentation, static, security, and formatting gates remain required.
+Focused tests proved case-insensitive declaration parsing and parent/inline
+cascade resolution. Native integration proved stylesheet and inline
+`inherit` preserve a parent `all` value through display-list construction and
+raster replay, while an explicit child `none` still overrides it. Full native,
+feature-library, strict lint, warning-denied rustdoc, locked package,
+dependency, offline fuzz, documentation, static, security, and formatting
+gates passed.
 
 Every local gate uses an isolated or intentionally shared target with a
 recorded purpose. Completed validation removes exact regenerable output only
@@ -118,10 +119,54 @@ registry publication, and a third crate are not claimed by this local task.
 
 ## Certification
 
-Pending implementation and local validation.
+Focused CSS parser/cascade tests passed 2/2 and focused native integration
+tests passed 5/5. The full feature-enabled `glass-browser` library passed 915
+tests with 1 ignored and 0 failures; the full native integration suite passed
+156/156. Serial `glass-dev` passed 365 unit tests, 4 integration tests, 15 PTY
+tests, and 1 doctest.
+
+All-feature workspace Clippy and no-default-feature browser Clippy passed with
+warnings denied. Warning-denied workspace rustdoc and the all-feature debug
+workspace build passed; the build emitted the existing non-fatal duplicate
+`glass-browser`/`.dwp` output-name warning between the two packages.
+
+Locked `glass-browser` packaging passed with 196 files and a 5.1 MiB archive.
+A local no-verify `glass-dev` archive passed with 69 files and a 2.6 MiB
+archive; the packaged dependency validator confirmed an exact
+`glass-browser 0.3.14` dependency. The public-registry limitation is
+unchanged: immutable published `glass-browser 0.3.14` lacks the current
+`BrowserRuntime`, `browser_runtime`, and `browser_endpoint` APIs required by
+`glass-dev 0.3.14`; no upload was attempted. The known yanked `chacha20
+0.10.1` lockfile warning remained non-fatal.
+
+Locked fuzz fetch plus offline all-target checking passed. `cargo deny check`
+passed with the existing duplicate-dependency warnings, and `cargo audit`
+passed with the four already-allowed warnings: unmaintained `bincode`,
+unmaintained `yaml-rust`, the recorded `lru` unsoundness advisory, and yanked
+`chacha20`.
+
+Formatting and diff checks passed. The final static audit passed with 533
+Markdown files, 83 current-version documents, 57 previous-version hits, 620
+semantic hits, and zero current-claim failures. Coverage passed with 345
+full-product MCP tools, 100 browser-only tools, 17 examples, and 22 public
+modules; TUI passed 15/63, depth 93/19, reliability 6/4, adapters 5, and Web
+IR 8/8/11. Remote CI, browser parity, release, registry publication, and a
+third crate are not claimed by this local checkpoint.
 
 ## Cleanup
 
-Pending implementation and local validation. Record the exact target/report
-inventory, active-writer/open-file checks, bounded deletion, final absence
-check, and filesystem headroom before closing the task.
+The final exact inventory found `/tmp/glass-119-focused` at 10,460,150,421
+bytes across 15,268 files (about 9.74 GiB). Generated reports measured
+171,934 bytes for the release-documentation report, 3,482 bytes for the
+reliability report, 1,418 bytes for the adapter report, and 3,934 bytes for
+the Web IR log. No Cargo, rustc, rustdoc, Clippy, fuzz, rust-analyzer, or
+Glass test writer and no open descriptor referenced the target. The
+repository `target/` was absent. The exact target and four reports were
+removed with bounded deletion after the writer/open-file checks. The same
+cleanup removed 222 empty/small Glass test-scratch directories totaling 7,833
+bytes and the 12 remaining generated trust/lock files totaling 994 bytes;
+the final bounded candidate scan is empty. Filesystem headroom is 59% used
+with 85,498,941,440 bytes available (about 80 GiB). The three pre-existing
+Glass processes with deleted target paths were preserved; no process was
+killed. Shared Cargo registries, toolchains, source, durable data, and other
+projects were not touched.

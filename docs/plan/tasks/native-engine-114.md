@@ -1,7 +1,7 @@
 ---
 id: native-engine-114
 scope: glass-browser/native-engine/text-decoration-skip-ink
-status: design-ready
+status: implementation-in-progress
 depends-on: [native-engine-113]
 ---
 

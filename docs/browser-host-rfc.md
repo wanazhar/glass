@@ -128,7 +128,10 @@ line-state owner, bounded inherited
 `wavy` repeats a fixed eight-pixel phase `[0,1,2,1,0,-1,-2,-1]`,
 bounded inherited
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
-thickness-scaled integer dash/dot periods, bounded inherited signed fixed-pixel
+thickness-scaled integer dash/dot periods, plus inherited
+`text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
+underline and overline while preserving line-through, bounded inherited
+signed fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
 decreasing or increasing y, and bounded inherited ASCII
 `text-transform:none|uppercase|lowercase` layout, bounded non-negative

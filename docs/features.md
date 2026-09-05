@@ -87,6 +87,9 @@ bounded inherited
 thickness-scaled integer dash/dot periods, bounded inherited
 `text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
 underline and overline while preserving line-through, bounded inherited signed
+`text-decoration-skip-spaces:none|all` same-run ASCII-space interval skipping
+including adjacent letter, word, and final-line justification spacing across
+underline, overline, and line-through, and bounded inherited signed
 fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
 decreasing or increasing y,
@@ -319,6 +322,9 @@ projection, and point hit-testing,
   `text-decoration-thickness:1px|2px|3px|4px` positive-y raster bands,
   bounded inherited `text-decoration-skip-ink:auto|none` same-run glyph
   intersection skipping for underline and overline with unchanged line-through,
+  bounded inherited `text-decoration-skip-spaces:none|all` same-run ASCII-space
+  interval skipping including adjacent letter, word, and final-line
+  justification spacing across underline, overline, and line-through,
   bounded inherited signed fixed-pixel `text-underline-offset:-4px..=4px`
   that moves only the underline toward decreasing or increasing y,
   bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,

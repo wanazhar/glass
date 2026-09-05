@@ -80,11 +80,11 @@ paint including distinct shorthand combinations, bounded inherited
 `wavy` repeats a fixed eight-pixel phase `[0,1,2,1,0,-1,-2,-1]`,
 bounded inherited
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
-thickness-scaled integer dash/dot periods, bounded inherited signed fixed-pixel
+thickness-scaled integer dash/dot periods, bounded inherited
 `text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
-underline and overline while preserving line-through, bounded inherited signed
+underline and overline while preserving line-through, bounded inherited
 `text-decoration-skip-spaces:none|all` fixed-cell ASCII-space interval skipping
-across underline, overline, and line-through, bounded inherited signed
+across underline, overline, and line-through, and bounded inherited signed
 fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
 decreasing or increasing y, bounded
@@ -585,15 +585,16 @@ local gates pass. Exact target reclamation and the remaining local-only
 boundary are recorded in the task file. Remote CI remains pending because the
 branch is local-only.
 
-The active dependency-ordered 115 design is recorded in
+The dependency-ordered 115 implementation is complete and recorded in
 `docs/plan/tasks/native-engine-115.md`. It adds inherited
 `text-decoration-skip-spaces:none|all` through the existing immutable text
 command. `all` skips decoration pixels over same-run ASCII-space intervals,
 including word, letter, and final-line justification spacing, for underline,
 overline, and line-through; `none` preserves replay. The standard's `start` and
 `end` modes, Unicode whitespace, line-boundary semantics, and full browser text
-conformance remain outside this bounded design. Implementation, certification,
-cleanup, and remote CI remain pending; the checkout is local-only.
+conformance remain outside this bounded design. Implementation is checkpointed
+at `1c0bd484`; final strict/package/security/static certification, cleanup, and
+remote CI remain pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

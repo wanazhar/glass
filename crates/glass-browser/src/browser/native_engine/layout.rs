@@ -1009,6 +1009,7 @@ struct FlowStyle {
     text_indent: u32,
     word_spacing: u32,
     letter_spacing: u32,
+    owns_line_boundaries: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1059,6 +1060,7 @@ struct FlowCursor {
     pending_whitespace: bool,
     word_spacing: u32,
     letter_spacing: u32,
+    owns_line_boundaries: bool,
     line_items: Vec<FlowItem>,
     max_right: u32,
     max_bottom: u32,
@@ -1089,6 +1091,7 @@ impl FlowCursor {
             pending_whitespace: false,
             word_spacing: style.word_spacing,
             letter_spacing: style.letter_spacing,
+            owns_line_boundaries: style.owns_line_boundaries,
             line_items: Vec::new(),
             max_right: x,
             max_bottom: y,
@@ -1318,6 +1321,11 @@ impl<'a> LayoutBuilder<'a> {
                 WhiteSpaceValue::Normal | WhiteSpaceValue::PreLine
             )
             && style.word_break() == WordBreakValue::Normal;
+        let owns_line_boundaries = parent == self.document.root()
+            || matches!(
+                self.effective_display(parent),
+                DisplayValue::Block | DisplayValue::Flex
+            );
         let mut flow = FlowCursor::new(
             x,
             y,
@@ -1333,6 +1341,7 @@ impl<'a> LayoutBuilder<'a> {
                 text_indent,
                 word_spacing,
                 letter_spacing,
+                owns_line_boundaries,
             },
         );
         self.process_children(parent, &mut flow, depth);
@@ -1359,23 +1368,25 @@ impl<'a> LayoutBuilder<'a> {
     fn flush_line_with_reason(&mut self, flow: &mut FlowCursor, reason: FlowFlushReason) {
         if flow.line_has_content {
             let line_items = flow.take_line_items();
-            let text_indices = line_items
-                .iter()
-                .flat_map(|item| {
-                    let end = item.text_end.min(self.text_runs.len());
-                    let start = item.text_start.min(end);
-                    start..end
-                })
-                .collect::<Vec<_>>();
-            if let Some(first_text_index) = text_indices.first().copied()
-                && let Some(text_run) = self.text_runs.get_mut(first_text_index)
-            {
-                text_run.starts_line = true;
-            }
-            if let Some(last_text_index) = text_indices.last().copied()
-                && let Some(text_run) = self.text_runs.get_mut(last_text_index)
-            {
-                text_run.ends_line = true;
+            if flow.owns_line_boundaries {
+                let text_indices = line_items
+                    .iter()
+                    .flat_map(|item| {
+                        let end = item.text_end.min(self.text_runs.len());
+                        let start = item.text_start.min(end);
+                        start..end
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(first_text_index) = text_indices.first().copied()
+                    && let Some(text_run) = self.text_runs.get_mut(first_text_index)
+                {
+                    text_run.starts_line = true;
+                }
+                if let Some(last_text_index) = text_indices.last().copied()
+                    && let Some(text_run) = self.text_runs.get_mut(last_text_index)
+                {
+                    text_run.ends_line = true;
+                }
             }
             let justification_enabled = match reason {
                 FlowFlushReason::SoftWrap => flow.justify_enabled,

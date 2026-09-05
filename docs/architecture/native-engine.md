@@ -31,6 +31,7 @@ bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
 bounded-text-justification-control/bounded-text-decoration-lines/
 bounded-text-decoration-combinations,
+bounded-text-decoration-skip-spaces-line-edges,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -600,6 +601,14 @@ dry-run passed; the dev registry-backed verification is blocked by the
 immutable public `glass-browser 0.3.14` API surface, while the local dev
 no-verify packaging dry-run passed. No upload was attempted. Remote CI remains
 pending because the checkout is local-only.
+The design-ready dependency-ordered 116 boundary extends inherited
+`text-decoration-skip-spaces` with explicit `start`, `end`, and `start end`
+line-edge modes. It will mark line-edge text during the existing flow flush and
+carry that immutable provenance beside the display-list text commands, so only
+leading/trailing fixed-cell ASCII-space intervals are skipped without changing
+the 115 `none|all` behavior. The contract is recorded in
+`docs/plan/tasks/native-engine-116.md`; implementation and certification remain
+pending. Remote CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

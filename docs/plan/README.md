@@ -993,6 +993,15 @@ the dev registry-backed verification is blocked by the immutable public
 dry-run passed. No upload was attempted. Remote CI remains pending because the
 checkout is local-only.
 
+The design-ready dependency-ordered [native-engine-116](tasks/native-engine-116.md)
+boundary extends inherited `text-decoration-skip-spaces` with explicit
+`start`, `end`, and `start end` line-edge modes. It will mark line-edge text in
+the existing flow flush and carry immutable provenance alongside display-list
+text commands, so only leading/trailing fixed-cell ASCII-space intervals are
+skipped while the 115 `none|all` behavior remains unchanged. Implementation
+and certification remain pending; remote CI remains pending because the
+checkout is local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -32,7 +32,8 @@ bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-just
 bounded-text-justification-control/bounded-text-decoration-lines/
 bounded-text-decoration-combinations,
 bounded-text-decoration-skip-spaces-line-edges,
-bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit,
+bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit/
+bounded-text-decoration-skip-spaces-unset,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -643,6 +644,13 @@ fallback remain unchanged. Focused, full-native, two-crate, strict, package,
 fuzz, security, formatting, and static local certification passed; exact
 evidence and cleanup are recorded in the task. Remote CI remains pending
 because the checkout is local-only.
+The dependency-ordered 120 design is recorded in
+`docs/plan/tasks/native-engine-120.md`. It will accept explicit,
+case-insensitive `text-decoration-skip-spaces: unset` through the same private
+declaration-only boundary and resolve it as inherited parent state; the public
+finite paint enum, display-list schema, rasterizer, and omitted fallback remain
+unchanged. Implementation and certification are pending; remote CI remains
+pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

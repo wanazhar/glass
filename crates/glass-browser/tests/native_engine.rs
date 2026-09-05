@@ -1542,6 +1542,76 @@ fn native_text_decoration_skip_ink_cascades_to_display_commands() {
 }
 
 #[test]
+fn native_text_decoration_skip_ink_revert_layer_reuses_layers_and_reaches_raster() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration-color:red; text-decoration:underline; text-decoration-style:wavy; text-underline-offset:-1px; font-weight:bold; font-style:italic; } @layer base { #named { text-decoration-skip-ink:none; } #rollback { text-decoration-skip-ink:auto; } #inline { text-decoration-skip-ink:auto; } } @layer theme { .named { text-decoration-skip-ink:auto; } #rollback { text-decoration-skip-ink:none; } #inline { text-decoration-skip-ink:none; } } #named { text-decoration-skip-ink:revert-layer; } #rollback { text-decoration-skip-ink:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='inline' class='line' style='text-decoration-skip-ink:revert-layer'>A</div><div id='fallback' class='line'>A</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let list = document
+        .display_list(Viewport {
+            width: 32,
+            height: 100,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    let node_for = |id| document.resolve_target(&format!("id={id}")).unwrap();
+    let skip_ink_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                decoration_skip_ink,
+                ..
+            } if *command_node_id == node_id => Some(*decoration_skip_ink),
+            _ => None,
+        })
+    };
+    let named = node_for("named");
+    let rollback = node_for("rollback");
+    let inline = node_for("inline");
+    let fallback = node_for("fallback");
+    assert_eq!(skip_ink_for(named), Some(NativeTextDecorationSkipInk::Auto));
+    assert_eq!(
+        skip_ink_for(rollback),
+        Some(NativeTextDecorationSkipInk::None)
+    );
+    assert_eq!(
+        skip_ink_for(inline),
+        Some(NativeTextDecorationSkipInk::None)
+    );
+    assert_eq!(
+        skip_ink_for(fallback),
+        Some(NativeTextDecorationSkipInk::Auto)
+    );
+
+    let surface = list.rasterize().unwrap();
+    let run_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                ..
+            } if *command_node_id == node_id => Some(*origin),
+            _ => None,
+        })
+    };
+    let auto_origin = run_for(named).unwrap();
+    let none_origin = run_for(rollback).unwrap();
+    assert_eq!(
+        surface.pixel(auto_origin.x + 4, auto_origin.y + 6),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(none_origin.x + 4, none_origin.y + 6),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-skip-ink"
+    }));
+}
+
+#[test]
 fn native_text_decoration_skip_spaces_cascades_to_display_commands() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; text-decoration:underline; } #all { text-decoration-skip-spaces:ALL; } #parent { text-decoration-skip-spaces:none; } #invalid { text-decoration-skip-spaces:start start; }</style><div id='default' class='line'>A B</div><div id='all' class='line'>A B</div><div id='parent' class='line'><span id='inherited'>A B</span></div><div id='invalid' class='line'>A B</div><div id='inline' class='line' style='text-decoration-skip-spaces:all'>A B</div>",

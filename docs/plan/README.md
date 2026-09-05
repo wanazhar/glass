@@ -985,9 +985,13 @@ intervals, including word, letter, and final-line justification spacing, for
 underline, overline, and line-through; `none` preserves replay. `start`/`end`,
 Unicode whitespace, line-boundary semantics, fragment continuity, and
 browser-wide text conformance remain outside the bounded design. Implementation
-is checkpointed at `1c0bd484`; final strict/package/security/static
-certification, cleanup, and remote CI remain pending because the checkout is
-local-only.
+is checkpointed at `1c0bd484`; local native/dev, strict, package, fuzz,
+security, formatting, and static certification is complete and exact cleanup is
+recorded in the task file. The browser registry-backed publish dry-run passed;
+the dev registry-backed verification is blocked by the immutable public
+`glass-browser 0.3.14` API surface, while the local dev no-verify packaging
+dry-run passed. No upload was attempted. Remote CI remains pending because the
+checkout is local-only.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

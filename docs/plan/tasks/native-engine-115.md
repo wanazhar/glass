@@ -1,7 +1,7 @@
 ---
 id: native-engine-115
 scope: glass-browser/native-engine/text-decoration-skip-spaces
-status: in-progress
+status: complete
 depends-on: [native-engine-114]
 ---
 
@@ -106,9 +106,51 @@ recorded purpose. Completed validation removes exact regenerable output only
 after active-writer and open-file checks. Remote CI, browser parity, release,
 registry publication, and a third crate are not claimed by this local task.
 
+## Certification
+
+Implementation checkpoint: `1c0bd484`. Synchronized documentation checkpoint:
+`b739c7d0`. The focused skip-spaces parser, raster, and integration checks
+passed 3/3, 1/1, and 1/1. The native-engine library passed 914 tests with one
+ignored, and its integration suite passed 152/152. The all-feature
+`glass-browser` library passed 915 tests with one ignored. Serial `glass-dev`
+passed 365 unit tests, 4 integration tests, and 15 PTY tests.
+
+Workspace strict Clippy, no-default-feature browser Clippy, warning-denied
+workspace rustdoc, explicit debug builds, formatting, and `git diff --check`
+passed. Locked browser and dev package archives were produced and the dev
+archive's exact `glass-browser = 0.3.14` dependency was verified without path
+or feature leakage. The browser registry-backed publish dry-run passed. The
+dev registry-backed dry-run was intentionally not published and failed during
+tarball verification because the already-published immutable `glass-browser
+0.3.14` does not expose the current `BrowserRuntime`, `browser_runtime`, and
+`browser_endpoint` APIs required by `glass-dev 0.3.14`; the dev no-verify
+packaging dry-run passed. This is a public-registry compatibility blocker, not
+a native-engine test failure, and no upload was attempted.
+
+Offline fuzz-workspace all-target checking, `cargo deny`, `cargo audit` (with
+the repository's existing allowed warnings), version/feature/TUI/depth/public
+adapter/reliability/Web IR validators, release-documentation validation, and
+documentation coverage passed. Final documentation counts were 529 Markdown
+files, 83 current-version hits, 57 previous-version hits, 609 semantic hits,
+and zero current-claim failures; coverage found 345 full-product MCP tools,
+100 browser-only tools, 17 examples, and 22 public modules.
+
+The first native-library invocation also reproduced the repository's existing
+deep test-thread stack requirement; rerunning with
+`RUST_MIN_STACK=8388608` passed. This is recorded so the default-stack failure
+is not mistaken for a feature regression.
+
 ## Cleanup
 
-Record the exact isolated target and report paths, sizes, process/open-file
-checks, deletion counts, and post-removal filesystem state after
-certification. Do not remove shared Cargo registries, toolchains, source,
-durable user data, or other projects' non-regenerable artifacts.
+The isolated target `/tmp/glass-115-target` grew to approximately 11.63 GB
+during the complete certification pass. The exact cleanup inventory found 81
+user-owned, non-symlink `/tmp/glass-*`/`/tmp/forgebuild-*` roots totaling
+11,632,848,896 bytes, plus the generated
+`target/.rustc_info.json` (4,096 bytes). No Cargo, rustc, rustdoc, Clippy,
+fuzz, or rust-analyzer writer and no open file descriptor referenced any
+candidate. Bounded `find -P ... -xdev -depth -delete` removed all 82 exact
+outputs. The isolated target, report files, repository package output, and fuzz
+target are absent; no matching temporary roots remain. Filesystem availability
+returned to 80 GB (59% used). The active repository `target/debug` tree and
+its three running Glass processes were preserved. Shared Cargo registries,
+toolchains, source, durable data, and other projects were not touched.

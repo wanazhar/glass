@@ -587,7 +587,7 @@ impl NativeSurface {
         let leading_space_count = if skip_start {
             characters
                 .iter()
-                .take_while(|character| **character == ' ')
+                .take_while(|character| is_text_decoration_whitespace(**character))
                 .count()
         } else {
             0
@@ -597,7 +597,7 @@ impl NativeSurface {
                 characters
                     .iter()
                     .rev()
-                    .take_while(|character| **character == ' ')
+                    .take_while(|character| is_text_decoration_whitespace(**character))
                     .count(),
             )
         } else {
@@ -622,10 +622,11 @@ impl NativeSurface {
                 } else {
                     0
                 });
-            let edge_space = character == ' '
+            let decoration_whitespace = is_text_decoration_whitespace(character);
+            let edge_space = decoration_whitespace
                 && ((skip_start && character_index < leading_space_count)
                     || (skip_end && character_index >= trailing_space_start));
-            if character == ' ' && (skip_all || edge_space) {
+            if decoration_whitespace && (skip_all || edge_space) {
                 skip_space_ranges.push((
                     offset.saturating_sub(i64::from(paint.letter_spacing)),
                     offset.saturating_add(i64::from(character_advance)),
@@ -860,6 +861,10 @@ impl NativeDisplayList {
     pub fn rasterize(&self) -> Result<NativeSurface, NativeEngineError> {
         NativeSurface::from_display_list(self)
     }
+}
+
+fn is_text_decoration_whitespace(character: char) -> bool {
+    character.is_whitespace()
 }
 
 fn glyph_rows(character: char) -> Option<[u8; 7]> {
@@ -2200,6 +2205,71 @@ mod tests {
             );
             assert_eq!(all.pixel(0, y), Some([255, 0, 0, 255]), "all before y={y}");
             assert_eq!(all.pixel(18, y), Some([255, 0, 0, 255]), "all after y={y}");
+        }
+    }
+
+    #[test]
+    fn surface_skip_spaces_all_covers_unicode_whitespace_intervals() {
+        let node_id = NativeDocument::empty().root();
+        let text_run = |skip_spaces| NativeDisplayCommand::TextRun {
+            node_id,
+            origin: NativePoint { x: 0, y: 10 },
+            text: "A\tB\u{00a0}C".into(),
+            truncated: false,
+            color: NativeColor::BLACK,
+            decoration_color: NativeColor::RED,
+            decoration_style: NativeTextDecorationStyle::Solid,
+            decoration_skip_ink: NativeTextDecorationSkipInk::None,
+            decoration_skip_spaces: skip_spaces,
+            decoration_thickness: 1,
+            underline_offset: 0,
+            underline: true,
+            overline: true,
+            line_through: true,
+            bold: false,
+            italic: false,
+            word_spacing: 0,
+            letter_spacing: 0,
+            justify_spacing: 0,
+            clip: None,
+        };
+        let rasterize = |skip_spaces| {
+            display_list(
+                vec![
+                    NativeDisplayCommand::Clear {
+                        color: NativeColor::WHITE,
+                    },
+                    text_run(skip_spaces),
+                ],
+                48,
+                24,
+            )
+            .rasterize()
+            .unwrap()
+        };
+        let none = rasterize(NativeTextDecorationSkipSpaces::None);
+        let all = rasterize(NativeTextDecorationSkipSpaces::All);
+
+        for y in [9, 13, 17] {
+            for x in [6, 18] {
+                assert_eq!(
+                    none.pixel(x, y),
+                    Some([255, 0, 0, 255]),
+                    "none whitespace x={x} y={y}"
+                );
+                assert_eq!(
+                    all.pixel(x, y),
+                    Some([255, 255, 255, 255]),
+                    "all whitespace x={x} y={y}"
+                );
+            }
+            for x in [0, 12, 24] {
+                assert_eq!(
+                    all.pixel(x, y),
+                    Some([255, 0, 0, 255]),
+                    "all non-whitespace x={x} y={y}"
+                );
+            }
         }
     }
 

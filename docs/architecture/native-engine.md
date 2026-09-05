@@ -593,8 +593,13 @@ including word, letter, and final-line justification spacing, for underline,
 overline, and line-through; `none` preserves replay. The standard's `start` and
 `end` modes, Unicode whitespace, line-boundary semantics, and full browser text
 conformance remain outside this bounded design. Implementation is checkpointed
-at `1c0bd484`; final strict/package/security/static certification, cleanup, and
-remote CI remain pending because the checkout is local-only.
+at `1c0bd484`; local native/dev, strict, package, fuzz, security, formatting,
+and static certification is complete and the exact cleanup is recorded in
+`docs/plan/tasks/native-engine-115.md`. The browser registry-backed publish
+dry-run passed; the dev registry-backed verification is blocked by the
+immutable public `glass-browser 0.3.14` API surface, while the local dev
+no-verify packaging dry-run passed. No upload was attempted. Remote CI remains
+pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

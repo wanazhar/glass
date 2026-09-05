@@ -842,9 +842,13 @@ ASCII-space intervals, including the existing word, letter, and final-line
 justification spacing, for underline, overline, and line-through; `none`
 preserves replay. `start`/`end`, Unicode whitespace, line-boundary semantics,
 fragment continuity, and browser-wide text conformance remain outside the
-bounded design. Implementation is checkpointed at `1c0bd484`; final
-strict/package/security/static certification, cleanup, and remote CI remain
-pending because the branch is local-only.
+bounded design. Implementation is checkpointed at `1c0bd484`; local native/dev,
+strict, package, fuzz, security, formatting, and static certification is
+complete and exact cleanup is recorded in the task file. The browser
+registry-backed publish dry-run passed; the dev registry-backed verification is
+blocked by the immutable public `glass-browser 0.3.14` API surface, while the
+local dev no-verify packaging dry-run passed. No upload was attempted. Remote
+CI remains pending because the branch is local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1493,9 +1497,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-115.md` is the active design checkpoint;
-`docs/plan/tasks/native-engine-114.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-113.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-115.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-114.md` is the preceding completed checkpoint;
+`docs/plan/tasks/native-engine-113.md` is the earlier completed checkpoint;
 `docs/plan/tasks/native-engine-112.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-111.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-110.md` is the preceding completed checkpoint;

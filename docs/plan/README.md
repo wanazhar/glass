@@ -1061,6 +1061,14 @@ security, formatting, and static local certification passed; exact evidence
 and cleanup are recorded in the task. Remote CI remains pending because the
 checkout is local-only.
 
+The next dependency-ordered [native-engine-122](tasks/native-engine-122.md)
+boundary is designed for bounded top-level named cascade layers and explicit
+`text-decoration-skip-spaces: revert-layer` rollback. It will keep private
+layer priority metadata ahead of selector specificity, bound named layers to
+15, and preserve the unlayered/inline bucket above named layers. Layer
+statements, nesting, multiple origins, and general CSS-wide keyword machinery
+remain outside the planned slice; implementation and certification are pending.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

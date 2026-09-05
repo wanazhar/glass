@@ -34,6 +34,7 @@ bounded-text-decoration-combinations,
 bounded-text-decoration-skip-spaces-line-edges,
 bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit/
 bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-revert,
+bounded-cascade-layers/bounded-text-decoration-skip-spaces-revert-layer,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -664,6 +665,13 @@ layout/raster changes remain outside this slice. Focused, full-native,
 two-crate, strict, package, fuzz, security, formatting, and static local
 certification passed; exact evidence and cleanup are recorded in the task.
 Remote CI remains pending because the checkout is local-only.
+The next dependency-ordered 122 boundary is designed in
+`docs/plan/tasks/native-engine-122.md`: bounded top-level named cascade layers
+with private layer priority metadata and explicit
+`text-decoration-skip-spaces: revert-layer` rollback. It is limited to 15
+named layers, keeps the unlayered bucket above named layers, and does not claim
+layer statements, nesting, multiple origins, or general CSS-wide keyword
+machinery. Implementation and certification are pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

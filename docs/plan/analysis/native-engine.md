@@ -808,16 +808,17 @@ conformance remain outside the boundary. Implementation is `3bdd3b54`; final
 local gate and cleanup evidence are recorded in the task file. Remote CI
 remains pending because the branch is local-only.
 
-The next dependency-ordered `native-engine-113` design is recorded in
+The completed dependency-ordered `native-engine-113` boundary is recorded in
 `docs/plan/tasks/native-engine-113.md`. It adds inherited
 `text-decoration-style:wavy` through the dedicated text-decoration style type,
 painting a continuous eight-pixel fixed-cell wave with phase
 `[0,1,2,1,0,-1,-2,-1]` and the resolved thickness at each x column. Phase
 resets at each immutable text run; the 112 double behavior, 111 underline
 offset, line origins, clipping, scrolling, opacity, capture, and semantic
-consumers remain shared. CSS metric centering, fragment continuity, and
-browser-wide conformance remain outside the design. Implementation,
-certification, cleanup, and remote CI remain pending because the branch is
+consumers remain shared. CSS metric centering, fragment continuity,
+antialiasing, and browser-wide conformance remain outside the boundary.
+Implementation is `0c6a9ddc`; complete local gate and cleanup evidence are
+recorded in the task file. Remote CI remains pending because the branch is
 local-only.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
@@ -1057,7 +1058,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-110` | bounded inherited `text-decoration-thickness:1px|2px|3px|4px` as a positive-y fixed-pixel band through one immutable text command and the existing integer style-pattern helper | `native-engine-109` | arbitrary/font-derived/fractional values, zero/negative/percentage/auto/from-font syntax, centering, offsets, baseline metrics, fragment continuity, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-111` | bounded inherited signed `text-underline-offset:-4px..=4px` for underline-only y translation through the immutable text command, preserving the 110 thickness/style raster owner | `native-engine-110` | auto/percentage/fractional/font-derived values, overline/line-through offsets, decoration-origin propagation, centering, baseline metrics, fragment continuity, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-112` | bounded inherited `text-decoration-style:double` through a dedicated text-decoration style type, painting two solid thickness-preserving bands with one separator pixel through the immutable text command | `native-engine-111` | wavy styles, font-metric centering, decoration-origin propagation, fragment continuity, layout/geometry changes, shaping, bidi, vertical writing, and browser-wide text conformance |
-| `native-engine-113` | design-ready bounded inherited `text-decoration-style:wavy` through the dedicated text-decoration style type, painting a continuous eight-pixel fixed-cell phase `[0,1,2,1,0,-1,-2,-1]` with resolved thickness through the immutable text command | `native-engine-112` | CSS metric centering, decoration-origin propagation, fragment continuity, antialiasing, layout/geometry changes, shaping, bidi, vertical writing, and browser-wide text conformance |
+| `native-engine-113` | bounded inherited `text-decoration-style:wavy` through the dedicated text-decoration style type, painting a continuous eight-pixel fixed-cell phase `[0,1,2,1,0,-1,-2,-1]` with resolved thickness through the immutable text command | `native-engine-112` | CSS metric centering, decoration-origin propagation, fragment continuity, antialiasing, layout/geometry changes, shaping, bidi, vertical writing, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1465,8 +1466,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-112.md` is the latest completed checkpoint;
-`docs/plan/tasks/native-engine-113.md` is the active design checkpoint;
+`docs/plan/tasks/native-engine-113.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-112.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-111.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-110.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-109.md` is the preceding completed checkpoint;

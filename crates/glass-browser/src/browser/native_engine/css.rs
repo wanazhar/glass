@@ -3256,6 +3256,7 @@ fn parse_text_decoration_skip_spaces(value: &str) -> Option<NativeTextDecoration
     let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
     match tokens.as_slice() {
         [token] => match token.to_ascii_lowercase().as_str() {
+            "initial" => Some(NativeTextDecorationSkipSpaces::StartAndEnd),
             "none" => Some(NativeTextDecorationSkipSpaces::None),
             "all" => Some(NativeTextDecorationSkipSpaces::All),
             "start" => Some(NativeTextDecorationSkipSpaces::Start),
@@ -5407,10 +5408,17 @@ mod tests {
             parse_text_decoration_skip_spaces("END start"),
             Some(NativeTextDecorationSkipSpaces::StartAndEnd)
         );
+        assert_eq!(
+            parse_text_decoration_skip_spaces("INITIAL"),
+            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+        );
         assert_eq!(parse_text_decoration_skip_spaces("start start"), None);
         assert_eq!(parse_text_decoration_skip_spaces("none start"), None);
         assert_eq!(parse_text_decoration_skip_spaces("all end"), None);
         assert_eq!(parse_text_decoration_skip_spaces("inherit"), None);
+        assert_eq!(parse_text_decoration_skip_spaces("unset"), None);
+        assert_eq!(parse_text_decoration_skip_spaces("revert"), None);
+        assert_eq!(parse_text_decoration_skip_spaces("revert-layer"), None);
         assert_eq!(parse_text_decoration_skip_spaces(""), None);
         assert_eq!(
             parse_declarations("text-decoration-skip-spaces: all").text_decoration_skip_spaces,
@@ -5419,6 +5427,10 @@ mod tests {
         assert_eq!(
             parse_declarations("text-decoration-skip-spaces: start end")
                 .text_decoration_skip_spaces,
+            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+        );
+        assert_eq!(
+            parse_declarations("text-decoration-skip-spaces: initial").text_decoration_skip_spaces,
             Some(NativeTextDecorationSkipSpaces::StartAndEnd)
         );
     }

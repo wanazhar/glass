@@ -1708,6 +1708,95 @@ fn native_text_decoration_skip_spaces_uses_unicode_whitespace_at_line_edges() {
 }
 
 #[test]
+fn native_text_decoration_skip_spaces_initial_resets_to_both_edges() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; white-space:pre; text-decoration:underline overline line-through; text-decoration-skip-ink:none; } #parent { text-decoration-skip-spaces:all; } #initial { text-decoration-skip-spaces:INITIAL; } #none { text-decoration-skip-spaces:none; } #unset { text-decoration-skip-spaces:unset; }</style><div id='parent' class='line'><span id='inherited'>\tA\u{00a0}</span><span id='inline' style='text-decoration-skip-spaces:initial'>\tA\u{00a0}</span></div><div id='initial' class='line'>\tA\u{00a0}</div><div id='none' class='line'>\tA\u{00a0}</div><div id='unset' class='line'>\tA\u{00a0}</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let white = [u8::MAX, u8::MAX, u8::MAX, u8::MAX];
+    let black = [0, 0, 0, u8::MAX];
+    let node_for = |id| document.resolve_target(&format!("id={id}")).unwrap();
+    let run_for = |id| {
+        let node_id = node_for(id);
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id)
+            .unwrap()
+    };
+    let inherited = run_for("inherited");
+    let inline = run_for("inline");
+    let initial = run_for("initial");
+    let none = run_for("none");
+    let unset = run_for("unset");
+
+    for run in [initial, none, unset] {
+        assert_eq!(run.text, "\tA\u{00a0}");
+        assert!(run.starts_line && run.ends_line);
+    }
+    assert_eq!(inherited.text, "\tA\u{00a0}");
+    assert_eq!(inline.text, "\tA\u{00a0}");
+    let skip_spaces_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                decoration_skip_spaces,
+                ..
+            } if *command_node_id == node_id => Some(*decoration_skip_spaces),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        skip_spaces_for(node_for("inherited")),
+        Some(NativeTextDecorationSkipSpaces::All)
+    );
+    assert_eq!(
+        skip_spaces_for(node_for("inline")),
+        Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+    );
+    assert_eq!(
+        skip_spaces_for(node_for("initial")),
+        Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+    );
+    assert_eq!(
+        skip_spaces_for(node_for("none")),
+        Some(NativeTextDecorationSkipSpaces::None)
+    );
+    assert_eq!(
+        skip_spaces_for(node_for("unset")),
+        Some(NativeTextDecorationSkipSpaces::None)
+    );
+
+    let assert_edges = |run: &glass_browser::browser::native_engine::NativeTextLayout,
+                        expected_edges: [bool; 2]| {
+        for row in [run.origin.y + 3, run.origin.y + 7] {
+            for (x, expected_space) in [(0, expected_edges[0]), (8, false), (16, expected_edges[1])]
+            {
+                let pixel = surface.pixel(run.origin.x + x, row).unwrap();
+                let expected_color = if expected_space { white } else { black };
+                assert_eq!(pixel, expected_color, "x {}, row {row}", run.origin.x + x);
+            }
+        }
+    };
+    assert_edges(initial, [true, true]);
+    assert_edges(none, [false, false]);
+    assert_edges(unset, [false, false]);
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-skip-spaces"
+    }));
+}
+
+#[test]
 fn native_text_decoration_thickness_shares_style_and_line_geometry() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; } #one { text-decoration-style:solid; text-decoration-thickness:1px; } #two { text-decoration-style:dashed; text-decoration-thickness:2px; } #three { text-decoration-style:dotted; text-decoration-thickness:3px; } #four { text-decoration-style:solid; text-decoration-thickness:4px; } #parent { text-decoration-style:dotted; text-decoration-thickness:3px; }</style><div id='one' class='line'>AB</div><div id='two' class='line'>AB</div><div id='three' class='line'>AB</div><div id='four' class='line'>AB</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override' style='text-decoration-thickness:1px'>B</span></div>",

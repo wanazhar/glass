@@ -1,7 +1,7 @@
 ---
 id: native-engine-120
 scope: glass-browser/native-engine/text-decoration-skip-spaces-unset
-status: planned
+status: complete
 depends-on: [native-engine-119]
 ---
 
@@ -91,9 +91,12 @@ CSS conformance.
 
 ## Implementation
 
-Pending. Extend the private declaration state and parser, resolve `unset`
-through the existing inherited-style boundary, and add parser/cascade and
-display-list/raster regressions without changing the public resolved value.
+Complete at `897bd648`. The private declaration state now distinguishes
+`Unset`; the parser accepts the keyword case-insensitively, computed-style
+resolution maps it to the existing inherited parent value, and the public
+resolved enum, display-list, and rasterizer remain unchanged. The former
+root-level `unset` fixture now verifies its `None` fallback, while a separate
+fixture keeps `revert` and `revert-layer` diagnostics covered.
 
 ## Verification
 
@@ -106,17 +109,49 @@ value still overrides it. Full native, feature-library, strict lint,
 warning-denied rustdoc, locked package, dependency, offline fuzz,
 documentation, static, security, and formatting gates remain required.
 
-Every local gate uses an isolated or intentionally shared target with a
-recorded purpose. Completed validation removes exact regenerable output only
-after active-writer and open-file checks. Remote CI, browser parity, release,
-registry publication, and a third crate are not claimed by this local task.
+Every local gate used the single isolated `/tmp/glass-120-focused` target so
+feature, two-crate, package, and security checks could reuse artifacts without
+creating a repository `target/`. Focused CSS and native tests passed 2/2 and
+6/6. The full feature browser library passed 915 tests with 1 ignored; the
+full native integration suite passed 157/157; and the `glass-dev` suite passed
+365 unit tests, 4 integration tests, 15 PTY tests, and 1 doctest. All-feature
+and no-default strict Clippy passed with `-D warnings`; warning-denied
+workspace rustdoc and the all-feature debug build passed. Locked package
+verification passed for `glass-browser` (196 files, 5.1 MiB); local no-verify
+packaging passed for `glass-dev` (69 files, 2.6 MiB), and its packaged
+dependency resolves `glass-browser` exactly at 0.3.14. The locked offline fuzz
+all-target check, cargo-deny, cargo-audit, formatting, version/feature/TUI
+parity, documentation truth/depth/coverage, reliability, adapter, and Web IR
+checks all passed. Cargo emitted only the known duplicate dependency and
+yanked `chacha20` warnings, while audit reported only the four already-allowed
+warnings. Remote CI, browser parity, release, registry publication, and a
+third crate are not claimed by this local task.
 
 ## Certification
 
-Pending implementation and local validation.
+Certified locally on 2026-09-05. Static documentation truth reported 534
+Markdown documents, 83 current-version documents, 57 previous-version hits,
+621 semantic audit hits, and 0 current-claim failures; coverage reported 345
+full-product MCP tools (100 browser-only), 17 examples, and 22 public
+modules. Reliability reported 6 scenarios across 4 targets without claiming
+runtime certification, and the public read-only adapter inventory reported 5
+adapters without claiming runtime certification. The immutable public
+`glass-browser` 0.3.14 registry surface still lacks the current
+`BrowserRuntime`, `browser_runtime`, and `browser_endpoint` APIs required for a
+registry-backed `glass-dev` verification, so no upload was attempted.
 
 ## Cleanup
 
-Pending implementation and local validation. Record the exact target/report
-inventory, active-writer/open-file checks, bounded deletion, final absence
-check, and filesystem headroom before closing the task.
+Before cleanup, the exact disposable inventory was one
+`/tmp/glass-120-focused` tree at 10,460,390,372 bytes by `du -sb` containing
+15,269 files, four bounded reports totaling 181,455 bytes, and 78 named test
+scratch/lock entries totaling 2,943 apparent bytes. No Cargo, rustc, rustdoc,
+Clippy, fuzz, rust-analyzer, or Glass test writer was active; `lsof +D /tmp`
+reported no open handles. The target, reports, and generated test scratch
+entries were removed with bounded exact-path deletion. The repository
+`/home/ubuntu/work/glass/target` was absent before and after cleanup. The
+pre-existing Glass processes 590083, 610599, and 611107 were left running;
+they reference already-deleted old target executables and were not terminated.
+All shared Cargo registries, toolchains, source trees, and other projects were
+left untouched. Final absence and filesystem headroom are recorded in the
+closeout comment and issue update.

@@ -1,5 +1,6 @@
 use super::css::{
-    NativeBorderRadius, NativeBorderStyle, NativeTextDecorationSkipInk, NativeTextDecorationStyle,
+    NativeBorderRadius, NativeBorderStyle, NativeTextDecorationSkipInk,
+    NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
 };
 use super::error::NativeEngineError;
 use super::layout::{NativePoint, NativeRect, rounded_rect_contains};
@@ -23,6 +24,7 @@ struct TextPaint {
     decoration_color: super::css::NativeColor,
     decoration_style: NativeTextDecorationStyle,
     decoration_skip_ink: NativeTextDecorationSkipInk,
+    decoration_skip_spaces: NativeTextDecorationSkipSpaces,
     decoration_thickness: u32,
     underline_offset: i32,
     underline: bool,
@@ -169,6 +171,7 @@ impl NativeSurface {
                     decoration_color,
                     decoration_style,
                     decoration_skip_ink,
+                    decoration_skip_spaces,
                     decoration_thickness,
                     underline_offset,
                     underline,
@@ -206,6 +209,7 @@ impl NativeSurface {
                             decoration_color: *decoration_color,
                             decoration_style: *decoration_style,
                             decoration_skip_ink: *decoration_skip_ink,
+                            decoration_skip_spaces: *decoration_skip_spaces,
                             decoration_thickness,
                             underline_offset,
                             underline: *underline,
@@ -564,9 +568,28 @@ impl NativeSurface {
             } else {
                 None
             };
+        let mut skip_space_ranges = Vec::new();
         for character in text.chars() {
             let offset = i64::from(run_width);
             let glyph_origin_x = origin_x.saturating_add(offset);
+            let character_advance = GLYPH_ADVANCE
+                .saturating_add(paint.letter_spacing)
+                .saturating_add(if character == ' ' {
+                    paint.word_spacing.saturating_add(paint.justify_spacing)
+                } else {
+                    0
+                });
+            if character == ' '
+                && matches!(
+                    paint.decoration_skip_spaces,
+                    NativeTextDecorationSkipSpaces::All
+                )
+            {
+                skip_space_ranges.push((
+                    offset.saturating_sub(i64::from(paint.letter_spacing)),
+                    offset.saturating_add(i64::from(character_advance)),
+                ));
+            }
             if let Some(rows) = glyph_rows(character) {
                 for (row, bits) in rows.into_iter().enumerate() {
                     let y = origin_y.saturating_add(i64::try_from(row).unwrap_or(i64::MAX));
@@ -625,14 +648,7 @@ impl NativeSurface {
                     }
                 }
             }
-            run_width = run_width
-                .saturating_add(GLYPH_ADVANCE)
-                .saturating_add(paint.letter_spacing)
-                .saturating_add(if character == ' ' {
-                    paint.word_spacing.saturating_add(paint.justify_spacing)
-                } else {
-                    0
-                });
+            run_width = run_width.saturating_add(character_advance);
         }
         for (enabled, line_y, skip_ink) in [
             (paint.overline, origin_y.saturating_sub(1), true),
@@ -668,6 +684,16 @@ impl NativeSurface {
                         for thickness_offset in 0..paint.decoration_thickness {
                             let y = band_origin.saturating_add(i64::from(thickness_offset));
                             if y < 0 || y >= i64::from(self.height) {
+                                continue;
+                            }
+                            let skips_space = matches!(
+                                paint.decoration_skip_spaces,
+                                NativeTextDecorationSkipSpaces::All
+                            ) && skip_space_ranges.iter().any(|(start, end)| {
+                                let offset = i64::from(offset);
+                                offset >= *start && offset < *end
+                            });
+                            if skips_space {
                                 continue;
                             }
                             let intersects_glyph = skip_ink
@@ -1149,6 +1175,7 @@ mod tests {
                     decoration_color: NativeColor::RED,
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1189,6 +1216,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1210,6 +1238,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1250,6 +1279,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1271,6 +1301,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1302,6 +1333,7 @@ mod tests {
                     },
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1355,6 +1387,7 @@ mod tests {
                     },
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: true,
@@ -1401,6 +1434,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1427,6 +1461,7 @@ mod tests {
                     decoration_color: NativeColor::RED,
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1458,6 +1493,7 @@ mod tests {
                     },
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: true,
@@ -1802,6 +1838,7 @@ mod tests {
                     decoration_color: NativeColor::BLACK,
                     decoration_style: NativeTextDecorationStyle::Solid,
                     decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                     decoration_thickness: 1,
                     underline_offset: 0,
                     underline: false,
@@ -1837,6 +1874,7 @@ mod tests {
                 decoration_color: NativeColor::BLACK,
                 decoration_style: NativeTextDecorationStyle::Solid,
                 decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                 decoration_thickness: u32::MAX,
                 underline_offset: 0,
                 underline: true,
@@ -1871,6 +1909,7 @@ mod tests {
                 decoration_color: NativeColor::BLACK,
                 decoration_style: NativeTextDecorationStyle::Solid,
                 decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                 decoration_thickness: 1,
                 underline_offset: i32::MAX,
                 underline: true,
@@ -1906,6 +1945,7 @@ mod tests {
                 decoration_color: NativeColor::BLACK,
                 decoration_style: NativeTextDecorationStyle::Double,
                 decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
                 decoration_thickness: 2,
                 underline_offset,
                 underline: line == "underline",
@@ -1956,6 +1996,7 @@ mod tests {
             decoration_color: NativeColor::BLACK,
             decoration_style: NativeTextDecorationStyle::Wavy,
             decoration_skip_ink: NativeTextDecorationSkipInk::None,
+            decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
             decoration_thickness: thickness,
             underline_offset: 0,
             underline: true,
@@ -2021,6 +2062,7 @@ mod tests {
             decoration_color: NativeColor::RED,
             decoration_style: NativeTextDecorationStyle::Wavy,
             decoration_skip_ink: skip_ink,
+            decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
             decoration_thickness: 1,
             underline_offset: -1,
             underline: true,
@@ -2060,6 +2102,66 @@ mod tests {
         assert_eq!(none.pixel(1, 17), Some([255, 0, 0, 255]));
         assert_eq!(auto.pixel(1, 14), Some([255, 0, 0, 255]));
         assert_eq!(none.pixel(1, 14), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn surface_skip_spaces_all_covers_space_and_authored_spacing_advances() {
+        let node_id = NativeDocument::empty().root();
+        let text_run = |skip_spaces| NativeDisplayCommand::TextRun {
+            node_id,
+            origin: NativePoint { x: 0, y: 10 },
+            text: "A B".into(),
+            truncated: false,
+            color: NativeColor::BLACK,
+            decoration_color: NativeColor::RED,
+            decoration_style: NativeTextDecorationStyle::Solid,
+            decoration_skip_ink: NativeTextDecorationSkipInk::None,
+            decoration_skip_spaces: skip_spaces,
+            decoration_thickness: 1,
+            underline_offset: 0,
+            underline: true,
+            overline: true,
+            line_through: true,
+            bold: false,
+            italic: false,
+            word_spacing: 2,
+            letter_spacing: 1,
+            justify_spacing: 2,
+            clip: None,
+        };
+        let rasterize = |skip_spaces| {
+            display_list(
+                vec![
+                    NativeDisplayCommand::Clear {
+                        color: NativeColor::WHITE,
+                    },
+                    text_run(skip_spaces),
+                ],
+                32,
+                24,
+            )
+            .rasterize()
+            .unwrap()
+        };
+        let none = rasterize(NativeTextDecorationSkipSpaces::None);
+        let all = rasterize(NativeTextDecorationSkipSpaces::All);
+
+        for y in [9, 13, 17] {
+            assert_eq!(none.pixel(6, y), Some([255, 0, 0, 255]), "none start y={y}");
+            assert_eq!(none.pixel(17, y), Some([255, 0, 0, 255]), "none end y={y}");
+            assert_eq!(
+                all.pixel(6, y),
+                Some([255, 255, 255, 255]),
+                "all start y={y}"
+            );
+            assert_eq!(
+                all.pixel(17, y),
+                Some([255, 255, 255, 255]),
+                "all end y={y}"
+            );
+            assert_eq!(all.pixel(0, y), Some([255, 0, 0, 255]), "all before y={y}");
+            assert_eq!(all.pixel(18, y), Some([255, 0, 0, 255]), "all after y={y}");
+        }
     }
 
     #[test]

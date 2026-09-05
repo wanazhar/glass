@@ -963,6 +963,18 @@ conformance remain outside the contract. Implementation is `0c6a9ddc`; final
 local gate and cleanup evidence are recorded in the task file. Remote CI
 remains pending because the checkout is local-only.
 
+The next dependency-ordered [native-engine-114](tasks/native-engine-114.md)
+design is recorded as a design-ready checkpoint. It adds inherited
+`text-decoration-skip-ink:auto|none` through a dedicated value in the existing
+immutable text/raster path. `auto` suppresses underline and overline pixels
+only where the same fixed-cell text run emits glyph ink; `none` preserves
+existing replay and line-through remains unchanged. Wavy, thickness, offset,
+clipping, scroll, opacity, capture, hit testing, semantics, source order, and
+layout remain shared; font metrics, shaping, fragment continuity, and
+browser-wide conformance remain outside the contract. Implementation,
+certification, cleanup, and remote CI remain pending; the checkout is
+local-only.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

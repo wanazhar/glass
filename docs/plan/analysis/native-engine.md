@@ -862,13 +862,14 @@ is checkpointed at `a671a559` and `db7585f7`; local native/dev, strict, package,
 fuzz, security, formatting, and static certification is recorded in the task
 file. Remote CI remains pending because the branch is local-only.
 
-The next dependency-ordered design is `native-engine-117`, recorded in
-`docs/plan/tasks/native-engine-117.md`. It extends the 116 replay classifier
-from literal ASCII spaces to Rust's bounded Unicode `char::is_whitespace()`
-property for whitespace that survives the literal/preformatted path. The
-existing `none|all|start|end|start end` values, line-edge provenance, normal
-collapsing, fixed-cell geometry, and explicit omission fallback remain
-unchanged. Implementation and certification are not yet claimed.
+The dependency-ordered `native-engine-117` implementation is checkpointed at
+`5e65aadf` and recorded in `docs/plan/tasks/native-engine-117.md`. It extends
+the 116 replay classifier from literal ASCII spaces to Rust's bounded Unicode
+`char::is_whitespace()` property for whitespace that survives the
+literal/preformatted path. The existing `none|all|start|end|start end` values,
+line-edge provenance, normal collapsing, fixed-cell geometry, and explicit
+omission fallback remain unchanged. Focused regressions pass; full
+certification is pending.
 
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
@@ -1111,7 +1112,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-114` | completed bounded inherited `text-decoration-skip-ink:auto|none` through a dedicated value in the immutable text command, suppressing matching same-run glyph intersections for underline and overline replay while leaving line-through unchanged | `native-engine-113` | `all`, font metrics, shaping, bidi, vertical writing, decoration-origin propagation, cross-fragment continuity, antialiasing, layout/geometry changes, and browser-wide text conformance |
 | `native-engine-115` | completed bounded inherited `text-decoration-skip-spaces:none|all` through a dedicated value in the immutable text command, suppressing decoration pixels over same-run ASCII-space intervals including word/letter/justification spacing for underline, overline, and line-through | `native-engine-114` | `start`/`end`, Unicode whitespace, line-boundary semantics, font metrics, shaping, bidi, vertical writing, decoration-origin propagation, cross-fragment continuity, antialiasing, layout/geometry changes, and browser-wide text conformance |
 | `native-engine-116` | completed bounded inherited `text-decoration-skip-spaces:start|end|start end` through block-owned flow-flushed line-edge provenance beside immutable text commands, suppressing only leading/trailing ASCII-space intervals | `native-engine-115` | Unicode whitespace, initial-value changes, atomic-inline and ancestor propagation, cross-fragment continuity, font metrics, shaping, bidi, vertical writing, antialiasing, layout/geometry changes, and browser-wide text conformance |
-| `native-engine-117` | ready bounded Unicode `char::is_whitespace()` classification for `text-decoration-skip-spaces` replay across literal/preformatted fixed-cell runs, reusing 116 line-edge provenance and preserving ASCII spacing arithmetic | `native-engine-116` | CSS whitespace-mode conformance, Unicode line breaking, tab stops, initial-value changes, atomic-inline and ancestor propagation, cross-fragment continuity, font metrics, shaping, bidi, vertical writing, antialiasing, layout/geometry changes, and browser-wide text conformance |
+| `native-engine-117` | in-progress bounded Unicode `char::is_whitespace()` classification for `text-decoration-skip-spaces` replay across literal/preformatted fixed-cell runs, reusing 116 line-edge provenance and preserving ASCII spacing arithmetic | `native-engine-116` | CSS whitespace-mode conformance, Unicode line breaking, tab stops, initial-value changes, atomic-inline and ancestor propagation, cross-fragment continuity, font metrics, shaping, bidi, vertical writing, antialiasing, layout/geometry changes, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

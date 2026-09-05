@@ -1,7 +1,7 @@
 ---
 id: native-engine-117
 scope: glass-browser/native-engine/text-decoration-skip-spaces-unicode
-status: ready
+status: in-progress
 depends-on: [native-engine-116]
 ---
 
@@ -86,6 +86,16 @@ text-paint parity, or cross-fragment/atomic-inline continuity.
 - `crates/glass-browser/tests/native_engine.rs`
 - synchronized native-engine architecture, analysis, README, and issue docs
 
+## Implementation
+
+The raster decoration owner now uses one bounded helper backed by Rust's
+`char::is_whitespace()` classification for `all`, `start`, `end`, and
+`start end`. The existing fixed-cell advance calculation is unchanged, so
+ASCII word/justification spacing remains special while literal tabs and
+non-breaking spaces participate in the selected skip intervals. Focused unit
+and native integration regressions are green. The implementation checkpoint
+is `5e65aadf`; full certification remains pending.
+
 ## Verification
 
 Focused tests must prove `all` skips internal tab and non-breaking-space
@@ -100,4 +110,3 @@ Every local gate uses an isolated or intentionally shared target with a
 recorded purpose. Completed validation removes exact regenerable output only
 after active-writer and open-file checks. Remote CI, browser parity, release,
 registry publication, and a third crate are not claimed by this local task.
-

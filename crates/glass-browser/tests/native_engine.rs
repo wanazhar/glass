@@ -1794,17 +1794,10 @@ fn native_text_decoration_skip_spaces_initial_resets_to_both_edges() {
     assert_edges(unset, [false, false]);
     assert_edges(revert, [false, false]);
     assert_edges(revert_layer, [false, false]);
-    assert!(
-        document
-            .diagnostics()
-            .iter()
-            .filter(|diagnostic| {
-                diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
-                    && diagnostic.detail == "text-decoration-skip-spaces"
-            })
-            .count()
-            == 1
-    );
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-skip-spaces"
+    }));
 }
 
 #[test]
@@ -2015,6 +2008,86 @@ fn native_text_decoration_skip_spaces_revert_resolves_parent_value() {
     for row in [explicit_none.origin.y + 3, explicit_none.origin.y + 7] {
         assert_eq!(surface.pixel(explicit_none.origin.x, row), Some(black));
         assert_eq!(surface.pixel(explicit_none.origin.x + 16, row), Some(black));
+    }
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-skip-spaces"
+    }));
+}
+
+#[test]
+fn native_text_decoration_skip_spaces_revert_layer_rolls_back_layers_and_reaches_raster() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; white-space:pre; text-decoration:underline overline line-through; text-decoration-skip-ink:none; } @layer base { #named { text-decoration-skip-spaces:all; } #repeated { text-decoration-skip-spaces:all; } #unlayered { text-decoration-skip-spaces:all; } #inline { text-decoration-skip-spaces:all; } } @layer theme { #named { text-decoration-skip-spaces:revert-layer; } #repeated { text-decoration-skip-spaces:end; } #unlayered { text-decoration-skip-spaces:end; } #inline { text-decoration-skip-spaces:end; } } @layer top { #repeated { text-decoration-skip-spaces:revert-layer; } } #unlayered { text-decoration-skip-spaces:revert-layer; }</style><div id='named' class='line'>\tA\u{00a0}</div><div id='repeated' class='line'>\tA\u{00a0}</div><div id='unlayered' class='line'>\tA\u{00a0}</div><div id='inline' class='line' style='text-decoration-skip-spaces:revert-layer'>\tA\u{00a0}</div><div id='fallback' class='line'>\tA\u{00a0}</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let node_for = |id| document.resolve_target(&format!("id={id}")).unwrap();
+    let run_for = |id| {
+        let node_id = node_for(id);
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id)
+            .unwrap()
+    };
+    let skip_spaces_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                decoration_skip_spaces,
+                ..
+            } if *command_node_id == node_id => Some(*decoration_skip_spaces),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        skip_spaces_for(node_for("named")),
+        Some(NativeTextDecorationSkipSpaces::All)
+    );
+    for id in ["repeated", "unlayered", "inline"] {
+        assert_eq!(
+            skip_spaces_for(node_for(id)),
+            Some(NativeTextDecorationSkipSpaces::End)
+        );
+    }
+    assert_eq!(
+        skip_spaces_for(node_for("fallback")),
+        Some(NativeTextDecorationSkipSpaces::None)
+    );
+
+    let white = [u8::MAX, u8::MAX, u8::MAX, u8::MAX];
+    let black = [0, 0, 0, u8::MAX];
+    let assert_edges = |id, expected_edges: ([u8; 4], [u8; 4])| {
+        let run = run_for(id);
+        for row in [run.origin.y + 3, run.origin.y + 7] {
+            assert_eq!(surface.pixel(run.origin.x, row), Some(expected_edges.0));
+            assert_eq!(
+                surface.pixel(run.origin.x + 16, row),
+                Some(expected_edges.1)
+            );
+        }
+    };
+    assert_edges("named", (white, white));
+    for id in ["repeated", "unlayered", "inline"] {
+        let run = run_for(id);
+        for row in [run.origin.y + 3, run.origin.y + 7] {
+            assert_eq!(surface.pixel(run.origin.x, row), Some(black));
+            assert_eq!(surface.pixel(run.origin.x + 16, row), Some(white));
+        }
+    }
+    let fallback = run_for("fallback");
+    for row in [fallback.origin.y + 3, fallback.origin.y + 7] {
+        assert_eq!(surface.pixel(fallback.origin.x, row), Some(black));
+        assert_eq!(surface.pixel(fallback.origin.x + 16, row), Some(black));
     }
     assert!(!document.diagnostics().iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

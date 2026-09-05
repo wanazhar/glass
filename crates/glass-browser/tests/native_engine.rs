@@ -3140,12 +3140,17 @@ fn native_text_fragments_follow_inline_flow_and_source_order() {
     assert_eq!(layout.text_runs[0].node_id, container);
     assert_eq!(layout.text_runs[0].origin, NativePoint { x: 0, y: 0 });
     assert_eq!(layout.text_runs[0].text, "AB");
+    assert!(layout.text_runs[0].starts_line);
+    assert!(!layout.text_runs[0].ends_line);
     assert_eq!(layout.text_runs[1].node_id, middle);
     assert_eq!(layout.text_runs[1].origin, NativePoint { x: 16, y: 0 });
     assert_eq!(layout.text_runs[1].text, "C");
+    assert!(!layout.text_runs[1].starts_line);
+    assert!(layout.text_runs[1].ends_line);
     assert_eq!(layout.text_runs[2].node_id, container);
     assert_eq!(layout.text_runs[2].origin, NativePoint { x: 0, y: 20 });
     assert_eq!(layout.text_runs[2].text, "DE");
+    assert!(layout.text_runs[2].starts_line && layout.text_runs[2].ends_line);
 
     let list = document.display_list(viewport).unwrap();
     let runs = list

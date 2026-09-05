@@ -2588,47 +2588,50 @@ fn parse_source(
     layers: &mut Vec<String>,
 ) -> Result<(), NativeEngineError> {
     let source = strip_comments(source);
-    parse_source_block(
-        &source,
-        0,
-        source.len(),
+    let end = source.len();
+    let mut context = NativeCssParseContext {
+        source: &source,
         rules,
         next_order,
         diagnostic_source,
         diagnostics,
-        None,
         layers,
-    )
+    };
+    parse_source_block(&mut context, 0, end, None)
+}
+
+struct NativeCssParseContext<'a> {
+    source: &'a str,
+    rules: &'a mut Vec<NativeStyleRule>,
+    next_order: &'a mut usize,
+    diagnostic_source: NativeDiagnosticSource,
+    diagnostics: &'a mut NativeDiagnosticSink,
+    layers: &'a mut Vec<String>,
 }
 
 fn parse_source_block(
-    source: &str,
+    context: &mut NativeCssParseContext<'_>,
     start: usize,
     end: usize,
-    rules: &mut Vec<NativeStyleRule>,
-    next_order: &mut usize,
-    diagnostic_source: NativeDiagnosticSource,
-    diagnostics: &mut NativeDiagnosticSink,
     current_layer: Option<usize>,
-    layers: &mut Vec<String>,
 ) -> Result<(), NativeEngineError> {
     let mut cursor = start;
     while cursor < end {
-        let remaining = &source[cursor..end];
+        let remaining = &context.source[cursor..end];
         let Some(open_relative) = remaining.find('{') else {
             let trailing = remaining.trim();
             if !trailing.is_empty() {
                 if parse_layer_header(trailing).is_some() {
-                    diagnostics.push(
+                    context.diagnostics.push(
                         NativeDiagnosticCode::UnsupportedCssValue,
-                        diagnostic_source,
+                        context.diagnostic_source,
                         cursor,
                         "layer-statement",
                     );
                 } else {
-                    diagnostics.push(
+                    context.diagnostics.push(
                         NativeDiagnosticCode::MalformedCss,
-                        diagnostic_source,
+                        context.diagnostic_source,
                         cursor,
                         "missing-rule",
                     );
@@ -2638,10 +2641,10 @@ fn parse_source_block(
         };
         if let Some(semicolon_relative) = remaining[..open_relative].find(';') {
             let semicolon = cursor + semicolon_relative;
-            if parse_layer_header(&source[cursor..semicolon]).is_some() {
-                diagnostics.push(
+            if parse_layer_header(&context.source[cursor..semicolon]).is_some() {
+                context.diagnostics.push(
                     NativeDiagnosticCode::UnsupportedCssValue,
-                    diagnostic_source,
+                    context.diagnostic_source,
                     cursor,
                     "layer-statement",
                 );
@@ -2650,69 +2653,49 @@ fn parse_source_block(
             }
         }
         let open = cursor + open_relative;
-        let Some(close) = find_matching_brace(source, open, end) else {
-            diagnostics.push(
+        let Some(close) = find_matching_brace(context.source, open, end) else {
+            context.diagnostics.push(
                 NativeDiagnosticCode::MalformedCss,
-                diagnostic_source,
+                context.diagnostic_source,
                 open,
                 "unclosed-rule",
             );
             return Ok(());
         };
-        let header = &source[cursor..open];
+        let header = &context.source[cursor..open];
         if let Some(layer_header) = parse_layer_header(header) {
             if current_layer.is_some() {
-                diagnostics.push(
+                context.diagnostics.push(
                     NativeDiagnosticCode::UnsupportedCssValue,
-                    diagnostic_source,
+                    context.diagnostic_source,
                     cursor,
                     "nested-layer",
                 );
             } else {
                 match layer_header {
                     Ok(name) => {
-                        let Some(layer) = register_named_layer(layers, &name) else {
-                            diagnostics.push(
+                        let Some(layer) = register_named_layer(context.layers, &name) else {
+                            context.diagnostics.push(
                                 NativeDiagnosticCode::UnsupportedCssValue,
-                                diagnostic_source,
+                                context.diagnostic_source,
                                 cursor,
                                 "too-many-layers",
                             );
                             cursor = close + 1;
                             continue;
                         };
-                        parse_source_block(
-                            source,
-                            open + 1,
-                            close,
-                            rules,
-                            next_order,
-                            diagnostic_source,
-                            diagnostics,
-                            Some(layer),
-                            layers,
-                        )?;
+                        parse_source_block(context, open + 1, close, Some(layer))?;
                     }
-                    Err(detail) => diagnostics.push(
+                    Err(detail) => context.diagnostics.push(
                         NativeDiagnosticCode::UnsupportedCssValue,
-                        diagnostic_source,
+                        context.diagnostic_source,
                         cursor,
                         detail,
                     ),
                 }
             }
         } else {
-            parse_style_rule(
-                source,
-                cursor,
-                open,
-                close,
-                rules,
-                next_order,
-                diagnostic_source,
-                diagnostics,
-                current_layer,
-            )?;
+            parse_style_rule(context, cursor, open, close, current_layer)?;
         }
         cursor = close + 1;
     }
@@ -2720,21 +2703,18 @@ fn parse_source_block(
 }
 
 fn parse_style_rule(
-    source: &str,
+    context: &mut NativeCssParseContext<'_>,
     selector_start: usize,
     open: usize,
     close: usize,
-    rules: &mut Vec<NativeStyleRule>,
-    next_order: &mut usize,
-    diagnostic_source: NativeDiagnosticSource,
-    diagnostics: &mut NativeDiagnosticSink,
     layer: Option<usize>,
 ) -> Result<(), NativeEngineError> {
+    let source = context.source;
     let declarations = parse_declarations_with_diagnostics(
         &source[open + 1..close],
-        diagnostic_source,
+        context.diagnostic_source,
         open.saturating_add(1),
-        diagnostics,
+        context.diagnostics,
     );
     let has_supported_declaration = declarations.display.is_some()
         || declarations.visibility.is_some()
@@ -2794,9 +2774,9 @@ fn parse_style_rule(
     let mut selector_offset = selector_start;
     for selector_text in selector_source.split(',') {
         let Some(mut selector) = parse_selector(selector_text) else {
-            diagnostics.push(
+            context.diagnostics.push(
                 NativeDiagnosticCode::UnsupportedCssSelector,
-                diagnostic_source,
+                context.diagnostic_source,
                 selector_offset.saturating_add(
                     selector_text
                         .len()
@@ -2808,20 +2788,20 @@ fn parse_style_rule(
             continue;
         };
         if has_supported_declaration {
-            if rules.len() >= MAX_NATIVE_STYLE_RULES {
+            if context.rules.len() >= MAX_NATIVE_STYLE_RULES {
                 return Err(NativeEngineError::limit(
                     "CSS style rules",
                     MAX_NATIVE_STYLE_RULES,
-                    rules.len().saturating_add(1),
+                    context.rules.len().saturating_add(1),
                 ));
             }
             selector.specificity = encode_cascade_specificity(selector.specificity, layer);
-            rules.push(NativeStyleRule {
+            context.rules.push(NativeStyleRule {
                 selector,
                 declarations,
-                order: *next_order,
+                order: *context.next_order,
             });
-            *next_order = next_order.saturating_add(1);
+            *context.next_order = context.next_order.saturating_add(1);
         }
         selector_offset = selector_offset.saturating_add(selector_text.len() + 1);
     }

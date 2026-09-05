@@ -84,6 +84,24 @@ pub enum NativeTextDecorationSkipSpaces {
     StartAndEnd,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeTextDecorationSkipSpacesDeclaration {
+    Value(NativeTextDecorationSkipSpaces),
+    Inherit,
+}
+
+impl NativeTextDecorationSkipSpacesDeclaration {
+    const fn resolve(
+        self,
+        inherited: NativeTextDecorationSkipSpaces,
+    ) -> NativeTextDecorationSkipSpaces {
+        match self {
+            Self::Value(value) => value,
+            Self::Inherit => inherited,
+        }
+    }
+}
+
 /// Bounded physical circular radii for the top-left, top-right, bottom-right,
 /// and bottom-left corners of one native box.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2085,7 +2103,9 @@ impl NativeStylesheet {
             text_decoration_skip_ink: text_decoration_skip_ink
                 .map_or(inherited.text_decoration_skip_ink, |value| value.value),
             text_decoration_skip_spaces: text_decoration_skip_spaces
-                .map_or(inherited.text_decoration_skip_spaces, |value| value.value),
+                .map_or(inherited.text_decoration_skip_spaces, |value| {
+                    value.value.resolve(inherited.text_decoration_skip_spaces)
+                }),
             text_decoration_thickness: text_decoration_thickness
                 .map_or(inherited.text_decoration_thickness, |value| value.value),
             text_underline_offset: text_underline_offset
@@ -2346,7 +2366,7 @@ struct NativeDeclarations {
     text_decoration: Option<TextDecorationValue>,
     text_decoration_style: Option<NativeTextDecorationStyle>,
     text_decoration_skip_ink: Option<NativeTextDecorationSkipInk>,
-    text_decoration_skip_spaces: Option<NativeTextDecorationSkipSpaces>,
+    text_decoration_skip_spaces: Option<NativeTextDecorationSkipSpacesDeclaration>,
     text_decoration_thickness: Option<u32>,
     text_underline_offset: Option<i32>,
     text_decoration_color: Option<NativeColor>,
@@ -3252,15 +3272,28 @@ fn parse_text_decoration_skip_ink(value: &str) -> Option<NativeTextDecorationSki
     }
 }
 
-fn parse_text_decoration_skip_spaces(value: &str) -> Option<NativeTextDecorationSkipSpaces> {
+fn parse_text_decoration_skip_spaces(
+    value: &str,
+) -> Option<NativeTextDecorationSkipSpacesDeclaration> {
     let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
     match tokens.as_slice() {
         [token] => match token.to_ascii_lowercase().as_str() {
-            "initial" => Some(NativeTextDecorationSkipSpaces::StartAndEnd),
-            "none" => Some(NativeTextDecorationSkipSpaces::None),
-            "all" => Some(NativeTextDecorationSkipSpaces::All),
-            "start" => Some(NativeTextDecorationSkipSpaces::Start),
-            "end" => Some(NativeTextDecorationSkipSpaces::End),
+            "initial" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::StartAndEnd,
+            )),
+            "inherit" => Some(NativeTextDecorationSkipSpacesDeclaration::Inherit),
+            "none" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::None,
+            )),
+            "all" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::All,
+            )),
+            "start" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::Start,
+            )),
+            "end" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::End,
+            )),
             _ => None,
         },
         [first, second] => {
@@ -3270,7 +3303,9 @@ fn parse_text_decoration_skip_spaces(value: &str) -> Option<NativeTextDecoration
                 && matches!(second.as_str(), "start" | "end")
                 && first != second
             {
-                Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+                Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                    NativeTextDecorationSkipSpaces::StartAndEnd,
+                ))
             } else {
                 None
             }
@@ -5386,65 +5421,94 @@ mod tests {
         );
         assert_eq!(
             parse_text_decoration_skip_spaces("NONE"),
-            Some(NativeTextDecorationSkipSpaces::None)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::None
+            ))
         );
         assert_eq!(
             parse_text_decoration_skip_spaces("AlL"),
-            Some(NativeTextDecorationSkipSpaces::All)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::All
+            ))
         );
         assert_eq!(
             parse_text_decoration_skip_spaces("start"),
-            Some(NativeTextDecorationSkipSpaces::Start)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::Start
+            ))
         );
         assert_eq!(
             parse_text_decoration_skip_spaces("END"),
-            Some(NativeTextDecorationSkipSpaces::End)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::End
+            ))
         );
         assert_eq!(
             parse_text_decoration_skip_spaces("start end"),
-            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::StartAndEnd
+            ))
         );
         assert_eq!(
             parse_text_decoration_skip_spaces("END start"),
-            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::StartAndEnd
+            ))
         );
         assert_eq!(
             parse_text_decoration_skip_spaces("INITIAL"),
-            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::StartAndEnd
+            ))
+        );
+        assert_eq!(
+            parse_text_decoration_skip_spaces("InHeRiT"),
+            Some(NativeTextDecorationSkipSpacesDeclaration::Inherit)
         );
         assert_eq!(parse_text_decoration_skip_spaces("start start"), None);
         assert_eq!(parse_text_decoration_skip_spaces("none start"), None);
         assert_eq!(parse_text_decoration_skip_spaces("all end"), None);
-        assert_eq!(parse_text_decoration_skip_spaces("inherit"), None);
         assert_eq!(parse_text_decoration_skip_spaces("unset"), None);
         assert_eq!(parse_text_decoration_skip_spaces("revert"), None);
         assert_eq!(parse_text_decoration_skip_spaces("revert-layer"), None);
         assert_eq!(parse_text_decoration_skip_spaces(""), None);
         assert_eq!(
             parse_declarations("text-decoration-skip-spaces: all").text_decoration_skip_spaces,
-            Some(NativeTextDecorationSkipSpaces::All)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::All
+            ))
         );
         assert_eq!(
             parse_declarations("text-decoration-skip-spaces: start end")
                 .text_decoration_skip_spaces,
-            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::StartAndEnd
+            ))
         );
         assert_eq!(
             parse_declarations("text-decoration-skip-spaces: initial").text_decoration_skip_spaces,
-            Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+            Some(NativeTextDecorationSkipSpacesDeclaration::Value(
+                NativeTextDecorationSkipSpaces::StartAndEnd
+            ))
+        );
+        assert_eq!(
+            parse_declarations("text-decoration-skip-spaces: inherit").text_decoration_skip_spaces,
+            Some(NativeTextDecorationSkipSpacesDeclaration::Inherit)
         );
     }
 
     #[test]
     fn text_decoration_skip_spaces_is_inherited_and_cascaded() {
         let document = NativeDocument::parse(
-            "<style>div { text-decoration-skip-spaces: none; } #parent { text-decoration-skip-spaces: START END; } #explicit { text-decoration-skip-spaces: end; } #invalid { text-decoration-skip-spaces: start start; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-skip-spaces:start'>Inline</span></div>",
+            "<style>div { text-decoration-skip-spaces: none; } #parent { text-decoration-skip-spaces: START END; } #explicit { text-decoration-skip-spaces: end; } #inherit { text-decoration-skip-spaces: INHERIT; } #inline-inherit { text-decoration-skip-spaces: end; } #invalid { text-decoration-skip-spaces: start start; }</style><div id='parent'><span id='inherited'>Inherited</span><span id='explicit'>Explicit</span><span id='inherit'>Inherit</span><span id='inline-inherit' style='text-decoration-skip-spaces:inherit'>Inline inherit</span><span id='invalid'>Invalid</span><span id='inline' style='text-decoration-skip-spaces:start'>Inline</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let inherited = document.resolve_target("id=inherited").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
+        let inherit = document.resolve_target("id=inherit").unwrap();
+        let inline_inherit = document.resolve_target("id=inline-inherit").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
         let inline = document.resolve_target("id=inline").unwrap();
 
@@ -5471,6 +5535,18 @@ mod tests {
                 .computed_style_for_layout(explicit)
                 .text_decoration_skip_spaces(),
             NativeTextDecorationSkipSpaces::End
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inherit)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::StartAndEnd
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inline_inherit)
+                .text_decoration_skip_spaces(),
+            NativeTextDecorationSkipSpaces::StartAndEnd
         );
         assert_eq!(
             document

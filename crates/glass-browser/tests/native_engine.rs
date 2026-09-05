@@ -1797,6 +1797,75 @@ fn native_text_decoration_skip_spaces_initial_resets_to_both_edges() {
 }
 
 #[test]
+fn native_text_decoration_skip_spaces_inherit_resolves_parent_value() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; white-space:pre; text-decoration:underline overline line-through; text-decoration-skip-ink:none; } .child { display:block; } #parent { text-decoration-skip-spaces:all; } #stylesheet-inherit { text-decoration-skip-spaces:INHERIT; } #inline-inherit { text-decoration-skip-spaces:none; }</style><div id='parent' class='line'><span id='stylesheet-inherit' class='child'>\tA\u{00a0}</span><span id='inline-inherit' class='child' style='text-decoration-skip-spaces:inherit'>\tA\u{00a0}</span><span id='explicit-none' class='child' style='text-decoration-skip-spaces:none'>\tA\u{00a0}</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let white = [u8::MAX, u8::MAX, u8::MAX, u8::MAX];
+    let black = [0, 0, 0, u8::MAX];
+    let node_for = |id| document.resolve_target(&format!("id={id}")).unwrap();
+    let run_for = |id| {
+        let node_id = node_for(id);
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id)
+            .unwrap()
+    };
+    let stylesheet_inherit = run_for("stylesheet-inherit");
+    let inline_inherit = run_for("inline-inherit");
+    let explicit_none = run_for("explicit-none");
+    for run in [stylesheet_inherit, inline_inherit, explicit_none] {
+        assert_eq!(run.text, "\tA\u{00a0}");
+        assert!(run.starts_line && run.ends_line);
+    }
+    let skip_spaces_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                decoration_skip_spaces,
+                ..
+            } if *command_node_id == node_id => Some(*decoration_skip_spaces),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        skip_spaces_for(node_for("stylesheet-inherit")),
+        Some(NativeTextDecorationSkipSpaces::All)
+    );
+    assert_eq!(
+        skip_spaces_for(node_for("inline-inherit")),
+        Some(NativeTextDecorationSkipSpaces::All)
+    );
+    assert_eq!(
+        skip_spaces_for(node_for("explicit-none")),
+        Some(NativeTextDecorationSkipSpaces::None)
+    );
+
+    for run in [stylesheet_inherit, inline_inherit] {
+        for row in [run.origin.y + 3, run.origin.y + 7] {
+            assert_eq!(surface.pixel(run.origin.x, row), Some(white));
+            assert_eq!(surface.pixel(run.origin.x + 8, row), Some(black));
+            assert_eq!(surface.pixel(run.origin.x + 16, row), Some(white));
+        }
+    }
+    for row in [explicit_none.origin.y + 3, explicit_none.origin.y + 7] {
+        assert_eq!(surface.pixel(explicit_none.origin.x, row), Some(black));
+        assert_eq!(surface.pixel(explicit_none.origin.x + 16, row), Some(black));
+    }
+}
+
+#[test]
 fn native_text_decoration_thickness_shares_style_and_line_geometry() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; } #one { text-decoration-style:solid; text-decoration-thickness:1px; } #two { text-decoration-style:dashed; text-decoration-thickness:2px; } #three { text-decoration-style:dotted; text-decoration-thickness:3px; } #four { text-decoration-style:solid; text-decoration-thickness:4px; } #parent { text-decoration-style:dotted; text-decoration-thickness:3px; }</style><div id='one' class='line'>AB</div><div id='two' class='line'>AB</div><div id='three' class='line'>AB</div><div id='four' class='line'>AB</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override' style='text-decoration-thickness:1px'>B</span></div>",

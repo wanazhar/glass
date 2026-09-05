@@ -131,6 +131,9 @@ bounded inherited
 thickness-scaled integer dash/dot periods, plus inherited
 `text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
 underline and overline while preserving line-through, bounded inherited
+`text-decoration-skip-spaces:none|all` same-run ASCII-space interval skipping
+including adjacent letter, word, and final-line justification spacing across
+underline, overline, and line-through, and bounded inherited
 signed fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
 decreasing or increasing y, and bounded inherited ASCII

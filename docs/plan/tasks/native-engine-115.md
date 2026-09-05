@@ -1,7 +1,7 @@
 ---
 id: native-engine-115
 scope: glass-browser/native-engine/text-decoration-skip-spaces
-status: design-ready
+status: in-progress
 depends-on: [native-engine-114]
 ---
 

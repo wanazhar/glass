@@ -83,6 +83,8 @@ bounded inherited
 thickness-scaled integer dash/dot periods, bounded inherited signed fixed-pixel
 `text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
 underline and overline while preserving line-through, bounded inherited signed
+`text-decoration-skip-spaces:none|all` fixed-cell ASCII-space interval skipping
+across underline, overline, and line-through, bounded inherited signed
 fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
 decreasing or increasing y, bounded
@@ -582,6 +584,16 @@ Implementation is checkpointed at `ceedf1d8` and synchronized documentation at
 local gates pass. Exact target reclamation and the remaining local-only
 boundary are recorded in the task file. Remote CI remains pending because the
 branch is local-only.
+
+The active dependency-ordered 115 design is recorded in
+`docs/plan/tasks/native-engine-115.md`. It adds inherited
+`text-decoration-skip-spaces:none|all` through the existing immutable text
+command. `all` skips decoration pixels over same-run ASCII-space intervals,
+including word, letter, and final-line justification spacing, for underline,
+overline, and line-through; `none` preserves replay. The standard's `start` and
+`end` modes, Unicode whitespace, line-boundary semantics, and full browser text
+conformance remain outside this bounded design. Implementation, certification,
+cleanup, and remote CI remain pending; the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -834,6 +834,17 @@ conformance remain outside the design. Implementation is checkpointed at
 certification gates pass. Exact cleanup evidence and the local-only remote-CI
 boundary are recorded in the task file.
 
+The active dependency-ordered `native-engine-115` design is recorded in
+`docs/plan/tasks/native-engine-115.md`. It adds inherited
+`text-decoration-skip-spaces:none|all` through a dedicated value in the
+existing immutable text command. `all` skips decoration pixels over same-run
+ASCII-space intervals, including the existing word, letter, and final-line
+justification spacing, for underline, overline, and line-through; `none`
+preserves replay. `start`/`end`, Unicode whitespace, line-boundary semantics,
+fragment continuity, and browser-wide text conformance remain outside the
+bounded design. Implementation, certification, cleanup, and remote CI remain
+pending because the branch is local-only.
+
 Issue [#40](https://github.com/wanazhar/glass/issues/40) is the authority. The
 current delivery is a Phase 0/Phase 1 kernel plus bounded Phase 2 semantic
 DOM/interaction slices and initial Phase 3 presentation slices, not an attempt
@@ -1073,6 +1084,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-112` | bounded inherited `text-decoration-style:double` through a dedicated text-decoration style type, painting two solid thickness-preserving bands with one separator pixel through the immutable text command | `native-engine-111` | wavy styles, font-metric centering, decoration-origin propagation, fragment continuity, layout/geometry changes, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-113` | bounded inherited `text-decoration-style:wavy` through the dedicated text-decoration style type, painting a continuous eight-pixel fixed-cell phase `[0,1,2,1,0,-1,-2,-1]` with resolved thickness through the immutable text command | `native-engine-112` | CSS metric centering, decoration-origin propagation, fragment continuity, antialiasing, layout/geometry changes, shaping, bidi, vertical writing, and browser-wide text conformance |
 | `native-engine-114` | completed bounded inherited `text-decoration-skip-ink:auto|none` through a dedicated value in the immutable text command, suppressing matching same-run glyph intersections for underline and overline replay while leaving line-through unchanged | `native-engine-113` | `all`, font metrics, shaping, bidi, vertical writing, decoration-origin propagation, cross-fragment continuity, antialiasing, layout/geometry changes, and browser-wide text conformance |
+| `native-engine-115` | design-ready bounded inherited `text-decoration-skip-spaces:none|all` through a dedicated value in the immutable text command, suppressing decoration pixels over same-run ASCII-space intervals including word/letter/justification spacing for underline, overline, and line-through | `native-engine-114` | `start`/`end`, Unicode whitespace, line-boundary semantics, font metrics, shaping, bidi, vertical writing, decoration-origin propagation, cross-fragment continuity, antialiasing, layout/geometry changes, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1480,6 +1492,7 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-115.md` is the active design checkpoint;
 `docs/plan/tasks/native-engine-114.md` is the latest completed checkpoint;
 `docs/plan/tasks/native-engine-113.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-112.md` is the preceding completed checkpoint;

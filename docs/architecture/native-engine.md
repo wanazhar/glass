@@ -614,14 +614,15 @@ Nested inline temporary flows cannot claim a line edge. Implementation is
 checkpointed at `a671a559` and `db7585f7`; focused, full-native, dev, strict,
 package, fuzz, security, formatting, and static local gates are recorded in
 the task file. Remote CI remains pending because the checkout is local-only.
-The dependency-ordered 117 implementation is checkpointed at `5e65aadf` and
+The dependency-ordered 117 implementation is complete at `5e65aadf` and
 recorded in `docs/plan/tasks/native-engine-117.md`. The existing decoration
 replay owner now classifies literal/preformatted tabs and non-breaking spaces
 with Rust's bounded `char::is_whitespace()` property for `all` and the
 selected 116 line edges, while normal collapsing, fixed-cell geometry, line
-provenance, and the explicit omission fallback remain unchanged. Focused
-regressions pass; full certification is pending and remote CI remains pending
-because the checkout is local-only.
+provenance, and the explicit omission fallback remain unchanged. Focused,
+full-native, two-crate, package, fuzz, security, and static local
+certification passed; exact evidence and cleanup are recorded in the task.
+Remote CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

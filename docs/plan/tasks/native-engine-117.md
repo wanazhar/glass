@@ -1,7 +1,7 @@
 ---
 id: native-engine-117
 scope: glass-browser/native-engine/text-decoration-skip-spaces-unicode
-status: in-progress
+status: complete
 depends-on: [native-engine-116]
 ---
 
@@ -94,7 +94,7 @@ The raster decoration owner now uses one bounded helper backed by Rust's
 ASCII word/justification spacing remains special while literal tabs and
 non-breaking spaces participate in the selected skip intervals. Focused unit
 and native integration regressions are green. The implementation checkpoint
-is `5e65aadf`; full certification remains pending.
+is `5e65aadf`; full certification is recorded below.
 
 ## Verification
 
@@ -110,3 +110,56 @@ Every local gate uses an isolated or intentionally shared target with a
 recorded purpose. Completed validation removes exact regenerable output only
 after active-writer and open-file checks. Remote CI, browser parity, release,
 registry publication, and a third crate are not claimed by this local task.
+
+## Certification
+
+The focused raster filter passed 2/2 tests and the focused native integration
+filter passed 3/3. The final native integration suite passed 154/154 tests;
+the feature-enabled browser library passed 915 tests with 1 ignored and 0
+failures. The serial `glass-dev` suite passed 365 unit tests, 4 integration
+tests, 15 PTY tests, and 1 doctest.
+
+Workspace all-feature Clippy and no-default-feature browser Clippy passed with
+warnings denied. Warning-denied workspace rustdoc and the all-feature debug
+workspace build passed; the build emitted the existing non-fatal duplicate
+`glass-browser`/`.dwp` output-name warning between the two packages. The
+source-only slice did not repeat optimized release builds because it changes
+neither manifests nor release configuration; debug, package, and fuzz paths
+compiled the changed code.
+
+Locked `glass-browser` packaging and verification passed with 196 files and a
+5.0 MiB archive. A local no-verify `glass-dev` archive passed with 69 files
+and a 2.6 MiB archive, and the packaged dependency validator confirmed an
+exact `glass-browser 0.3.14` dependency. The existing public-registry
+verification limitation remains unchanged: immutable published
+`glass-browser 0.3.14` lacks the current `BrowserRuntime`, `browser_runtime`,
+and `browser_endpoint` API required by `glass-dev 0.3.14`; no upload was
+attempted.
+
+Locked fuzz fetch plus offline all-target checking passed. `cargo deny check`
+passed with the existing duplicate-dependency warnings, and `cargo audit`
+passed with the repository's four already-allowed warnings. Formatting and
+diff checks passed. The final static audit passed with 531 Markdown files, 83
+current-version documents, 57 previous-version hits, 612 semantic hits, and
+zero current-claim failures; coverage passed with 345 full-product MCP tools,
+100 browser-only tools, 17 examples, and 22 public modules. TUI passed 15/63,
+depth 93/19, reliability 6/4, adapters 5, and Web IR 8/8/11.
+
+## Cleanup
+
+The final exact inventory found `/tmp/glass-117-target` at 10,862,782,300
+bytes across 15,528 files, containing only regenerable Cargo/test/package
+output, plus `/tmp/glass-117-release-doc.json` (170,564 bytes),
+`/tmp/glass-117-adapters.json` (1,418 bytes), and
+`/tmp/glass-117-reliability.json` (3,482 bytes). No Cargo, rustc, rustdoc,
+Clippy, fuzz, rust-analyzer, or Glass test writer and no open descriptor
+referenced those exact candidates. Bounded deletion removed the target and
+reports after the writer/open-file checks, and the empty repository `target`
+directory was removed. Shared Cargo registries, toolchains, source, durable
+data, and other projects were not touched. The three pre-existing Glass
+processes were preserved.
+
+The implementation and local certification are complete. This remains
+local-only: remote CI, browser parity, release, registry publication, and a
+third crate are not claimed. The epic remains open for the next
+dependency-ordered slice.

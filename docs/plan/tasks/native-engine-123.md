@@ -180,6 +180,8 @@ tests, locked two-crate tests, strict lint, no-default lint, rustdoc,
 packaging, fuzz, dependency, formatting, documentation, reliability, adapter,
 Web IR, and exact regenerable-output cleanup. The public resolved value
 remains finite and unchanged; layer rank and `revert-layer` rollback remain
-private to the CSS cascade. Issue #40 synchronization is the next closeout
-action; remote CI, browser parity, release, and registry publication remain
-explicitly unclaimed from this local checkout.
+private to the CSS cascade. Issue #40 was synchronized through the authenticated
+wanazhar account in comment `5555996896` after the body update, with the
+implementation, task, architecture, analysis, plan, and cleanup markers
+verified through the GitHub API. Remote CI, browser parity, release, and
+registry publication remain explicitly unclaimed from this local checkout.

@@ -5480,10 +5480,7 @@ fn native_direction_revert_layer_preserves_text_flex_and_artifact_owners() {
     assert_eq!(row_order, vec!["first", "second"]);
     let row_rect = layout.box_for(row).unwrap();
     assert_eq!(
-        layout.hit_test(
-            i64::from(row_rect.x + 15),
-            i64::from(row_rect.y + 1),
-        ),
+        layout.hit_test(i64::from(row_rect.x + 15), i64::from(row_rect.y + 1),),
         Ok(Some(row_first))
     );
 

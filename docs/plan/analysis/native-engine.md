@@ -988,6 +988,12 @@ the existing flow/artifact owners. Focused and complete affected-package local
 gates passed; the package library gate used an explicit 32 MiB test-thread
 stack for one pre-existing CLI stack-overflow test. Remote CI remains pending
 because the checkout is local-only.
+The dependency-ordered `native-engine-132` design is recorded in
+`docs/plan/tasks/native-engine-132.md`. It will extend the same private
+bounded layer resolver to inherited `direction: revert-layer`, retaining the
+finite `ltr|rtl` value and the existing logical text, flex, wrapping,
+hit-test, display-list, and raster owners. This is a planned design only;
+implementation and completion evidence do not yet exist.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1685,12 +1691,14 @@ visual stacking.
 | bounded alignment rollback | extends the proven layer rollback across the three related inherited line-alignment owners without changing artifact schemas | private declaration types and candidate arrays add small parser/cascade code and do not provide generic CSS-wide semantics | keep the public enums finite, resolve before line flush, test ordinary/final-line/justification paths together, and retain typed boundaries for unsupported origins and keywords |
 | bounded whitespace rollback | extends the proven layer rollback to the inherited whitespace owner without changing line-flow or artifact schemas | private declaration types and per-layer candidates add property-local cascade state; no generic CSS-wide semantics, multiple origins, or browser whitespace parity | keep the five public whitespace modes finite, resolve rollback before the existing inherited style walk feeds flow, test repeated/unlayered/inline fallback across every supported mode, and retain typed boundaries for unsupported keywords |
 | bounded line-height rollback | extends the proven layer rollback to the inherited positive-pixel line-height owner without changing flow or artifact schemas | private declaration types and per-layer candidates add property-local cascade state; no generic CSS-wide semantics, changed omitted-value behavior, font metrics, or browser line-height parity | keep `Option<u32>` and the existing root `None` fallback, resolve rollback before the style walk feeds line flow, test inherited/explicit-height interactions, and retain typed boundaries for unsupported values |
+| bounded direction rollback | extends the proven layer rollback to the inherited `direction:ltr|rtl` owner without changing text, flex, wrapping, or artifact schemas | private declaration types and per-layer candidates add property-local cascade state; no generic CSS-wide semantics, bidi, writing modes, or browser direction parity | keep the public direction enum finite, resolve rollback before logical-edge and flex mapping, test text/row/column/wrapped-line physical consumers together, preserve source/semantic order, and retain typed boundaries for unsupported values |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-131.md` is the latest completed task;
+`docs/plan/tasks/native-engine-132.md` is the next planned task;
 `docs/plan/tasks/native-engine-130.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-129.md` is the earlier completed task;
 `docs/plan/tasks/native-engine-127.md` is the preceding completed task;

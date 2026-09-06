@@ -5598,6 +5598,112 @@ fn native_flex_direction_revert_layer_preserves_non_inherited_flex_owners() {
 }
 
 #[test]
+fn native_flexbox_revert_layer_family_preserves_non_inherited_owners() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #justify { display:flex; width:20px; height:12px; justify-content:flex-start; align-items:flex-start; } #repeat { display:flex; width:20px; height:12px; justify-content:flex-start; align-items:flex-start; } #items { display:flex; width:20px; height:12px; align-items:flex-start; } #self { display:flex; width:20px; height:12px; align-items:flex-start; } #content { display:flex; width:14px; height:20px; flex-wrap:wrap; align-items:flex-start; align-content:flex-start; } #wrap { display:flex; width:14px; height:14px; flex-wrap:nowrap; align-items:flex-start; align-content:flex-start; } #parent { display:flex; width:20px; height:8px; justify-content:flex-end; align-items:flex-start; } } @layer theme { #justify { justify-content:flex-end; } #repeat { justify-content:center; } #items { align-items:flex-end; } #self-first { align-self:flex-end; } #content { align-content:flex-end; } #wrap { flex-wrap:wrap; } } @layer top { #repeat { justify-content:revert-layer; } } #justify { justify-content:revert-layer; } #repeat { justify-content:revert-layer; } #self-first { align-self:revert-layer; } #content { align-content:revert-layer; } #wrap { flex-wrap:revert-layer; } #fallback { display:flex; width:20px; height:12px; flex-wrap:revert-layer; justify-content:revert-layer; align-items:revert-layer; align-content:revert-layer; }</style><div id='justify'><div id='justify-first' style='width:6px;height:4px;flex-shrink:0;background-color:red'>A</div><div id='justify-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>B</div></div><div id='repeat'><div id='repeat-first' style='width:6px;height:4px;flex-shrink:0;background-color:red'>C</div><div id='repeat-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>D</div></div><div id='items' style='align-items:REVERT-LAYER'><div id='items-first' style='width:6px;height:4px;flex-shrink:0;background-color:red'>E</div><div id='items-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>F</div></div><div id='self'><div id='self-first' style='width:6px;height:4px;flex-shrink:0;background-color:red'>G</div><div id='self-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>H</div></div><div id='content'><div id='content-first' style='width:8px;height:4px;flex-shrink:0;background-color:red'>I</div><div id='content-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>J</div><div id='content-third' style='width:8px;height:4px;flex-shrink:0;background-color:green'>K</div></div><div id='wrap'><div id='wrap-first' style='width:8px;height:4px;flex-shrink:0;background-color:red'>L</div><div id='wrap-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>M</div><div id='wrap-third' style='width:8px;height:4px;flex-shrink:0;background-color:green'>N</div></div><div id='parent'><div id='nested' style='display:flex;width:14px;height:8px;align-items:flex-start'><div id='nested-first' style='width:6px;height:4px;flex-shrink:0;background-color:red'>O</div><div id='nested-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>P</div></div></div><div id='fallback'><div id='fallback-first' style='width:6px;height:4px;flex-shrink:0;background-color:red'>Q</div><div id='fallback-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>R</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "flex-wrap" | "justify-content" | "align-items" | "align-self" | "align-content"
+            ))
+    }));
+
+    let viewport = Viewport {
+        width: 64,
+        height: 256,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let box_for = |id: &str| {
+        let node = document.resolve_target(&format!("id={id}")).unwrap();
+        layout.box_for(node).unwrap()
+    };
+
+    // Unlayered rollback exposes the theme value, while two rollback layers
+    // expose the lower concrete candidate.
+    let justify = box_for("justify");
+    assert_eq!(box_for("justify-first").x, justify.x + 6);
+    assert_eq!(box_for("justify-second").x, justify.x + 12);
+    let repeat = box_for("repeat");
+    assert_eq!(box_for("repeat-first").x, repeat.x + 3);
+    assert_eq!(box_for("repeat-second").x, repeat.x + 9);
+
+    // Inline rollback reaches the named cross-axis value, and item rollback
+    // reaches its named override inside the existing parent alignment path.
+    let items = box_for("items");
+    assert_eq!(box_for("items-first").y, items.y + 8);
+    let self_container = box_for("self");
+    assert_eq!(box_for("self-first").y, self_container.y + 8);
+    assert_eq!(box_for("self-second").y, self_container.y);
+
+    // Line-level and item-level rollback retain distinct geometry owners.
+    let content = box_for("content");
+    assert_eq!(box_for("content-first").x, content.x);
+    assert_eq!(box_for("content-first").y, content.y + 8);
+    assert_eq!(box_for("content-second").y, content.y + 12);
+    assert_eq!(box_for("content-third").y, content.y + 16);
+    let wrap = box_for("wrap");
+    assert_eq!(box_for("wrap-first").x, wrap.x);
+    assert_eq!(box_for("wrap-second").x, wrap.x);
+    assert_eq!(box_for("wrap-third").x, wrap.x);
+    assert_eq!(box_for("wrap-second").y, box_for("wrap-first").y + 4);
+    assert_eq!(box_for("wrap-third").y, box_for("wrap-first").y + 8);
+
+    // Non-inherited defaults are local: the parent justifies its child, but
+    // the nested flex container uses its own flex-start fallback.
+    let nested = box_for("nested");
+    assert_eq!(box_for("nested-first").x, nested.x);
+    assert_eq!(box_for("nested-second").x, nested.x + 6);
+    let fallback = box_for("fallback");
+    assert_eq!(box_for("fallback-first").x, fallback.x);
+    assert_eq!(box_for("fallback-second").x, fallback.x + 6);
+    assert_eq!(box_for("fallback-first").y, box_for("fallback-second").y);
+
+    let justify_first = document.resolve_target("id=justify-first").unwrap();
+    let justify_second = document.resolve_target("id=justify-second").unwrap();
+    let source_order = layout
+        .text_runs
+        .iter()
+        .filter_map(|run| {
+            if run.node_id == justify_first {
+                Some("first")
+            } else if run.node_id == justify_second {
+                Some("second")
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(source_order, vec!["first", "second"]);
+
+    let justify_first_rect = box_for("justify-first");
+    assert_eq!(
+        layout.hit_test(
+            i64::from(justify_first_rect.x + 1),
+            i64::from(justify_first_rect.y + 1),
+        ),
+        Ok(Some(justify_first))
+    );
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == justify_first && *rect == justify_first_rect
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(justify_first_rect.x + 1, justify_first_rect.y + 1),
+        Some([255, 0, 0, 255])
+    );
+}
+
+#[test]
 fn native_flex_row_preserves_fixed_width_overflow_and_fallback_content() {
     let overflow = NativeDocument::parse(
         "<div id='row' style='display:flex;width:16px'><div id='first' style='width:12px;height:8px;flex-shrink:0'>A</div><div id='second' style='width:12px;height:8px;flex-shrink:0'>B</div></div>",

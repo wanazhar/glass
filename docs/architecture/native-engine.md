@@ -102,7 +102,8 @@ separate glyph/decoration paint color and the existing `Option<NativeColor>`
 fallback, bounded inherited
 `text-decoration-line` and `text-decoration` rollback through the same
 15-layer registry with their shared three-bit line-state owner and inherited
-fallback, and bounded
+fallback, and the planned bounded inherited `text-align`, `text-align-last`,
+and `text-justify` rollback through the same 15-layer registry, and bounded
 inherited ASCII `text-transform:none|uppercase|lowercase` layout, and
 bounded inherited non-negative fixed-pixel `word-spacing` across the supported
 fixed-cell whitespace modes, and
@@ -749,6 +750,13 @@ CSS-wide keywords, multiple origins, layer statements, and unsupported values
 remain typed diagnostics. Exact local gate, documentation-audit, issue-sync,
 and regenerable-output cleanup evidence is recorded in the task. Remote CI
 remains pending because the checkout is local-only.
+The next designed dependency-ordered boundary is `native-engine-129`, recorded
+in `docs/plan/tasks/native-engine-129.md`. It adds private, case-insensitive
+`revert-layer` declarations for inherited `text-align`, `text-align-last`, and
+`text-justify`, reusing the existing 15-layer registry and unlayered/inline
+precedence while preserving the finite alignment values, direction mapping,
+final-line alignment, separator justification, and all existing line/artifact
+owners. The design remains unimplemented and makes no new capability claim.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -962,6 +962,11 @@ origins, `!important` inversion, layer statements, and unsupported values
 remain excluded. Exact evidence, issue-sync, and regenerable-output cleanup
 evidence is recorded in the task. Remote CI remains pending because the
 checkout is local-only.
+The next designed dependency-ordered `native-engine-129` boundary is recorded
+in `docs/plan/tasks/native-engine-129.md`. It will reuse the bounded cascade
+layer registry for private `revert-layer` declarations on the inherited
+`text-align`, `text-align-last`, and `text-justify` owners without changing the
+finite alignment values or fixed-cell line/artifact path.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1236,6 +1241,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-126` | completed reuse of bounded named-layer priority and private rollback for inherited `text-underline-offset:revert-layer`, preserving finite signed `-4px` through `4px` underline translation and stable overline/line-through origins | `native-engine-125` | other CSS-wide keywords, `auto`/percentages/fractional/font-derived values, dimensions outside the bounded range, overline/line-through offsets, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
 | `native-engine-127` | completed reuse of bounded named-layer priority and private rollback for local `text-decoration-color:revert-layer`, preserving the existing `Option<NativeColor>` fallback and separate glyph/decoration paint owner | `native-engine-126` | other CSS-wide keywords, `currentColor`, gradients, system colors, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
 | `native-engine-128` | completed reuse of bounded named-layer priority and private rollback for `text-decoration-line`/`text-decoration:revert-layer`, preserving the shared inherited three-bit line-state owner, declaration-order interaction, and existing display/raster geometry | `native-engine-127` | other CSS-wide keywords, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
+| `native-engine-129` | planned reuse of bounded named-layer priority and private rollback for inherited `text-align`, `text-align-last`, and `text-justify`, preserving direction mapping, final-line alignment, separator justification, and the existing fixed-cell line/artifact owners | `native-engine-128` | other CSS-wide keywords, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1263,13 +1269,16 @@ Phase 2 integration chains added by these slices are:
    title, and textarea content from creating nested semantic elements.
 9. Bounded stylesheet and inline declarations produce deterministic
    display/visibility state consumed by visible text and actionability.
-10. Feature-gated runtime construction creates the native backend directly from
+10. Alignment rollback candidates resolve before the existing inherited
+    direction, final-line, and separator-spacing consumers, with no unresolved
+    declaration keyword entering line artifacts.
+11. Feature-gated runtime construction creates the native backend directly from
     `NativeEngineConfig` without contacting an endpoint or entering automatic
     selection.
-11. The native CLI path accepts only local URL shapes, forwards semantic
+12. The native CLI path accepts only local URL shapes, forwards semantic
     navigate/click/type/text/observe/targets operations, and rejects unsupported
     flags before startup.
-12. Default builds retain the Chromium CLI value set and cannot select native
+13. Default builds retain the Chromium CLI value set and cannot select native
     through an omitted runtime or a fallback path.
 13. Native layout derives visible element rectangles from the current DOM and
     viewport without creating a second mutable owner.

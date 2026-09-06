@@ -1112,6 +1112,15 @@ remain typed diagnostics. Exact local gate, documentation-audit, issue-sync,
 and regenerable-output cleanup evidence is recorded in the task. Remote CI
 remains pending because the checkout is local-only.
 
+The next designed dependency-ordered [native-engine-129](tasks/native-engine-129.md)
+slice adds private case-insensitive `revert-layer` declarations for inherited
+`text-align`, `text-align-last`, and `text-justify`. It reuses the bounded
+15-layer and unlayered/inline cascade boundary while preserving direction
+mapping, final-line alignment, separator justification, finite public values,
+and the existing fixed-cell line/artifact owner. The design is recorded before
+implementation; no current capability claim is made until the slice is
+implemented and locally certified.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

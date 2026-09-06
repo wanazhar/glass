@@ -785,12 +785,14 @@ integration gates, the full affected library suite, and strict affected-
 package Clippy passed locally; the package library gate used an explicit 32 MiB
 test-thread stack because one pre-existing CLI test overflows the default
 thread stack. Remote CI remains pending because the checkout is local-only.
-The dependency-ordered 132 design is recorded in
-`docs/plan/tasks/native-engine-132.md`. It will reuse the same private bounded
-layer boundary for inherited `direction: revert-layer`, preserving the finite
-`ltr|rtl` value, logical text-edge mapping, flex directionality, wrapped-line
-placement, source/semantic order, and shared artifact owners. The task is
-planned; no 132 production implementation or completion evidence is claimed.
+The dependency-ordered 132 implementation is complete in `4a46862f` and is
+recorded in `docs/plan/tasks/native-engine-132.md`. It reuses the same private
+bounded layer boundary for inherited `direction: revert-layer`, preserving
+the finite `ltr|rtl` value, logical text-edge mapping, flex directionality,
+wrapped-line placement, source/semantic order, and shared artifact owners.
+Focused, full-native, affected-library, and strict affected-package local
+gates passed; exact test and cleanup evidence is recorded in the task. Remote
+CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1710,6 +1712,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded 15-layer/unlayered `revert-layer` rollback for inherited
   `line-height`, with private declaration state, positive-pixel `Option<u32>`
   fallback, and unchanged flow/artifact owners.
+- bounded 15-layer/unlayered `revert-layer` rollback for inherited
+  `direction`, with private declaration state, finite `ltr|rtl` fallback,
+  unchanged logical text/flex/wrapped-line mapping, and preserved
+  source/semantic order and shared artifacts.
 - bounded `rgba(R, G, B, A)` functional alpha parsing for background, border,
   and text colors, with shared fixed-point quantization, display-list color
   ownership, and integer source-over replay.

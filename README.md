@@ -401,6 +401,9 @@ bounded non-inherited `flex-direction:row|row-reverse` physical placement of
 the order-sorted visual sequence with item-attached margins, existing
 gap/justification/alignment, shared subtree artifacts, bounded overflow
 translation, root horizontal scrolling, and unchanged semantic/source order,
+bounded inherited `direction:ltr|rtl` with case-insensitive 15-layer/unlayered
+`direction: revert-layer` rollback preserving logical text and flex physical
+mapping, wrapped-line placement, source/semantic order, and shared artifacts,
 plus bounded revisioned Rust
 diagnostics for unsupported CSS without raw stylesheet echo. A
 `native-engine` feature build exposes the explicit local

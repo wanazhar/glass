@@ -1,7 +1,7 @@
 ---
 id: native-engine-132
 scope: glass-browser/native-engine/cascade-layers-direction-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-131]
 ---
 
@@ -17,8 +17,8 @@ display-list coordinates, and raster output.
 
 ## Context
 
-The native engine currently accepts only the finite inherited
-`direction:ltr|rtl` values. The resolved value already travels through the
+The native engine accepts the finite inherited `direction:ltr|rtl` values. The
+resolved value already travels through the
 DOM style walk and is consumed by text alignment, row reversal, column
 cross-axis placement, wrapping, and shared artifact projection. This slice
 adds private declaration-only rollback state and per-layer candidates without
@@ -75,13 +75,50 @@ parity.
 
 ## Implementation
 
-The implementation will add a private `DirectionDeclaration` enum with
-`Value(DirectionValue)` and `RevertLayer` variants, store winning stylesheet
-and inline candidates in the existing bounded layer array, and resolve them
+The implementation is complete in `4a46862f` (`feat(native-engine): support
+direction rollback`). It adds a private `DirectionDeclaration` enum with
+`Value(DirectionValue)` and `RevertLayer` variants, stores winning stylesheet
+and inline candidates in the existing bounded layer array, and resolves them
 before the inherited style walk feeds the existing direction consumers. The
-diagnostic classifier and declaration parser will share one standalone
+diagnostic classifier and declaration parser share one standalone
 `revert-layer`-aware parser so accepted case variants cannot be reported as
 unsupported.
+
+The focused and affected-package gates passed:
+
+- `cargo check -p glass-browser --features native-engine --test native_engine
+  --locked` — passed in 2.13s in the isolated 132 target.
+- Direction parser/cascade unit filters — 8 passed in 0.02s; the fresh test
+  profile compilation took 3m26s.
+- The new direction text/flex/artifact integration regression — 1 passed in
+  0.05s after a 2m02s incremental test-target compilation.
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  --locked` — 169 passed, 0 failed in 2.88s.
+- `RUST_MIN_STACK=33554432 cargo test -p glass-browser
+  --features native-engine --lib --locked` — 933 passed, 1 ignored, 0 failed
+  in 2.19s.
+- `cargo clippy -p glass-browser --features native-engine --all-targets
+  --locked -- -D warnings` — passed in 1m39s.
+
+The focused fixture verifies named-layer ordering, repeated rollback,
+unlayered and inline precedence, inherited descendants, root fallback,
+logical text placement, row/column/wrapped flex directionality, source order,
+hit testing, display-list geometry, and decoded raster output. Valid rollback
+forms produce no unsupported-value diagnostic and the public computed style
+remains `DirectionValue` without declaration-keyword leakage. No production
+schema, dependency, feature default, or crate boundary changed. Full
+two-crate, strict, fuzz/security, static-documentation, and remote-CI gates
+remain issue-level gates; remote CI is unclaimed because this checkout has
+not been pushed.
+
+The final local formatting and diff checks passed. After the tests finished,
+process and `/proc` descriptor checks found no consumer of
+`/tmp/glass-132-focused`. That exact regenerable target measured
+3,021,333,326 logical bytes across 4,136 files and 657 directories and was
+removed with bounded `find -P ... -xdev -depth -delete`; no repository target,
+source, fixture, durable data, or unrelated temporary path was removed.
+Available filesystem bytes increased from 81,521,618,944 to
+84,556,779,520, a measured delta of 3,035,160,576 bytes.
 
 ## Tradeoffs
 

@@ -94,7 +94,9 @@ owner, bounded
   bounded inherited non-negative fixed-pixel `word-spacing` across collapsed
   and supported preformatted ASCII spaces, bounded inherited non-negative
   fixed-pixel `letter-spacing` after every rendered fixed-cell character in
-  each emitted fragment, composed with word spacing,
+  each emitted fragment, composed with word spacing, plus bounded case-insensitive
+  15-layer/unlayered inherited `revert-layer` rollback for `word-spacing` and
+  `letter-spacing` with finite parent/root fallbacks,
   bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster
   presentation with unchanged advances and clipped one-pixel bold dilation,
   bounded inherited `font-style:normal|italic` fixed-cell raster presentation
@@ -223,6 +225,10 @@ The inherited text-presentation surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `text-transform`, `font-weight`,
 `font-style`, and `word-break`, resolving through finite parent/root fallbacks
 without changing the existing fixed-cell layout, wrapping, or raster owners.
+The inherited text-spacing surface also accepts bounded case-insensitive
+15-layer/unlayered `revert-layer` for `word-spacing` and `letter-spacing`,
+resolving through finite parent/root fallbacks without changing the existing
+spacing, wrapping, alignment, or raster owners.
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -277,6 +283,9 @@ agreement reports exact schema and capability status.
   plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
   rollback for `text-transform`, `font-weight`, `font-style`, and `word-break`
   with finite parent/root fallbacks,
+  plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
+  rollback for `word-spacing` and `letter-spacing` with finite parent/root
+  fallbacks,
   and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary

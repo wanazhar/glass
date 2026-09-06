@@ -1,7 +1,7 @@
 ---
 id: native-engine-140
 scope: glass-browser/native-engine/cascade-layers-inherited-text-spacing-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-139]
 ---
 
@@ -19,12 +19,11 @@ semantic/source-order contracts.
 ## Context
 
 The native engine already accepts bounded non-negative integer-pixel values for
-these inherited properties and carries them through the DOM style walk. Their
-stylesheet and inline declarations currently keep only one winning concrete
-candidate, so a higher-priority rollback declaration cannot expose a lower
-candidate or the inherited parent value. This slice adds only private
-declaration/candidate state and reuses the existing bounded first-appearance
-15-layer registry and generic inherited-text resolver.
+these inherited properties and carries them through the DOM style walk. This
+slice replaces their single-winner declaration state with private per-property
+candidates so a higher-priority rollback declaration can expose a lower
+candidate or the inherited parent value. It reuses the existing bounded
+first-appearance 15-layer registry and generic inherited-text resolver.
 
 Normative references:
 
@@ -39,6 +38,18 @@ Read with:
 - `docs/plan/analysis/native-engine.md`
 - `docs/plan/README.md`
 - `docs/plan/tasks/native-engine-139.md`
+
+## Implementation
+
+Implemented in `7d40cf87598f05c61b02f27cf8713dd9ce5fadea` with the design
+checkpoint `34f8ec1a0e7208f15194631d402c713583b5b967`. The implementation adds
+private candidate arrays and declaration wrappers for both spacing properties,
+keeps the public finite `u32` values unchanged, and hardens the shared parser
+to preserve earlier valid inherited-text declarations when a later declaration
+is invalid. Existing spacing, wrapping, alignment, display-list, raster,
+overflow, capture, hit-test, and semantic/source-order owners remain the
+consumers. No dependency, feature, public schema, or crate-boundary changes
+were made.
 
 ## Contract
 
@@ -103,7 +114,7 @@ multiple origins, animation, script, or browser-wide CSS parity.
 
 ## Verification
 
-The focused gate must cover:
+The completed gate covered:
 
 - standalone case-insensitive parsing and typed rejection of other CSS-wide,
   mixed, malformed, negative, fractional, relative, and unsupported spacing
@@ -116,7 +127,27 @@ The focused gate must cover:
   testing, and unchanged semantic/source order;
 - absence of false unsupported-value diagnostics and no public rollback
   keyword leakage; and
-- focused `glass-browser` check, targeted behavioral tests, full native
-  integration/library tests, strict affected-package Clippy, formatting, and
-  final static documentation gates. Remote CI remains unclaimed until an
-  explicitly authorized push.
+- locked focused `glass-browser` check passed;
+- inherited-text parser/cascade tests passed 5/5, including invalid-later
+  preservation, and the spacing consumer integration regression passed 1/1
+  with 176 tests filtered;
+- full native integration passed 177/177;
+- the stack-adjusted full feature-enabled `glass-browser` library passed 945
+  tests with 1 ignored and 0 failures;
+- strict affected-package Clippy passed with `-D warnings`;
+- formatting and final static documentation gates passed: 554 Markdown
+  documents, 83 current documents, 57 previous-version hits, 649 semantic
+  audit hits, and zero current-claim failures; coverage reported 345
+  full-product MCP tools (100 browser-only), 17 examples, and 22 public
+  modules; depth reported 93 current guides and 19 substantive contracts;
+  parity reported 14 capabilities across 4 targets; TUI reported 15
+  implementation keys and 63 documentation markers; adapters reported 5;
+  reliability reported 6 scenarios across 4 targets; and Web IR reported
+  8 fixtures, 8 scenarios, and 11 categories;
+- the temporary `/tmp/glass-140-focused` target measured 7,084,596,446 logical
+  bytes across 7,120 files and 925 directories, with no open handles or
+  active Cargo/rustc/Clippy consumers; the exact target and 4,742-byte audit
+  directory were removed with bounded `find -P ... -xdev -depth -delete`,
+  reclaiming 7,105,167,360 bytes of measured `/tmp` free space; and
+- remote CI remains unclaimed because the checkout is local-only and no push
+  was authorized.

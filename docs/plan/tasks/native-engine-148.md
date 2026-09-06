@@ -1,7 +1,7 @@
 ---
 id: native-engine-148
 scope: glass-browser/native-engine/cascade-layers-opacity-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-147]
 ---
 
@@ -121,8 +121,29 @@ The completed slice must cover:
 
 ## Implementation
 
-Pending the implementation checkpoint.
+Implemented in `d3f89a6c` with design contract checkpoint `d882d846`.
+The source change is confined to
+`crates/glass-browser/src/browser/native_engine/css.rs`, with behavioral
+coverage in `crates/glass-browser/tests/native_engine.rs`.
 
 ## Evidence
 
-Pending implementation and local certification.
+Local certification passed: focused locked `glass-browser` check; opacity
+parser/cascade unit coverage passed 5/5; the targeted integration regression
+passed 1/1 with 185 tests filtered; full native integration passed 186/186;
+the feature-enabled `glass-browser` library passed 958 tests with 1 ignored
+under `RUST_MIN_STACK=16777216`; warnings-denied affected-package Clippy and
+formatting passed. The default library test harness also exposed the known
+stack-sensitive `agent_readiness_commands_are_explicit` overflow; the same
+package gate passed with the established larger test stack. Synchronized
+static documentation gates passed with 562 Markdown documents, 83 current
+documents, 57 previous-version hits, 656 semantic-audit hits, and 0
+current-claim failures; documentation coverage passed with 562 Markdown files,
+345 full-product MCP tools (100 browser-only), 17 examples, and 22 public
+modules; depth passed with 93 guides and 19 substantive contracts; parity
+passed for 14 capabilities across 4 targets; TUI passed at 15 implementation
+help keys/63 documentation markers; adapters passed at 5; reliability passed
+at 6 scenarios across 4 targets; and Web IR passed at 8 fixtures/8
+scenarios/11 categories. Remote CI is unclaimed because no push was
+authorized. The complete semantic audit report is retained at
+`/tmp/glass-release-documentation-148.json`.

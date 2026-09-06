@@ -1319,14 +1319,26 @@ boundary. Focused, full-native, affected-library, strict Clippy, formatting,
 and static documentation gates passed locally; exact evidence and cleanup are
 recorded in the task. Remote CI remains pending because the checkout is
 local-only.
-The next dependency-ordered [native-engine-148](tasks/native-engine-148.md)
-contract is planned. It will reuse the same private bounded layer resolver for
-standalone, case-insensitive `revert-layer` on the existing local 8-bit
-`opacity` owner, preserving the full-opacity fallback and the reduced-opacity
-display-list group, software compositing, layout, point-hit, capture, and
-semantic/source-order owners. Inherited opacity, stacking-context/blending
+The dependency-ordered [native-engine-148](tasks/native-engine-148.md)
+implementation is complete in `d3f89a6c` (design `d882d846`). It reuses the
+same private bounded layer resolver for standalone, case-insensitive
+`revert-layer` on the existing local 8-bit `opacity` owner, preserving the
+full-opacity fallback, reduced-opacity group markers and software
+compositing, and the existing layout, point-hit, capture, raster, overflow,
+and semantic/source-order owners. Inherited opacity, stacking-context/blending
 parity, filters, animation, multiple origins, and browser-wide opacity
-conformance remain outside the planned boundary.
+conformance remain outside the boundary. Focused parser/cascade and
+integration tests, full-native integration/library tests, strict
+affected-package Clippy, and formatting passed locally. Static documentation
+gates passed with 562 Markdown documents, 83 current documents, 57
+previous-version hits, 656 semantic-audit hits, and 0 current-claim failures.
+Documentation coverage passed with 562 Markdown files, 345 full-product MCP
+tools (100 browser-only), 17 examples, and 22 public modules; depth passed
+with 93 guides and 19 substantive contracts; parity passed for 14 capabilities
+across 4 targets; TUI passed at 15 implementation help keys/63 documentation
+markers; adapters passed at 5; reliability passed at 6 scenarios across 4
+targets; and Web IR passed at 8 fixtures/8 scenarios/11 categories. Remote CI
+remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

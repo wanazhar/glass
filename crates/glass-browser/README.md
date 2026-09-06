@@ -227,7 +227,14 @@ one-to-four-value integer shorthand. Rollback preserves the zero-corner
 fallback and the existing rounded layout, fill, border, point-hit, capture,
 raster, overflow, and semantic/source-order owners; elliptical, percentage,
 corner-longhand, nested-clip, anti-aliasing, multiple-origin, and browser-wide
-border-radius conformance remain outside the boundary.
+border-radius conformance remain outside the boundary. The same bounded local
+cascade path also accepts standalone, case-insensitive 15-layer/unlayered
+`opacity:revert-layer` for the existing local 8-bit opacity owner, preserving
+the full-opacity (`255`) fallback, reduced-opacity group markers and software
+compositing, and unchanged layout, point-hit, capture, raster, overflow, and
+semantic/source-order owners; inherited opacity, stacking-context/blending
+parity, filters, animation, multiple origins, and browser-wide opacity
+conformance remain outside the boundary.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and

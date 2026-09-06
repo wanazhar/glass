@@ -1282,14 +1282,18 @@ full-native, affected-library, strict Clippy, formatting, and static
 documentation gates passed locally; exact evidence and cleanup are recorded in
 the task. Remote CI remains pending because the checkout is local-only.
 
-The next dependency-ordered [native-engine-145](tasks/native-engine-145.md)
-contract is planned. It will reuse the same private bounded layer resolver for
-standalone case-insensitive `revert-layer` on local `background-color` and
-inherited `color`, preserving independent `None`/inherited fallbacks and the
-existing fill/text display-list, capture, raster, clipping, opacity, hit-test,
-and semantic/source-order owners. Border-color, `currentColor`, gradients,
-system colors, multiple origins, and browser-wide CSS color conformance remain
-outside the planned boundary.
+The dependency-ordered [native-engine-145](tasks/native-engine-145.md)
+implementation is complete in `997d4aa7` (design `553c5f89`) and is recorded
+in the task. It reuses the same private bounded layer resolver for standalone
+case-insensitive `revert-layer` on local `background-color` and inherited
+`color`, preserving independent `None`/inherited fallbacks and the existing
+fill/text display-list, capture, raster, clipping, opacity, hit-test, and
+semantic/source-order owners. Border-color, `currentColor`, gradients, system
+colors, multiple origins, and browser-wide CSS color conformance remain
+outside the boundary. Focused, full-native, affected-library, strict Clippy,
+formatting, and static documentation gates passed locally; exact evidence and
+cleanup are recorded in the task. Remote CI remains pending because the
+checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

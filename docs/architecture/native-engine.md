@@ -949,14 +949,19 @@ integration/library tests, strict affected-package Clippy, formatting, and
 static documentation gates passed locally; exact evidence and cleanup are
 recorded in the task. Remote CI remains pending because the checkout is
 local-only.
-The next dependency-ordered 145 contract is planned in
-`docs/plan/tasks/native-engine-145.md`. It will reuse the same private bounded
-layer resolver for standalone, case-insensitive `revert-layer` on local
-`background-color` and inherited `color`, preserving independent paint-color
-candidate ownership, `None`/inherited fallbacks, fill/text display-list and
-raster consumers, and the existing text-decoration-color owner. Border-color,
-`currentColor`, gradients, system colors, multiple origins, and browser-wide
-CSS color conformance remain outside the planned boundary.
+The dependency-ordered 145 implementation is complete in `997d4aa7` (design
+`553c5f89`) and is recorded in `docs/plan/tasks/native-engine-145.md`. It
+extends the same private bounded layer resolver to standalone,
+case-insensitive `revert-layer` on local `background-color` and inherited
+`color`, preserving independent paint-color candidate ownership,
+`None`/inherited fallbacks, fill/text display-list and raster consumers, and
+the existing text-decoration-color owner. Border-color, `currentColor`,
+gradients, system colors, multiple origins, and browser-wide CSS color
+conformance remain outside the boundary. Focused parser/cascade and
+integration tests, full-native integration/library tests, strict affected-
+package Clippy, formatting, and static documentation gates passed locally;
+exact evidence and cleanup are recorded in the task. Remote CI remains
+pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

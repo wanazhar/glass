@@ -245,6 +245,12 @@ The local text-geometry surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `text-indent` and `text-overflow`,
 resolving through finite `0px`/`clip` local fallbacks without changing the
 existing first-line flow or clipped-nowrap direct-text truncation owners.
+The local paint-color surface also accepts bounded case-insensitive
+15-layer/unlayered `revert-layer` for `background-color` and inherited `color`,
+resolving through the existing `None`/parent-root fallbacks without changing
+fill/text display-list, clipping, opacity, capture, or raster owners.
+`currentColor`, gradients, system colors, border-color, percentages, color
+spaces, and multiple origins remain outside the boundary.
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |

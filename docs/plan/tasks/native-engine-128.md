@@ -187,7 +187,10 @@ absent. The three pre-existing Glass processes were preserved.
 
 ## Certification
 
-Pending final exact-output cleanup and issue synchronization. The behavioral
-implementation and local acceptance gates are complete; this section is closed
-only after the cleanup measurements and authenticated issue evidence are
-recorded below.
+Local implementation and all local gates are complete at `7acc95f2` (the
+behavioral implementation is `15fc761c`). Issue #40 closeout synchronization is
+recorded in the authenticated comment at
+<https://github.com/wanazhar/glass/issues/40#issuecomment-5558903825> and in
+the updated issue body. Exact-output cleanup is complete above. Remote CI
+remains pending because the checkout is local-only; no push, release, tag,
+registry publication, browser-parity, or third-crate claim is made.

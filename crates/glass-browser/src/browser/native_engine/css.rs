@@ -101,6 +101,21 @@ impl NativeTextDecorationThicknessDeclaration {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeTextUnderlineOffsetDeclaration {
+    Value(i32),
+    RevertLayer,
+}
+
+impl NativeTextUnderlineOffsetDeclaration {
+    const fn resolve(self, inherited: i32) -> i32 {
+        match self {
+            Self::Value(value) => value,
+            Self::RevertLayer => inherited,
+        }
+    }
+}
+
 /// Bounded inherited glyph-intersection behavior for text decorations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeTextDecorationSkipInk {
@@ -1043,7 +1058,8 @@ impl NativeStylesheet {
         let mut text_decoration_thickness: [Option<
             CascadeValue<NativeTextDecorationThicknessDeclaration>,
         >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut text_underline_offset = None;
+        let mut text_underline_offset: [Option<CascadeValue<NativeTextUnderlineOffsetDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration_color = None;
         let mut text_transform = None;
         let mut font_weight = None;
@@ -1231,20 +1247,21 @@ impl NativeStylesheet {
                     });
                 }
             }
-            if let Some(value) = rule.declarations.text_underline_offset
-                && wins(
+            if let Some(value) = rule.declarations.text_underline_offset {
+                let layer = cascade_layer_index(rule.selector.specificity);
+                if wins(
                     rule.selector.specificity,
                     rule.order,
                     false,
-                    text_underline_offset,
-                )
-            {
-                text_underline_offset = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
+                    text_underline_offset[layer],
+                ) {
+                    text_underline_offset[layer] = Some(CascadeValue {
+                        value,
+                        specificity: rule.selector.specificity,
+                        order: rule.order,
+                        inline: false,
+                    });
+                }
             }
             if let Some(value) = rule.declarations.text_decoration_color
                 && wins(
@@ -1769,15 +1786,16 @@ impl NativeStylesheet {
                     });
                 }
             }
-            if let Some(value) = declarations.text_underline_offset
-                && wins(u16::MAX, usize::MAX, true, text_underline_offset)
-            {
-                text_underline_offset = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
+            if let Some(value) = declarations.text_underline_offset {
+                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
+                if wins(u16::MAX, usize::MAX, true, text_underline_offset[layer]) {
+                    text_underline_offset[layer] = Some(CascadeValue {
+                        value,
+                        specificity: u16::MAX,
+                        order: usize::MAX,
+                        inline: true,
+                    });
+                }
             }
             if let Some(value) = declarations.text_decoration_color
                 && wins(u16::MAX, usize::MAX, true, text_decoration_color)
@@ -2190,8 +2208,10 @@ impl NativeStylesheet {
                 text_decoration_thickness,
                 inherited.text_decoration_thickness,
             ),
-            text_underline_offset: text_underline_offset
-                .map_or(inherited.text_underline_offset, |value| value.value),
+            text_underline_offset: resolve_text_underline_offset(
+                text_underline_offset,
+                inherited.text_underline_offset,
+            ),
             text_decoration_color: text_decoration_color.map(|value| value.value),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
@@ -2378,6 +2398,39 @@ fn resolve_text_decoration_thickness(
         if matches!(
             candidate.value,
             NativeTextDecorationThicknessDeclaration::RevertLayer
+        ) {
+            blocked[layer] = true;
+            continue;
+        }
+        return candidate.value.resolve(inherited);
+    }
+}
+
+fn resolve_text_underline_offset(
+    candidates: [Option<CascadeValue<NativeTextUnderlineOffsetDeclaration>>;
+        MAX_NATIVE_CASCADE_LAYERS],
+    inherited: i32,
+) -> i32 {
+    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    loop {
+        let Some((layer, candidate)) =
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(layer, candidate)| {
+                    if blocked[layer] {
+                        None
+                    } else {
+                        candidate.map(|candidate| (layer, candidate))
+                    }
+                })
+        else {
+            return inherited;
+        };
+        if matches!(
+            candidate.value,
+            NativeTextUnderlineOffsetDeclaration::RevertLayer
         ) {
             blocked[layer] = true;
             continue;
@@ -2596,7 +2649,7 @@ struct NativeDeclarations {
     text_decoration_skip_ink: Option<NativeTextDecorationSkipInkDeclaration>,
     text_decoration_skip_spaces: Option<NativeTextDecorationSkipSpacesDeclaration>,
     text_decoration_thickness: Option<NativeTextDecorationThicknessDeclaration>,
-    text_underline_offset: Option<i32>,
+    text_underline_offset: Option<NativeTextUnderlineOffsetDeclaration>,
     text_decoration_color: Option<NativeColor>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
@@ -3729,8 +3782,12 @@ fn parse_text_decoration_thickness(
         .map(NativeTextDecorationThicknessDeclaration::Value)
 }
 
-fn parse_text_underline_offset(value: &str) -> Option<i32> {
-    let value = value.trim().to_ascii_lowercase();
+fn parse_text_underline_offset(value: &str) -> Option<NativeTextUnderlineOffsetDeclaration> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("revert-layer") {
+        return Some(NativeTextUnderlineOffsetDeclaration::RevertLayer);
+    }
+    let value = value.to_ascii_lowercase();
     let value = value.strip_suffix("px")?.trim();
     let (negative, magnitude) = match value.strip_prefix('-') {
         Some(value) => (true, value),
@@ -3743,7 +3800,11 @@ fn parse_text_underline_offset(value: &str) -> Option<i32> {
     if magnitude > MAX_NATIVE_TEXT_UNDERLINE_OFFSET {
         return None;
     }
-    Some(if negative { -magnitude } else { magnitude })
+    Some(NativeTextUnderlineOffsetDeclaration::Value(if negative {
+        -magnitude
+    } else {
+        magnitude
+    }))
 }
 
 fn set_border_side(sides: &mut [Option<NativeBorderSide>; 4], index: usize, value: &str) {
@@ -4604,7 +4665,10 @@ mod tests {
             declarations.text_decoration_thickness,
             Some(NativeTextDecorationThicknessDeclaration::Value(2))
         );
-        assert_eq!(declarations.text_underline_offset, Some(-2));
+        assert_eq!(
+            declarations.text_underline_offset,
+            Some(NativeTextUnderlineOffsetDeclaration::Value(-2))
+        );
         assert_eq!(declarations.text_indent, Some(12));
         assert_eq!(declarations.word_spacing, Some(12));
         assert_eq!(declarations.letter_spacing, Some(12));
@@ -5117,6 +5181,40 @@ mod tests {
                 .computed_for(&fallback)
                 .text_decoration_thickness(),
             1
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_text_underline_offset_candidates() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { text-underline-offset: -1px; } #rollback { text-underline-offset: -1px; } #repeated { text-underline-offset: -1px; } #unlayered { text-underline-offset: -1px; } #inline { text-underline-offset: -1px; } #fallback { text-underline-offset: revert-layer; } } @layer theme { .named { text-underline-offset: -2px; } #rollback { text-underline-offset: revert-layer; } #repeated { text-underline-offset: revert-layer; } #unlayered { text-underline-offset: 4px; } #inline { text-underline-offset: 2px; } } @layer top { #repeated { text-underline-offset: revert-layer; } } #named { text-underline-offset: revert-layer; } #unlayered { text-underline-offset: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named' class='named'>Named</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let unlayered = node("<div id='unlayered'>Unlayered</div>");
+        let inline =
+            node("<div id='inline' style='text-underline-offset:revert-layer'>Inline</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        assert_eq!(stylesheet.computed_for(&named).text_underline_offset(), -2);
+        assert_eq!(
+            stylesheet.computed_for(&rollback).text_underline_offset(),
+            -1
+        );
+        assert_eq!(
+            stylesheet.computed_for(&repeated).text_underline_offset(),
+            -1
+        );
+        assert_eq!(
+            stylesheet.computed_for(&unlayered).text_underline_offset(),
+            4
+        );
+        assert_eq!(stylesheet.computed_for(&inline).text_underline_offset(), 2);
+        assert_eq!(
+            stylesheet.computed_for(&fallback).text_underline_offset(),
+            0
         );
     }
 
@@ -6439,11 +6537,26 @@ mod tests {
         assert_eq!(NativeInheritedStyle::default().text_underline_offset, 0);
         assert_eq!(
             parse_text_underline_offset("-4px"),
-            Some(MIN_NATIVE_TEXT_UNDERLINE_OFFSET)
+            Some(NativeTextUnderlineOffsetDeclaration::Value(
+                MIN_NATIVE_TEXT_UNDERLINE_OFFSET
+            ))
         );
-        assert_eq!(parse_text_underline_offset("-0PX"), Some(0));
-        assert_eq!(parse_text_underline_offset("0px"), Some(0));
-        assert_eq!(parse_text_underline_offset("4px"), Some(4));
+        assert_eq!(
+            parse_text_underline_offset("-0PX"),
+            Some(NativeTextUnderlineOffsetDeclaration::Value(0))
+        );
+        assert_eq!(
+            parse_text_underline_offset("0px"),
+            Some(NativeTextUnderlineOffsetDeclaration::Value(0))
+        );
+        assert_eq!(
+            parse_text_underline_offset("4px"),
+            Some(NativeTextUnderlineOffsetDeclaration::Value(4))
+        );
+        assert_eq!(
+            parse_text_underline_offset("ReVeRt-LaYeR"),
+            Some(NativeTextUnderlineOffsetDeclaration::RevertLayer)
+        );
         assert_eq!(parse_text_underline_offset("-5px"), None);
         assert_eq!(parse_text_underline_offset("5px"), None);
         assert_eq!(parse_text_underline_offset("+1px"), None);

@@ -1340,6 +1340,16 @@ markers; adapters passed at 5; reliability passed at 6 scenarios across 4
 targets; and Web IR passed at 8 fixtures/8 scenarios/11 categories. Remote CI
 remains pending because the checkout is local-only.
 
+The next dependency-ordered [native-engine-149](tasks/native-engine-149.md)
+contract is planned. It will reuse the same private bounded layer resolver for
+standalone, case-insensitive `revert-layer` on the existing local `display` and
+`visibility` owners, preserving the `display:auto`/visible fallbacks and the
+existing hidden-subtree, normal-flow, point-hit, display-list, capture, raster,
+and semantic/source-order owners. Inherited visibility, display decomposition,
+formatting-context parity, table/ruby/flow-root details, animation, multiple
+origins, and browser-wide CSS display/visibility conformance remain outside
+the planned boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

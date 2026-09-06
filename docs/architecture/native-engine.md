@@ -1007,6 +1007,15 @@ across 4 targets; TUI passed at 15 implementation help keys/63 documentation
 markers; adapters passed at 5; reliability passed at 6 scenarios across 4
 targets; and Web IR passed at 8 fixtures/8 scenarios/11 categories. Remote CI
 remains pending because the checkout is local-only.
+The next dependency-ordered 149 contract is planned in
+`docs/plan/tasks/native-engine-149.md`. It will reuse the same private bounded
+layer resolver for standalone, case-insensitive `revert-layer` on the existing
+local `display` and `visibility` owners, preserving the `display:auto`/visible
+fallbacks and the existing hidden-subtree, normal-flow, point-hit,
+display-list, capture, raster, and semantic/source-order owners. Inherited
+visibility, display decomposition, formatting-context parity, table/ruby/
+flow-root details, animation, multiple origins, and browser-wide CSS
+display/visibility conformance remain outside the planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

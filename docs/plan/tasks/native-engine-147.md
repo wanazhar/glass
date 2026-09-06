@@ -161,5 +161,11 @@ The completed slice must cover:
   dependencies.
 - Formatting and diff checks passed.
 
-Cleanup remains to be recorded after the exact focused target is inventoried
-and removed.
+- After all checks completed, no Cargo/Rust process or open handle referenced
+  the exact regenerable target. `/tmp/glass-147-focused` measured
+  5,312,073,728 bytes (8,962 files, 1,179 directories) and was removed with
+  bounded same-filesystem deletion; the exact path is absent.
+  `/home/ubuntu/work/glass/target` remained absent. `/tmp` availability
+  increased from 78,562,713,600 to 83,874,627,584 bytes, reclaiming
+  5,311,913,984 bytes. The complete semantic audit JSON remains at
+  `/tmp/glass-release-documentation-147.json` (181,388 bytes).

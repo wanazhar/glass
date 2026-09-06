@@ -154,3 +154,16 @@ Local certification completed:
   categories; and documentation coverage 563 Markdown files, 345 full-product
   MCP tools (100 browser-only), 17 examples, and 22 public modules.
 - Remote CI remains unclaimed because the checkout is local-only.
+
+## Cleanup
+
+After all code and documentation gates, the exact non-symlink target
+`/tmp/glass-149-focused` was inventoried at 6,730,055,680 bytes with 9,874
+files and 1,204 directories. No Cargo, rustc, rustdoc, or Clippy process and
+no open handle referenced it. It was removed with the bounded
+`find -P /tmp/glass-149-focused -xdev -depth -delete` operation and verified
+absent; the repository `target` directory also remained absent. Available
+space increased from 77,131,821,056 to 83,861,868,544 bytes, a
+6,730,047,488-byte filesystem delta. Documentation coverage passed immediately
+before this cleanup-only task evidence edit; the final static documentation
+pass follows this edit.

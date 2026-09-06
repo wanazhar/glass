@@ -987,6 +987,14 @@ border-radius conformance remain outside the boundary. Focused, full-native,
 affected-library, strict Clippy, formatting, and static documentation gates
 passed locally; exact evidence and cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
+The next dependency-ordered 148 contract is planned in
+`docs/plan/tasks/native-engine-148.md`. It will extend standalone,
+case-insensitive `revert-layer` to the existing bounded local 8-bit `opacity`
+owner, preserving the full-opacity fallback and the existing reduced-opacity
+display-list group, software compositing, layout, point-hit, capture, and
+semantic/source-order owners. Inherited opacity, stacking-context/blending
+parity, filters, animation, multiple origins, and browser-wide opacity
+conformance remain outside the planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

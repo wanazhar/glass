@@ -620,7 +620,6 @@ overflow, hit testing, and semantic/source order. The design is `04cc4a3e`,
 implementation is `299c93f9`, and local validation and cleanup evidence are
 recorded in the task file. Remote CI remains pending because the branch is
 local-only.
-
 The completed dependency-ordered [native-engine-082](tasks/native-engine-082.md)
 slice adds bounded `flex` shorthand expansion into the existing grow, shrink,
 and basis components. It covers `none`, `auto`, bounded integer factor forms,
@@ -1320,6 +1319,14 @@ boundary. Focused, full-native, affected-library, strict Clippy, formatting,
 and static documentation gates passed locally; exact evidence and cleanup are
 recorded in the task. Remote CI remains pending because the checkout is
 local-only.
+The next dependency-ordered [native-engine-148](tasks/native-engine-148.md)
+contract is planned. It will reuse the same private bounded layer resolver for
+standalone, case-insensitive `revert-layer` on the existing local 8-bit
+`opacity` owner, preserving the full-opacity fallback and the reduced-opacity
+display-list group, software compositing, layout, point-hit, capture, and
+semantic/source-order owners. Inherited opacity, stacking-context/blending
+parity, filters, animation, multiple origins, and browser-wide opacity
+conformance remain outside the planned boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

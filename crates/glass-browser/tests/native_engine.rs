@@ -5501,6 +5501,103 @@ fn native_direction_revert_layer_preserves_text_flex_and_artifact_owners() {
 }
 
 #[test]
+fn native_flex_direction_revert_layer_preserves_non_inherited_flex_owners() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #named { display:flex; width:20px; height:8px; flex-direction:row; align-items:flex-start; } #repeated { display:flex; width:20px; height:8px; flex-direction:column; align-items:flex-start; } #inline { display:flex; width:20px; height:12px; flex-direction:row; align-items:flex-start; } #parent { display:flex; width:20px; height:12px; flex-direction:column; align-items:flex-start; } #wrapped { display:flex; width:14px; height:8px; flex-direction:column; flex-wrap:wrap; align-items:flex-start; align-content:flex-start; } } @layer theme { #named { flex-direction:row-reverse; } #repeated { flex-direction:row; } #inline { flex-direction:column; } #wrapped { flex-direction:row; } } @layer top { #repeated { flex-direction:revert-layer; } } #named { flex-direction:revert-layer; } #repeated { flex-direction:revert-layer; } #fallback { display:flex; width:20px; height:8px; flex-direction:revert-layer; align-items:flex-start; }</style><div id='named'><div id='named-first' style='width:6px;height:8px;flex-shrink:0;background-color:red'>A</div><div id='named-second' style='width:8px;height:8px;flex-shrink:0;background-color:blue'>B</div></div><div id='repeated'><div id='repeated-first' style='width:6px;height:8px;flex-shrink:0;background-color:red'>C</div><div id='repeated-second' style='width:8px;height:8px;flex-shrink:0;background-color:blue'>D</div></div><div id='inline' style='flex-direction:REVERT-LAYER'><div id='inline-first' style='width:6px;height:6px;flex-shrink:0;background-color:red'>E</div><div id='inline-second' style='width:8px;height:6px;flex-shrink:0;background-color:blue'>F</div></div><div id='fallback'><div id='fallback-first' style='width:6px;height:8px;flex-shrink:0;background-color:red'>G</div><div id='fallback-second' style='width:8px;height:8px;flex-shrink:0;background-color:blue'>H</div></div><div id='parent'><div id='child' style='display:flex;width:20px;height:8px;flex-direction:revert-layer;align-items:flex-start'><div id='child-first' style='width:6px;height:8px;flex-shrink:0;background-color:red'>I</div><div id='child-second' style='width:8px;height:8px;flex-shrink:0;background-color:blue'>J</div></div></div><div id='wrapped'><div id='wrapped-first' style='width:8px;height:4px;flex-shrink:0;background-color:red'>K</div><div id='wrapped-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>L</div><div id='wrapped-third' style='width:8px;height:4px;flex-shrink:0;background-color:green'>M</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "flex-direction")
+    }));
+
+    let viewport = Viewport {
+        width: 64,
+        height: 256,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let box_for = |id: &str| {
+        let node = document.resolve_target(&format!("id={id}")).unwrap();
+        layout.box_for(node).unwrap()
+    };
+
+    // Unlayered rollback exposes the named theme candidate, while two
+    // rollback layers reach the lower named candidate. A local inline rollback
+    // falls through to the named column candidate.
+    let named = box_for("named");
+    assert_eq!(box_for("named-first").x, named.x + 14);
+    assert_eq!(box_for("named-second").x, named.x + 6);
+    let repeated = box_for("repeated");
+    assert_eq!(box_for("repeated-first").x, repeated.x);
+    assert_eq!(box_for("repeated-second").x, repeated.x + 6);
+    let inline = box_for("inline");
+    assert_eq!(box_for("inline-first").y, inline.y);
+    assert_eq!(box_for("inline-second").y, inline.y + 6);
+
+    // No concrete candidate leaves the non-inherited root fallback at row.
+    let fallback = box_for("fallback");
+    assert_eq!(box_for("fallback-first").x, fallback.x);
+    assert_eq!(box_for("fallback-second").x, fallback.x + 6);
+
+    // The parent is column, but a child with no local concrete flex-direction
+    // candidate still resolves its own non-inherited row fallback.
+    let child = box_for("child");
+    assert_eq!(box_for("child-first").x, child.x);
+    assert_eq!(box_for("child-second").x, child.x + 6);
+    assert_eq!(box_for("child-first").y, box_for("child-second").y);
+
+    // Rolling back from base column to theme row keeps source order while
+    // changing wrapped-line formation from horizontal columns to row lines.
+    let wrapped = box_for("wrapped");
+    assert_eq!(box_for("wrapped-first").x, wrapped.x);
+    assert_eq!(box_for("wrapped-second").x, wrapped.x);
+    assert_eq!(box_for("wrapped-third").x, wrapped.x);
+    assert_eq!(box_for("wrapped-second").y, box_for("wrapped-first").y + 4);
+    assert_eq!(box_for("wrapped-third").y, box_for("wrapped-first").y + 8);
+
+    let named_first = document.resolve_target("id=named-first").unwrap();
+    let named_second = document.resolve_target("id=named-second").unwrap();
+    let row_order = layout
+        .text_runs
+        .iter()
+        .filter_map(|run| {
+            if run.node_id == named_first {
+                Some("first")
+            } else if run.node_id == named_second {
+                Some("second")
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(row_order, vec!["first", "second"]);
+
+    let named_first_rect = box_for("named-first");
+    assert_eq!(
+        layout.hit_test(
+            i64::from(named_first_rect.x + 1),
+            i64::from(named_first_rect.y + 1),
+        ),
+        Ok(Some(named_first))
+    );
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == named_first && *rect == named_first_rect
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(named_first_rect.x + 1, named_first_rect.y + 1),
+        Some([255, 0, 0, 255])
+    );
+}
+
+#[test]
 fn native_flex_row_preserves_fixed_width_overflow_and_fallback_content() {
     let overflow = NativeDocument::parse(
         "<div id='row' style='display:flex;width:16px'><div id='first' style='width:12px;height:8px;flex-shrink:0'>A</div><div id='second' style='width:12px;height:8px;flex-shrink:0'>B</div></div>",

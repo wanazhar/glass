@@ -793,6 +793,11 @@ wrapped-line placement, source/semantic order, and shared artifact owners.
 Focused, full-native, affected-library, and strict affected-package local
 gates passed; exact test and cleanup evidence is recorded in the task. Remote
 CI remains pending because the checkout is local-only.
+The next dependency-ordered `native-engine-133` contract is planned in
+`docs/plan/tasks/native-engine-133.md`; it will extend the bounded rollback
+boundary to non-inherited `flex-direction` while retaining the local `row`
+fallback and existing row/column/wrapped flex owners. No implementation or
+validation claim is made for 133 yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

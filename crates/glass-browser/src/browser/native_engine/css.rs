@@ -3609,7 +3609,7 @@ fn parse_declarations_with_diagnostics(
         let value = value.strip_suffix("!important").map_or(value, str::trim);
         let property_name = property.to_ascii_lowercase();
         let supported = match property_name.as_str() {
-            "display" => parse_display_declaration(value).is_some(),
+            "display" => supports_display_declaration(value),
             "visibility" => parse_visibility_declaration(value).is_some(),
             "opacity" => parse_opacity_declaration(value).is_some(),
             "white-space" => parse_white_space_declaration(value).is_some(),
@@ -4507,6 +4507,25 @@ fn parse_display(value: &str) -> Option<DisplayValue> {
 
 fn parse_display_declaration(value: &str) -> Option<LocalCascadeDeclaration<DisplayValue>> {
     parse_local_cascade_declaration(value, parse_display)
+}
+
+fn supports_display_declaration(value: &str) -> bool {
+    let value = value.trim();
+    value.eq_ignore_ascii_case("revert-layer")
+        || matches!(
+            value.to_ascii_lowercase().as_str(),
+            "none"
+                | "block"
+                | "flow-root"
+                | "list-item"
+                | "table"
+                | "inline"
+                | "inline-block"
+                | "inline-flex"
+                | "inline-grid"
+                | "flex"
+                | "contents"
+        )
 }
 
 fn parse_dimension(value: &str) -> Option<u32> {

@@ -1162,13 +1162,14 @@ fallback, finite `flex-flow` expansion, and the existing wrapped-flex/artifact
 owners. Focused, full-native, affected-library, and strict affected-package
 local gates passed; exact test and cleanup evidence is recorded in the task.
 Remote CI remains pending because the checkout is local-only.
-The next dependency-ordered [native-engine-134](tasks/native-engine-134.md)
-contract is planned. It will extend the bounded private layer resolver to the
-non-inherited `flex-wrap`, `justify-content`, `align-items`, `align-self`, and
-`align-content` owners while preserving their native fallbacks, finite
+The dependency-ordered [native-engine-134](tasks/native-engine-134.md)
+implementation is complete in `f2e20121`. It extends the bounded private
+layer resolver to non-inherited `flex-wrap`, `justify-content`, `align-items`,
+`align-self`, and `align-content`, preserving their native fallbacks, finite
 `flex-flow`/`place-content` expansion, and existing wrapped-flex/artifact
-consumers. No implementation or validation claim exists until its contract is
-executed.
+consumers. Focused, full-native, affected-library, and strict affected-package
+local gates passed; exact test and cleanup evidence is recorded in the task.
+Remote CI remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

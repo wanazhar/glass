@@ -405,6 +405,11 @@ bounded case-insensitive 15-layer/unlayered non-inherited
 `flex-direction: revert-layer` rollback preserving finite row/row-reverse/
 column/column-reverse placement, finite `flex-flow` expansion, local `row`
 fallback, wrapped-line formation, source order, and shared artifacts,
+bounded case-insensitive 15-layer/unlayered non-inherited
+`flex-wrap`, `justify-content`, `align-items`, `align-self`, and
+`align-content` `revert-layer` rollback preserving native fallbacks, finite
+`flex-flow`/`place-content` expansion, wrapped-line, item, and line
+cross-axis artifact owners,
 bounded inherited `direction:ltr|rtl` with case-insensitive 15-layer/unlayered
 `direction: revert-layer` rollback preserving logical text and flex physical
 mapping, wrapped-line placement, source/semantic order, and shared artifacts,

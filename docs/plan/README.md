@@ -1048,12 +1048,15 @@ security, formatting, and static local certification passed; exact evidence
 and cleanup are recorded in the task. Remote CI remains pending because the
 checkout is local-only.
 
-The next dependency-ordered [native-engine-123](tasks/native-engine-123.md)
-boundary is designed to reuse the 122 layer registry and private rollback
-state for inherited `text-decoration-skip-ink: revert-layer`. It preserves the
-finite `Auto|None` paint value, existing glyph-intersection replay, and the
-unlayered/inline layer boundary; general CSS-wide keyword machinery, multiple
-origins, layer statements, and unsupported values remain outside the slice.
+The dependency-ordered [native-engine-123](tasks/native-engine-123.md)
+implementation is complete at `af644112`. It reuses the 122 layer registry
+and private rollback state for inherited `text-decoration-skip-ink:
+revert-layer`, preserving the finite `Auto|None` paint value,
+glyph-intersection replay, and the unlayered/inline layer boundary. Parser,
+cascade, display-list, and decoded-raster regressions passed; general CSS-wide
+keyword machinery, multiple origins, layer statements, and unsupported values
+remain outside the slice. Exact local gate and cleanup evidence is recorded in
+the task; remote CI remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

@@ -1,7 +1,7 @@
 ---
 id: native-engine-139
 scope: glass-browser/native-engine/cascade-layers-inherited-text-presentation-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-138]
 ---
 
@@ -19,12 +19,11 @@ overflow, capture, hit-test, and semantic/source-order contracts.
 ## Context
 
 The native engine already accepts finite concrete values for these four
-inherited properties and carries them through the DOM style walk. Their
-stylesheet and inline declarations currently keep only one winning concrete
-candidate, so a higher-priority rollback declaration cannot expose a lower
-candidate or the inherited parent value. This slice adds only private
-declaration/candidate state and reuses the existing bounded first-appearance
-15-layer registry.
+inherited properties and carries them through the DOM style walk. This slice
+replaces the single-winner declaration state for these owners with private
+per-property candidates so a higher-priority rollback declaration can expose a
+lower candidate or the inherited parent value. It reuses the existing bounded
+first-appearance 15-layer registry.
 
 Normative references:
 
@@ -41,6 +40,16 @@ Read with:
 - `docs/plan/analysis/native-engine.md`
 - `docs/plan/README.md`
 - `docs/plan/tasks/native-engine-138.md`
+
+## Implementation
+
+Implemented in `0114659d56fadb87e41fb31b5dff5842a4e72537` with the design
+checkpoint `16589ae4e1fb0febde17879de54519d583aeeb6f`. The implementation adds
+one private generic declaration wrapper and four fixed candidate arrays, keeps
+the public computed values unchanged, and routes the existing transform,
+wrapping, display-list, raster, overflow, capture, hit-test, and
+semantic/source-order owners through the resolved finite values. No dependency,
+feature, public schema, or crate-boundary changes were made.
 
 ## Contract
 
@@ -100,9 +109,9 @@ origins, animation, script, grid, writing modes, or browser-wide CSS parity.
 - synchronized native-engine architecture, analysis, plan, README, and issue
   records
 
-## Verification
+## Verification evidence
 
-The focused gate must cover:
+The completed gate covered:
 
 - standalone case-insensitive parsing and typed rejection of other CSS-wide,
   mixed, malformed, and unsupported concrete forms for all four properties;
@@ -113,7 +122,25 @@ The focused gate must cover:
   overflow/capture, point hit testing, and unchanged semantic/source order;
 - absence of false unsupported-value diagnostics and no public rollback keyword
   leakage; and
-- focused `glass-browser` check, targeted behavioral tests, full native
-  integration/library tests, strict affected-package Clippy, formatting, and
-  final static documentation gates. Remote CI remains unclaimed until an
-  explicitly authorized push.
+- focused `glass-browser` check passed;
+- parser and cascade unit tests passed (1/1 each), and the integrated consumer
+  regression passed (1/1, 175 filtered);
+- full native integration passed (176/176);
+- the native-feature `glass-browser` library passed (942 passed, 1 ignored);
+- strict affected-package Clippy passed with `-D warnings`;
+- formatting and final static documentation gates passed: 553 Markdown
+  documents, 83 current documents, 57 previous-version hits, 649 semantic
+  audit hits, and zero current-claim failures; coverage reported 345
+  full-product MCP tools (100 browser-only), 17 examples, and 22 public
+  modules; depth reported 93 current guides and 19 substantive contracts;
+  parity reported 14 capabilities across 4 targets; TUI reported 15
+  implementation keys and 63 documentation markers; adapters reported 5;
+  reliability reported 6 scenarios across 4 targets; and Web IR reported
+  8 fixtures, 8 scenarios, and 11 categories;
+- the temporary `/tmp/glass-139-focused` target measured 5,850,572,751 logical
+  bytes across 6,490 files and 887 directories, with no open handles or
+  active Cargo/rustc/Clippy consumers; the exact target and 4,742-byte audit
+  directory were removed with bounded `find -P ... -xdev -depth -delete`,
+  reclaiming 5,870,452,736 bytes of measured `/tmp` free space; and
+- remote CI remains unclaimed because the checkout is local-only and no push
+  was authorized.

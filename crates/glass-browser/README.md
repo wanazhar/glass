@@ -121,6 +121,9 @@ owner, bounded
   and finite shorthand expansion, plus bounded case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components,
+  bounded case-insensitive 15-layer/unlayered inherited `revert-layer` rollback
+  for `text-transform`, `font-weight`, `font-style`, and `word-break` with
+  finite parent/root fallbacks,
   bounded case-insensitive 15-layer/unlayered rollback for non-inherited
   `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
   and `flex-direction` owners with their native fallbacks,
@@ -216,6 +219,10 @@ precedence. The same private component-candidate owner accepts standalone
 case-insensitive `gap:revert-layer`, `row-gap:revert-layer`, and
 `column-gap:revert-layer`, preserving finite pixel parsing, shorthand expansion,
 independent row/column fallback, and same-block declaration order.
+The inherited text-presentation surface also accepts bounded case-insensitive
+15-layer/unlayered `revert-layer` for `text-transform`, `font-weight`,
+`font-style`, and `word-break`, resolving through finite parent/root fallbacks
+without changing the existing fixed-cell layout, wrapping, or raster owners.
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -227,7 +234,7 @@ independent row/column fallback, and same-block declaration order.
 |---|---:|---|
 | `visual-compare` | no | Explicit PNG comparison helpers |
 | `fuzzing` | no | Test-only fuzz hooks |
-| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded physical box-edge layout/point input, root horizontal and vertical viewport scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips, bounded local opacity subtree groups, inherited physical `text-align:left|center|right` fixed-cell line placement, bounded functional `rgba(R, G, B, A)` alpha colors for background/border/text paint, bounded inherited fixed-cell `text-decoration:none|underline|overline|line-through` paint including distinct shorthand combinations, bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout, bounded non-negative fixed-pixel first-line `text-indent` for block flow, bounded inherited non-negative fixed-pixel `word-spacing` across collapsed and supported preformatted ASCII spaces, bounded inherited non-negative fixed-pixel `letter-spacing` after every rendered fixed-cell character in each emitted fragment composed with word spacing, bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster presentation with unchanged advances and clipped one-pixel bold dilation, bounded inherited `font-style:normal|italic` fixed-cell raster presentation with unchanged advances and clipped row-dependent italic shear, bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping, bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line direct text, bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for fixed-cell inline and inline-block line items, bounded percent-decoded exact visible-id or legacy `<a name>` fragment scrolling/history restoration, simple `#:~:text=start[,end]` matching plus exact adjacent prefix/suffix affixes within the first visible non-truncated text run, fragment-only, fixture-relative, and absolute local link activation, bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis placement using explicit content height or the auto row's maximum item outer height, and Rust-only display/raster artifacts |
+| `native-engine` | no | Experimental Glass-owned fixture/data-URL browser backend with bounded physical box-edge layout/point input, root horizontal and vertical viewport scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips, bounded local opacity subtree groups, inherited physical `text-align:left|center|right` fixed-cell line placement, bounded functional `rgba(R, G, B, A)` alpha colors for background/border/text paint, bounded inherited fixed-cell `text-decoration:none|underline|overline|line-through` paint including distinct shorthand combinations, bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout plus bounded case-insensitive 15-layer/unlayered `revert-layer` rollback for inherited `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks, bounded non-negative fixed-pixel first-line `text-indent` for block flow, bounded inherited non-negative fixed-pixel `word-spacing` across collapsed and supported preformatted ASCII spaces, bounded inherited non-negative fixed-pixel `letter-spacing` after every rendered fixed-cell character in each emitted fragment composed with word spacing, bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster presentation with unchanged advances and clipped one-pixel bold dilation, bounded inherited `font-style:normal|italic` fixed-cell raster presentation with unchanged advances and clipped row-dependent italic shear, bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping, bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line direct text, bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for fixed-cell inline and inline-block line items, bounded percent-decoded exact visible-id or legacy `<a name>` fragment scrolling/history restoration, simple `#:~:text=start[,end]` matching plus exact adjacent prefix/suffix affixes within the first visible non-truncated text run, fragment-only, fixture-relative, and absolute local link activation, bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis placement using explicit content height or the auto row's maximum item outer height, and Rust-only display/raster artifacts |
 
 ## MCP
 
@@ -267,6 +274,9 @@ agreement reports exact schema and capability status.
   `place-content:revert-layer` shorthand rollback,
   plus standalone case-insensitive `gap:revert-layer`, `row-gap:revert-layer`,
   and `column-gap:revert-layer` rollback with finite pixel components,
+  plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
+  rollback for `text-transform`, `font-weight`, `font-style`, and `word-break`
+  with finite parent/root fallbacks,
   and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary

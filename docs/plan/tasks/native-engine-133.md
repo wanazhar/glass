@@ -1,7 +1,7 @@
 ---
 id: native-engine-133
 scope: glass-browser/native-engine/cascade-layers-flex-direction-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-132]
 ---
 
@@ -80,6 +80,48 @@ The slice remains a horizontal-tb, fixed-cell, bounded local-content
 contract. It changes which existing flex-direction owner wins; it does not
 add intrinsic sizing, percentage sizing, grid, general event behavior, or
 browser parity.
+
+## Implementation and local result
+
+The implementation is complete in `56944c83` (`feat(native-engine): support
+flex direction rollback`). It adds private `FlexDirectionDeclaration` state,
+stores stylesheet and inline candidates in the existing bounded 15-layer array,
+resolves repeated rollback before the non-inherited `FlexDirectionValue::Row`
+fallback, and keeps finite `flex-flow` expansion concrete. The supported-value
+diagnostic classifier and declaration parser share the same standalone,
+case-insensitive `revert-layer` parser, so accepted forms do not produce a
+false unsupported-value diagnostic.
+
+The focused and affected-package gates passed:
+
+- `cargo check -p glass-browser --features native-engine --test native_engine
+  --locked` passed in the fresh 133 target.
+- The `flex_direction` library filter passed 3/3 parser/cascade tests.
+- The new non-inherited flex-direction integration regression passed 1/1.
+- Full native integration passed 170/170 in 3.11s.
+- The affected feature-enabled `glass-browser` library passed 934 tests with
+  1 ignored and 0 failures using `RUST_MIN_STACK=33554432`.
+- Warnings-denied affected-package Clippy passed; formatting and diff checks
+  passed.
+
+The integration fixture verifies named-layer ordering, repeated rollback,
+unlayered and inline precedence, finite `flex-flow` interaction, non-inherited
+root-row fallback, descendant isolation, row and column placement, wrapped
+line formation, source order, hit testing, display-list geometry, and decoded
+raster output. A first assertion used an offset from an already-positioned
+child rectangle and was corrected to an interior point; no production behavior
+changed. No public schema, dependency, feature default, or crate boundary
+changed. Full two-crate, strict, fuzz/security, source-built documentation
+coverage, and remote-CI gates remain issue-level gates. No remote CI, push,
+release, tag, registry publication, or browser-parity claim is made.
+
+The exact regenerable `/tmp/glass-133-focused` target measured
+3,052,916,399 logical bytes across 4,253 files and 658 directories. Process
+and `/proc` descriptor checks found no consumer after validation; the target
+was removed with bounded `find -P ... -xdev -depth -delete`. No repository
+target, source, fixture, durable data, or unrelated temporary path was removed.
+Available filesystem bytes increased from 81,027,399,680 to
+84,093,984,768, a measured delta of 3,066,585,088 bytes.
 
 ## Tradeoffs
 

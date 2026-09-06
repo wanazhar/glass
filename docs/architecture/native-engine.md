@@ -793,11 +793,14 @@ wrapped-line placement, source/semantic order, and shared artifact owners.
 Focused, full-native, affected-library, and strict affected-package local
 gates passed; exact test and cleanup evidence is recorded in the task. Remote
 CI remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-133` contract is planned in
-`docs/plan/tasks/native-engine-133.md`; it will extend the bounded rollback
-boundary to non-inherited `flex-direction` while retaining the local `row`
-fallback and existing row/column/wrapped flex owners. No implementation or
-validation claim is made for 133 yet.
+The dependency-ordered 133 implementation is complete in `56944c83` and is
+recorded in `docs/plan/tasks/native-engine-133.md`. It extends the bounded
+rollback boundary to non-inherited `flex-direction: revert-layer`, retaining
+the finite row/row-reverse/column/column-reverse values, local `row` fallback,
+finite `flex-flow` expansion, and existing row/column/wrapped flex owners.
+Focused, full-native, affected-library, and strict affected-package local
+gates passed; exact test and cleanup evidence is recorded in the task. Remote
+CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1721,6 +1724,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   `direction`, with private declaration state, finite `ltr|rtl` fallback,
   unchanged logical text/flex/wrapped-line mapping, and preserved
   source/semantic order and shared artifacts.
+- bounded 15-layer/unlayered `revert-layer` rollback for non-inherited
+  `flex-direction`, with private declaration state, finite row/row-reverse/
+  column/column-reverse values, local row fallback, finite `flex-flow`
+  expansion, and preserved flex/artifact owners.
 - bounded `rgba(R, G, B, A)` functional alpha parsing for background, border,
   and text colors, with shared fixed-point quantization, display-list color
   ownership, and integer source-over replay.

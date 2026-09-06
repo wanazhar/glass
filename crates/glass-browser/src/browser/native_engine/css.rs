@@ -487,6 +487,30 @@ pub(crate) enum FlexBasisValue {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NativeOrderValue(i32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlexItemOrderDeclaration {
+    Value(NativeOrderValue),
+    RevertLayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlexGrowDeclaration {
+    Value(u32),
+    RevertLayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlexShrinkDeclaration {
+    Value(u32),
+    RevertLayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlexBasisDeclaration {
+    Value(FlexBasisValue),
+    RevertLayer,
+}
+
 impl NativeOrderValue {
     pub(crate) const fn value(self) -> i32 {
         self.0
@@ -1146,10 +1170,14 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut flex_wrap: [Option<CascadeValue<FlexWrapDeclaration>>; MAX_NATIVE_CASCADE_LAYERS] =
             [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut flex_item_order = None;
-        let mut flex_grow = None;
-        let mut flex_shrink = None;
-        let mut flex_basis = None;
+        let mut flex_item_order: [Option<CascadeValue<FlexItemOrderDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut flex_grow: [Option<CascadeValue<FlexGrowDeclaration>>; MAX_NATIVE_CASCADE_LAYERS] =
+            [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut flex_shrink: [Option<CascadeValue<FlexShrinkDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut flex_basis: [Option<CascadeValue<FlexBasisDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration: [Option<CascadeValue<NativeTextDecorationDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration_style: [Option<CascadeValue<NativeTextDecorationStyleDeclaration>>;
@@ -1537,10 +1565,10 @@ impl NativeStylesheet {
                     rule.selector.specificity,
                     rule.order,
                     false,
-                    flex_item_order,
+                    flex_item_order[layer],
                 )
             {
-                flex_item_order = Some(CascadeValue {
+                flex_item_order[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1548,9 +1576,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.flex_grow
-                && wins(rule.selector.specificity, rule.order, false, flex_grow)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    flex_grow[layer],
+                )
             {
-                flex_grow = Some(CascadeValue {
+                flex_grow[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1558,9 +1591,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.flex_shrink
-                && wins(rule.selector.specificity, rule.order, false, flex_shrink)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    flex_shrink[layer],
+                )
             {
-                flex_shrink = Some(CascadeValue {
+                flex_shrink[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1568,9 +1606,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.flex_basis
-                && wins(rule.selector.specificity, rule.order, false, flex_basis)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    flex_basis[layer],
+                )
             {
-                flex_basis = Some(CascadeValue {
+                flex_basis[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -2090,9 +2133,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.order
-                && wins(u16::MAX, usize::MAX, true, flex_item_order)
+                && wins(u16::MAX, usize::MAX, true, flex_item_order[layer])
             {
-                flex_item_order = Some(CascadeValue {
+                flex_item_order[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2100,9 +2143,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.flex_grow
-                && wins(u16::MAX, usize::MAX, true, flex_grow)
+                && wins(u16::MAX, usize::MAX, true, flex_grow[layer])
             {
-                flex_grow = Some(CascadeValue {
+                flex_grow[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2110,9 +2153,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.flex_shrink
-                && wins(u16::MAX, usize::MAX, true, flex_shrink)
+                && wins(u16::MAX, usize::MAX, true, flex_shrink[layer])
             {
-                flex_shrink = Some(CascadeValue {
+                flex_shrink[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2120,9 +2163,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.flex_basis
-                && wins(u16::MAX, usize::MAX, true, flex_basis)
+                && wins(u16::MAX, usize::MAX, true, flex_basis[layer])
             {
-                flex_basis = Some(CascadeValue {
+                flex_basis[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2348,11 +2391,10 @@ impl NativeStylesheet {
             flex_direction: resolve_flex_direction(flex_direction),
             direction: resolve_direction(direction, inherited.direction),
             flex_wrap: resolve_flex_wrap(flex_wrap),
-            flex_item_order: flex_item_order
-                .map_or(NativeOrderValue::default(), |value| value.value),
-            flex_grow: flex_grow.map_or(0, |value| value.value),
-            flex_shrink: flex_shrink.map_or(1, |value| value.value),
-            flex_basis: flex_basis.map_or(FlexBasisValue::Auto, |value| value.value),
+            flex_item_order: resolve_flex_item_order(flex_item_order),
+            flex_grow: resolve_flex_grow(flex_grow),
+            flex_shrink: resolve_flex_shrink(flex_shrink),
+            flex_basis: resolve_flex_basis(flex_basis),
             text_decoration: resolve_text_decoration(text_decoration, inherited.text_decoration),
             text_decoration_style: resolve_text_decoration_style(
                 text_decoration_style,
@@ -2563,6 +2605,48 @@ fn resolve_flex_wrap(
         |declaration| match declaration {
             FlexWrapDeclaration::Value(value) => Some(value),
             FlexWrapDeclaration::RevertLayer => None,
+        },
+    )
+}
+
+fn resolve_flex_item_order(
+    candidates: [Option<CascadeValue<FlexItemOrderDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> NativeOrderValue {
+    resolve_alignment_candidates(candidates, NativeOrderValue::default(), |declaration| {
+        match declaration {
+            FlexItemOrderDeclaration::Value(value) => Some(value),
+            FlexItemOrderDeclaration::RevertLayer => None,
+        }
+    })
+}
+
+fn resolve_flex_grow(
+    candidates: [Option<CascadeValue<FlexGrowDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> u32 {
+    resolve_alignment_candidates(candidates, 0, |declaration| match declaration {
+        FlexGrowDeclaration::Value(value) => Some(value),
+        FlexGrowDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_flex_shrink(
+    candidates: [Option<CascadeValue<FlexShrinkDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> u32 {
+    resolve_alignment_candidates(candidates, 1, |declaration| match declaration {
+        FlexShrinkDeclaration::Value(value) => Some(value),
+        FlexShrinkDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_flex_basis(
+    candidates: [Option<CascadeValue<FlexBasisDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> FlexBasisValue {
+    resolve_alignment_candidates(
+        candidates,
+        FlexBasisValue::Auto,
+        |declaration| match declaration {
+            FlexBasisDeclaration::Value(value) => Some(value),
+            FlexBasisDeclaration::RevertLayer => None,
         },
     )
 }
@@ -3024,10 +3108,10 @@ struct NativeDeclarations {
     flex_direction: Option<FlexDirectionDeclaration>,
     direction: Option<DirectionDeclaration>,
     flex_wrap: Option<FlexWrapDeclaration>,
-    order: Option<NativeOrderValue>,
-    flex_grow: Option<u32>,
-    flex_shrink: Option<u32>,
-    flex_basis: Option<FlexBasisValue>,
+    order: Option<FlexItemOrderDeclaration>,
+    flex_grow: Option<FlexGrowDeclaration>,
+    flex_shrink: Option<FlexShrinkDeclaration>,
+    flex_basis: Option<FlexBasisDeclaration>,
     text_decoration: Option<NativeTextDecorationDeclaration>,
     text_decoration_style: Option<NativeTextDecorationStyleDeclaration>,
     text_decoration_skip_ink: Option<NativeTextDecorationSkipInkDeclaration>,
@@ -3533,11 +3617,11 @@ fn parse_declarations_with_diagnostics(
             "direction" => parse_direction_declaration(value).is_some(),
             "flex-wrap" => parse_flex_wrap_declaration(value).is_some(),
             "flex-flow" => parse_flex_flow(value).is_some(),
-            "order" => parse_flex_item_order(value).is_some(),
+            "order" => parse_flex_item_order_declaration(value).is_some(),
             "flex" => parse_flex_shorthand(value).is_some(),
-            "flex-grow" => parse_flex_grow(value).is_some(),
-            "flex-shrink" => parse_flex_shrink(value).is_some(),
-            "flex-basis" => parse_flex_basis(value).is_some(),
+            "flex-grow" => parse_flex_grow_declaration(value).is_some(),
+            "flex-shrink" => parse_flex_shrink_declaration(value).is_some(),
+            "flex-basis" => parse_flex_basis_declaration(value).is_some(),
             "text-decoration" | "text-decoration-line" => {
                 parse_text_decoration_declaration(value).is_some()
             }
@@ -3779,27 +3863,29 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "order" => {
-                declarations.order = parse_flex_item_order(value);
+                if let Some(parsed) = parse_flex_item_order_declaration(value) {
+                    declarations.order = Some(parsed);
+                }
             }
             "flex" => {
                 if let Some((grow, shrink, basis)) = parse_flex_shorthand(value) {
-                    declarations.flex_grow = Some(grow);
-                    declarations.flex_shrink = Some(shrink);
-                    declarations.flex_basis = Some(basis);
+                    declarations.flex_grow = Some(FlexGrowDeclaration::Value(grow));
+                    declarations.flex_shrink = Some(FlexShrinkDeclaration::Value(shrink));
+                    declarations.flex_basis = Some(FlexBasisDeclaration::Value(basis));
                 }
             }
             "flex-grow" => {
-                if let Some(parsed) = parse_flex_grow(value) {
+                if let Some(parsed) = parse_flex_grow_declaration(value) {
                     declarations.flex_grow = Some(parsed);
                 }
             }
             "flex-shrink" => {
-                if let Some(parsed) = parse_flex_shrink(value) {
+                if let Some(parsed) = parse_flex_shrink_declaration(value) {
                     declarations.flex_shrink = Some(parsed);
                 }
             }
             "flex-basis" => {
-                if let Some(parsed) = parse_flex_basis(value) {
+                if let Some(parsed) = parse_flex_basis_declaration(value) {
                     declarations.flex_basis = Some(parsed);
                 }
             }
@@ -4669,6 +4755,14 @@ fn parse_flex_item_order(value: &str) -> Option<NativeOrderValue> {
         .then_some(NativeOrderValue(parsed))
 }
 
+fn parse_flex_item_order_declaration(value: &str) -> Option<FlexItemOrderDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(FlexItemOrderDeclaration::RevertLayer)
+    } else {
+        parse_flex_item_order(value).map(FlexItemOrderDeclaration::Value)
+    }
+}
+
 fn parse_flex_grow(value: &str) -> Option<u32> {
     let value = value.trim();
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -4678,6 +4772,14 @@ fn parse_flex_grow(value: &str) -> Option<u32> {
     (0..=MAX_NATIVE_FLEX_GROW)
         .contains(&parsed)
         .then_some(parsed)
+}
+
+fn parse_flex_grow_declaration(value: &str) -> Option<FlexGrowDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(FlexGrowDeclaration::RevertLayer)
+    } else {
+        parse_flex_grow(value).map(FlexGrowDeclaration::Value)
+    }
 }
 
 fn parse_flex_shrink(value: &str) -> Option<u32> {
@@ -4691,12 +4793,28 @@ fn parse_flex_shrink(value: &str) -> Option<u32> {
         .then_some(parsed)
 }
 
+fn parse_flex_shrink_declaration(value: &str) -> Option<FlexShrinkDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(FlexShrinkDeclaration::RevertLayer)
+    } else {
+        parse_flex_shrink(value).map(FlexShrinkDeclaration::Value)
+    }
+}
+
 fn parse_flex_basis(value: &str) -> Option<FlexBasisValue> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("auto") {
         return Some(FlexBasisValue::Auto);
     }
     parse_dimension(value).map(FlexBasisValue::Length)
+}
+
+fn parse_flex_basis_declaration(value: &str) -> Option<FlexBasisDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(FlexBasisDeclaration::RevertLayer)
+    } else {
+        parse_flex_basis(value).map(FlexBasisDeclaration::Value)
+    }
 }
 
 fn parse_flex_shorthand(value: &str) -> Option<(u32, u32, FlexBasisValue)> {
@@ -5176,10 +5294,19 @@ mod tests {
             declarations.flex_wrap,
             Some(FlexWrapDeclaration::Value(FlexWrapValue::WrapReverse))
         );
-        assert_eq!(declarations.order, Some(NativeOrderValue(-12)));
-        assert_eq!(declarations.flex_grow, Some(2));
-        assert_eq!(declarations.flex_shrink, Some(3));
-        assert_eq!(declarations.flex_basis, Some(FlexBasisValue::Length(40)));
+        assert_eq!(
+            declarations.order,
+            Some(FlexItemOrderDeclaration::Value(NativeOrderValue(-12)))
+        );
+        assert_eq!(declarations.flex_grow, Some(FlexGrowDeclaration::Value(2)));
+        assert_eq!(
+            declarations.flex_shrink,
+            Some(FlexShrinkDeclaration::Value(3))
+        );
+        assert_eq!(
+            declarations.flex_basis,
+            Some(FlexBasisDeclaration::Value(FlexBasisValue::Length(40)))
+        );
         assert_eq!(
             declarations.text_decoration,
             Some(NativeTextDecorationDeclaration::Value(
@@ -6191,7 +6318,7 @@ mod tests {
         assert_eq!(parse_flex_basis("20000px"), None);
         assert_eq!(
             parse_declarations("flex-basis: 12px; flex-basis: 1.5px").flex_basis,
-            Some(FlexBasisValue::Length(12))
+            Some(FlexBasisDeclaration::Value(FlexBasisValue::Length(12)))
         );
     }
 
@@ -6241,9 +6368,9 @@ mod tests {
         assert_eq!(
             parse_declarations("flex: 2 3 12px; flex-grow: 4; flex-basis: auto"),
             NativeDeclarations {
-                flex_grow: Some(4),
-                flex_shrink: Some(3),
-                flex_basis: Some(FlexBasisValue::Auto),
+                flex_grow: Some(FlexGrowDeclaration::Value(4)),
+                flex_shrink: Some(FlexShrinkDeclaration::Value(3)),
+                flex_basis: Some(FlexBasisDeclaration::Value(FlexBasisValue::Auto)),
                 ..NativeDeclarations::default()
             }
         );
@@ -6717,6 +6844,95 @@ mod tests {
         assert_eq!(parse_flex_item_order("+ 1"), None);
         assert_eq!(parse_flex_item_order("normal"), None);
         assert_eq!(parse_flex_item_order("1px"), None);
+    }
+
+    #[test]
+    fn flex_item_declaration_parsers_accept_only_standalone_case_insensitive_revert_layer() {
+        assert_eq!(
+            parse_flex_item_order_declaration("ReVeRt-LaYeR"),
+            Some(FlexItemOrderDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_flex_item_order_declaration("-12"),
+            Some(FlexItemOrderDeclaration::Value(NativeOrderValue(-12)))
+        );
+        assert_eq!(
+            parse_flex_grow_declaration(" REVERT-LAYER "),
+            Some(FlexGrowDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_flex_grow_declaration("2"),
+            Some(FlexGrowDeclaration::Value(2))
+        );
+        assert_eq!(
+            parse_flex_shrink_declaration("revert-LAYER"),
+            Some(FlexShrinkDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_flex_shrink_declaration("3"),
+            Some(FlexShrinkDeclaration::Value(3))
+        );
+        assert_eq!(
+            parse_flex_basis_declaration("REVERT-LAYER"),
+            Some(FlexBasisDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_flex_basis_declaration("12px"),
+            Some(FlexBasisDeclaration::Value(FlexBasisValue::Length(12)))
+        );
+
+        assert_eq!(parse_flex_item_order_declaration("inherit"), None);
+        assert_eq!(parse_flex_grow_declaration("initial"), None);
+        assert_eq!(parse_flex_shrink_declaration("revert"), None);
+        assert_eq!(parse_flex_basis_declaration("unset"), None);
+        assert_eq!(parse_flex_item_order_declaration("revert-layer -1"), None);
+        assert_eq!(parse_flex_grow_declaration("1 revert-layer"), None);
+        assert_eq!(parse_flex_shrink_declaration("1.5"), None);
+        assert_eq!(parse_flex_basis_declaration("50%"), None);
+    }
+
+    #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_flex_item_order_and_sizing_candidates() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { order: -1; flex-grow: 1; flex-shrink: 2; flex-basis: 4px; } #rollback { order: -2; flex-grow: 2; flex-shrink: 3; flex-basis: 6px; } #repeated { order: -3; flex-grow: 3; flex-shrink: 4; flex-basis: 8px; } #unlayered { order: -4; flex-grow: 4; flex-shrink: 5; flex-basis: 10px; } #inline { order: -5; flex-grow: 5; flex-shrink: 6; flex-basis: 12px; } #fallback { order: revert-layer; flex-grow: revert-layer; flex-shrink: revert-layer; flex-basis: revert-layer; } } @layer theme { .named { order: 1; flex-grow: 11; flex-shrink: 12; flex-basis: 14px; } #rollback { order: revert-layer; flex-grow: revert-layer; flex-shrink: revert-layer; flex-basis: revert-layer; } #repeated { order: revert-layer; flex-grow: revert-layer; flex-shrink: revert-layer; flex-basis: revert-layer; } #unlayered { order: 2; flex-grow: 13; flex-shrink: 14; flex-basis: 16px; } #inline { order: 3; flex-grow: 15; flex-shrink: 16; flex-basis: 18px; } } @layer top { #repeated { order: revert-layer; flex-grow: revert-layer; flex-shrink: revert-layer; flex-basis: revert-layer; } } #named { order: revert-layer; flex-grow: revert-layer; flex-shrink: revert-layer; flex-basis: revert-layer; } #unlayered { order: revert-layer; flex-grow: revert-layer; flex-shrink: revert-layer; flex-basis: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named' class='named'>Named</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let unlayered = node("<div id='unlayered'>Unlayered</div>");
+        let inline = node(
+            "<div id='inline' style='order:revert-layer;flex-grow:revert-layer;flex-shrink:revert-layer;flex-basis:revert-layer'>Inline</div>",
+        );
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let parent = node(
+            "<div id='parent' style='order:7;flex-grow:7;flex-shrink:7;flex-basis:20px'><span id='child'>Child</span></div>",
+        );
+        let child = node("<span id='child'>Child</span>");
+
+        let assert_values =
+            |element: &NativeNode, order: i32, grow: u32, shrink: u32, basis: FlexBasisValue| {
+                let style = stylesheet.computed_for(element);
+                assert_eq!(style.flex_item_order(), NativeOrderValue(order));
+                assert_eq!(style.flex_grow(), grow);
+                assert_eq!(style.flex_shrink(), shrink);
+                assert_eq!(style.flex_basis(), basis);
+            };
+
+        assert_values(&named, 1, 11, 12, FlexBasisValue::Length(14));
+        assert_values(&rollback, -2, 2, 3, FlexBasisValue::Length(6));
+        assert_values(&repeated, -3, 3, 4, FlexBasisValue::Length(8));
+        assert_values(&unlayered, 2, 13, 14, FlexBasisValue::Length(16));
+        assert_values(&inline, 3, 15, 16, FlexBasisValue::Length(18));
+        assert_values(&fallback, 0, 0, 1, FlexBasisValue::Auto);
+
+        let parent_style = stylesheet.computed_for(&parent);
+        assert_eq!(parent_style.flex_item_order(), NativeOrderValue(7));
+        assert_eq!(parent_style.flex_grow(), 7);
+        assert_eq!(parent_style.flex_shrink(), 7);
+        assert_eq!(parent_style.flex_basis(), FlexBasisValue::Length(20));
+        assert_values(&child, 0, 0, 1, FlexBasisValue::Auto);
     }
 
     #[test]

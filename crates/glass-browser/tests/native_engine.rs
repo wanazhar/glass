@@ -6849,6 +6849,101 @@ fn native_flex_item_order_filters_hidden_items_and_ignores_fallback_rows() {
 }
 
 #[test]
+fn native_flex_item_order_sizing_revert_layer_preserves_layout_and_artifacts() {
+    let order_document = NativeDocument::parse(
+        "<style>@layer base { #row { display:flex;width:24px;height:8px;gap:2px; } #first { order:0;width:8px;height:8px;background-color:red; } #second { order:0;width:8px;height:8px;background-color:blue; } } @layer theme { #first { order:2; } #second { order:-1; } } #first { order:revert-layer; }</style><div id='row'><button id='first'>A</button><button id='second'>B</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = order_document.resolve_target("id=first").unwrap();
+    let second = order_document.resolve_target("id=second").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let order_layout = order_document.layout(viewport).unwrap();
+    assert_eq!(order_layout.box_for(second).unwrap().x, 0);
+    assert_eq!(order_layout.box_for(first).unwrap().x, 10);
+    assert_eq!(order_layout.hit_test(1, 1).unwrap(), Some(second));
+    assert_eq!(order_layout.hit_test(10, 1).unwrap(), Some(first));
+    assert_eq!(
+        order_document
+            .semantic_nodes()
+            .into_iter()
+            .map(|node| node.node_id)
+            .collect::<Vec<_>>(),
+        vec![first, second]
+    );
+    let order_list = order_document.display_list(viewport).unwrap();
+    assert_eq!(
+        order_list
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                NativeDisplayCommand::FillRect { node_id, .. } => Some(*node_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![second, first]
+    );
+    let order_surface = order_list.rasterize().unwrap();
+    assert_eq!(order_surface.pixel(1, 1), Some([0, 0, 255, 255]));
+    assert_eq!(order_surface.pixel(11, 1), Some([255, 0, 0, 255]));
+
+    let grow_document = NativeDocument::parse(
+        "<style>@layer base { #row { display:flex;width:20px;height:8px;gap:2px; } #first { width:6px;height:8px;flex-grow:0;background-color:red; } #second { width:6px;height:8px;flex-grow:0;background-color:blue; } } @layer theme { #first { flex-grow:1; } } #first { flex-grow:revert-layer; }</style><div id='row'><div id='first'>A</div><div id='second'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let grow_first = grow_document.resolve_target("id=first").unwrap();
+    let grow_second = grow_document.resolve_target("id=second").unwrap();
+    let grow_layout = grow_document.layout(viewport).unwrap();
+    assert_eq!(grow_layout.box_for(grow_first).unwrap().width, 12);
+    assert_eq!(grow_layout.box_for(grow_second).unwrap().x, 14);
+    assert_eq!(grow_layout.box_for(grow_second).unwrap().width, 6);
+
+    let shrink_document = NativeDocument::parse(
+        "<style>@layer base { #row { display:flex;width:12px;height:8px;gap:2px; } #first { width:8px;height:8px;flex-shrink:1;background-color:red; } #second { width:8px;height:8px;flex-shrink:1;background-color:blue; } } @layer theme { #first { flex-shrink:0; } } #first { flex-shrink:revert-layer; }</style><div id='row'><div id='first'>A</div><div id='second'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let shrink_first = shrink_document.resolve_target("id=first").unwrap();
+    let shrink_second = shrink_document.resolve_target("id=second").unwrap();
+    let shrink_layout = shrink_document.layout(viewport).unwrap();
+    assert_eq!(shrink_layout.box_for(shrink_first).unwrap().width, 8);
+    assert_eq!(shrink_layout.box_for(shrink_second).unwrap().x, 10);
+    assert_eq!(shrink_layout.box_for(shrink_second).unwrap().width, 2);
+
+    let basis_document = NativeDocument::parse(
+        "<style>@layer base { #row { display:flex;width:20px;height:8px;gap:2px; } #first { width:4px;height:8px;flex-basis:4px;background-color:red; } #second { width:4px;height:8px;background-color:blue; } } @layer theme { #first { flex-basis:10px; } } #first { flex-basis:revert-layer; }</style><div id='row'><div id='first'>A</div><div id='second'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let basis_first = basis_document.resolve_target("id=first").unwrap();
+    let basis_second = basis_document.resolve_target("id=second").unwrap();
+    let basis_layout = basis_document.layout(viewport).unwrap();
+    assert_eq!(basis_layout.box_for(basis_first).unwrap().width, 10);
+    assert_eq!(basis_layout.box_for(basis_second).unwrap().x, 12);
+    assert_eq!(basis_layout.box_for(basis_second).unwrap().width, 4);
+
+    for document in [
+        &order_document,
+        &grow_document,
+        &shrink_document,
+        &basis_document,
+    ] {
+        assert!(!document.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && matches!(
+                    diagnostic.detail.as_str(),
+                    "order" | "flex-grow" | "flex-shrink" | "flex-basis"
+                )
+        }));
+    }
+}
+
+#[test]
 fn native_flex_align_items_moves_complete_subtrees_and_paint_artifacts() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:40px;height:31px;gap:2px;align-items:center'><button id='short' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></button><button id='tall' style='width:6px;height:20px;background-color:blue'>B</button></div>",

@@ -1,7 +1,7 @@
 ---
 id: native-engine-137
 scope: glass-browser/native-engine/cascade-layers-flex-flow-place-content-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-136]
 ---
 
@@ -83,16 +83,34 @@ It changes only which existing shorthand components win the cascade; it does
 not add intrinsic or percentage sizing, grid, general event behavior, or
 browser parity.
 
-## Planned implementation
+## Implementation and local result
 
-- Add declaration-aware finite shorthand parsers for the standalone rollback
-  token while retaining the existing concrete parsers.
-- Feed the resulting private longhand declarations through the current
-  stylesheet and inline candidate arrays, preserving component-level source
-  order and invalid-declaration behavior.
-- Extend parser, diagnostic, cascade, layout, display-list, hit-test, and
-  decoded-raster regressions across direction/wrap and line/main-axis
-  placement.
+Design was recorded in `79e2d2fa`; implementation was committed in
+`7da4dfd5`. The two declaration-aware shorthand parsers accept the standalone,
+case-insensitive rollback token and otherwise preserve the existing finite
+expansion paths. The parsed private longhand candidates flow through the
+existing stylesheet and inline arrays, so component-level source order,
+invalid-declaration behavior, bounded layer priority, and local fallback are
+unchanged. The integration fixture covers independent direction/wrap and
+line/main-axis placement through layout, display-list, hit-test, and decoded
+raster consumers. No public schema, dependency, feature default, or crate
+boundary changed.
+
+Local verification passed:
+
+- focused feature check: `cargo check -q -p glass-browser --features
+  native-engine --test native_engine --locked`;
+- parser/cascade filters: `flex_flow` 3/3 and `place_content` 3/3;
+- new integration regression: 1/1;
+- full native-engine integration suite: 174/174;
+- full feature-enabled `glass-browser` library: 939 passed, 1 ignored,
+  using `RUST_MIN_STACK=33554432` for the pre-existing large-Clap parser
+  test;
+- strict affected-package Clippy: passed with `-D warnings`;
+- formatting, static documentation audits, and repository diff checks: passed.
+
+Remote CI, push, release, registry publication, browser parity, and
+security-boundary claims remain unmade because this checkout is local-only.
 
 ## Tradeoffs
 
@@ -132,3 +150,12 @@ Targeted checks follow the completed shorthand behavioral unit. Full native,
 two-crate, strict, fuzz/security, and static documentation gates are final
 validation only; remote CI remains unclaimed until an explicitly authorized
 push.
+
+## Cleanup
+
+The isolated `CARGO_TARGET_DIR=/tmp/glass-137-focused` was inspected after all
+gates: 3,030,180,151 logical bytes across 4,131 files and 657 directories,
+with no open handles or active Cargo/rustc process. It was removed with a
+bounded `find -P /tmp/glass-137-focused -xdev -depth -delete`; the exact target
+is absent. `/tmp` available space increased from 80,946,733,056 to
+83,990,753,280 bytes, a measured delta of 3,044,020,224 bytes.

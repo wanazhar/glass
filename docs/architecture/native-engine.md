@@ -785,6 +785,12 @@ integration gates, the full affected library suite, and strict affected-
 package Clippy passed locally; the package library gate used an explicit 32 MiB
 test-thread stack because one pre-existing CLI test overflows the default
 thread stack. Remote CI remains pending because the checkout is local-only.
+The dependency-ordered 132 design is recorded in
+`docs/plan/tasks/native-engine-132.md`. It will reuse the same private bounded
+layer boundary for inherited `direction: revert-layer`, preserving the finite
+`ltr|rtl` value, logical text-edge mapping, flex directionality, wrapped-line
+placement, source/semantic order, and shared artifact owners. The task is
+planned; no 132 production implementation or completion evidence is claimed.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

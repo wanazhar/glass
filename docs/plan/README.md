@@ -1144,6 +1144,14 @@ explicit 32 MiB test-thread stack to accommodate one pre-existing CLI
 stack-overflow test. Remote CI remains pending because the checkout is
 local-only.
 
+The dependency-ordered [native-engine-132](tasks/native-engine-132.md) design
+is planned. It will add private case-insensitive `direction: revert-layer`
+declarations through the bounded 15-layer and unlayered/inline cascade
+boundary while preserving the finite `ltr|rtl` value, logical text-edge
+mapping, flex directionality, wrapped-line placement, source/semantic order,
+and current layout/artifact owners. No 132 implementation or completion
+evidence is claimed yet.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

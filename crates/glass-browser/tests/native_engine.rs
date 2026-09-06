@@ -1372,6 +1372,97 @@ fn native_text_decoration_color_separates_glyph_and_line_paint() {
 }
 
 #[test]
+fn native_text_decoration_color_revert_layer_preserves_local_fallback_and_glyph_paint() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:green; text-decoration:underline overline line-through; } @layer base { #named { text-decoration-color:red; } #rollback { text-decoration-color:red; } #repeated { text-decoration-color:red; } #unlayered { text-decoration-color:red; } #inline { text-decoration-color:red; } #fallback { text-decoration-color:revert-layer; } } @layer theme { .named { text-decoration-color:blue; } #rollback { text-decoration-color:blue; } #repeated { text-decoration-color:revert-layer; } #unlayered { text-decoration-color:blue; } #inline { text-decoration-color:blue; } } @layer top { #repeated { text-decoration-color:revert-layer; } } #named { text-decoration-color:revert-layer; } #unlayered { text-decoration-color:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='repeated' class='line'>A</div><div id='unlayered' class='line'>A</div><div id='inline' class='line' style='text-decoration-color:revert-layer'>A</div><div id='fallback' class='line'>A</div><div id='parent' class='line' style='text-decoration-color:red'><span id='child'>A</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 160,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let command_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        list.commands
+            .iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::TextRun {
+                    node_id: command_node_id,
+                    origin,
+                    color,
+                    decoration_color,
+                    underline,
+                    overline,
+                    line_through,
+                    ..
+                } if *command_node_id == node_id => Some((
+                    *origin,
+                    *color,
+                    *decoration_color,
+                    *underline,
+                    *overline,
+                    *line_through,
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text command for {id}"))
+    };
+    let named = command_for("named");
+    let rollback = command_for("rollback");
+    let repeated = command_for("repeated");
+    let unlayered = command_for("unlayered");
+    let inline = command_for("inline");
+    let fallback = command_for("fallback");
+    let child = command_for("child");
+
+    assert_eq!(named.1, green);
+    assert_eq!(named.2, blue);
+    assert_eq!(rollback.2, blue);
+    assert_eq!(repeated.2, NativeColor::RED);
+    assert_eq!(unlayered.2, blue);
+    assert_eq!(inline.2, blue);
+    assert_eq!(fallback.2, green);
+    assert_eq!(child.2, green);
+    for command in [
+        named, rollback, repeated, unlayered, inline, fallback, child,
+    ] {
+        assert!(command.3 && command.4 && command.5);
+        assert_eq!(
+            surface.pixel(command.0.x.saturating_add(1), command.0.y),
+            Some([0, 128, 0, 255])
+        );
+    }
+    assert_eq!(
+        surface.pixel(named.0.x, named.0.y.saturating_add(7)),
+        Some([0, 0, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(repeated.0.x, repeated.0.y.saturating_add(7)),
+        Some([255, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(fallback.0.x, fallback.0.y.saturating_add(7)),
+        Some([0, 128, 0, 255])
+    );
+}
+
+#[test]
 fn native_text_decoration_line_longhand_reuses_color_and_geometry() {
     let document = NativeDocument::parse(
         "<style>#target { display:block; width:24px; height:20px; line-height:20px; color:red; text-decoration-line:overline line-through; text-decoration-color:blue; }</style><div id='target'>A</div>",

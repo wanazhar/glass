@@ -116,6 +116,12 @@ impl NativeTextUnderlineOffsetDeclaration {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeTextDecorationColorDeclaration {
+    Value(NativeColor),
+    RevertLayer,
+}
+
 /// Bounded inherited glyph-intersection behavior for text decorations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeTextDecorationSkipInk {
@@ -1060,7 +1066,8 @@ impl NativeStylesheet {
         >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_underline_offset: [Option<CascadeValue<NativeTextUnderlineOffsetDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut text_decoration_color = None;
+        let mut text_decoration_color: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_transform = None;
         let mut font_weight = None;
         let mut font_style = None;
@@ -1263,20 +1270,21 @@ impl NativeStylesheet {
                     });
                 }
             }
-            if let Some(value) = rule.declarations.text_decoration_color
-                && wins(
+            if let Some(value) = rule.declarations.text_decoration_color {
+                let layer = cascade_layer_index(rule.selector.specificity);
+                if wins(
                     rule.selector.specificity,
                     rule.order,
                     false,
-                    text_decoration_color,
-                )
-            {
-                text_decoration_color = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
+                    text_decoration_color[layer],
+                ) {
+                    text_decoration_color[layer] = Some(CascadeValue {
+                        value,
+                        specificity: rule.selector.specificity,
+                        order: rule.order,
+                        inline: false,
+                    });
+                }
             }
             if let Some(value) = rule.declarations.text_transform
                 && wins(rule.selector.specificity, rule.order, false, text_transform)
@@ -1797,15 +1805,16 @@ impl NativeStylesheet {
                     });
                 }
             }
-            if let Some(value) = declarations.text_decoration_color
-                && wins(u16::MAX, usize::MAX, true, text_decoration_color)
-            {
-                text_decoration_color = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
+            if let Some(value) = declarations.text_decoration_color {
+                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
+                if wins(u16::MAX, usize::MAX, true, text_decoration_color[layer]) {
+                    text_decoration_color[layer] = Some(CascadeValue {
+                        value,
+                        specificity: u16::MAX,
+                        order: usize::MAX,
+                        inline: true,
+                    });
+                }
             }
             if let Some(value) = declarations.text_transform
                 && wins(u16::MAX, usize::MAX, true, text_transform)
@@ -2212,7 +2221,7 @@ impl NativeStylesheet {
                 text_underline_offset,
                 inherited.text_underline_offset,
             ),
-            text_decoration_color: text_decoration_color.map(|value| value.value),
+            text_decoration_color: resolve_text_decoration_color(text_decoration_color),
             text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
             font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
             font_style: font_style.map_or(inherited.font_style, |value| value.value),
@@ -2439,6 +2448,41 @@ fn resolve_text_underline_offset(
     }
 }
 
+fn resolve_text_decoration_color(
+    candidates: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
+        MAX_NATIVE_CASCADE_LAYERS],
+) -> Option<NativeColor> {
+    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    loop {
+        let Some((layer, candidate)) =
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(layer, candidate)| {
+                    if blocked[layer] {
+                        None
+                    } else {
+                        candidate.map(|candidate| (layer, candidate))
+                    }
+                })
+        else {
+            return None;
+        };
+        if matches!(
+            candidate.value,
+            NativeTextDecorationColorDeclaration::RevertLayer
+        ) {
+            blocked[layer] = true;
+            continue;
+        }
+        return match candidate.value {
+            NativeTextDecorationColorDeclaration::Value(value) => Some(value),
+            NativeTextDecorationColorDeclaration::RevertLayer => unreachable!(),
+        };
+    }
+}
+
 fn resolve_text_decoration_skip_ink(
     candidates: [Option<CascadeValue<NativeTextDecorationSkipInkDeclaration>>;
         MAX_NATIVE_CASCADE_LAYERS],
@@ -2650,7 +2694,7 @@ struct NativeDeclarations {
     text_decoration_skip_spaces: Option<NativeTextDecorationSkipSpacesDeclaration>,
     text_decoration_thickness: Option<NativeTextDecorationThicknessDeclaration>,
     text_underline_offset: Option<NativeTextUnderlineOffsetDeclaration>,
-    text_decoration_color: Option<NativeColor>,
+    text_decoration_color: Option<NativeTextDecorationColorDeclaration>,
     text_transform: Option<TextTransformValue>,
     font_weight: Option<FontWeightValue>,
     font_style: Option<FontStyleValue>,
@@ -3160,7 +3204,7 @@ fn parse_declarations_with_diagnostics(
             "text-decoration-skip-spaces" => parse_text_decoration_skip_spaces(value).is_some(),
             "text-decoration-thickness" => parse_text_decoration_thickness(value).is_some(),
             "text-underline-offset" => parse_text_underline_offset(value).is_some(),
-            "text-decoration-color" => parse_color(value).is_some(),
+            "text-decoration-color" => parse_text_decoration_color(value).is_some(),
             "text-transform" => parse_text_transform(value).is_some(),
             "font-weight" => parse_font_weight(value).is_some(),
             "font-style" => parse_font_style(value).is_some(),
@@ -3434,7 +3478,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.text_underline_offset = parse_text_underline_offset(value);
             }
             "text-decoration-color" => {
-                declarations.text_decoration_color = parse_color(value);
+                declarations.text_decoration_color = parse_text_decoration_color(value);
             }
             "text-transform" => {
                 declarations.text_transform = parse_text_transform(value);
@@ -3805,6 +3849,13 @@ fn parse_text_underline_offset(value: &str) -> Option<NativeTextUnderlineOffsetD
     } else {
         magnitude
     }))
+}
+
+fn parse_text_decoration_color(value: &str) -> Option<NativeTextDecorationColorDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some(NativeTextDecorationColorDeclaration::RevertLayer);
+    }
+    parse_color(value).map(NativeTextDecorationColorDeclaration::Value)
 }
 
 fn set_border_side(sides: &mut [Option<NativeBorderSide>; 4], index: usize, value: &str) {
@@ -6687,6 +6738,71 @@ mod tests {
                 .text_decoration_color(),
             None
         );
+    }
+
+    #[test]
+    fn text_decoration_color_parser_accepts_only_bounded_values_and_revert_layer() {
+        assert_eq!(
+            parse_text_decoration_color("ReVeRt-LaYeR"),
+            Some(NativeTextDecorationColorDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_text_decoration_color("blue"),
+            Some(NativeTextDecorationColorDeclaration::Value(NativeColor {
+                red: 0,
+                green: 0,
+                blue: u8::MAX,
+                alpha: u8::MAX,
+            }))
+        );
+        assert_eq!(
+            parse_text_decoration_color("transparent"),
+            Some(NativeTextDecorationColorDeclaration::Value(NativeColor {
+                red: 0,
+                green: 0,
+                blue: 0,
+                alpha: 0,
+            }))
+        );
+        assert_eq!(parse_text_decoration_color("currentColor"), None);
+        assert_eq!(parse_text_decoration_color("inherit"), None);
+        assert_eq!(parse_text_decoration_color("unset"), None);
+        assert_eq!(parse_text_decoration_color("revert"), None);
+        assert_eq!(
+            parse_text_decoration_color("linear-gradient(red, blue)"),
+            None
+        );
+        assert_eq!(
+            parse_declarations("text-decoration-color: revert-layer").text_decoration_color,
+            Some(NativeTextDecorationColorDeclaration::RevertLayer)
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_text_decoration_color_candidates() {
+        let document = NativeDocument::parse(
+            "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:green; text-decoration:underline; } @layer base { #named { text-decoration-color:red; } #rollback { text-decoration-color:red; } #repeated { text-decoration-color:red; } #unlayered { text-decoration-color:red; } #inline { text-decoration-color:red; } #fallback { text-decoration-color:revert-layer; } } @layer theme { .named { text-decoration-color:blue; } #rollback { text-decoration-color:blue; } #repeated { text-decoration-color:revert-layer; } #unlayered { text-decoration-color:blue; } #inline { text-decoration-color:blue; } } @layer top { #repeated { text-decoration-color:revert-layer; } } #named { text-decoration-color:revert-layer; } #unlayered { text-decoration-color:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='repeated' class='line'>A</div><div id='unlayered' class='line'>A</div><div id='inline' class='line' style='text-decoration-color:revert-layer'>A</div><div id='fallback' class='line'>A</div><div id='inherited' class='line' style='text-decoration-color:red'><span id='child'>A</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        let color_for = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_decoration_color()
+        };
+        assert_eq!(color_for("named"), Some(blue));
+        assert_eq!(color_for("rollback"), Some(blue));
+        assert_eq!(color_for("repeated"), Some(NativeColor::RED));
+        assert_eq!(color_for("unlayered"), Some(blue));
+        assert_eq!(color_for("inline"), Some(blue));
+        assert_eq!(color_for("fallback"), None);
+        assert_eq!(color_for("child"), None);
     }
 
     #[test]

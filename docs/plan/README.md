@@ -1239,6 +1239,17 @@ affected-library, strict Clippy, formatting, and static documentation gates
 passed locally; exact evidence and cleanup are recorded in the task. Remote
 CI remains pending because the checkout is local-only.
 
+The next dependency-ordered [native-engine-142](tasks/native-engine-142.md)
+contract is planned. It will add standalone case-insensitive `revert-layer` to
+the local `text-indent` and `text-overflow` owners through private candidates,
+preserving finite non-negative fixed-pixel indentation, `clip|ellipsis`, local
+`0px`/`clip` fallbacks, and the existing first-line flow, eligible clipped-
+nowrap truncation, text-fragment, display-list, raster, overflow, capture,
+hit-test, and semantic/source-order owners. Negative or hanging indentation,
+percentages, font-relative units, inherited text-overflow, marker
+customization, multiple origins, and browser-wide text conformance remain
+outside the planned boundary; implementation and evidence remain pending.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

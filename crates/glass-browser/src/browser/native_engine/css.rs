@@ -3609,14 +3609,14 @@ fn parse_declarations_with_diagnostics(
             "text-align-last" => parse_text_align_last_declaration(value).is_some(),
             "text-justify" => parse_text_justify_declaration(value).is_some(),
             "justify-content" => parse_justify_content_declaration(value).is_some(),
-            "place-content" => parse_place_content(value).is_some(),
+            "place-content" => parse_place_content_declaration(value).is_some(),
             "align-items" => parse_align_items_declaration(value).is_some(),
             "align-self" => parse_align_self_declaration(value).is_some(),
             "align-content" => parse_align_content_declaration(value).is_some(),
             "flex-direction" => parse_flex_direction_declaration(value).is_some(),
             "direction" => parse_direction_declaration(value).is_some(),
             "flex-wrap" => parse_flex_wrap_declaration(value).is_some(),
-            "flex-flow" => parse_flex_flow(value).is_some(),
+            "flex-flow" => parse_flex_flow_declaration(value).is_some(),
             "order" => parse_flex_item_order_declaration(value).is_some(),
             "flex" => parse_flex_shorthand_declaration(value).is_some(),
             "flex-grow" => parse_flex_grow_declaration(value).is_some(),
@@ -3827,11 +3827,11 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "place-content" => {
-                if let Some((align_content, justify_content)) = parse_place_content(value) {
-                    declarations.align_content =
-                        Some(AlignContentDeclaration::Value(align_content));
-                    declarations.justify_content =
-                        Some(JustifyContentDeclaration::Value(justify_content));
+                if let Some((align_content, justify_content)) =
+                    parse_place_content_declaration(value)
+                {
+                    declarations.align_content = Some(align_content);
+                    declarations.justify_content = Some(justify_content);
                 }
             }
             "align-items" => {
@@ -3857,9 +3857,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.flex_wrap = parse_flex_wrap_declaration(value);
             }
             "flex-flow" => {
-                if let Some((direction, wrap)) = parse_flex_flow(value) {
-                    declarations.flex_direction = Some(FlexDirectionDeclaration::Value(direction));
-                    declarations.flex_wrap = Some(FlexWrapDeclaration::Value(wrap));
+                if let Some((direction, wrap)) = parse_flex_flow_declaration(value) {
+                    declarations.flex_direction = Some(direction);
+                    declarations.flex_wrap = Some(wrap);
                 }
             }
             "order" => {
@@ -4606,6 +4606,22 @@ fn parse_place_content(value: &str) -> Option<(AlignContentValue, JustifyContent
     }
 }
 
+fn parse_place_content_declaration(
+    value: &str,
+) -> Option<(AlignContentDeclaration, JustifyContentDeclaration)> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some((
+            AlignContentDeclaration::RevertLayer,
+            JustifyContentDeclaration::RevertLayer,
+        ));
+    }
+    let (align_content, justify_content) = parse_place_content(value)?;
+    Some((
+        AlignContentDeclaration::Value(align_content),
+        JustifyContentDeclaration::Value(justify_content),
+    ))
+}
+
 fn parse_align_items(value: &str) -> Option<AlignItemsValue> {
     match value.to_ascii_lowercase().as_str() {
         "flex-start" => Some(AlignItemsValue::FlexStart),
@@ -4738,6 +4754,22 @@ fn parse_flex_flow(value: &str) -> Option<(FlexDirectionValue, FlexWrapValue)> {
         }
     }
     Some((direction.unwrap_or_default(), wrap.unwrap_or_default()))
+}
+
+fn parse_flex_flow_declaration(
+    value: &str,
+) -> Option<(FlexDirectionDeclaration, FlexWrapDeclaration)> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some((
+            FlexDirectionDeclaration::RevertLayer,
+            FlexWrapDeclaration::RevertLayer,
+        ));
+    }
+    let (direction, wrap) = parse_flex_flow(value)?;
+    Some((
+        FlexDirectionDeclaration::Value(direction),
+        FlexWrapDeclaration::Value(wrap),
+    ))
 }
 
 fn parse_flex_item_order(value: &str) -> Option<NativeOrderValue> {
@@ -6481,12 +6513,28 @@ mod tests {
         assert_eq!(parse_flex_flow("row row-reverse"), None);
         assert_eq!(parse_flex_flow("initial"), None);
         assert_eq!(
+            parse_flex_flow_declaration("ReVeRt-LaYeR"),
+            Some((
+                FlexDirectionDeclaration::RevertLayer,
+                FlexWrapDeclaration::RevertLayer,
+            ))
+        );
+        assert_eq!(parse_flex_flow_declaration("revert-layer row"), None);
+        assert_eq!(
             parse_declarations(
                 "flex-flow: row-reverse wrap; flex-direction: row; flex-wrap: nowrap"
             ),
             NativeDeclarations {
                 flex_direction: Some(FlexDirectionDeclaration::Value(FlexDirectionValue::Row)),
                 flex_wrap: Some(FlexWrapDeclaration::Value(FlexWrapValue::NoWrap)),
+                ..NativeDeclarations::default()
+            }
+        );
+        assert_eq!(
+            parse_declarations("flex-flow: revert-layer; flex-direction: column"),
+            NativeDeclarations {
+                flex_direction: Some(FlexDirectionDeclaration::Value(FlexDirectionValue::Column,)),
+                flex_wrap: Some(FlexWrapDeclaration::RevertLayer),
                 ..NativeDeclarations::default()
             }
         );
@@ -6720,6 +6768,24 @@ mod tests {
         );
         assert_eq!(parse_place_content("center center center"), None);
         assert_eq!(parse_place_content("start center"), None);
+        assert_eq!(
+            parse_place_content_declaration("ReVeRt-LaYeR"),
+            Some((
+                AlignContentDeclaration::RevertLayer,
+                JustifyContentDeclaration::RevertLayer,
+            ))
+        );
+        assert_eq!(parse_place_content_declaration("revert-layer center"), None);
+        assert_eq!(
+            parse_declarations("place-content: revert-layer; justify-content: flex-end"),
+            NativeDeclarations {
+                align_content: Some(AlignContentDeclaration::RevertLayer),
+                justify_content: Some(JustifyContentDeclaration::Value(
+                    JustifyContentValue::FlexEnd,
+                )),
+                ..NativeDeclarations::default()
+            }
+        );
     }
 
     #[test]
@@ -7011,6 +7077,70 @@ mod tests {
         assert_values(&mixed, 5, 3, FlexBasisValue::Length(6));
         assert_values(&fallback, 0, 1, FlexBasisValue::Auto);
         assert_values(&inline, 1, 0, FlexBasisValue::Length(10));
+    }
+
+    #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_flex_flow_and_place_content_components() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #flow { flex-flow: row nowrap; } #content { place-content: flex-start; } #mixed { flex-flow: row nowrap; place-content: flex-start; } #inline { flex-flow: row nowrap; place-content: flex-start; } } @layer theme { #flow { flex-flow: column wrap; } #content { place-content: space-between flex-end; } #mixed { flex-flow: revert-layer; flex-direction: row-reverse; place-content: revert-layer; justify-content: space-around; } #inline { flex-flow: column wrap; place-content: center flex-end; } } @layer top { #flow { flex-flow: revert-layer; } #content { place-content: revert-layer; } #mixed { flex-flow: column-reverse wrap; flex-flow: revert-layer; place-content: center; place-content: revert-layer; } } #flow { flex-flow: revert-layer; } #content { place-content: revert-layer; } #mixed { flex-flow: revert-layer; place-content: revert-layer; } #fallback { flex-flow: revert-layer; place-content: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let flow = node("<div id='flow'>Flow</div>");
+        let content = node("<div id='content'>Content</div>");
+        let mixed = node("<div id='mixed'>Mixed</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let inline = node(
+            "<div id='inline' style='flex-flow:REVERT-LAYER;place-content:REVERT-LAYER'>Inline</div>",
+        );
+
+        let assert_values = |element: &NativeNode,
+                             direction: FlexDirectionValue,
+                             wrap: FlexWrapValue,
+                             align_content: AlignContentValue,
+                             justify_content: JustifyContentValue| {
+            let style = stylesheet.computed_for(element);
+            assert_eq!(style.flex_direction(), direction);
+            assert_eq!(style.flex_wrap(), wrap);
+            assert_eq!(style.align_content(), align_content);
+            assert_eq!(style.justify_content(), justify_content);
+        };
+
+        assert_values(
+            &flow,
+            FlexDirectionValue::Column,
+            FlexWrapValue::Wrap,
+            AlignContentValue::FlexStart,
+            JustifyContentValue::FlexStart,
+        );
+        assert_values(
+            &content,
+            FlexDirectionValue::Row,
+            FlexWrapValue::NoWrap,
+            AlignContentValue::SpaceBetween,
+            JustifyContentValue::FlexEnd,
+        );
+        assert_values(
+            &mixed,
+            FlexDirectionValue::RowReverse,
+            FlexWrapValue::NoWrap,
+            AlignContentValue::FlexStart,
+            JustifyContentValue::SpaceAround,
+        );
+        assert_values(
+            &fallback,
+            FlexDirectionValue::Row,
+            FlexWrapValue::NoWrap,
+            AlignContentValue::FlexStart,
+            JustifyContentValue::FlexStart,
+        );
+        assert_values(
+            &inline,
+            FlexDirectionValue::Column,
+            FlexWrapValue::Wrap,
+            AlignContentValue::Center,
+            JustifyContentValue::FlexEnd,
+        );
     }
 
     #[test]

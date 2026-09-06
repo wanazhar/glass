@@ -6991,6 +6991,83 @@ fn native_flex_shorthand_revert_layer_preserves_components_and_artifacts() {
 }
 
 #[test]
+fn native_flex_flow_place_content_revert_layer_preserves_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #flow { display:flex;width:14px;height:8px;flex-flow:row nowrap;align-items:flex-start;align-content:flex-start; } #content { display:flex;width:14px;height:16px;flex-flow:row wrap;align-items:flex-start;place-content:flex-start; } } @layer theme { #flow { flex-flow:column wrap; } #content { place-content:space-between flex-end; } } @layer top { #flow { flex-flow:column-reverse wrap; flex-flow:revert-layer; } #content { place-content:center center; place-content:revert-layer; } } #flow { flex-flow:row-reverse nowrap; flex-flow:revert-layer; } #content { place-content:flex-start flex-start; place-content:revert-layer; }</style><div id='flow'><div id='flow-first' style='width:4px;height:4px;flex-shrink:0;background-color:red'>A</div><div id='flow-second' style='width:4px;height:4px;flex-shrink:0;background-color:blue'>B</div><div id='flow-third' style='width:4px;height:4px;flex-shrink:0;background-color:green'>C</div></div><div id='content'><div id='content-first' style='width:8px;height:4px;flex-shrink:0;background-color:red'>D</div><div id='content-second' style='width:8px;height:4px;flex-shrink:0;background-color:blue'>E</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(diagnostic.detail.as_str(), "flex-flow" | "place-content"))
+    }));
+
+    let flow = document.resolve_target("id=flow").unwrap();
+    let flow_first = document.resolve_target("id=flow-first").unwrap();
+    let flow_second = document.resolve_target("id=flow-second").unwrap();
+    let flow_third = document.resolve_target("id=flow-third").unwrap();
+    let content = document.resolve_target("id=content").unwrap();
+    let content_first = document.resolve_target("id=content-first").unwrap();
+    let content_second = document.resolve_target("id=content-second").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let flow_rect = layout.box_for(flow).unwrap();
+    let content_rect = layout.box_for(content).unwrap();
+    let flow_first_rect = layout.box_for(flow_first).unwrap();
+    let flow_second_rect = layout.box_for(flow_second).unwrap();
+    let flow_third_rect = layout.box_for(flow_third).unwrap();
+    assert_eq!(flow_first_rect.x, flow_rect.x);
+    assert_eq!(flow_first_rect.y, flow_rect.y);
+    assert_eq!(flow_second_rect.x, flow_rect.x);
+    assert_eq!(flow_second_rect.y, flow_rect.y + 4);
+    assert_eq!(flow_third_rect.x, flow_rect.x + 4);
+    assert_eq!(flow_third_rect.y, flow_rect.y);
+
+    let content_first_rect = layout.box_for(content_first).unwrap();
+    let content_second_rect = layout.box_for(content_second).unwrap();
+    assert_eq!(content_first_rect.x, content_rect.x + 6);
+    assert_eq!(content_first_rect.y, content_rect.y);
+    assert_eq!(content_second_rect.x, content_rect.x + 6);
+    assert_eq!(content_second_rect.y, content_rect.y + 12);
+    assert_eq!(
+        layout.hit_test(
+            i64::from(flow_first_rect.x + 1),
+            i64::from(flow_first_rect.y + 1),
+        ),
+        Ok(Some(flow_first))
+    );
+    assert_eq!(
+        layout.hit_test(
+            i64::from(content_second_rect.x + 1),
+            i64::from(content_second_rect.y + 1),
+        ),
+        Ok(Some(content_second))
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == flow_first && *rect == flow_first_rect
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(flow_first_rect.x + 1, flow_first_rect.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(content_second_rect.x + 1, content_second_rect.y + 1),
+        Some([0, 0, 255, 255])
+    );
+}
+
+#[test]
 fn native_flex_align_items_moves_complete_subtrees_and_paint_artifacts() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:40px;height:31px;gap:2px;align-items:center'><button id='short' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></button><button id='tall' style='width:6px;height:20px;background-color:blue'>B</button></div>",

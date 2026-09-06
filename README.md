@@ -342,6 +342,8 @@ direct-text flow fragments and
 source-order text paint, bounded word-aware wrapping, bounded
 source-whitespace boundaries across sibling direct text and supported inline
 flow items, bounded inherited `white-space: nowrap` collapsed one-line flow,
+bounded inherited case-insensitive 15-layer/unlayered
+`white-space: revert-layer` rollback with five-mode inherited/root fallback,
 bounded `overflow:hidden` clips shared by paint, viewport
 projection, and point hit-testing, bounded
 PNG capture through the explicit backend operation, and Rust-only

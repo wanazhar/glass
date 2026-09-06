@@ -168,20 +168,43 @@ evidence unless separately executed and verified.
   `yaml-rust`, the allowed `lru` advisory, and yanked `chacha20`.
 
 The final documentation, reliability, adapter, Web IR, formatting, and
-version/feature gates are recorded after the closeout synchronization below.
+version/feature gates passed after the closeout synchronization:
+
+- `cargo fmt --all -- --check` and `git diff --check` passed after the initial
+  post-correction formatting mismatch was fixed in `e27d7067`;
+- version sync, feature parity, TUI, documentation depth, and release truth
+  passed. Release truth measured 542 Markdown documents, 83 current-version
+  documents, 57 previous-version references, 639 semantic hits, and zero
+  current-claim failures; the release-documentation unit suite passed 9/9;
+- coverage measured 542 Markdown files, 345 full-product MCP entries (100
+  browser-only), 17 examples, and 22 public modules; reliability measured
+  6 scenarios across 4 targets; public read-only adapters measured 5; Web IR
+  measured 8 fixtures, 8 scenarios, and 11 categories.
 
 ## Cleanup
 
-All expensive gates used the isolated task target
-`/tmp/glass-127-focused`. Before deletion, its exact byte/file inventory,
-process ownership, and recursive open-file checks must be recorded. Remove only
-that target, reports, scratch entries, and generated evidence created by this
-task; preserve source, durable fixtures, active processes, and unrelated
-`/tmp` entries. Final evidence must show no repository `target/`, no current
-task target/report candidates, no open handles, and the available-byte delta.
+All expensive gates used the isolated task target `/tmp/glass-127-focused`.
+Immediately before deletion it measured 10,290,844,453 bytes across 15,101
+files. The exact validator reports measured 8,708 bytes total:
+`/tmp/glass-127-reliability.json` (3,482 bytes),
+`/tmp/glass-127-adapters.json` (1,418 bytes), and
+`benchmarks/results/.glass-127-web-ir.json` (3,808 bytes). The 77 exact
+PID-674152 scratch entries measured 2,611 bytes. Process and recursive handle
+checks reported no Cargo/rustc/rustdoc/Clippy/fuzz/package writer and no open
+handle for those exact paths. Bounded `find -P <exact-path> -xdev -depth
+-delete` operations removed only those candidates; no process was terminated
+and no source, fixture, durable data, or unrelated `/tmp` entry was touched.
+Available bytes moved from 75,169,660,928 to 85,504,622,592, a measured delta
+of 10,334,961,664 bytes. The exact target, reports, and scratch paths are
+absent; no repository-local `target/` or top-level `/tmp/target/` remains. The
+three pre-existing Glass processes were preserved.
 
 ## Certification
 
-Local implementation and the focused/full/package/fuzz/security gates are
-complete at `50a36545`. The final static validators, exact-output cleanup, and
-issue #40 closeout synchronization are the remaining certification records.
+Local implementation and all local gates are complete at `e27d7067` (the
+behavioral implementation is `8cad37c6` and the lint correction is
+`50a36545`). Issue #40 closeout synchronization is recorded in the authenticated
+comment at
+<https://github.com/wanazhar/glass/issues/40#issuecomment-5558274385>.
+Exact-output cleanup is complete above. Remote CI remains pending because no
+push was authorized.

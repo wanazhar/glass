@@ -60,7 +60,10 @@ source-behavior reference.
   sizing, bounded physical min/max width/height constraints with bounded
   case-insensitive 15-layer/unlayered local `revert-layer` rollback for finite
   non-negative integer-pixel `width`, `height`, `min-width`, `max-width`,
-  `min-height`, and `max-height` with absent local fallbacks, bounded root
+  `min-height`, and `max-height` with absent local fallbacks, plus bounded
+  case-insensitive 15-layer/unlayered local `revert-layer` rollback for
+  `box-sizing`, physical padding and margin edges, including bounded
+  `margin:auto`, with content-box/zero local fallbacks, bounded root
   horizontal and vertical viewport scrolling,
   inherited text color, bounded `overflow:hidden` clips shared by paint,
   viewport projection, and point hit-testing, bounded axis-specific
@@ -343,8 +346,11 @@ projection, and point hit-testing,
   shorthands and longhands, bounded physical min/max width/height constraints
   with bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback
   for finite non-negative integer-pixel `width`, `height`, `min-width`,
-  `max-width`, `min-height`, and `max-height` with absent local fallbacks,
-  explicit box sizing, and bounded root horizontal and vertical viewport scrolling,
+  `max-width`, `min-height`, and `max-height` with absent local fallbacks, plus
+  bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback for
+  `box-sizing`, physical padding and margin edges, including bounded
+  `margin:auto`, with content-box/zero local fallbacks, explicit box sizing,
+  and bounded root horizontal and vertical viewport scrolling,
   bounded inherited fixed-cell text-decoration lines with bounded
   `text-decoration-style:solid|dashed|dotted|double|wavy` and
   `text-decoration-thickness:1px|2px|3px|4px` positive-y raster bands,

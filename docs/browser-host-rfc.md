@@ -113,7 +113,10 @@ shorthands and longhands plus explicit box sizing and bounded physical min/max
 width/height constraints with bounded case-insensitive 15-layer/unlayered local
 `revert-layer` rollback for finite non-negative integer-pixel `width`, `height`,
 `min-width`, `max-width`, `min-height`, and `max-height` with absent local
-fallbacks, bounded vertical viewport
+fallbacks, plus bounded case-insensitive 15-layer/unlayered local
+`revert-layer` rollback for `box-sizing`, physical padding and margin edges,
+including bounded `margin:auto`, with content-box/zero local fallbacks,
+bounded vertical viewport
 scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip`
 clips through the existing projection and point-hit owner, and bounded PNG
 capture through the explicit backend operation,

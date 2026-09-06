@@ -136,7 +136,12 @@ bounded root horizontal scrolling,
 bounded local opacity subtree groups through transparent software layers,
 bounded inherited physical `text-align:left|center|right` fixed-cell line
 placement, bounded functional `rgba(R, G, B, A)` alpha colors for background,
-border, and text paint, bounded inherited fixed-cell
+border, and text paint, plus bounded case-insensitive 15-layer/unlayered local
+`revert-layer` rollback for `background-color` and inherited `color`, preserving
+the existing `None`/parent-root fallbacks and fill/text display-list, clipping,
+opacity, capture, and raster owners; `currentColor`, gradients, system colors,
+border-color, percentages, color spaces, and multiple origins remain outside
+the boundary, bounded inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using
 the existing fixed palette and alpha grammar with separate glyph and line

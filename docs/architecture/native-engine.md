@@ -37,6 +37,7 @@ bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-re
 bounded-cascade-layers/bounded-text-decoration-skip-spaces-revert-layer/
 bounded-text-decoration-skip-ink-revert-layer/
 bounded-text-decoration-color-revert-layer,
+bounded-text-decoration-line-revert-layer,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
 bounded-relative-local-links/bounded-percent-decoded-fragment-targets/
@@ -98,6 +99,9 @@ fixed-pixel
 decreasing or increasing y, bounded
 local `text-decoration-color` rollback through the 15-layer registry with a
 separate glyph/decoration paint color and the existing `Option<NativeColor>`
+fallback, bounded inherited
+`text-decoration-line` and `text-decoration` rollback through the same
+15-layer registry with their shared three-bit line-state owner and inherited
 fallback, and bounded
 inherited ASCII `text-transform:none|uppercase|lowercase` layout, and
 bounded inherited non-negative fixed-pixel `word-spacing` across the supported
@@ -734,9 +738,17 @@ CSS-wide keyword machinery, `currentColor`, multiple origins, layer
 statements, and unsupported values remain typed diagnostics. Exact local gate,
 issue-sync, and regenerable-output cleanup evidence is recorded in the task.
 Remote CI remains pending because the checkout is local-only.
-The next dependency-ordered 128 boundary is recorded separately for
-`text-decoration-line`/`text-decoration: revert-layer`, preserving their
-existing shared three-bit line-state owner and inherited fallback.
+The dependency-ordered 128 implementation is complete at `15fc761c` and is
+recorded in `docs/plan/tasks/native-engine-128.md`. It reuses the bounded layer
+registry for case-insensitive `text-decoration-line: revert-layer` and
+`text-decoration: revert-layer`, preserving their shared inherited three-bit
+line-state owner, declaration-order interaction, unlayered/inline bucket,
+display-list, command, and fixed-cell raster geometry. Parser, cascade,
+display-list, inherited fallback, and decoded-raster regressions passed; other
+CSS-wide keywords, multiple origins, layer statements, and unsupported values
+remain typed diagnostics. Exact local gate, documentation-audit, issue-sync,
+and regenerable-output cleanup evidence is recorded in the task. Remote CI
+remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

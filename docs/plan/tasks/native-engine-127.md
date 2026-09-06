@@ -1,7 +1,7 @@
 ---
 id: native-engine-127
 scope: glass-browser/native-engine/cascade-layers-decoration-color-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-126]
 ---
 
@@ -111,15 +111,18 @@ browser parity.
 
 ## Implementation
 
-Pending. The implementation must add private decoration-color declaration
-storage, layer-indexed candidate resolution, case-insensitive `revert-layer`
-parsing, and parser/cascade plus display-list/raster regressions. It must not
-change package dependencies, feature defaults, crate boundaries, the public
-`Option<NativeColor>` artifact, glyph paint, or unrelated style behavior.
+Implemented at `8cad37c6`, with the strict-Clippy parser-context correction at
+`50a36545`. The private decoration-color declaration enum carries either a
+bounded `NativeColor` or `RevertLayer`; stylesheet candidates reuse the 15
+named-layer slots and the unlayered/inline bucket; the resolver repeatedly
+blocks only the winning layer until it finds a concrete color or returns the
+existing local `None` fallback. The public `Option<NativeColor>` computed-style
+field, immutable text command, glyph color, decoration geometry, and raster
+owners are unchanged.
 
 ## Verification
 
-The focused gate must cover:
+The focused gate covered:
 
 - case-insensitive `revert-layer` parsing for decoration color and typed
   rejection of unsupported CSS-wide, color-space, dimension, and unknown
@@ -134,7 +137,7 @@ The focused gate must cover:
   line owners, and the 126 underline-offset/style/thickness/skip owners
   remaining unchanged.
 
-Then run the established native feature library/integration suites, locked
+Then the established native feature library/integration suites, locked
 two-crate tests, strict Clippy, no-default-feature Clippy, warnings-denied
 rustdoc, locked package/fuzz/deny/audit checks, and the repository's static
 documentation/reliability/adapter/Web IR validators. Use isolated targets and
@@ -143,17 +146,42 @@ synchronization, and cleanup evidence here. Remote CI, browser parity,
 release, registry publication, and a third crate remain outside local task
 evidence unless separately executed and verified.
 
+### Results
+
+- post-correction focused parser/cascade unit tests: 3 passed, 0 failed;
+- post-correction decoration glyph/raster integration: 1 passed, 0 failed;
+- full native feature library: 924 passed, 1 ignored; native integration:
+  164 passed, 0 failed;
+- locked two-crate `scripts/check-rust-workspace.sh test`: passed for the
+  browser all-target matrix and `glass-dev`; the browser matrix reported 926
+  library tests with 1 ignored and 164 native integration tests, while the
+  development suite reported 365 unit, 4 integration, and 15 PTY tests;
+- strict workspace Clippy passed with warnings denied (browser about 5m06s,
+  dev about 7m12s); no-default-feature browser Clippy passed in about 4m54s;
+  warnings-denied workspace rustdoc passed in about 3m15s;
+- locked binaries were already covered by the workspace matrix; both locked
+  packages passed and the packaged `glass-dev` archive resolved
+  `glass-browser` exactly at `0.3.14`; locked offline fuzz all-target checking
+  passed in about 8m40s;
+- `cargo deny check` and `cargo audit` passed with the repository's known
+  warnings: duplicate dependency versions, unmaintained `bincode` and
+  `yaml-rust`, the allowed `lru` advisory, and yanked `chacha20`.
+
+The final documentation, reliability, adapter, Web IR, formatting, and
+version/feature gates are recorded after the closeout synchronization below.
+
 ## Cleanup
 
-All expensive gates must use isolated task targets where practical. Before
-deleting generated output, verify no Cargo/rustc/rustdoc/Clippy/fuzz/test
-writer owns it and no open file handle remains. Remove only exact task targets,
-reports, scratch entries, and generated evidence created by this task; preserve
-source, durable fixtures, active processes, and unrelated workloads. Final
-evidence must show no repository `target/`, no current task target/report
-candidates, no open handles, and the available-byte delta.
+All expensive gates used the isolated task target
+`/tmp/glass-127-focused`. Before deletion, its exact byte/file inventory,
+process ownership, and recursive open-file checks must be recorded. Remove only
+that target, reports, scratch entries, and generated evidence created by this
+task; preserve source, durable fixtures, active processes, and unrelated
+`/tmp` entries. Final evidence must show no repository `target/`, no current
+task target/report candidates, no open handles, and the available-byte delta.
 
 ## Certification
 
-Pending local certification after implementation, full validation, issue #40
-synchronization, and exact regenerable-output cleanup.
+Local implementation and the focused/full/package/fuzz/security gates are
+complete at `50a36545`. The final static validators, exact-output cleanup, and
+issue #40 closeout synchronization are the remaining certification records.

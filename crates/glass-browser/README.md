@@ -268,6 +268,11 @@ agreement reports exact schema and capability status.
   `text-underline-offset:-4px..=4px`, moving only the underline toward
   decreasing or increasing y while preserving overline and line-through
   origins; replay clamps externally supplied offsets to the same range.
+- The local decoration-color surface accepts case-insensitive
+  `text-decoration-color:revert-layer` through the bounded 15-layer and
+  unlayered/inline cascade buckets; when no concrete candidate remains it
+  preserves the existing omitted-color fallback and keeps glyph and
+  decoration paint colors separate.
 - Native extensions require explicit opt-in and a platform sandbox gate.
 
 ## Documentation

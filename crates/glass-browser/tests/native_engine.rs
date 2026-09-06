@@ -602,12 +602,12 @@ fn native_text_alignment_shifts_complete_fixed_cell_line_items() {
 #[test]
 fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
     let document = NativeDocument::parse(
-        "<style>.line { display:block; width:32px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",
+        "<style>.line { display:block; width:45px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
     let viewport = Viewport {
-        width: 32,
+        width: 45,
         height: 120,
         device_scale_factor_milli: 1000,
     };
@@ -623,12 +623,12 @@ fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
     };
 
     // Unlayered rollback exposes the highest named candidate.
-    assert_eq!(text_origin("named").x, 12);
+    assert_eq!(text_origin("named").x, 18);
     // Rollback in theme, top, and then the unlayered bucket reaches base.
-    assert_eq!(text_origin("repeat").x, 12);
+    assert_eq!(text_origin("repeat").x, 18);
     // The child rollback is inherited from the centered parent, while the
     // root rollback keeps the documented left default.
-    assert_eq!(text_origin("child").x, 12);
+    assert_eq!(text_origin("child").x, 18);
     assert_eq!(text_origin("fallback").x, 0);
 
     let final_node = document.resolve_target("id=final").unwrap();
@@ -637,10 +637,11 @@ fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
         .iter()
         .filter(|run| run.node_id == final_node)
         .collect::<Vec<_>>();
-    assert_eq!(final_runs.len(), 2);
+    assert_eq!(final_runs.len(), 3);
     assert!(final_runs.iter().any(|run| run.justify_spacing > 0));
-    assert_eq!(final_runs[0].text, "A B");
-    assert_eq!(final_runs[1].text, "C");
+    assert_eq!(final_runs[0].text, "A");
+    assert_eq!(final_runs[1].text, " B");
+    assert_eq!(final_runs[2].text, " C");
 }
 
 #[test]

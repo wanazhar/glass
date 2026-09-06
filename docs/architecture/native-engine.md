@@ -31,6 +31,7 @@ bounded-inherited-text-spacing-revert-layer,
 bounded-inherited-vertical-align-revert-layer,
 bounded-local-text-geometry-revert-layer,
 bounded-local-dimension-revert-layer,
+bounded-local-box-model-revert-layer,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -933,6 +934,15 @@ Focused parser/cascade and integration tests, full-native integration/library
 tests, strict affected-package Clippy, formatting, and static documentation
 gates passed locally; exact evidence and cleanup are recorded in the task.
 Remote CI remains pending because the checkout is local-only.
+The next dependency-ordered 144 contract is planned in
+`docs/plan/tasks/native-engine-144.md`. It will extend the same private bounded
+layer resolver to standalone, case-insensitive `revert-layer` for local
+`box-sizing`, physical padding and margin edges, including shorthand/longhand
+rollback and bounded `margin:auto`, while preserving existing box-model,
+normal-flow, flex, overflow, capture, hit-test, display-list, raster, and
+semantic/source-order owners. Percentages, negative/logical edges, margin
+collapsing, multiple origins, and browser-wide box-model conformance remain
+outside the planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

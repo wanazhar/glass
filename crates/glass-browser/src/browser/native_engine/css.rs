@@ -621,6 +621,18 @@ struct NativeGapValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GapShorthandDeclaration {
+    Value(NativeGapValue),
+    RevertLayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GapComponentDeclaration {
+    Value(u32),
+    RevertLayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeMarginValue {
     Length(u32),
     Auto,
@@ -1204,9 +1216,7 @@ impl NativeStylesheet {
         let mut text_indent = None;
         let mut word_spacing = None;
         let mut letter_spacing = None;
-        let mut gap = None;
-        let mut row_gap = None;
-        let mut column_gap = None;
+        let mut gap = GapCascade::default();
         let mut width = None;
         let mut height = None;
         let mut min_width = None;
@@ -1542,8 +1552,6 @@ impl NativeStylesheet {
                 rule.order,
                 false,
                 &mut gap,
-                &mut row_gap,
-                &mut column_gap,
             );
             if let Some(value) = rule.declarations.justify_content
                 && wins(
@@ -2113,15 +2121,7 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            apply_gap_declarations(
-                declarations,
-                u16::MAX,
-                usize::MAX,
-                true,
-                &mut gap,
-                &mut row_gap,
-                &mut column_gap,
-            );
+            apply_gap_declarations(declarations, u16::MAX, usize::MAX, true, &mut gap);
             if let Some(value) = declarations.justify_content
                 && wins(u16::MAX, usize::MAX, true, justify_content[layer])
             {
@@ -2426,8 +2426,8 @@ impl NativeStylesheet {
             text_indent: text_indent.map_or(0, |value| value.value),
             word_spacing: word_spacing.map_or(inherited.word_spacing, |value| value.value),
             letter_spacing: letter_spacing.map_or(inherited.letter_spacing, |value| value.value),
-            gap: resolve_gap_axis(gap, column_gap, GapAxis::Column),
-            row_gap: resolve_gap_axis(gap, row_gap, GapAxis::Row),
+            gap: resolve_gap_axis(gap.shorthand_column, gap.column_gap),
+            row_gap: resolve_gap_axis(gap.shorthand_row, gap.row_gap),
             width: width.map(|value| value.value),
             height: height.map(|value| value.value),
             min_width: min_width.map(|value| value.value),
@@ -2483,10 +2483,23 @@ struct GapCascadeValue<T> {
     inline: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GapAxis {
-    Row,
-    Column,
+#[derive(Debug, Clone, Copy)]
+struct GapCascade {
+    shorthand_row: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    shorthand_column: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    row_gap: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    column_gap: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+}
+
+impl Default for GapCascade {
+    fn default() -> Self {
+        Self {
+            shorthand_row: [None; MAX_NATIVE_CASCADE_LAYERS],
+            shorthand_column: [None; MAX_NATIVE_CASCADE_LAYERS],
+            row_gap: [None; MAX_NATIVE_CASCADE_LAYERS],
+            column_gap: [None; MAX_NATIVE_CASCADE_LAYERS],
+        }
+    }
 }
 
 fn wins<T>(specificity: u16, order: usize, inline: bool, current: Option<CascadeValue<T>>) -> bool {
@@ -2972,19 +2985,57 @@ fn gap_wins<T>(
     })
 }
 
-fn resolve_gap_axis(
-    shorthand: Option<GapCascadeValue<NativeGapValue>>,
-    longhand: Option<GapCascadeValue<u32>>,
-    axis: GapAxis,
-) -> u32 {
+fn set_gap_candidate<T: Copy>(
+    slot: &mut Option<GapCascadeValue<T>>,
+    value: T,
+    specificity: u16,
+    order: usize,
+    declaration_order: usize,
+    inline: bool,
+) {
+    if gap_wins(specificity, order, declaration_order, inline, *slot) {
+        *slot = Some(GapCascadeValue {
+            value,
+            specificity,
+            order,
+            declaration_order,
+            inline,
+        });
+    }
+}
+
+fn select_gap_candidate(
+    shorthand: Option<GapCascadeValue<GapComponentDeclaration>>,
+    longhand: Option<GapCascadeValue<GapComponentDeclaration>>,
+) -> Option<GapCascadeValue<GapComponentDeclaration>> {
     match (shorthand, longhand) {
-        (Some(shorthand), Some(longhand)) if gap_precedes(&longhand, &shorthand) => longhand.value,
-        (Some(shorthand), _) => match axis {
-            GapAxis::Row => shorthand.value.row,
-            GapAxis::Column => shorthand.value.column,
-        },
-        (None, Some(longhand)) => longhand.value,
-        (None, None) => 0,
+        (Some(shorthand), Some(longhand)) if gap_precedes(&longhand, &shorthand) => Some(longhand),
+        (Some(shorthand), _) => Some(shorthand),
+        (None, Some(longhand)) => Some(longhand),
+        (None, None) => None,
+    }
+}
+
+fn resolve_gap_axis(
+    shorthand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    longhand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> u32 {
+    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    loop {
+        let Some((layer, candidate)) = (0..MAX_NATIVE_CASCADE_LAYERS).rev().find_map(|layer| {
+            if blocked[layer] {
+                None
+            } else {
+                select_gap_candidate(shorthand[layer], longhand[layer])
+                    .map(|candidate| (layer, candidate))
+            }
+        }) else {
+            return 0;
+        };
+        match candidate.value {
+            GapComponentDeclaration::Value(value) => return value,
+            GapComponentDeclaration::RevertLayer => blocked[layer] = true,
+        }
     }
 }
 
@@ -2993,60 +3044,56 @@ fn apply_gap_declarations(
     specificity: u16,
     order: usize,
     inline: bool,
-    shorthand: &mut Option<GapCascadeValue<NativeGapValue>>,
-    row_gap: &mut Option<GapCascadeValue<u32>>,
-    column_gap: &mut Option<GapCascadeValue<u32>>,
+    cascade: &mut GapCascade,
 ) {
-    if let Some(value) = declarations.gap
-        && gap_wins(
+    let layer = cascade_layer_index(specificity);
+    if let Some(value) = declarations.gap {
+        let (row, column) = match value {
+            GapShorthandDeclaration::Value(value) => (
+                GapComponentDeclaration::Value(value.row),
+                GapComponentDeclaration::Value(value.column),
+            ),
+            GapShorthandDeclaration::RevertLayer => (
+                GapComponentDeclaration::RevertLayer,
+                GapComponentDeclaration::RevertLayer,
+            ),
+        };
+        set_gap_candidate(
+            &mut cascade.shorthand_row[layer],
+            row,
             specificity,
             order,
             declarations.gap_order,
             inline,
-            *shorthand,
-        )
-    {
-        *shorthand = Some(GapCascadeValue {
-            value,
+        );
+        set_gap_candidate(
+            &mut cascade.shorthand_column[layer],
+            column,
             specificity,
             order,
-            declaration_order: declarations.gap_order,
+            declarations.gap_order,
             inline,
-        });
+        );
     }
-    if let Some(value) = declarations.row_gap
-        && gap_wins(
+    if let Some(value) = declarations.row_gap {
+        set_gap_candidate(
+            &mut cascade.row_gap[layer],
+            value,
             specificity,
             order,
             declarations.row_gap_order,
             inline,
-            *row_gap,
-        )
-    {
-        *row_gap = Some(GapCascadeValue {
-            value,
-            specificity,
-            order,
-            declaration_order: declarations.row_gap_order,
-            inline,
-        });
+        );
     }
-    if let Some(value) = declarations.column_gap
-        && gap_wins(
+    if let Some(value) = declarations.column_gap {
+        set_gap_candidate(
+            &mut cascade.column_gap[layer],
+            value,
             specificity,
             order,
             declarations.column_gap_order,
             inline,
-            *column_gap,
-        )
-    {
-        *column_gap = Some(GapCascadeValue {
-            value,
-            specificity,
-            order,
-            declaration_order: declarations.column_gap_order,
-            inline,
-        });
+        );
     }
 }
 
@@ -3128,11 +3175,11 @@ struct NativeDeclarations {
     text_indent: Option<u32>,
     word_spacing: Option<u32>,
     letter_spacing: Option<u32>,
-    gap: Option<NativeGapValue>,
+    gap: Option<GapShorthandDeclaration>,
     gap_order: usize,
-    row_gap: Option<u32>,
+    row_gap: Option<GapComponentDeclaration>,
     row_gap_order: usize,
-    column_gap: Option<u32>,
+    column_gap: Option<GapComponentDeclaration>,
     column_gap_order: usize,
     width: Option<u32>,
     height: Option<u32>,
@@ -3640,8 +3687,8 @@ fn parse_declarations_with_diagnostics(
             "text-indent" => parse_dimension(value).is_some(),
             "word-spacing" => parse_dimension(value).is_some(),
             "letter-spacing" => parse_dimension(value).is_some(),
-            "gap" => parse_gap(value).is_some(),
-            "row-gap" | "column-gap" => parse_dimension(value).is_some(),
+            "gap" => parse_gap_declaration(value).is_some(),
+            "row-gap" | "column-gap" => parse_gap_component_declaration(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
             }
@@ -3938,19 +3985,19 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.letter_spacing = parse_dimension(value);
             }
             "gap" => {
-                if let Some(parsed) = parse_gap(value) {
+                if let Some(parsed) = parse_gap_declaration(value) {
                     declarations.gap = Some(parsed);
                     declarations.gap_order = declaration_order;
                 }
             }
             "row-gap" => {
-                if let Some(parsed) = parse_dimension(value) {
+                if let Some(parsed) = parse_gap_component_declaration(value) {
                     declarations.row_gap = Some(parsed);
                     declarations.row_gap_order = declaration_order;
                 }
             }
             "column-gap" => {
-                if let Some(parsed) = parse_dimension(value) {
+                if let Some(parsed) = parse_gap_component_declaration(value) {
                     declarations.column_gap = Some(parsed);
                     declarations.column_gap_order = declaration_order;
                 }
@@ -4429,6 +4476,22 @@ fn parse_gap(value: &str) -> Option<NativeGapValue> {
         .next()
         .is_none()
         .then_some(NativeGapValue { row, column })
+}
+
+fn parse_gap_declaration(value: &str) -> Option<GapShorthandDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(GapShorthandDeclaration::RevertLayer)
+    } else {
+        parse_gap(value).map(GapShorthandDeclaration::Value)
+    }
+}
+
+fn parse_gap_component_declaration(value: &str) -> Option<GapComponentDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(GapComponentDeclaration::RevertLayer)
+    } else {
+        parse_dimension(value).map(GapComponentDeclaration::Value)
+    }
 }
 
 fn parse_line_height(value: &str) -> Option<u32> {
@@ -5386,13 +5449,19 @@ mod tests {
         assert_eq!(declarations.letter_spacing, Some(12));
         assert_eq!(
             declarations.gap,
-            Some(NativeGapValue {
+            Some(GapShorthandDeclaration::Value(NativeGapValue {
                 row: 12,
                 column: 14,
-            })
+            }))
         );
-        assert_eq!(declarations.row_gap, Some(13));
-        assert_eq!(declarations.column_gap, Some(15));
+        assert_eq!(
+            declarations.row_gap,
+            Some(GapComponentDeclaration::Value(13))
+        );
+        assert_eq!(
+            declarations.column_gap,
+            Some(GapComponentDeclaration::Value(15))
+        );
         assert_eq!(declarations.font_weight, Some(FontWeightValue::Bold));
         assert_eq!(declarations.font_style, Some(FontStyleValue::Italic));
         assert_eq!(declarations.word_break, Some(WordBreakValue::BreakAll));
@@ -6285,21 +6354,32 @@ mod tests {
     fn gap_parser_accepts_one_or_two_bounded_non_negative_pixels() {
         assert_eq!(
             parse_declarations("gap: 16px").gap,
-            Some(NativeGapValue {
+            Some(GapShorthandDeclaration::Value(NativeGapValue {
                 row: 16,
                 column: 16,
-            })
+            }))
         );
         assert_eq!(
             parse_declarations("gap: 8px 16px").gap,
-            Some(NativeGapValue { row: 8, column: 16 })
+            Some(GapShorthandDeclaration::Value(NativeGapValue {
+                row: 8,
+                column: 16,
+            }))
         );
         assert_eq!(
             parse_declarations("gap: 0px").gap,
-            Some(NativeGapValue { row: 0, column: 0 })
+            Some(GapShorthandDeclaration::Value(NativeGapValue {
+                row: 0,
+                column: 0,
+            }))
+        );
+        assert_eq!(
+            parse_declarations("gap: REVERT-LAYER").gap,
+            Some(GapShorthandDeclaration::RevertLayer)
         );
         assert_eq!(parse_declarations("gap: -1px").gap, None);
         assert_eq!(parse_declarations("gap: 1px 2px 3px").gap, None);
+        assert_eq!(parse_declarations("gap: revert-layer 1px").gap, None);
         assert_eq!(parse_declarations("gap: 1.5px").gap, None);
         assert_eq!(parse_declarations("gap: 2em").gap, None);
         assert_eq!(parse_declarations("gap: 50%").gap, None);
@@ -6308,10 +6388,24 @@ mod tests {
 
     #[test]
     fn row_gap_parser_accepts_only_bounded_non_negative_single_pixels() {
-        assert_eq!(parse_declarations("row-gap: 16px").row_gap, Some(16));
-        assert_eq!(parse_declarations("row-gap: 0px").row_gap, Some(0));
+        assert_eq!(
+            parse_declarations("row-gap: 16px").row_gap,
+            Some(GapComponentDeclaration::Value(16))
+        );
+        assert_eq!(
+            parse_declarations("row-gap: 0px").row_gap,
+            Some(GapComponentDeclaration::Value(0))
+        );
+        assert_eq!(
+            parse_declarations("row-gap: revert-LAYER").row_gap,
+            Some(GapComponentDeclaration::RevertLayer)
+        );
         assert_eq!(parse_declarations("row-gap: -1px").row_gap, None);
         assert_eq!(parse_declarations("row-gap: 1px 2px").row_gap, None);
+        assert_eq!(
+            parse_declarations("row-gap: revert-layer 1px").row_gap,
+            None
+        );
         assert_eq!(parse_declarations("row-gap: 1.5px").row_gap, None);
         assert_eq!(parse_declarations("row-gap: 2em").row_gap, None);
         assert_eq!(parse_declarations("row-gap: 50%").row_gap, None);
@@ -6320,10 +6414,24 @@ mod tests {
 
     #[test]
     fn column_gap_parser_accepts_only_bounded_non_negative_single_pixels() {
-        assert_eq!(parse_declarations("column-gap: 16px").column_gap, Some(16));
-        assert_eq!(parse_declarations("column-gap: 0px").column_gap, Some(0));
+        assert_eq!(
+            parse_declarations("column-gap: 16px").column_gap,
+            Some(GapComponentDeclaration::Value(16))
+        );
+        assert_eq!(
+            parse_declarations("column-gap: 0px").column_gap,
+            Some(GapComponentDeclaration::Value(0))
+        );
+        assert_eq!(
+            parse_declarations("column-gap: REVERT-layer").column_gap,
+            Some(GapComponentDeclaration::RevertLayer)
+        );
         assert_eq!(parse_declarations("column-gap: -1px").column_gap, None);
         assert_eq!(parse_declarations("column-gap: 1px 2px").column_gap, None);
+        assert_eq!(
+            parse_declarations("column-gap: revert-layer 1px").column_gap,
+            None
+        );
         assert_eq!(parse_declarations("column-gap: 1.5px").column_gap, None);
         assert_eq!(parse_declarations("column-gap: 2em").column_gap, None);
         assert_eq!(parse_declarations("column-gap: 50%").column_gap, None);
@@ -7141,6 +7249,38 @@ mod tests {
             AlignContentValue::Center,
             JustifyContentValue::FlexEnd,
         );
+    }
+
+    #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_gap_components() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { gap: 2px 3px; } #rollback { gap: 6px 7px; } #repeated { gap: 10px 11px; } #fallback { gap: revert-layer; } #inline { gap: 18px 19px; } #invalid { gap: 24px 25px; gap: 1px 2px 3px; row-gap: 26px; row-gap: revert-layer 1px; } #longhand { row-gap: 2px; column-gap: 3px; } #mixed { gap: 30px 31px; } } @layer theme { .named { gap: 4px 5px; } #rollback { gap: 8px 9px; } #repeated { gap: 12px 13px; } #inline { gap: 20px 21px; } #longhand { row-gap: 4px; column-gap: 5px; } #mixed { gap: 40px 41px; } } @layer top { #repeated { gap: revert-layer; } #longhand { row-gap: revert-layer; column-gap: revert-layer; } } #named { gap: revert-layer; } #rollback { gap: revert-layer; row-gap: 10px; } #repeated { gap: revert-layer; } #mixed { gap: revert-layer; column-gap: 42px; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named' class='named'>Named</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let inline = node("<div id='inline' style='gap:revert-layer;column-gap:22px'>Inline</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let longhand = node("<div id='longhand'>Longhand</div>");
+        let mixed = node("<div id='mixed'>Mixed</div>");
+
+        let assert_values = |element: &NativeNode, row: u32, column: u32| {
+            let style = stylesheet.computed_for(element);
+            assert_eq!(style.row_gap(), row);
+            assert_eq!(style.column_gap(), column);
+        };
+
+        assert_values(&named, 4, 5);
+        assert_values(&rollback, 10, 9);
+        assert_values(&repeated, 12, 13);
+        assert_values(&fallback, 0, 0);
+        assert_values(&inline, 20, 22);
+        assert_values(&invalid, 26, 25);
+        assert_values(&longhand, 4, 5);
+        assert_values(&mixed, 40, 42);
     }
 
     #[test]

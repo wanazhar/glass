@@ -1,7 +1,7 @@
 ---
 id: native-engine-125
 scope: glass-browser/native-engine/cascade-layers-decoration-thickness-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-124]
 ---
 
@@ -107,11 +107,19 @@ conformance or browser parity.
 
 ## Implementation
 
-Pending. The implementation must add private thickness declaration storage,
-layer-indexed candidate resolution, case-insensitive `revert-layer` parsing,
-and parser/cascade plus display-list/raster regressions. It must not change
-package dependencies, feature defaults, crate boundaries, public thickness
-values, layout owners, or unrelated style behavior.
+Implemented at `271702ae` in
+`crates/glass-browser/src/browser/native_engine/css.rs` and
+`crates/glass-browser/tests/native_engine.rs`. The parser now accepts
+case-insensitive `text-decoration-thickness: revert-layer` into a private
+declaration-only state. Candidate storage reuses the bounded 15-layer registry
+and unlayered bucket from 122; resolution rolls back the winning layer until a
+concrete `1px|2px|3px|4px` value or the inherited/root fallback is reached.
+The immutable display-list command, one-to-four-cell decoration geometry, and
+software raster owners remain finite and unchanged. Parser, cascade,
+display-list, command, and decoded-raster regressions cover named and inline
+layers, repeated rollback, descendants, root fallback, and all three line
+owners. No dependency, feature, crate-boundary, layout, or unrelated style
+change was made.
 
 ## Verification
 
@@ -137,17 +145,55 @@ synchronization, and cleanup evidence here. Remote CI, browser parity,
 release, registry publication, and a third crate remain outside local task
 evidence unless separately executed and verified.
 
+Results:
+
+- `RUST_MIN_STACK=33554432 CARGO_TARGET_DIR=/tmp/glass-125-focused cargo test -p glass-browser --features native-engine --lib stylesheet_cascade_revert_layer_rolls_back_text_decoration_thickness_candidates`: 1 passed.
+- `CARGO_TARGET_DIR=/tmp/glass-125-focused cargo test -p glass-browser --features native-engine --test native_engine native_text_decoration_thickness_revert_layer_reaches_all_line_owners -- --nocapture`: 1 passed; underline, overline, and line-through command/raster assertions passed.
+- The complete native-enabled suites passed: browser library 921 passed/1
+  ignored and native integration 162 passed.
+- `RUST_MIN_STACK=33554432 CARGO_TARGET_DIR=/tmp/glass-125-focused scripts/check-rust-workspace.sh test`: passed for both installable crates and all targets/features. The browser matrix included 922 library tests with 1 ignored, 162 native integration tests, 18 browser smoke tests, 1 daemon-recovery test, 5 protocol-conformance tests, 1 public-API test, 2 CLI reliability tests, 2 fixture reliability tests, 4 scenario reliability tests, 1 TUI PTY smoke test, 6 Web IR corpus tests, 1 workflow-authoring test, 32 workspace-contract tests, and all example targets. `glass-dev` reported 365 unit tests, 4 development-runtime integration tests, and 15 PTY tests.
+- `CARGO_TARGET_DIR=/tmp/glass-125-focused scripts/check-rust-workspace.sh clippy`: passed with warnings denied for both crates (browser about 8m44s; dev about 7m15s). `CARGO_TARGET_DIR=/tmp/glass-125-focused cargo clippy -p glass-browser --no-default-features --all-targets --locked -- -D warnings`: passed (about 4m50s).
+- `RUSTDOCFLAGS="-D warnings" CARGO_TARGET_DIR=/tmp/glass-125-focused cargo doc --workspace --all-features --locked --no-deps`: passed (about 3m22s).
+- Locked default binary builds passed: `glass-browser` about 5m46s and
+  `glass-dev` 2.84s. Formatting and `git diff --check` passed.
+- Locked packaging passed: browser crate 196 files/5.1 MiB and dev crate 69
+  files/2.6 MiB; packaged dev dependency validation confirmed exact
+  `glass-browser 0.3.14`.
+- `cargo fetch --manifest-path fuzz/Cargo.toml --locked` and
+  `CARGO_TARGET_DIR=/tmp/glass-125-focused cargo check --manifest-path fuzz/Cargo.toml --locked --offline --all-targets`: passed (about 9m07s).
+- `cargo deny check`: passed advisories, bans, licenses, and sources with the
+  existing duplicate-dependency warnings. `cargo audit`: passed with the
+  configured/known warnings for unmaintained `bincode` and `yaml-rust`, the
+  allowed `lru` advisory, and yanked `chacha20`.
+- Version sync, feature parity, TUI shortcut inventory, documentation depth,
+  release documentation, script unit, reliability matrix, public adapters,
+  Web IR, and documentation coverage validators passed. Release truth found
+  539 Markdown documents, 83 current-version documents, 57 previous-version
+  references, and zero current-claim failures; coverage found 345 full-product
+  MCP entries, 100 browser-only entries, 17 examples, and 22 public modules.
+
+The checkout remained local-only throughout. No remote CI, browser parity,
+release, registry publication, push, tag, or third-crate claim is made.
+
 ## Cleanup
 
-All expensive gates must use isolated task targets where practical. Before
-deleting generated output, verify no Cargo/rustc/rustdoc/Clippy/fuzz/test
-writer owns it and no open file handle remains. Remove only exact task targets,
-reports, scratch entries, and generated evidence created by this task; preserve
-source, durable fixtures, active processes, and unrelated workloads. Final
-evidence must show no repository `target/`, no current task target/report
-candidates, no open handles, and the available-byte delta.
+All expensive gates used the isolated `/tmp/glass-125-focused` target. Before
+deletion it measured 10,075,952,454 bytes across 14,842 files. Four exact
+validator reports measured 180,429 bytes total, and the 64 exact
+PID-3802988 test scratch roots measured 2,231 bytes total. Process and
+recursive handle checks reported no Cargo/rustc/rustdoc/Clippy/fuzz/package
+writer and no open handle for those paths. They were removed with bounded
+`find -P <exact-path> -xdev -depth -delete` operations; no process was
+terminated and no source, fixture, durable data, or unrelated `/tmp` entry was
+touched. Available filesystem bytes increased from 75,375,235,072 to
+85,495,951,360, a measured delta of 10,120,716,288 bytes (about 9.42 GiB).
+The exact target, report, and scratch paths are absent; no repository-local
+`target/` and no top-level `/tmp/target/` remain. The three pre-existing Glass
+processes were preserved.
 
 ## Certification
 
-Pending local certification after implementation, full validation, issue #40
-synchronization, and exact regenerable-output cleanup.
+Local implementation, full validation, and exact regenerable-output cleanup
+are complete at `271702ae`. The issue body and maintainer comment still need
+to be synchronized to this completed slice before the next slice is designed;
+remote CI remains pending because no push was authorized.

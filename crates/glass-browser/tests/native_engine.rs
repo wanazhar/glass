@@ -1463,6 +1463,164 @@ fn native_text_decoration_color_revert_layer_preserves_local_fallback_and_glyph_
 }
 
 #[test]
+fn native_text_decoration_line_revert_layer_preserves_shared_line_owner() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:green; text-decoration-style:dashed; text-decoration-thickness:2px; text-underline-offset:1px; text-decoration-color:blue; } @layer base { #named { text-decoration-line:underline; } #rollback { text-decoration:underline; } #repeated { text-decoration:underline; } #unlayered { text-decoration:underline; } #inline { text-decoration:underline; } #fallback { text-decoration-line:revert-layer; } } @layer theme { .named { text-decoration-line:overline; } #rollback { text-decoration-line:revert-layer; } #repeated { text-decoration-line:revert-layer; } #unlayered { text-decoration-line:overline; } #inline { text-decoration-line:overline; } } @layer top { #repeated { text-decoration-line:revert-layer; } } #named { text-decoration-line:revert-layer; } #unlayered { text-decoration-line:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='repeated' class='line'>A</div><div id='unlayered' class='line'>A</div><div id='inline' class='line' style='text-decoration-line:revert-layer'>A</div><div id='fallback' class='line'>A</div><div id='parent' class='line' style='text-decoration:line-through'><span id='child' style='text-decoration-line:revert-layer'>A</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let blue = [0, 0, 255, 255];
+    let green = [0, 128, 0, 255];
+    let white = [255, 255, 255, 255];
+    let command_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        list.commands
+            .iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::TextRun {
+                    node_id: command_node_id,
+                    origin,
+                    color,
+                    decoration_color,
+                    decoration_style,
+                    decoration_thickness,
+                    underline_offset,
+                    underline,
+                    overline,
+                    line_through,
+                    ..
+                } if *command_node_id == node_id => Some((
+                    *origin,
+                    *color,
+                    *decoration_color,
+                    *decoration_style,
+                    *decoration_thickness,
+                    *underline_offset,
+                    *underline,
+                    *overline,
+                    *line_through,
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text command for {id}"))
+    };
+    let named = command_for("named");
+    let rollback = command_for("rollback");
+    let repeated = command_for("repeated");
+    let unlayered = command_for("unlayered");
+    let inline = command_for("inline");
+    let fallback = command_for("fallback");
+    let child = command_for("child");
+
+    assert_eq!(
+        (named.6, named.7, named.8),
+        (false, true, false),
+        "named candidate rolls back from unlayered to theme"
+    );
+    assert_eq!((rollback.6, rollback.7, rollback.8), (true, false, false));
+    assert_eq!((repeated.6, repeated.7, repeated.8), (true, false, false));
+    assert_eq!(
+        (unlayered.6, unlayered.7, unlayered.8),
+        (false, true, false)
+    );
+    assert_eq!((inline.6, inline.7, inline.8), (false, true, false));
+    assert_eq!((fallback.6, fallback.7, fallback.8), (false, false, false));
+    assert_eq!((child.6, child.7, child.8), (false, false, true));
+
+    for command in [named, rollback, repeated, unlayered, inline, fallback] {
+        assert_eq!(
+            command.1,
+            NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: 255,
+            }
+        );
+        assert_eq!(
+            command.2,
+            NativeColor {
+                red: 0,
+                green: 0,
+                blue: 255,
+                alpha: 255,
+            }
+        );
+        assert_eq!(command.3, NativeTextDecorationStyle::Dashed);
+        assert_eq!(command.4, 2);
+        assert_eq!(command.5, 1);
+        assert_eq!(
+            surface.pixel(command.0.x.saturating_add(1), command.0.y),
+            Some(green)
+        );
+    }
+    assert_eq!(
+        child.1,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255,
+        }
+    );
+    assert_eq!(
+        child.2,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255,
+        }
+    );
+    assert_eq!(child.3, NativeTextDecorationStyle::Dashed);
+    assert_eq!(child.4, 2);
+    assert_eq!(child.5, 1);
+    assert_eq!(
+        surface.pixel(
+            rollback.0.x.saturating_add(2),
+            rollback.0.y.saturating_add(8)
+        ),
+        Some(blue)
+    );
+    assert_eq!(
+        surface.pixel(
+            repeated.0.x.saturating_add(2),
+            repeated.0.y.saturating_add(8)
+        ),
+        Some(blue)
+    );
+    assert_eq!(
+        surface.pixel(inline.0.x.saturating_add(2), inline.0.y.saturating_sub(1)),
+        Some(blue)
+    );
+    assert_eq!(
+        surface.pixel(
+            fallback.0.x.saturating_add(2),
+            fallback.0.y.saturating_add(8)
+        ),
+        Some(white)
+    );
+    assert_eq!(
+        surface.pixel(
+            unlayered.0.x.saturating_add(2),
+            unlayered.0.y.saturating_sub(1)
+        ),
+        Some(blue)
+    );
+    assert_eq!(
+        surface.pixel(child.0.x.saturating_add(2), child.0.y.saturating_add(3)),
+        Some(green)
+    );
+}
+
+#[test]
 fn native_text_decoration_line_longhand_reuses_color_and_geometry() {
     let document = NativeDocument::parse(
         "<style>#target { display:block; width:24px; height:20px; line-height:20px; color:red; text-decoration-line:overline line-through; text-decoration-color:blue; }</style><div id='target'>A</div>",

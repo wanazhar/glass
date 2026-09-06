@@ -308,7 +308,6 @@ recorded in `docs/plan/tasks/native-engine-068.md`; design is `a0488ef`,
 implementation is `6b55b9c`, and current-source documentation closeout is
 recorded in this checkpoint. Remote CI remains pending because the branch is
 local-only.
-
 The completed dependency-ordered `native-engine-069` slice adds bounded
 non-inherited `flex-direction:row|row-reverse` to eligible fixed-width
 single-row flex rows. `row` remains equivalent to 068; `row-reverse` performs a
@@ -1174,6 +1173,14 @@ boundary. Focused, full-native, affected-library, strict Clippy, formatting,
 and static documentation gates passed locally; exact evidence and cleanup are
 recorded in the task. Remote CI remains pending because the checkout is
 local-only.
+The next dependency-ordered `native-engine-148` contract is planned in
+`docs/plan/tasks/native-engine-148.md`. It will reuse the same private bounded
+layer resolver for standalone, case-insensitive `revert-layer` on the existing
+local 8-bit `opacity` owner, preserving the full-opacity fallback and the
+reduced-opacity display-list group, software compositing, layout, point-hit,
+capture, and semantic/source-order owners. Inherited opacity,
+stacking-context/blending parity, filters, animation, multiple origins, and
+browser-wide opacity conformance remain outside the planned boundary.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1466,6 +1473,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-145` | completed reuse of bounded named-layer priority and private rollback for local `background-color:revert-layer` and inherited `color:revert-layer`, preserving independent `None`/inherited fallbacks and existing fill/text artifact consumers | `native-engine-144` | other CSS-wide keywords, `currentColor`, gradients, system colors, percentages, color spaces, border-color, multiple origins, `!important` inversion, layer statements, and browser-wide CSS color conformance |
 | `native-engine-146` | completed reuse of bounded named-layer priority and private rollback for local `overflow:revert-layer`, `overflow-x:revert-layer`, and `overflow-y:revert-layer`, preserving independent x/y visible fallbacks and existing clip consumers | `native-engine-145` | other CSS-wide keywords, nested scrolling, scrollbars, `visible`/`auto`/`scroll` used-value parity, multiple origins, `!important` inversion, layer statements, and browser-wide CSS overflow conformance |
 | `native-engine-147` | completed reuse of bounded named-layer priority and private rollback for local one-to-four-value integer `border-radius:revert-layer`, preserving zero-corner fallback and existing rounded fill/border/point-hit consumers | `native-engine-146` | other CSS-wide keywords, elliptical or percentage radii, corner longhands, nested clips, anti-aliasing, multiple origins, and browser-wide CSS border-radius conformance |
+| `native-engine-148` | planned reuse of bounded named-layer priority and private rollback for local 8-bit `opacity:revert-layer`, preserving full-opacity fallback and existing reduced-opacity group/compositing consumers | `native-engine-147` | other CSS-wide keywords, inherited opacity, stacking-context/blending parity, filters, animation, multiple origins, and browser-wide CSS opacity conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1896,6 +1904,7 @@ visual stacking.
 | bounded paint-color rollback | completed extension of the proven layer rollback to local `background-color` and inherited `color` through independent private candidates without changing public computed values or artifact schemas | two fixed candidate arrays add bounded paint cascade state; grouping fill and glyph color broadens the display/raster regression; no `currentColor`, gradients, system colors, color spaces, border-color, multiple origins, or browser color parity | share the optional local resolver, keep fill and inherited text candidates property-local, preserve `None`/inherited fallbacks, and test layer order, descendant inheritance, transparent override, fill/text display-list ownership, decoded raster, clipping, opacity, and source/semantic order together |
 | bounded overflow rollback | completed extension of the proven layer rollback to local `overflow`, `overflow-x`, and `overflow-y` through independent x/y candidates without changing public computed values or artifact schemas | two fixed candidate arrays add bounded clip cascade state; grouping shorthand expansion with axis-specific rollback broadens the clip/projection/hit-test regression; no nested scrolling, scrollbars, `visible`/`auto`/`scroll` used-value parity, multiple origins, or browser overflow parity | reuse the optional local resolver with visible/no-clip fallbacks, expand shorthand to both axes at the existing declaration boundary, keep x/y candidates independent, and test paint, projection, hit testing, root overflow, capture, and semantic/source order together |
 | bounded border-radius rollback | completed extension of the proven layer rollback to the local one-to-four-value integer `border-radius` shorthand without changing public computed values or artifact schemas | one fixed candidate array adds bounded local cascade state; grouping rounded fill, border, point-hit, capture, and raster checks broadens the existing geometry regression; no elliptical/percentage radii, corner longhands, nested clips, anti-aliasing, multiple origins, or browser border-radius parity | reuse the optional local resolver with a zero-corner fallback, keep the existing shorthand expansion/normalization and shared rounded geometry owner, and test named/repeated/unlayered/inline rollback, invalid-later preservation, rounded display/raster/hit behavior, overflow, capture, and semantic/source order together; focused and full-native gates passed locally |
+| bounded opacity rollback | planned extension of the proven layer rollback to the local quantized 8-bit `opacity` owner without changing layout, semantic, display-list, or raster schemas | one fixed candidate array adds bounded local cascade state; group-marker/compositing assertions broaden the artifact regression while full-opacity remains the explicit fallback; no inherited opacity, stacking-context/blending parity, filters, animation, multiple origins, or browser opacity parity | reuse the optional local resolver with a `255` fallback, preserve the existing quantization and reduced-opacity group owner, and test named/repeated/unlayered/inline rollback, invalid-later preservation, zero/full/reduced alpha, group replay, layout, hit testing, capture, and semantic/source order together |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence

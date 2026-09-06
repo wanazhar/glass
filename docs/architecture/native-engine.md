@@ -801,6 +801,12 @@ finite `flex-flow` expansion, and existing row/column/wrapped flex owners.
 Focused, full-native, affected-library, and strict affected-package local
 gates passed; exact test and cleanup evidence is recorded in the task. Remote
 CI remains pending because the checkout is local-only.
+The next dependency-ordered `native-engine-134` contract is planned in
+`docs/plan/tasks/native-engine-134.md`; it will extend the bounded rollback
+boundary to the non-inherited `flex-wrap`, `justify-content`, `align-items`,
+`align-self`, and `align-content` owners while retaining their native defaults,
+finite `flex-flow`/`place-content` expansion, and existing flex artifacts. No
+implementation or validation claim is made for 134 yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

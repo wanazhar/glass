@@ -1,7 +1,7 @@
 ---
 id: native-engine-141
 scope: glass-browser/native-engine/cascade-layers-inherited-vertical-align-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-140]
 ---
 
@@ -37,6 +37,18 @@ Read with:
 - `docs/plan/analysis/native-engine.md`
 - `docs/plan/README.md`
 - `docs/plan/tasks/native-engine-140.md`
+
+## Implementation
+
+The implementation is complete in
+`271bfaf236e8e4363182e08aa7b841d5b9494eaf`; the design checkpoint is
+`0d1f72818e01cdde4b99c464c33fc27ec6739ac2`. The stylesheet and inline
+declaration paths now keep a private bounded candidate sequence for inherited
+`vertical-align`, accept standalone case-insensitive `revert-layer`, preserve
+earlier valid values when a later declaration is invalid, and resolve the
+finite public value through the existing inherited style walk. No public
+computed-style field, display-list command, raster schema, diagnostic
+transport, dependency, feature default, or crate boundary changed.
 
 ## Contract
 
@@ -94,7 +106,7 @@ alignment, multiple origins, animation, script, or browser-wide CSS parity.
 
 ## Verification
 
-The focused gate must cover:
+The completed gate covered:
 
 - standalone case-insensitive parsing and typed rejection of other CSS-wide,
   mixed, malformed, unsupported, length, and percentage forms;
@@ -110,3 +122,30 @@ The focused gate must cover:
   integration/library tests, strict affected-package Clippy, formatting, and
   final static documentation gates. Remote CI remains unclaimed until an
   explicitly authorized push.
+
+## Evidence
+
+- Focused locked `glass-browser` check passed.
+- Targeted parser/cascade tests passed 2/2.
+- Targeted native integration test passed 1/1 with 177 filtered.
+- Full native integration passed 178/178.
+- Feature-enabled `glass-browser` library tests passed 947, with 1 ignored.
+- Strict affected-package Clippy passed.
+- Formatting and diff checks passed. Version synchronization and release
+  documentation passed with 555 Markdown documents, 83 current-document
+  records, 57 previous-version references, 649 semantic-audit hits, and zero
+  current-claim failures. Coverage passed with 345 full-product MCP tools
+  (100 browser-only), 17 examples, and 22 public modules. Documentation depth
+  passed with 93 current guides and 19 substantive contracts. Feature parity
+  passed for 14 capabilities across 4 targets (baseline 0.3.0, next 0.3.14,
+  checkout 0.3.14). TUI shortcut parity passed with 15 implementation help
+  keys and 63 documentation markers. Public read-only adapters passed with 5
+  adapters. Reliability passed with 6 scenarios across 4 targets. Web IR
+  corpus passed with 8 fixtures, 8 scenarios, and 11 categories.
+- The bounded focused target was inventoried and removed only after checking
+  for active Cargo/Rust processes and open handles: 5,499,282,159 logical
+  bytes, 6,358 files, and 888 directories; the audit directory was 4,742
+  bytes. `/tmp` availability increased from 78,451,109,888 to 83,970,142,208
+  bytes, a measured reclaim of 5,519,032,320 bytes. Post-delete checks found
+  neither exact path.
+- Remote CI remains pending because this checkout is local-only.

@@ -106,6 +106,8 @@ owner, bounded
   direct text,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
+  plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
+  rollback for `vertical-align` with finite parent/root fallbacks,
   bounded block-level `display:flex` single-row placement for eligible direct
   element children with fixed widths and margins, with normal-flow fallback
   for unsupported child shapes,
@@ -286,6 +288,8 @@ agreement reports exact schema and capability status.
   plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
   rollback for `word-spacing` and `letter-spacing` with finite parent/root
   fallbacks,
+  plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
+  rollback for `vertical-align` with finite parent/root fallbacks,
   and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary

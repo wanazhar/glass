@@ -1226,15 +1226,18 @@ multi-origin, and browser-wide text semantics remain outside the boundary;
 exact implementation, validation, and cleanup evidence are recorded in the
 task. Remote CI remains pending because the checkout is local-only.
 
-The next dependency-ordered [native-engine-141](tasks/native-engine-141.md)
-contract is planned. It will add standalone case-insensitive `revert-layer` to
-inherited `vertical-align` through private candidates, preserving finite
+The dependency-ordered [native-engine-141](tasks/native-engine-141.md)
+implementation is complete in `271bfaf2` (design `0d1f7281`) and recorded in
+the task. It adds standalone case-insensitive `revert-layer` to inherited
+`vertical-align` through private candidates, preserving finite
 `baseline|top|middle|bottom` values, parent/root fallback, and the existing
 inline line-item, text-fragment, display-list, raster, overflow, capture,
 hit-test, and semantic/source-order owners. Baseline metrics, lengths,
 percentages, bidi, writing modes, multiple origins, and browser-wide text
-conformance remain outside the planned boundary; implementation and evidence
-remain pending.
+conformance remain outside the boundary. Focused, full-native,
+affected-library, strict Clippy, formatting, and static documentation gates
+passed locally; exact evidence and cleanup are recorded in the task. Remote
+CI remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

@@ -7068,6 +7068,97 @@ fn native_flex_flow_place_content_revert_layer_preserves_layout_and_artifacts() 
 }
 
 #[test]
+fn native_gap_revert_layer_preserves_row_column_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #row { display:flex;width:14px;height:16px;flex-wrap:wrap;gap:2px 3px;align-items:flex-start;align-content:flex-start; } #column { display:flex;width:12px;height:14px;flex-direction:column;flex-wrap:wrap;gap:2px 3px;align-items:flex-start;align-content:flex-start; } } @layer theme { #row { gap:4px 5px; } #column { gap:4px 5px; } } @layer top { #row { gap:revert-layer; row-gap:8px; } #column { gap:revert-layer; column-gap:6px; } } #row { column-gap:revert-layer; } #column { row-gap:revert-layer; }</style><div id='row'><div id='row-first' style='width:4px;height:4px;flex-shrink:0;background-color:red'>A</div><div id='row-second' style='width:4px;height:4px;flex-shrink:0;background-color:green'>B</div><div id='row-third' style='width:4px;height:4px;flex-shrink:0;background-color:blue'>C</div></div><div id='column'><div id='column-first' style='width:4px;height:4px;flex-shrink:0;background-color:red'>D</div><div id='column-second' style='width:4px;height:4px;flex-shrink:0;background-color:green'>E</div><div id='column-third' style='width:4px;height:4px;flex-shrink:0;background-color:blue'>F</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(diagnostic.detail.as_str(), "gap" | "row-gap" | "column-gap"))
+    }));
+
+    let row = document.resolve_target("id=row").unwrap();
+    let row_first = document.resolve_target("id=row-first").unwrap();
+    let row_second = document.resolve_target("id=row-second").unwrap();
+    let row_third = document.resolve_target("id=row-third").unwrap();
+    let column = document.resolve_target("id=column").unwrap();
+    let column_first = document.resolve_target("id=column-first").unwrap();
+    let column_second = document.resolve_target("id=column-second").unwrap();
+    let column_third = document.resolve_target("id=column-third").unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let row_rect = layout.box_for(row).unwrap();
+    let row_first_rect = layout.box_for(row_first).unwrap();
+    let row_second_rect = layout.box_for(row_second).unwrap();
+    let row_third_rect = layout.box_for(row_third).unwrap();
+    assert_eq!(row_rect.height, 16);
+    assert_eq!(row_first_rect.x, row_rect.x);
+    assert_eq!(row_first_rect.y, row_rect.y);
+    assert_eq!(row_second_rect.x, row_rect.x + 9);
+    assert_eq!(row_second_rect.y, row_rect.y);
+    assert_eq!(row_third_rect.x, row_rect.x);
+    assert_eq!(row_third_rect.y, row_rect.y + 12);
+    assert_eq!(layout.content_height, 30);
+    assert_eq!(layout.max_scroll_offset().y, 6);
+    assert_eq!(
+        layout.hit_test(
+            i64::from(row_third_rect.x + 1),
+            i64::from(row_third_rect.y + 1),
+        ),
+        Ok(Some(row_third))
+    );
+
+    let column_rect = layout.box_for(column).unwrap();
+    let column_first_rect = layout.box_for(column_first).unwrap();
+    let column_second_rect = layout.box_for(column_second).unwrap();
+    let column_third_rect = layout.box_for(column_third).unwrap();
+    assert_eq!(column_first_rect.x, column_rect.x);
+    assert_eq!(column_first_rect.y, column_rect.y);
+    assert_eq!(column_second_rect.x, column_rect.x);
+    assert_eq!(column_second_rect.y, column_rect.y + 8);
+    assert_eq!(column_third_rect.x, column_rect.x + 10);
+    assert_eq!(column_third_rect.y, column_rect.y);
+    assert_eq!(
+        layout.hit_test(
+            i64::from(column_third_rect.x + 1),
+            i64::from(column_third_rect.y + 1),
+        ),
+        Ok(Some(column_third))
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == row_third && *rect == row_third_rect
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == column_third && *rect == column_third_rect
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(row_third_rect.x + 1, row_third_rect.y + 1),
+        Some([0, 0, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(column_third_rect.x + 1, column_third_rect.y + 1),
+        Some([0, 0, 255, 255])
+    );
+}
+
+#[test]
 fn native_flex_align_items_moves_complete_subtrees_and_paint_artifacts() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:40px;height:31px;gap:2px;align-items:center'><button id='short' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></button><button id='tall' style='width:6px;height:20px;background-color:blue'>B</button></div>",

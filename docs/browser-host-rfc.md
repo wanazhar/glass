@@ -165,7 +165,9 @@ allocation plus `flex-basis:auto|Npx` base-size selection, including
 case-insensitive 15-layer/unlayered `revert-layer` rollback for the components
 and standalone `flex:revert-layer`, `flex-flow:revert-layer`, and
 `place-content:revert-layer` shorthand rollback with native fallbacks and
-finite shorthand expansion,
+finite shorthand expansion, plus bounded case-insensitive gap-family
+`revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with independent
+finite-pixel components,
 bounded case-insensitive 15-layer/unlayered rollback for non-inherited
 `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
 and `flex-direction` owners with their native fallbacks,

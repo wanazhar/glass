@@ -118,7 +118,9 @@ owner, bounded
   case-insensitive 15-layer/unlayered `revert-layer` rollback for the
   components and standalone `flex:revert-layer`, `flex-flow:revert-layer`,
   and `place-content:revert-layer` shorthand rollback with native fallbacks
-  and finite shorthand expansion,
+  and finite shorthand expansion, plus bounded case-insensitive gap-family
+  `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
+  independent finite-pixel components,
   bounded case-insensitive 15-layer/unlayered rollback for non-inherited
   `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
   and `flex-direction` owners with their native fallbacks,
@@ -210,7 +212,10 @@ The native Flexbox rollback surface also accepts standalone case-insensitive
 `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer`,
 resolving each shorthand through its existing bounded component candidates
 while preserving finite shorthand expansion and same-block longhand
-precedence.
+precedence. The same private component-candidate owner accepts standalone
+case-insensitive `gap:revert-layer`, `row-gap:revert-layer`, and
+`column-gap:revert-layer`, preserving finite pixel parsing, shorthand expansion,
+independent row/column fallback, and same-block declaration order.
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -260,6 +265,8 @@ agreement reports exact schema and capability status.
   non-inherited `order`, `flex-grow`, `flex-shrink`, and `flex-basis` rollback,
   including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and
   `place-content:revert-layer` shorthand rollback,
+  plus standalone case-insensitive `gap:revert-layer`, `row-gap:revert-layer`,
+  and `column-gap:revert-layer` rollback with finite pixel components,
   and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary

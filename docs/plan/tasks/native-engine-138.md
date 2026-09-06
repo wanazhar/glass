@@ -1,7 +1,7 @@
 ---
 id: native-engine-138
 scope: glass-browser/native-engine/cascade-layers-gap-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-137]
 ---
 
@@ -82,14 +82,45 @@ The slice remains a horizontal-tb, fixed-cell, bounded local-content contract.
 It changes only which existing gap component candidates win the cascade; it
 does not add intrinsic or percentage sizing, grid behavior, or browser parity.
 
-## Planned implementation
+## Implementation and local result
 
-- Add private declaration-aware parsers for the standalone rollback token while
-  retaining the existing concrete gap parsers.
-- Preserve the existing shorthand/longhand declaration-order comparison while
-  retaining a bounded candidate per physical component and cascade layer.
-- Extend parser, diagnostic, row/column layout, display-list, hit-test,
-  overflow/scroll, and decoded-raster regressions.
+- Design checkpoint: `656dc37d` (`docs(native-engine): plan gap rollback`).
+- Implementation checkpoint: `bded96ae` (`feat(native-engine): add gap
+  rollback`).
+- Added private declaration-aware gap parsers and four fixed bounded
+  row/column cascade candidate arrays; the public computed gap values remain
+  finite `u32` pixels.
+- `gap:revert-layer` rolls back both physical components while the two
+  longhands roll back independently; same-block shorthand/longhand order,
+  named-layer priority, unlayered/inline precedence, invalid-declaration
+  handling, zero fallback, and non-inherited descendant behavior are covered.
+- Existing layout, overflow/scroll, point-hit, display-list, software-raster,
+  semantic, and source-order owners consume the resolved values without public
+  schema, dependency, feature, or crate-boundary changes.
+- Focused native test binary: 7 gap parser/cascade tests passed.
+- Focused integration: 1 gap row/column layout and artifact test passed.
+- Full native integration: 175 tests passed.
+- Full `glass-browser` native-feature library: 940 tests passed, 1 ignored,
+  with `RUST_MIN_STACK=33554432`.
+- Strict affected-package Clippy (`glass-browser`, native-engine,
+  all-targets, locked, `-D warnings`) passed.
+- `cargo fmt --all` and `git diff --check` passed.
+- Static version, release-documentation, documentation-depth/coverage,
+  feature-parity, TUI-shortcut, adapter, reliability, and Web IR gates passed
+  for the synchronized checkout: 552 Markdown documents, 83 current guides,
+  649 semantic audit hits, zero current-claim failures, 345 full-product MCP
+  tools, 17 examples, 22 public modules, 14 parity capabilities across four
+  targets, 15 implementation help keys, 63 documentation markers, 5
+  read-only adapters, 6 reliability scenarios across four targets, and 8 Web
+  IR fixtures across 11 categories.
+- The bounded `/tmp/glass-138-focused` target measured 6,597,239,094 logical
+  bytes across 6,985 files and 892 directories after all Cargo and static
+  gates; it had no open handles and was removed with bounded `find -P
+  /tmp/glass-138-focused -xdev -depth -delete`. `/tmp` free space increased
+  from 77,372,166,144 to 83,989,454,848 bytes, reclaiming 6,617,288,704
+  bytes, and the target path is absent.
+- Remote CI, push, release, tag, registry publication, and browser parity are
+  not claimed; this checkout remains local-only.
 
 ## Tradeoffs
 

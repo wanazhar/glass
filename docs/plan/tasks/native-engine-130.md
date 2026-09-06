@@ -1,7 +1,7 @@
 ---
 id: native-engine-130
 scope: glass-browser/native-engine/cascade-layers-white-space-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-129]
 ---
 
@@ -76,6 +76,39 @@ crate boundary changes are permitted.
 The slice remains a horizontal-tb, fixed-cell, bounded local-content contract;
 it does not claim browser parity, full CSS cascade semantics, or a complete
 browser engine.
+
+## Implementation and local result
+
+The implementation is complete in `d7f4d7ca` (`feat(native-engine): support
+white-space rollback`). `WhiteSpaceDeclaration` keeps `revert-layer` private,
+stores stylesheet and inline candidates in the existing bounded cascade-layer
+array, resolves repeated rollback before inherited/root fallback, and leaves
+the public `WhiteSpaceValue` and all downstream flow/artifact owners unchanged.
+The supported-value diagnostic classifier uses the same declaration parser, so
+valid case variants do not produce false unsupported-value diagnostics.
+
+The focused and affected-package gates passed:
+
+- `cargo check -p glass-browser --features native-engine --test native_engine
+  --locked` — passed in 1.39s.
+- parser/cascade filters — 2 unit tests passed; the new integration test — 1
+  passed; existing `pre-line`/`pre`/`pre-wrap` regressions — 3 passed; existing
+  `nowrap` regression — 1 passed.
+- `cargo test -p glass-browser --features native-engine --lib --locked` with
+  `RUST_MIN_STACK=33554432` — 929 passed, 1 ignored.
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  --locked` — 167 passed.
+- `cargo clippy -p glass-browser --features native-engine --all-targets
+  --locked -- -D warnings` — passed.
+
+The first full library invocation with the default test-thread stack hit a
+pre-existing deterministic overflow in
+`cli::args::tests::agent_readiness_commands_are_explicit`; the isolated test
+reproduced it and the same test passed with the explicit 32 MiB stack. This is
+a test-runtime limitation, not a production or native-engine failure, and the
+source was not changed to hide it. Full native, two-crate, strict, fuzz,
+security, static-documentation, and remote-CI gates remain issue-level gates;
+remote CI is unclaimed because this checkout has not been pushed.
 
 ## Tradeoffs
 

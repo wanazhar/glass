@@ -79,6 +79,8 @@ four-side padding/margin edges, bounded source-whitespace boundaries, and
 bounded hard line breaks in supported inline flow, and
 bounded inherited `white-space: pre-line`, `white-space: pre`,
 `white-space: pre-wrap`, and `white-space: nowrap` source whitespace flow, and
+bounded case-insensitive 15-layer/unlayered `white-space: revert-layer`
+rollback with five-mode inherited/root fallback, and
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
 text paint, bounded fixed-cell `text-decoration:none|underline|overline|line-through`
@@ -761,12 +763,16 @@ precedence while preserving the finite alignment values, direction mapping,
 final-line alignment, separator justification, and all existing line/artifact
 owners. The public computed values and downstream geometry remain unchanged;
 the supported-value diagnostic path recognizes the same declaration forms.
-The next designed dependency-ordered boundary is `native-engine-130`, recorded
-in `docs/plan/tasks/native-engine-130.md`. It adds private, case-insensitive
-`white-space: revert-layer` declarations through the existing 15-layer and
-unlayered/inline cascade boundary while preserving the five finite whitespace
-modes and all existing line-flow/artifact owners; implementation is not yet
-claimed.
+The dependency-ordered 130 implementation is complete in `d7f4d7ca` and is
+recorded in `docs/plan/tasks/native-engine-130.md`. It adds private,
+case-insensitive `white-space: revert-layer` declarations through the
+existing 15-layer and unlayered/inline cascade boundary while preserving the
+five finite whitespace modes, inherited/root fallback, and all existing
+line-flow/artifact owners. Focused parser/cascade and complete native-engine
+integration gates, the full affected library suite, and strict affected-
+package Clippy passed locally; the package library gate used an explicit 32 MiB
+test-thread stack because one pre-existing CLI test overflows the default
+thread stack. Remote CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1680,6 +1686,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded 15-layer/unlayered `revert-layer` rollback for inherited
   `text-align`, `text-align-last`, and `text-justify`, with private declaration
   state and unchanged line/artifact owners.
+- bounded 15-layer/unlayered `revert-layer` rollback for inherited
+  `white-space`, with private declaration state, five finite modes, inherited/
+  root fallback, and unchanged line-flow/artifact owners.
 - bounded `rgba(R, G, B, A)` functional alpha parsing for background, border,
   and text colors, with shared fixed-point quantization, display-list color
   ownership, and integer source-over replay.

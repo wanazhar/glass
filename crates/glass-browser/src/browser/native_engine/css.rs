@@ -1169,8 +1169,10 @@ impl NativeStylesheet {
         inherited: NativeInheritedStyle,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
-        let mut display = None;
-        let mut visibility = None;
+        let mut display: [Option<CascadeValue<LocalCascadeDeclaration<DisplayValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut visibility: [Option<CascadeValue<LocalCascadeDeclaration<VisibilityValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut opacity: [Option<CascadeValue<LocalCascadeDeclaration<u8>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut white_space: [Option<CascadeValue<WhiteSpaceDeclaration>>;
@@ -1274,26 +1276,20 @@ impl NativeStylesheet {
             if !matches(&rule.selector) {
                 continue;
             }
-            if let Some(value) = rule.declarations.display
-                && wins(rule.selector.specificity, rule.order, false, display)
-            {
-                display = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.visibility
-                && wins(rule.selector.specificity, rule.order, false, visibility)
-            {
-                visibility = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_local_cascade_declaration(
+                rule.declarations.display,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut display,
+            );
+            apply_local_cascade_declaration(
+                rule.declarations.visibility,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut visibility,
+            );
             apply_local_cascade_declaration(
                 rule.declarations.opacity,
                 rule.selector.specificity,
@@ -1833,26 +1829,20 @@ impl NativeStylesheet {
 
         if let Some(inline_style) = node.attribute("style") {
             let declarations = parse_declarations(inline_style);
-            if let Some(value) = declarations.display
-                && wins(u16::MAX, usize::MAX, true, display)
-            {
-                display = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.visibility
-                && wins(u16::MAX, usize::MAX, true, visibility)
-            {
-                visibility = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_local_cascade_declaration(
+                declarations.display,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut display,
+            );
+            apply_local_cascade_declaration(
+                declarations.visibility,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut visibility,
+            );
             apply_local_cascade_declaration(
                 declarations.opacity,
                 u16::MAX,
@@ -2278,9 +2268,11 @@ impl NativeStylesheet {
         let resolved_margin = margin.map(resolve_local_optional_cascade_declaration);
 
         NativeComputedStyle {
-            display: display.map_or(DisplayValue::Auto, |value| value.value),
-            visibility_hidden: visibility
-                .is_some_and(|value| value.value == VisibilityValue::Hidden),
+            display: resolve_local_cascade_declaration(display, DisplayValue::Auto),
+            visibility_hidden: resolve_local_cascade_declaration(
+                visibility,
+                VisibilityValue::Other,
+            ) == VisibilityValue::Hidden,
             opacity: resolve_local_optional_cascade_declaration(opacity),
             white_space: resolve_white_space(white_space, inherited.white_space),
             text_align: resolve_text_align(text_align, inherited.text_align),
@@ -3125,8 +3117,8 @@ fn apply_border_sides(
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeDeclarations {
-    display: Option<DisplayValue>,
-    visibility: Option<VisibilityValue>,
+    display: Option<LocalCascadeDeclaration<DisplayValue>>,
+    visibility: Option<LocalCascadeDeclaration<VisibilityValue>>,
     opacity: Option<LocalCascadeDeclaration<u8>>,
     white_space: Option<WhiteSpaceDeclaration>,
     text_align: Option<TextAlignDeclaration>,
@@ -3617,23 +3609,8 @@ fn parse_declarations_with_diagnostics(
         let value = value.strip_suffix("!important").map_or(value, str::trim);
         let property_name = property.to_ascii_lowercase();
         let supported = match property_name.as_str() {
-            "display" => {
-                matches!(
-                    value.to_ascii_lowercase().as_str(),
-                    "none"
-                        | "block"
-                        | "flow-root"
-                        | "list-item"
-                        | "table"
-                        | "inline"
-                        | "inline-block"
-                        | "inline-flex"
-                        | "inline-grid"
-                        | "flex"
-                        | "contents"
-                )
-            }
-            "visibility" => parse_visibility(value).is_some(),
+            "display" => parse_display_declaration(value).is_some(),
+            "visibility" => parse_visibility_declaration(value).is_some(),
             "opacity" => parse_opacity_declaration(value).is_some(),
             "white-space" => parse_white_space_declaration(value).is_some(),
             "text-align" => parse_text_align_declaration(value).is_some(),
@@ -3840,10 +3817,14 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
         let value = value.strip_suffix("!important").map_or(value, str::trim);
         match property.to_ascii_lowercase().as_str() {
             "display" => {
-                declarations.display = parse_display(value);
+                if let Some(parsed) = parse_display_declaration(value) {
+                    declarations.display = Some(parsed);
+                }
             }
             "visibility" => {
-                declarations.visibility = parse_visibility(value);
+                if let Some(parsed) = parse_visibility_declaration(value) {
+                    declarations.visibility = Some(parsed);
+                }
             }
             "opacity" => {
                 if let Some(parsed) = parse_opacity_declaration(value) {
@@ -4522,6 +4503,10 @@ fn parse_display(value: &str) -> Option<DisplayValue> {
         "grid" => Some(DisplayValue::Other),
         _ => None,
     }
+}
+
+fn parse_display_declaration(value: &str) -> Option<LocalCascadeDeclaration<DisplayValue>> {
+    parse_local_cascade_declaration(value, parse_display)
 }
 
 fn parse_dimension(value: &str) -> Option<u32> {
@@ -5225,6 +5210,10 @@ fn parse_visibility(value: &str) -> Option<VisibilityValue> {
     }
 }
 
+fn parse_visibility_declaration(value: &str) -> Option<LocalCascadeDeclaration<VisibilityValue>> {
+    parse_local_cascade_declaration(value, parse_visibility)
+}
+
 fn parse_overflow(value: &str) -> Option<OverflowValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(OverflowValue::Hidden),
@@ -5524,8 +5513,14 @@ mod tests {
         let declarations = parse_declarations(
             "color: red; display: none !important; visibility: visible; opacity: 50%; white-space: pre-line; text-align: center; text-align-last: end; text-justify: inter-word; justify-content: space-between; align-items: flex-end; align-self: center; align-content: stretch; flex-direction: row-reverse; direction: RTL; flex-wrap: wrap-reverse; order: -12; flex-grow: 2; flex-shrink: 3; flex-basis: 40px; text-decoration: underline; text-decoration-style: dotted; text-decoration-thickness: 2px; text-underline-offset: -2px; text-indent: 12px; word-spacing: 12px; letter-spacing: 12px; gap: 12px 14px; row-gap: 13px; column-gap: 15px; font-weight: bold; font-style: italic; word-break: break-all; text-overflow: ellipsis; vertical-align: bottom; width: 240px; height: 30px; min-width: 12px; max-width: 400px; min-height: 14px; max-height: 500px; line-height: 28px; border: 2px solid #102030; border-radius: 1px 2px 3px 4px; padding: 4px; margin: 3px; box-sizing: border-box; overflow: hidden",
         );
-        assert_eq!(declarations.display, Some(DisplayValue::None));
-        assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
+        assert_eq!(
+            declarations.display,
+            Some(LocalCascadeDeclaration::Value(DisplayValue::None))
+        );
+        assert_eq!(
+            declarations.visibility,
+            Some(LocalCascadeDeclaration::Value(VisibilityValue::Other))
+        );
         assert_eq!(
             declarations.opacity,
             Some(LocalCascadeDeclaration::Value(128))
@@ -6028,6 +6023,100 @@ mod tests {
         .unwrap();
         let node = node("<button id='shown' style='display:none'>Shown</button>");
         assert!(stylesheet.computed_for(&node).hidden());
+    }
+
+    #[test]
+    fn display_visibility_revert_layer_rolls_back_named_and_inline_candidates() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { display:none; visibility:hidden; } #repeat { display:block; visibility:hidden; } #contents { display:contents; visibility:visible; } #fallback { display:revert-layer; visibility:revert-layer; } #inline { display:block; visibility:hidden; } } @layer theme { #named { display:block; visibility:visible; } #named { display:revert-layer; visibility:revert-layer; } #repeat { display:revert-layer; visibility:revert-layer; } #contents { display:block; visibility:hidden; } #contents { display:revert-layer; visibility:revert-layer; } } @layer top { #repeat { display:revert-layer; visibility:revert-layer; } } #named { display:revert-layer; visibility:revert-layer; } #repeat { display:revert-layer; visibility:revert-layer; } #contents { display:revert-layer; visibility:revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<button id='named'>Named</button>");
+        let repeat = node("<button id='repeat'>Repeat</button>");
+        let contents = node("<button id='contents'>Contents</button>");
+        let fallback = node("<button id='fallback'>Fallback</button>");
+        let inline = node(
+            "<button id='inline' style='display:ReVeRt-LaYeR;visibility:revert-layer'>Inline</button>",
+        );
+
+        assert_eq!(
+            stylesheet.computed_for(&named).display(),
+            DisplayValue::None
+        );
+        assert!(stylesheet.computed_for(&named).hidden());
+        assert_eq!(
+            stylesheet.computed_for(&repeat).display(),
+            DisplayValue::Block
+        );
+        assert!(stylesheet.computed_for(&repeat).hidden());
+        assert_eq!(
+            stylesheet.computed_for(&contents).display(),
+            DisplayValue::Contents
+        );
+        assert!(!stylesheet.computed_for(&contents).hidden());
+        assert_eq!(
+            stylesheet.computed_for(&fallback).display(),
+            DisplayValue::Auto
+        );
+        assert!(!stylesheet.computed_for(&fallback).hidden());
+        assert_eq!(
+            stylesheet.computed_for(&inline).display(),
+            DisplayValue::Block
+        );
+        assert!(stylesheet.computed_for(&inline).hidden());
+
+        let declarations = parse_declarations(
+            "display: block; display: unsupported; visibility: hidden; visibility: unsupported",
+        );
+        assert_eq!(
+            declarations.display,
+            Some(LocalCascadeDeclaration::Value(DisplayValue::Block))
+        );
+        assert_eq!(
+            declarations.visibility,
+            Some(LocalCascadeDeclaration::Value(VisibilityValue::Hidden))
+        );
+        assert_eq!(
+            parse_display_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_visibility_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+
+        let mut diagnostics = NativeDiagnosticSink::default();
+        NativeStylesheet::from_sources_with_diagnostics(
+            vec![
+                "#valid { display: ReVeRt-LaYeR; visibility: revert-layer; } #invalid { display: block inline; visibility: hidden visible; }"
+                    .into(),
+            ],
+            &mut diagnostics,
+        )
+        .unwrap();
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                        && diagnostic.detail == "display"
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                        && diagnostic.detail == "visibility"
+                })
+                .count(),
+            1
+        );
     }
 
     #[test]

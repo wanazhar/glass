@@ -1173,14 +1173,27 @@ boundary. Focused, full-native, affected-library, strict Clippy, formatting,
 and static documentation gates passed locally; exact evidence and cleanup are
 recorded in the task. Remote CI remains pending because the checkout is
 local-only.
-The next dependency-ordered `native-engine-148` contract is planned in
-`docs/plan/tasks/native-engine-148.md`. It will reuse the same private bounded
+The dependency-ordered `native-engine-148` implementation is complete in
+`d3f89a6c` (design `d882d846`) and is recorded in
+`docs/plan/tasks/native-engine-148.md`. It reuses the same private bounded
 layer resolver for standalone, case-insensitive `revert-layer` on the existing
-local 8-bit `opacity` owner, preserving the full-opacity fallback and the
-reduced-opacity display-list group, software compositing, layout, point-hit,
-capture, and semantic/source-order owners. Inherited opacity,
-stacking-context/blending parity, filters, animation, multiple origins, and
-browser-wide opacity conformance remain outside the planned boundary.
+local 8-bit `opacity` owner, preserving the full-opacity fallback,
+reduced-opacity group markers and software compositing, and the existing
+layout, point-hit, capture, raster, overflow, and semantic/source-order
+owners. Inherited opacity, stacking-context/blending parity, filters,
+animation, multiple origins, and browser-wide opacity conformance remain
+outside the boundary. Focused parser/cascade and integration tests, full-native
+integration/library tests, strict affected-package Clippy, and formatting
+passed locally. Static documentation gates passed with 562 Markdown documents,
+83 current documents, 57 previous-version hits, 656 semantic-audit hits, and
+0 current-claim failures. Documentation coverage passed with 562 Markdown
+files, 345 full-product MCP tools (100 browser-only), 17 examples, and 22
+public modules; depth passed with 93 guides and 19 substantive contracts;
+parity passed for 14 capabilities across 4 targets; TUI passed at 15
+implementation help keys/63 documentation markers; adapters passed at 5;
+reliability passed at 6 scenarios across 4 targets; and Web IR passed at 8
+fixtures/8 scenarios/11 categories. Remote CI remains pending because the
+checkout is local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1473,7 +1486,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-145` | completed reuse of bounded named-layer priority and private rollback for local `background-color:revert-layer` and inherited `color:revert-layer`, preserving independent `None`/inherited fallbacks and existing fill/text artifact consumers | `native-engine-144` | other CSS-wide keywords, `currentColor`, gradients, system colors, percentages, color spaces, border-color, multiple origins, `!important` inversion, layer statements, and browser-wide CSS color conformance |
 | `native-engine-146` | completed reuse of bounded named-layer priority and private rollback for local `overflow:revert-layer`, `overflow-x:revert-layer`, and `overflow-y:revert-layer`, preserving independent x/y visible fallbacks and existing clip consumers | `native-engine-145` | other CSS-wide keywords, nested scrolling, scrollbars, `visible`/`auto`/`scroll` used-value parity, multiple origins, `!important` inversion, layer statements, and browser-wide CSS overflow conformance |
 | `native-engine-147` | completed reuse of bounded named-layer priority and private rollback for local one-to-four-value integer `border-radius:revert-layer`, preserving zero-corner fallback and existing rounded fill/border/point-hit consumers | `native-engine-146` | other CSS-wide keywords, elliptical or percentage radii, corner longhands, nested clips, anti-aliasing, multiple origins, and browser-wide CSS border-radius conformance |
-| `native-engine-148` | planned reuse of bounded named-layer priority and private rollback for local 8-bit `opacity:revert-layer`, preserving full-opacity fallback and existing reduced-opacity group/compositing consumers | `native-engine-147` | other CSS-wide keywords, inherited opacity, stacking-context/blending parity, filters, animation, multiple origins, and browser-wide CSS opacity conformance |
+| `native-engine-148` | completed reuse of bounded named-layer priority and private rollback for local 8-bit `opacity:revert-layer`, preserving full-opacity fallback, reduced-opacity group/compositing consumers, and unchanged geometry/artifact owners | `native-engine-147` | other CSS-wide keywords, inherited opacity, stacking-context/blending parity, filters, animation, multiple origins, and browser-wide CSS opacity conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

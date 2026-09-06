@@ -154,6 +154,13 @@ preserving the zero-corner fallback and the existing rounded layout, fill,
 border, point-hit, capture, raster, overflow, and semantic/source-order owners;
 elliptical, percentage, corner-longhand, nested-clip, anti-aliasing,
 multiple-origin, and browser-wide border-radius conformance remain outside the
+boundary. The same bounded local cascade path also accepts standalone,
+case-insensitive 15-layer/unlayered `opacity:revert-layer` for the existing
+local 8-bit opacity owner, preserving the full-opacity (`255`) fallback,
+reduced-opacity group markers and software compositing, and unchanged layout,
+point-hit, capture, raster, overflow, and semantic/source-order owners;
+inherited opacity, stacking-context/blending parity, filters, animation,
+multiple origins, and browser-wide opacity conformance remain outside the
 boundary. It also provides side-specific solid/dashed/dotted-border paint,
 bounded physical circular border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

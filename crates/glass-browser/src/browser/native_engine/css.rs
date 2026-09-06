@@ -427,6 +427,12 @@ pub(crate) enum DirectionValue {
     Rtl,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectionDeclaration {
+    Value(DirectionValue),
+    RevertLayer,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum FlexWrapValue {
     #[default]
@@ -1090,12 +1096,13 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_justify: [Option<CascadeValue<TextJustifyDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut direction: [Option<CascadeValue<DirectionDeclaration>>; MAX_NATIVE_CASCADE_LAYERS] =
+            [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut justify_content = None;
         let mut align_items = None;
         let mut align_self = None;
         let mut align_content = None;
         let mut flex_direction = None;
-        let mut direction = None;
         let mut flex_wrap = None;
         let mut flex_item_order = None;
         let mut flex_grow = None;
@@ -1236,6 +1243,21 @@ impl NativeStylesheet {
                 )
             {
                 text_justify[layer] = Some(CascadeValue {
+                    value,
+                    specificity: rule.selector.specificity,
+                    order: rule.order,
+                    inline: false,
+                });
+            }
+            if let Some(value) = rule.declarations.direction
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    direction[layer],
+                )
+            {
+                direction[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1553,16 +1575,6 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.direction
-                && wins(rule.selector.specificity, rule.order, false, direction)
-            {
-                direction = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
             if let Some(value) = rule.declarations.flex_wrap
                 && wins(rule.selector.specificity, rule.order, false, flex_wrap)
             {
@@ -1803,6 +1815,16 @@ impl NativeStylesheet {
                 && wins(u16::MAX, usize::MAX, true, text_justify[layer])
             {
                 text_justify[layer] = Some(CascadeValue {
+                    value,
+                    specificity: u16::MAX,
+                    order: usize::MAX,
+                    inline: true,
+                });
+            }
+            if let Some(value) = declarations.direction
+                && wins(u16::MAX, usize::MAX, true, direction[layer])
+            {
+                direction[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2080,16 +2102,6 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.direction
-                && wins(u16::MAX, usize::MAX, true, direction)
-            {
-                direction = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
             if let Some(value) = declarations.flex_wrap
                 && wins(u16::MAX, usize::MAX, true, flex_wrap)
             {
@@ -2268,7 +2280,7 @@ impl NativeStylesheet {
             align_self: align_self.map_or(AlignSelfValue::Auto, |value| value.value),
             align_content: align_content.map_or(AlignContentValue::FlexStart, |value| value.value),
             flex_direction: flex_direction.map_or(FlexDirectionValue::Row, |value| value.value),
-            direction: direction.map_or(inherited.direction, |value| value.value),
+            direction: resolve_direction(direction, inherited.direction),
             flex_wrap: flex_wrap.map_or(FlexWrapValue::NoWrap, |value| value.value),
             flex_item_order: flex_item_order
                 .map_or(NativeOrderValue::default(), |value| value.value),
@@ -2406,6 +2418,16 @@ fn resolve_line_height(
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         LineHeightDeclaration::Value(value) => Some(Some(value)),
         LineHeightDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_direction(
+    candidates: [Option<CascadeValue<DirectionDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    inherited: DirectionValue,
+) -> DirectionValue {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        DirectionDeclaration::Value(value) => Some(value),
+        DirectionDeclaration::RevertLayer => None,
     })
 }
 
@@ -2864,7 +2886,7 @@ struct NativeDeclarations {
     align_self: Option<AlignSelfValue>,
     align_content: Option<AlignContentValue>,
     flex_direction: Option<FlexDirectionValue>,
-    direction: Option<DirectionValue>,
+    direction: Option<DirectionDeclaration>,
     flex_wrap: Option<FlexWrapValue>,
     order: Option<NativeOrderValue>,
     flex_grow: Option<u32>,
@@ -3372,7 +3394,7 @@ fn parse_declarations_with_diagnostics(
             "align-self" => parse_align_self(value).is_some(),
             "align-content" => parse_align_content(value).is_some(),
             "flex-direction" => parse_flex_direction(value).is_some(),
-            "direction" => parse_direction(value).is_some(),
+            "direction" => parse_direction_declaration(value).is_some(),
             "flex-wrap" => parse_flex_wrap(value).is_some(),
             "flex-flow" => parse_flex_flow(value).is_some(),
             "order" => parse_flex_item_order(value).is_some(),
@@ -3607,7 +3629,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.flex_direction = parse_flex_direction(value);
             }
             "direction" => {
-                declarations.direction = parse_direction(value);
+                declarations.direction = parse_direction_declaration(value);
             }
             "flex-wrap" => {
                 declarations.flex_wrap = parse_flex_wrap(value);
@@ -4407,6 +4429,14 @@ fn parse_direction(value: &str) -> Option<DirectionValue> {
     }
 }
 
+fn parse_direction_declaration(value: &str) -> Option<DirectionDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(DirectionDeclaration::RevertLayer)
+    } else {
+        parse_direction(value).map(DirectionDeclaration::Value)
+    }
+}
+
 fn parse_flex_wrap(value: &str) -> Option<FlexWrapValue> {
     match value.to_ascii_lowercase().as_str() {
         "nowrap" => Some(FlexWrapValue::NoWrap),
@@ -4939,7 +4969,10 @@ mod tests {
             declarations.flex_direction,
             Some(FlexDirectionValue::RowReverse)
         );
-        assert_eq!(declarations.direction, Some(DirectionValue::Rtl));
+        assert_eq!(
+            declarations.direction,
+            Some(DirectionDeclaration::Value(DirectionValue::Rtl))
+        );
         assert_eq!(declarations.flex_wrap, Some(FlexWrapValue::WrapReverse));
         assert_eq!(declarations.order, Some(NativeOrderValue(-12)));
         assert_eq!(declarations.flex_grow, Some(2));
@@ -5654,6 +5687,49 @@ mod tests {
     }
 
     #[test]
+    fn direction_revert_layer_rolls_back_named_and_inline_candidates() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { direction: ltr; } #repeated { direction: ltr; } #inline { direction: ltr; } #fallback { direction: revert-layer; } } @layer theme { #named { direction: rtl; } #repeated { direction: revert-layer; } #inline { direction: rtl; } } @layer top { #repeated { direction: revert-layer; } } #named { direction: revert-layer; } #repeated { direction: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named'>Named</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let inline = node("<div id='inline' style='direction:ReVeRt-LaYeR'>Inline</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+
+        assert_eq!(
+            stylesheet.computed_for(&named).direction(),
+            DirectionValue::Rtl
+        );
+        assert_eq!(
+            stylesheet.computed_for(&repeated).direction(),
+            DirectionValue::Ltr
+        );
+        assert_eq!(
+            stylesheet.computed_for(&inline).direction(),
+            DirectionValue::Rtl
+        );
+        assert_eq!(
+            stylesheet.computed_for(&fallback).direction(),
+            DirectionValue::Ltr
+        );
+
+        let mut diagnostics = NativeDiagnosticSink::default();
+        NativeStylesheet::from_sources_with_diagnostics(
+            vec!["#target { direction: revert-layer; }".into()],
+            &mut diagnostics,
+        )
+        .unwrap();
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "direction"
+        }));
+    }
+
+    #[test]
     fn overflow_axis_longhands_cascade_independently_from_shorthand() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             ".card { overflow: hidden; } #card { overflow-x: clip; overflow-y: visible; }".into(),
@@ -6153,6 +6229,25 @@ mod tests {
         assert_eq!(parse_direction("inherit"), None);
         assert_eq!(parse_direction("vertical-rl"), None);
         assert_eq!(parse_direction("rtl ltr"), None);
+    }
+
+    #[test]
+    fn direction_declaration_parser_accepts_only_standalone_case_insensitive_revert_layer() {
+        assert_eq!(
+            parse_direction_declaration("ReVeRt-LaYeR"),
+            Some(DirectionDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_direction_declaration("RTL"),
+            Some(DirectionDeclaration::Value(DirectionValue::Rtl))
+        );
+        assert_eq!(
+            parse_direction_declaration(" REVERT-LAYER "),
+            Some(DirectionDeclaration::RevertLayer)
+        );
+        assert_eq!(parse_direction_declaration("inherit"), None);
+        assert_eq!(parse_direction_declaration("vertical-rl"), None);
+        assert_eq!(parse_direction_declaration("revert-layer rtl"), None);
     }
 
     #[test]

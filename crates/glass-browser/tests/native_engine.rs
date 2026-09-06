@@ -3426,6 +3426,72 @@ fn native_local_text_revert_layer_preserves_indent_and_ellipsis_consumers() {
 }
 
 #[test]
+fn native_local_dimension_revert_layer_preserves_box_geometry_and_hit_testing() {
+    let document = NativeDocument::parse(
+        "<style>.box { display:block; margin:0; padding:0; } @layer base { #named { width:24px; height:12px; min-width:4px; max-width:80px; min-height:6px; max-height:90px; background-color:red; } #repeat { width:20px; height:10px; min-width:2px; max-width:70px; min-height:4px; max-height:60px; background-color:blue; } #fallback { width:revert-layer; height:revert-layer; min-width:revert-layer; max-width:revert-layer; min-height:revert-layer; max-height:revert-layer; } #invalid { width:30px; height:18px; min-width:8px; max-width:70px; min-height:10px; max-height:40px; } } @layer theme { #named { width:48px; height:20px; min-width:16px; max-width:100px; min-height:10px; max-height:110px; } #repeat { width:36px; height:16px; min-width:12px; max-width:90px; min-height:8px; max-height:80px; } } @layer top { #repeat { width:revert-layer; height:revert-layer; min-width:revert-layer; max-width:revert-layer; min-height:revert-layer; max-height:revert-layer; } } #named { width:revert-layer; height:revert-layer; min-width:revert-layer; max-width:revert-layer; min-height:revert-layer; max-height:revert-layer; } #repeat { width:revert-layer; height:revert-layer; min-width:revert-layer; max-width:revert-layer; min-height:revert-layer; max-height:revert-layer; } #invalid { width:1px 2px; height:1px 2px; min-width:1px 2px; max-width:1px 2px; min-height:1px 2px; max-height:50%; }</style><div id='named' class='box'>Named</div><div id='repeat' class='box'>Repeat</div><div id='fallback' class='box'>Fallback</div><div id='invalid' class='box'>Invalid</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 120,
+        height: 160,
+        device_scale_factor_milli: 1000,
+    };
+    let named = document.resolve_target("id=named").unwrap();
+    let repeat = document.resolve_target("id=repeat").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(named),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 48,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout.box_for(repeat),
+        Some(NativeRect {
+            x: 0,
+            y: 20,
+            width: 36,
+            height: 16,
+        })
+    );
+    assert_eq!(
+        layout.box_for(fallback),
+        Some(NativeRect {
+            x: 0,
+            y: 36,
+            width: 120,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout.box_for(invalid),
+        Some(NativeRect {
+            x: 0,
+            y: 56,
+            width: 30,
+            height: 18,
+        })
+    );
+    assert_eq!(layout.hit_test(47, 1).unwrap(), Some(named));
+    assert_eq!(layout.hit_test(35, 21).unwrap(), Some(repeat));
+
+    let surface = document
+        .display_list(viewport)
+        .unwrap()
+        .rasterize()
+        .unwrap();
+    assert_eq!(surface.pixel(47, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(35, 21), Some([0, 0, 255, 255]));
+}
+
+#[test]
 fn native_word_spacing_shares_width_across_flow_paint_and_overflow() {
     let document = NativeDocument::parse(
         "<style>#normal { display:block; width:40px; word-spacing:4px; } #pre { display:block; width:32px; word-spacing:4px; white-space:pre-wrap; } #wide { display:block; width:32px; word-spacing:4px; white-space:nowrap; } #align { display:block; width:40px; word-spacing:4px; text-align:right; white-space:nowrap; } #parent { display:block; width:72px; word-spacing:4px; } #override { word-spacing:8px; }</style><div id='normal'>A   B C</div><div id='pre'>A  B</div><div id='wide'>A B C D E F G H</div><div id='align'>A B</div><div id='parent'>A <span id='override'>B C</span></div>",

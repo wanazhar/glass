@@ -1252,7 +1252,8 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut line_height: [Option<CascadeValue<LineHeightDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut background_color = None;
+        let mut background_color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut border: [Option<CascadeValue<NativeBorderSide>>; 4] = [None; 4];
         let mut border_radius = None;
         let mut padding: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
@@ -1261,7 +1262,8 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut box_sizing: [Option<CascadeValue<LocalCascadeDeclaration<NativeBoxSizing>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut color = None;
+        let mut color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut overflow_x = None;
         let mut overflow_y = None;
         for rule in &self.rules {
@@ -1763,21 +1765,13 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.background_color
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    background_color,
-                )
-            {
-                background_color = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_local_cascade_declaration(
+                rule.declarations.background_color,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut background_color,
+            );
             apply_border_sides(
                 &rule.declarations.border,
                 rule.selector.specificity,
@@ -1816,16 +1810,13 @@ impl NativeStylesheet {
                 false,
                 &mut box_sizing,
             );
-            if let Some(value) = rule.declarations.color
-                && wins(rule.selector.specificity, rule.order, false, color)
-            {
-                color = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_local_cascade_declaration(
+                rule.declarations.color,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut color,
+            );
             if let Some(value) = rule.declarations.overflow_x
                 && wins(rule.selector.specificity, rule.order, false, overflow_x)
             {
@@ -2229,16 +2220,13 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.background_color
-                && wins(u16::MAX, usize::MAX, true, background_color)
-            {
-                background_color = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_local_cascade_declaration(
+                declarations.background_color,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut background_color,
+            );
             apply_border_sides(
                 &declarations.border,
                 u16::MAX,
@@ -2277,16 +2265,13 @@ impl NativeStylesheet {
                 true,
                 &mut box_sizing,
             );
-            if let Some(value) = declarations.color
-                && wins(u16::MAX, usize::MAX, true, color)
-            {
-                color = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_local_cascade_declaration(
+                declarations.color,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut color,
+            );
             if let Some(value) = declarations.overflow_x
                 && wins(u16::MAX, usize::MAX, true, overflow_x)
             {
@@ -2384,14 +2369,14 @@ impl NativeStylesheet {
             min_height: resolve_local_optional_cascade_declaration(min_height),
             max_height: resolve_local_optional_cascade_declaration(max_height),
             line_height: resolve_line_height(line_height, inherited.line_height),
-            background_color: background_color.map(|value| value.value),
+            background_color: resolve_local_optional_cascade_declaration(background_color),
             border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
             border_radius: border_radius.map_or(NativeBorderRadius::default(), |value| value.value),
             padding: NativeBoxEdges::from_values(resolved_padding),
             margin: NativeBoxEdges::from_margin_values(resolved_margin),
             margin_auto: NativeAutoEdges::from_values(resolved_margin),
             box_sizing: resolve_local_cascade_declaration(box_sizing, NativeBoxSizing::ContentBox),
-            color: color.map(|value| value.value).or(inherited.color),
+            color: resolve_local_optional_cascade_declaration(color).or(inherited.color),
             overflow_clip_x: overflow_x.is_some_and(|value| {
                 matches!(value.value, OverflowValue::Hidden | OverflowValue::Clip)
             }),
@@ -3206,13 +3191,13 @@ struct NativeDeclarations {
     min_height: Option<LocalCascadeDeclaration<u32>>,
     max_height: Option<LocalCascadeDeclaration<u32>>,
     line_height: Option<LineHeightDeclaration>,
-    background_color: Option<NativeColor>,
+    background_color: Option<LocalCascadeDeclaration<NativeColor>>,
     border: [Option<NativeBorderSide>; 4],
     border_radius: Option<NativeBorderRadius>,
     padding: [Option<LocalCascadeDeclaration<u32>>; 4],
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
     box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
-    color: Option<NativeColor>,
+    color: Option<LocalCascadeDeclaration<NativeColor>>,
     overflow: Option<OverflowValue>,
     overflow_x: Option<OverflowValue>,
     overflow_y: Option<OverflowValue>,
@@ -3711,7 +3696,7 @@ fn parse_declarations_with_diagnostics(
                 parse_local_dimension_declaration(value).is_some()
             }
             "line-height" => parse_line_height_declaration(value).is_some(),
-            "background-color" | "color" => parse_color(value).is_some(),
+            "background-color" | "color" => parse_local_color_declaration(value).is_some(),
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
                 parse_border(value).is_some()
             }
@@ -4072,7 +4057,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.line_height = parse_line_height_declaration(value);
             }
             "background-color" => {
-                declarations.background_color = parse_color(value);
+                if let Some(parsed) = parse_local_color_declaration(value) {
+                    declarations.background_color = Some(parsed);
+                }
             }
             "border" => {
                 if let Some(border) = parse_border(value) {
@@ -4150,7 +4137,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "color" => {
-                declarations.color = parse_color(value);
+                if let Some(parsed) = parse_local_color_declaration(value) {
+                    declarations.color = Some(parsed);
+                }
             }
             "overflow" => {
                 let parsed = parse_overflow(value);
@@ -4399,6 +4388,13 @@ fn parse_text_decoration_color(value: &str) -> Option<NativeTextDecorationColorD
         return Some(NativeTextDecorationColorDeclaration::RevertLayer);
     }
     parse_color(value).map(NativeTextDecorationColorDeclaration::Value)
+}
+
+fn parse_local_color_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeColor>> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some(LocalCascadeDeclaration::RevertLayer);
+    }
+    parse_color(value).map(LocalCascadeDeclaration::Value)
 }
 
 fn set_border_side(sides: &mut [Option<NativeBorderSide>; 4], index: usize, value: &str) {
@@ -5669,7 +5665,10 @@ mod tests {
             declarations.line_height,
             Some(LineHeightDeclaration::Value(28))
         );
-        assert_eq!(declarations.color, Some(NativeColor::RED));
+        assert_eq!(
+            declarations.color,
+            Some(LocalCascadeDeclaration::Value(NativeColor::RED))
+        );
         let parsed_color = NativeColor {
             red: 16,
             green: 32,
@@ -5794,6 +5793,61 @@ mod tests {
         assert_eq!(parse_color("rgba(0, 0, 0, 1, 0)"), None);
         assert_eq!(parse_color("rgba(0%, 0, 0, 1)"), None);
         assert_eq!(parse_color("rgb(0 0 0 / 0.5)"), None);
+    }
+
+    #[test]
+    fn local_paint_color_parser_accepts_revert_layer_and_preserves_valid_values() {
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        assert_eq!(
+            parse_local_color_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_local_color_declaration("rgba(1, 2, 3, 0.5)"),
+            Some(LocalCascadeDeclaration::Value(NativeColor {
+                red: 1,
+                green: 2,
+                blue: 3,
+                alpha: 128,
+            }))
+        );
+        for value in [
+            "revert-layer red",
+            "red revert-layer",
+            "inherit",
+            "unset",
+            "revert",
+            "currentColor",
+            "linear-gradient(red, blue)",
+            "color(display-p3 1 0 0)",
+        ] {
+            assert_eq!(parse_local_color_declaration(value), None, "value={value}");
+        }
+
+        let declarations = parse_declarations(
+            "background-color: red; background-color: currentColor; color: blue; color: inherit",
+        );
+        assert_eq!(
+            declarations.background_color,
+            Some(LocalCascadeDeclaration::Value(NativeColor::RED))
+        );
+        assert_eq!(
+            declarations.color,
+            Some(LocalCascadeDeclaration::Value(blue))
+        );
+        assert_eq!(
+            parse_declarations("background-color: revert-layer").background_color,
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_declarations("color: REVERT-LAYER").color,
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
     }
 
     #[test]
@@ -5964,6 +6018,67 @@ mod tests {
                 alpha: 255,
             })
         );
+    }
+
+    #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_independent_paint_colors() {
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        let green = NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: u8::MAX,
+        };
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { color: red; background-color: red; } #rollback { color: red; background-color: red; } #repeated { color: red; background-color: red; } #unlayered { color: red; background-color: red; } #inline { color: red; background-color: red; } #independent { color: red; background-color: red; } #parent { color: red; } } @layer theme { .named { color: blue; background-color: blue; } #rollback { color: revert-layer; background-color: revert-layer; } #repeated { color: revert-layer; background-color: revert-layer; } #unlayered { color: blue; background-color: blue; } #inline { color: blue; background-color: blue; } #independent { color: revert-layer; background-color: blue; } #parent { color: blue; } } @layer top { #repeated { color: revert-layer; background-color: revert-layer; } } #named { color: revert-layer; background-color: revert-layer; } #unlayered { color: revert-layer; background-color: revert-layer; } #parent { color: revert-layer; } #fallback { color: revert-layer; background-color: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named' class='named'>Named</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let unlayered = node("<div id='unlayered'>Unlayered</div>");
+        let inline = node(
+            "<div id='inline' style='color:revert-layer;background-color:revert-layer'>Inline</div>",
+        );
+        let independent = node("<div id='independent'>Independent</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let parent = node("<div id='parent'>Parent</div>");
+
+        let colors = |value: &NativeNode| {
+            let style = stylesheet.computed_for(value);
+            (style.color(), style.background_color())
+        };
+        assert_eq!(colors(&named), (Some(blue), Some(blue)));
+        assert_eq!(
+            colors(&rollback),
+            (Some(NativeColor::RED), Some(NativeColor::RED))
+        );
+        assert_eq!(
+            colors(&repeated),
+            (Some(NativeColor::RED), Some(NativeColor::RED))
+        );
+        assert_eq!(colors(&unlayered), (Some(blue), Some(blue)));
+        assert_eq!(colors(&inline), (Some(blue), Some(blue)));
+        assert_eq!(colors(&independent), (Some(NativeColor::RED), Some(blue)));
+        assert_eq!(colors(&fallback), (None, None));
+        assert_eq!(colors(&parent), (Some(blue), None));
+
+        let inherited = stylesheet.computed_for_with_matcher(
+            &node("<div style='color:revert-layer'>Inherited</div>"),
+            NativeInheritedStyle {
+                color: Some(green),
+                ..NativeInheritedStyle::default()
+            },
+            |_| false,
+        );
+        assert_eq!(inherited.color(), Some(green));
+        assert_eq!(inherited.background_color(), None);
     }
 
     #[test]

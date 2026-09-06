@@ -127,6 +127,10 @@ space-around|space-evenly|stretch` free-space placement for eligible fixed-width
 rows,
 bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
 source-order ties,
+bounded non-inherited `flex-grow:0..=1024`, `flex-shrink:0..=1024`, and
+`flex-basis:auto|Npx` sizing with native fallbacks, finite `flex` shorthand
+expansion, bounded grow/shrink allocation, base-size selection, and existing
+min/max constraints,
 bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
 placement using explicit content height or the auto row's maximum item outer
 height,
@@ -810,12 +814,15 @@ line/item artifact owners. Focused, full-native, affected-library, and strict
 affected-package local gates passed; exact test and cleanup evidence is
 recorded in the task. Remote CI remains pending because the checkout is
 local-only.
-The next dependency-ordered `native-engine-135` contract is planned in
-`docs/plan/tasks/native-engine-135.md`; it will extend the bounded rollback
-boundary to non-inherited `order`, `flex-grow`, `flex-shrink`, and `flex-basis`
-while retaining finite `flex` expansion, local defaults, and existing visual
-order/sizing artifacts. No implementation or validation claim is made for 135
-yet.
+The dependency-ordered 135 implementation is complete in `74195032` and is
+recorded in `docs/plan/tasks/native-engine-135.md`. It extends the bounded
+rollback boundary to non-inherited `order`, `flex-grow`, `flex-shrink`, and
+`flex-basis`, retaining finite `flex` expansion, local defaults, stable visual
+order, grow/shrink allocation, base-size selection, min/max constraints, and
+existing layout/artifact owners. Focused, full-native, affected-library, and
+strict affected-package local gates passed; exact test and cleanup evidence is
+recorded in the task. Remote CI remains pending because the checkout is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

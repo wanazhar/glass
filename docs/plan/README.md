@@ -1170,12 +1170,15 @@ layer resolver to non-inherited `flex-wrap`, `justify-content`, `align-items`,
 consumers. Focused, full-native, affected-library, and strict affected-package
 local gates passed; exact test and cleanup evidence is recorded in the task.
 Remote CI remains pending because the checkout is local-only.
-The next dependency-ordered [native-engine-135](tasks/native-engine-135.md)
-contract is planned. It will extend the bounded private layer resolver to
-non-inherited `order`, `flex-grow`, `flex-shrink`, and `flex-basis`, preserving
-finite `flex` expansion, local fallbacks, and existing visual-order/sizing
-artifacts. No implementation or validation claim exists until its contract is
-executed.
+The dependency-ordered [native-engine-135](tasks/native-engine-135.md)
+implementation is complete in `74195032`. It extends the bounded private
+layer resolver to non-inherited `order`, `flex-grow`, `flex-shrink`, and
+`flex-basis`, preserving finite `flex` expansion, local fallbacks, stable
+visual order, grow/shrink allocation, base-size selection, min/max constraints,
+and existing layout/artifact consumers. Focused, full-native,
+affected-library, and strict affected-package local gates passed; exact test
+and cleanup evidence is recorded in the task. Remote CI remains pending
+because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

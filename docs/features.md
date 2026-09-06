@@ -67,7 +67,12 @@ source-behavior reference.
   horizontal and vertical viewport scrolling,
   inherited text color, bounded `overflow:hidden` clips shared by paint,
   viewport projection, and point hit-testing, bounded axis-specific
-  `overflow-x`/`overflow-y` `hidden`/`clip` clips through the same owner,
+  `overflow-x`/`overflow-y` `hidden`/`clip` clips through the same owner, plus
+  bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback for
+  `overflow`, `overflow-x`, and `overflow-y`, preserving independent
+  visible/no-clip fallbacks and the existing paint, projection, point-hit,
+  root-overflow, capture, and semantic/source-order owners; nested scrolling,
+  scrollbars, and browser-wide overflow semantics remain outside the boundary,
   side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow with bounded inherited line-height, bounded direct-text

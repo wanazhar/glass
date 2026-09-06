@@ -1014,6 +1014,12 @@ expansion, and all existing flex/artifact consumers. Focused, full-native,
 affected-library, and strict affected-package local gates passed; exact test
 and cleanup evidence is recorded in the task. Remote CI remains pending
 because the checkout is local-only.
+The next dependency-ordered `native-engine-135` contract is planned in
+`docs/plan/tasks/native-engine-135.md`. It will reuse the private bounded layer
+resolver for the non-inherited `order`, `flex-grow`, `flex-shrink`, and
+`flex-basis` owners, keeping finite values, native fallbacks, finite `flex`
+expansion, and all existing visual-order/sizing artifacts; no implementation
+or validation claim exists yet.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1293,6 +1299,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-131` | completed reuse of bounded named-layer priority and private rollback for inherited positive-pixel `line-height`, preserving the `Option<u32>` inherited/root fallback and existing flow/artifact owners | `native-engine-130` | other CSS-wide keywords, zero/negative/relative/percentage values, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, font metrics, and browser-wide text conformance |
 | `native-engine-133` | completed reuse of bounded named-layer priority and private rollback for non-inherited `flex-direction`, preserving finite row/row-reverse/column/column-reverse values, local row fallback, finite flex-flow expansion, and existing flex/artifact owners | `native-engine-132` | other CSS-wide keywords, shorthand rollback, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, animation, script, grid, writing modes, intrinsic/percentage sizing, and browser-wide Flexbox conformance |
 | `native-engine-134` | completed reuse of bounded named-layer priority and private rollback for non-inherited `flex-wrap`, `justify-content`, `align-items`, `align-self`, and `align-content`, preserving finite values, native fallbacks, finite flex-flow/place-content expansion, and existing flex/artifact owners | `native-engine-133` | other CSS-wide keywords, shorthand rollback, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, animation, script, grid, writing modes, intrinsic/percentage sizing, and browser-wide Flexbox conformance |
+| `native-engine-135` | planned reuse of bounded named-layer priority and private rollback for non-inherited `order`, `flex-grow`, `flex-shrink`, and `flex-basis`, preserving finite values, native fallbacks, finite flex expansion, and existing visual-order/sizing artifacts | `native-engine-134` | other CSS-wide keywords, shorthand rollback, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, animation, script, grid, writing modes, percentage/intrinsic sizing, and browser-wide Flexbox conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

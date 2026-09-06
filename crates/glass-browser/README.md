@@ -91,6 +91,8 @@ owner, bounded
   logical RGBA software surface, and
   bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
   bounded non-negative fixed-pixel first-line `text-indent` for block flow,
+  plus bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback
+  for `text-indent` with a finite `0px` fallback,
   bounded inherited non-negative fixed-pixel `word-spacing` across collapsed
   and supported preformatted ASCII spaces, bounded inherited non-negative
   fixed-pixel `letter-spacing` after every rendered fixed-cell character in
@@ -104,6 +106,8 @@ owner, bounded
   bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
   bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
   direct text,
+  plus bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback
+  for `text-overflow` with a finite `clip` fallback,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
   plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
@@ -231,6 +235,10 @@ The inherited text-spacing surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `word-spacing` and `letter-spacing`,
 resolving through finite parent/root fallbacks without changing the existing
 spacing, wrapping, alignment, or raster owners.
+The local text-geometry surface also accepts bounded case-insensitive
+15-layer/unlayered `revert-layer` for `text-indent` and `text-overflow`,
+resolving through finite `0px`/`clip` local fallbacks without changing the
+existing first-line flow or clipped-nowrap direct-text truncation owners.
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |

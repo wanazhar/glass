@@ -153,6 +153,8 @@ signed fixed-pixel
 decreasing or increasing y,
 bounded inherited ASCII `text-transform:none|uppercase|lowercase` layout,
 bounded non-negative fixed-pixel first-line `text-indent` for block flow,
+plus bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback
+for `text-indent` with a finite `0px` fallback,
 bounded inherited non-negative fixed-pixel `word-spacing` across collapsed and
 supported preformatted ASCII spaces, bounded inherited non-negative fixed-pixel
 `letter-spacing` after every rendered fixed-cell character in each emitted
@@ -166,6 +168,8 @@ with unchanged advances and clipped row-dependent italic shear,
 bounded inherited `word-break:normal|break-all` collapsed fixed-cell wrapping,
 bounded local `text-overflow:clip|ellipsis` on eligible clipped single-line
 direct text,
+plus bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback
+for `text-overflow` with a finite `clip` fallback,
 bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
 fixed-cell inline and inline-block line items within the existing line box,
 plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`

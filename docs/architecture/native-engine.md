@@ -903,6 +903,16 @@ integration tests, full-native integration/library tests, strict affected-
 package Clippy, formatting, and static documentation gates passed locally;
 exact evidence and cleanup are recorded in the task. Remote CI remains
 pending because the checkout is local-only.
+The next dependency-ordered 142 contract is planned in
+`docs/plan/tasks/native-engine-142.md`. It will extend the same private bounded
+layer resolver to standalone, case-insensitive `revert-layer` for the local
+`text-indent` and `text-overflow` owners, preserving finite non-negative
+fixed-pixel indentation, `clip|ellipsis`, local `0px`/`clip` fallbacks, and the
+existing first-line flow, eligible clipped-nowrap truncation, text-fragment,
+display-list, raster, overflow, capture, hit-test, and semantic/source-order
+owners. Negative or hanging indentation, percentages, font-relative units,
+inherited text-overflow, marker customization, multiple origins, and
+browser-wide text conformance remain outside the planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

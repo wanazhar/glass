@@ -849,6 +849,14 @@ recorded in the task. Other CSS-wide keywords, multiple origins, layer
 statements, intrinsic or percentage sizing, and browser-wide Flexbox
 conformance remain outside the boundary. Remote CI remains pending because the
 checkout is local-only.
+The dependency-ordered 138 contract is planned in
+`docs/plan/tasks/native-engine-138.md`. It will extend the same private bounded
+layer resolver to standalone, case-insensitive `gap:revert-layer`,
+`row-gap:revert-layer`, and `column-gap:revert-layer`, retaining the existing
+finite integer-pixel shorthand expansion, component-local fallback, and all
+current row/column flex layout and artifact owners. Percentages, other
+CSS-wide keywords, multiple origins, layer statements, and browser-wide gap
+conformance remain outside the planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

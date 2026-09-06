@@ -1043,6 +1043,15 @@ and existing flex/artifact consumers. Focused parser/cascade, integration,
 full-native, affected-library, strict Clippy, formatting, and static
 documentation gates passed; exact evidence and cleanup are recorded in the
 task. Remote CI remains pending because the checkout is local-only.
+The next dependency-ordered `native-engine-138` contract is planned in
+`docs/plan/tasks/native-engine-138.md`. It will reuse the existing private
+gap precedence tuple and add standalone, case-insensitive
+`gap:revert-layer`, `row-gap:revert-layer`, and `column-gap:revert-layer`
+through component-local row/column candidates. Finite integer-pixel
+expansion, same-block shorthand/longhand precedence, zero fallback, and all
+current flex layout/artifact consumers remain unchanged; percentages, other
+CSS-wide keywords, multiple origins, layer statements, and browser-wide gap
+conformance remain outside the planned boundary.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1325,6 +1334,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-135` | completed reuse of bounded named-layer priority and private rollback for non-inherited `order`, `flex-grow`, `flex-shrink`, and `flex-basis`, preserving finite values, native fallbacks, finite flex expansion, stable visual order, grow/shrink allocation, base-size selection, min/max constraints, and existing layout/artifact consumers | `native-engine-134` | other CSS-wide keywords, shorthand rollback, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, animation, script, grid, writing modes, percentage/intrinsic sizing, and browser-wide Flexbox conformance |
 | `native-engine-136` | completed reuse of bounded named-layer priority and private component rollback for standalone non-inherited `flex:revert-layer`, preserving finite shorthand expansion, same-block longhand precedence, independent component fallbacks, and existing layout/artifact consumers | `native-engine-135` | other CSS-wide keywords, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, animation, script, grid, writing modes, percentage/intrinsic sizing, and browser-wide Flexbox conformance |
 | `native-engine-137` | completed reuse of bounded named-layer priority and private component rollback for standalone `flex-flow:revert-layer` and `place-content:revert-layer`, preserving finite shorthand expansion, same-block longhand precedence, independent component fallbacks, and existing flex/artifact consumers | `native-engine-136` | other CSS-wide keywords, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, animation, script, grid, writing modes, percentage/intrinsic sizing, and browser-wide Flexbox conformance |
+| `native-engine-138` | planned reuse of bounded named-layer priority and private component rollback for standalone `gap:revert-layer`, `row-gap:revert-layer`, and `column-gap:revert-layer`, preserving finite integer-pixel shorthand expansion, same-block shorthand/longhand precedence, zero fallback, and existing flex/artifact consumers | `native-engine-137` | other CSS-wide keywords, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, percentages/fractional lengths, grid, and browser-wide gap conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

@@ -1198,6 +1198,14 @@ full-native, affected-library, strict Clippy, formatting, and static
 documentation gates passed; exact evidence and cleanup are recorded in the
 task. Remote CI remains pending because the checkout is local-only.
 
+The next dependency-ordered [native-engine-138](tasks/native-engine-138.md)
+contract is planned. It will add standalone case-insensitive
+`gap:revert-layer`, `row-gap:revert-layer`, and `column-gap:revert-layer`
+through private row/column component candidates, preserving finite integer-
+pixel expansion, same-block shorthand/longhand precedence, zero fallback,
+and the current flex layout/artifact owners. Its implementation and evidence
+remain unclaimed until the bounded slice is completed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

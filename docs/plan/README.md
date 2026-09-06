@@ -1069,13 +1069,17 @@ machinery, multiple origins, layer statements, and unsupported values remain
 outside the slice. Exact local gate, documentation-audit, issue-sync, and
 regenerable-output cleanup evidence is recorded in the task. Remote CI remains
 pending because the checkout is local-only.
-The next dependency-ordered [native-engine-125](tasks/native-engine-125.md)
-boundary is designed to reuse the bounded layer registry and private rollback
-boundary proven by 124 for inherited `text-decoration-thickness: revert-layer`.
-It preserves the finite `1px` through `4px` value, existing one-to-four-cell
-decoration geometry, and the unlayered/inline layer boundary; general CSS-wide
-keyword machinery, multiple origins, layer statements, and unsupported values
-remain outside the slice.
+The dependency-ordered [native-engine-125](tasks/native-engine-125.md)
+implementation is complete at `271702ae`. It reuses the bounded layer registry
+and private rollback boundary proven by 124 for inherited
+`text-decoration-thickness: revert-layer`, preserving the finite `1px` through
+`4px` value, existing one-to-four-cell decoration geometry, and the
+unlayered/inline layer boundary. Parser, cascade, display-list, command, and
+decoded-raster regressions passed for underline, overline, and line-through;
+general CSS-wide keyword machinery, multiple origins, layer statements, and
+unsupported values remain outside the slice. Exact local gate, issue-sync, and
+regenerable-output cleanup evidence is recorded in the task. Remote CI remains
+pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

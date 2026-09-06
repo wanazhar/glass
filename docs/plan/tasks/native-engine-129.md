@@ -178,9 +178,9 @@ push.
 
 ## Cleanup
 
-The isolated `/tmp/glass-129-focused` target and exact validator logs are
-regenerable outputs. The final documentation/static gate is complete; after
-writer/open-handle checks they will be removed with bounded exact path
+The isolated `/tmp/glass-129-focused` target and exact validator logs were
+regenerable outputs. The final documentation/static gate and writer/open-handle
+checks are complete, and those exact paths were removed with bounded exact
 deletion. Source, fixtures, durable data, and unrelated temporary paths are
 not cleanup candidates.
 
@@ -196,6 +196,6 @@ fixture, durable data, or unrelated temporary path was removed.
 ## Certification
 
 The implementation, affected-package verification, documentation audit, and
-exact-output cleanup are complete locally at `3cb2f02c`, pending only final
-issue synchronization. Remote CI remains pending because this checkout is
-local-only.
+exact-output cleanup are complete locally at `24abf0ac`. Issue #40 was
+synchronized after this closeout. Remote CI remains pending because this
+checkout is local-only.

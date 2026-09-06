@@ -110,6 +110,8 @@ decreasing or increasing y,
   direct text,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
+  plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
+  rollback for `vertical-align` with finite parent/root fallbacks,
   bounded block-level `display:flex` single-row placement for eligible direct
   element children with fixed widths and margins, with normal-flow fallback
   for unsupported child shapes,
@@ -360,6 +362,8 @@ projection, and point hit-testing,
   direct text,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
+  plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
+  rollback for `vertical-align` with finite parent/root fallbacks,
   bounded block-level `display:flex` single-row placement for eligible direct
   element children with fixed widths and margins, with normal-flow fallback
   for unsupported child shapes,

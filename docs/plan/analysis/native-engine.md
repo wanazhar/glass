@@ -1083,14 +1083,18 @@ cross-fragment, font-metric, multi-origin, and browser-wide text semantics
 remain outside the boundary. Focused, full-native, affected-library, strict
 Clippy, formatting, and static documentation gates passed locally; remote CI
 remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-141` contract is planned in
-`docs/plan/tasks/native-engine-141.md`. It will reuse the private bounded layer
+The dependency-ordered `native-engine-141` implementation is complete in
+`271bfaf2` (design `0d1f7281`) and recorded in
+`docs/plan/tasks/native-engine-141.md`. It reuses the private bounded layer
 resolver for standalone, case-insensitive `revert-layer` on inherited
-`vertical-align`, preserving finite `baseline|top|middle|bottom` values,
-parent/root fallback, and the existing inline line-item, text-fragment,
-display-list, raster, overflow, capture, hit-test, and semantic/source-order
-owners. Baseline metrics, lengths, percentages, bidi, writing modes, multiple
-origins, and browser-wide text conformance remain outside the planned boundary.
+`vertical-align`, keeping the public values finite and preserving parent/root
+fallback plus the existing inline line-item, text-fragment, display-list,
+raster, overflow, capture, hit-test, and semantic/source-order owners. Baseline
+metrics, lengths, percentages, bidi, writing modes, multiple origins, and
+browser-wide text conformance remain outside the boundary. Focused,
+full-native, affected-library, strict Clippy, formatting, and static
+documentation gates passed locally; exact evidence and cleanup are recorded in
+the task. Remote CI remains pending because the checkout is local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1376,7 +1380,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-138` | completed reuse of bounded named-layer priority and private component rollback for standalone `gap:revert-layer`, `row-gap:revert-layer`, and `column-gap:revert-layer`, preserving finite integer-pixel shorthand expansion, same-block shorthand/longhand precedence, independent zero fallback, and existing flex/artifact consumers | `native-engine-137` | other CSS-wide keywords, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, percentages/fractional lengths, grid, and browser-wide gap conformance |
 | `native-engine-139` | completed reuse of bounded named-layer priority and private per-property rollback for inherited `text-transform:revert-layer`, `font-weight:revert-layer`, `font-style:revert-layer`, and `word-break:revert-layer`, preserving finite public values, parent/root fallback, and existing fixed-cell text/layout/raster consumers | `native-engine-138` | other CSS-wide keywords, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, Unicode case mapping, font metrics, other word-break modes, writing modes, and browser-wide text conformance |
 | `native-engine-140` | completed reuse of bounded named-layer priority and private per-property rollback for inherited `word-spacing:revert-layer` and `letter-spacing:revert-layer`, preserving finite non-negative pixel values, parent/root fallback, and existing fixed-cell spacing/layout/raster consumers | `native-engine-139` | other CSS-wide keywords, negative/relative/percentage/fractional spacing, `normal`, pair-boundary and cross-fragment semantics, multiple origins, `!important` inversion, layer statements, Unicode shaping/metrics, writing modes, and browser-wide text conformance |
-| `native-engine-141` | planned reuse of bounded named-layer priority and private rollback for inherited `vertical-align:revert-layer`, preserving finite `baseline|top|middle|bottom` values, parent/root fallback, and existing inline line-item/layout/raster consumers | `native-engine-140` | other CSS-wide keywords, baseline metrics, lengths, percentages, multiple origins, `!important` inversion, layer statements, bidi, writing modes, ruby/table-cell/replaced-element alignment, and browser-wide text conformance |
+| `native-engine-141` | completed reuse of bounded named-layer priority and private rollback for inherited `vertical-align:revert-layer`, preserving finite `baseline|top|middle|bottom` values, parent/root fallback, and existing inline line-item/layout/raster consumers | `native-engine-140` | other CSS-wide keywords, baseline metrics, lengths, percentages, multiple origins, `!important` inversion, layer statements, bidi, writing modes, ruby/table-cell/replaced-element alignment, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1800,12 +1804,14 @@ visual stacking.
 | bounded direction rollback | completed extension of the proven layer rollback to the inherited `direction:ltr|rtl` owner without changing text, flex, wrapping, or artifact schemas | private declaration types and per-layer candidates add property-local cascade state; no generic CSS-wide semantics, bidi, writing modes, or browser direction parity | keep the public direction enum finite, resolve rollback before logical-edge and flex mapping, test text/row/column/wrapped-line physical consumers together, preserve source/semantic order, and retain typed boundaries for unsupported values |
 | bounded inherited text-presentation rollback | completed extension of the proven layer rollback to inherited `text-transform`, `font-weight`, `font-style`, and `word-break` through independent private candidates without changing public computed values or text/display/raster schemas | four fixed candidate arrays add bounded style-walk state; no generic CSS-wide semantics, font metrics, Unicode mapping, other word-break modes, or browser text parity | share one generic private resolver, keep property-local fallback and finite public values, and test parsing, repeated/unlayered/inline rollback, descendants, root fallback, wrapping, transform, bold/italic raster, capture, hit testing, and semantic/source order together |
 | bounded inherited text-spacing rollback | completed extension of the proven layer rollback to inherited `word-spacing` and `letter-spacing` through independent private candidates without changing public computed values or text/display/raster schemas | two fixed candidate arrays add bounded style-walk state; shared parser hardening preserves earlier valid values before invalid later declarations; no generic CSS-wide semantics, negative/relative/percentage/fractional spacing, font metrics, or browser text parity | reuse the generic private resolver, keep spacing candidates property-local, and test standalone/repeated/unlayered/inline rollback, descendants, root fallback, invalid-later preservation, collapsed/preformatted flow, alignment, capture, raster, hit testing, and semantic/source order together |
+| bounded inherited vertical-align rollback | completed extension of the proven layer rollback to inherited `vertical-align` through a private candidate without changing public computed values or text/display/raster schemas | one fixed candidate array adds bounded style-walk state; line placement remains tied to the existing fixed-cell geometry owner; no baseline metrics, lengths, percentages, bidi, writing modes, or browser text parity | reuse the generic private resolver, keep the vertical-align candidate property-local, and test standalone/repeated/unlayered/inline rollback, descendants, root fallback, invalid-later preservation, all four finite values, line geometry, capture, raster, hit testing, and semantic/source order together |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-140.md` is the latest completed task;
+`docs/plan/tasks/native-engine-141.md` is the latest completed task;
+`docs/plan/tasks/native-engine-140.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-139.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-137.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-134.md` is the preceding completed task;

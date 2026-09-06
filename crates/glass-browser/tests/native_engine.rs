@@ -3346,6 +3346,86 @@ fn native_text_indent_shifts_only_block_first_lines_and_preserves_shared_consume
 }
 
 #[test]
+fn native_local_text_revert_layer_preserves_indent_and_ellipsis_consumers() {
+    let document = NativeDocument::parse(
+        "<style>.indent { display:block; width:40px; line-height:20px; } .overflow { display:block; width:40px; line-height:20px; white-space:nowrap; overflow-x:clip; } @layer base { #indent { text-indent:16px; } #repeat-indent { text-indent:8px; } #inline-indent { text-indent:12px; } #fallback-indent { text-indent:revert-layer; } #invalid-indent { text-indent:16px; } #clip { text-overflow:clip; } #ellipsis { text-overflow:clip; } #repeat-overflow { text-overflow:ellipsis; } #inline-overflow { text-overflow:ellipsis; } #fallback-overflow { text-overflow:revert-layer; } #invalid-overflow { text-overflow:ellipsis; } } @layer theme { #indent { text-indent:24px; } #repeat-indent { text-indent:20px; } #ellipsis { text-overflow:ellipsis; } #repeat-overflow { text-overflow:clip; } } @layer top { #repeat-indent { text-indent:revert-layer; } #repeat-overflow { text-overflow:revert-layer; } } #indent { text-indent:revert-layer; } #repeat-indent { text-indent:revert-layer; } #clip { text-overflow:revert-layer; } #ellipsis { text-overflow:revert-layer; } #repeat-overflow { text-overflow:revert-layer; } #invalid-indent { text-indent:1px 2px; } #invalid-overflow { text-overflow:fade; }</style><div id='indent' class='indent'>ABCDEFGH</div><div id='repeat-indent' class='indent'>ABCDEFGH</div><div id='inline-indent' class='indent' style='text-indent:revert-layer'>ABCDEFGH</div><div id='fallback-indent' class='indent'>ABCDEFGH</div><div id='invalid-indent' class='indent'>ABCDEFGH</div><div id='clip' class='overflow'>ABCDEFG</div><div id='ellipsis' class='overflow'>ABCDEFG</div><div id='repeat-overflow' class='overflow'>ABCDEFG</div><div id='inline-overflow' class='overflow' style='text-overflow:revert-layer'>ABCDEFG</div><div id='fallback-overflow' class='overflow'>ABCDEFG</div><div id='invalid-overflow' class='overflow'>ABCDEFG</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 240,
+        device_scale_factor_milli: 1000,
+    };
+    let indent = document.resolve_target("id=indent").unwrap();
+    let repeat_indent = document.resolve_target("id=repeat-indent").unwrap();
+    let inline_indent = document.resolve_target("id=inline-indent").unwrap();
+    let fallback_indent = document.resolve_target("id=fallback-indent").unwrap();
+    let invalid_indent = document.resolve_target("id=invalid-indent").unwrap();
+    let clip = document.resolve_target("id=clip").unwrap();
+    let ellipsis = document.resolve_target("id=ellipsis").unwrap();
+    let repeat_overflow = document.resolve_target("id=repeat-overflow").unwrap();
+    let inline_overflow = document.resolve_target("id=inline-overflow").unwrap();
+    let fallback_overflow = document.resolve_target("id=fallback-overflow").unwrap();
+    let invalid_overflow = document.resolve_target("id=invalid-overflow").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    let runs_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| (run.origin, run.text.as_str(), run.truncated))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(runs_for(indent)[0].0.x, 24);
+    assert_eq!(runs_for(repeat_indent)[0].0.x, 20);
+    assert_eq!(runs_for(inline_indent)[0].0.x, 12);
+    assert_eq!(runs_for(fallback_indent)[0].0.x, 0);
+    assert_eq!(runs_for(invalid_indent)[0].0.x, 16);
+
+    assert_eq!(
+        runs_for(clip),
+        vec![(NativePoint { x: 0, y: 240 }, "ABCDEFG", false)]
+    );
+    assert_eq!(
+        runs_for(ellipsis),
+        vec![(NativePoint { x: 0, y: 260 }, "AB...", true)]
+    );
+    assert_eq!(
+        runs_for(repeat_overflow),
+        vec![(NativePoint { x: 0, y: 280 }, "ABCDEFG", false)]
+    );
+    assert_eq!(
+        runs_for(inline_overflow),
+        vec![(NativePoint { x: 0, y: 300 }, "AB...", true)]
+    );
+    assert_eq!(
+        runs_for(fallback_overflow),
+        vec![(NativePoint { x: 0, y: 320 }, "ABCDEFG", false)]
+    );
+    assert_eq!(
+        runs_for(invalid_overflow),
+        vec![(NativePoint { x: 0, y: 340 }, "AB...", true)]
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    for run in &layout.text_runs {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::TextRun { node_id, origin, text, truncated, .. }
+                    if *node_id == run.node_id
+                        && *origin == run.origin
+                        && text == &run.text
+                        && *truncated == run.truncated
+            )
+        }));
+    }
+    assert_eq!(layout.hit_test(25, 1).unwrap(), Some(indent));
+}
+
+#[test]
 fn native_word_spacing_shares_width_across_flow_paint_and_overflow() {
     let document = NativeDocument::parse(
         "<style>#normal { display:block; width:40px; word-spacing:4px; } #pre { display:block; width:32px; word-spacing:4px; white-space:pre-wrap; } #wide { display:block; width:32px; word-spacing:4px; white-space:nowrap; } #align { display:block; width:40px; word-spacing:4px; text-align:right; white-space:nowrap; } #parent { display:block; width:72px; word-spacing:4px; } #override { word-spacing:8px; }</style><div id='normal'>A   B C</div><div id='pre'>A  B</div><div id='wide'>A B C D E F G H</div><div id='align'>A B</div><div id='parent'>A <span id='override'>B C</span></div>",

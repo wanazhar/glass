@@ -604,6 +604,12 @@ enum InheritedTextDeclaration<T> {
     RevertLayer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalTextDeclaration<T> {
+    Value(T),
+    RevertLayer,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextOverflowValue {
     #[default]
@@ -1221,10 +1227,12 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut word_break: [Option<CascadeValue<InheritedTextDeclaration<WordBreakValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut text_overflow = None;
+        let mut text_overflow: [Option<CascadeValue<LocalTextDeclaration<TextOverflowValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut vertical_align: [Option<CascadeValue<InheritedTextDeclaration<VerticalAlignValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut text_indent = None;
+        let mut text_indent: [Option<CascadeValue<LocalTextDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut word_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut letter_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
@@ -1497,16 +1505,13 @@ impl NativeStylesheet {
                 false,
                 &mut word_break,
             );
-            if let Some(value) = rule.declarations.text_overflow
-                && wins(rule.selector.specificity, rule.order, false, text_overflow)
-            {
-                text_overflow = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_local_text_declaration(
+                rule.declarations.text_overflow,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut text_overflow,
+            );
             apply_inherited_text_declaration(
                 rule.declarations.vertical_align,
                 rule.selector.specificity,
@@ -1514,16 +1519,13 @@ impl NativeStylesheet {
                 false,
                 &mut vertical_align,
             );
-            if let Some(value) = rule.declarations.text_indent
-                && wins(rule.selector.specificity, rule.order, false, text_indent)
-            {
-                text_indent = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_local_text_declaration(
+                rule.declarations.text_indent,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut text_indent,
+            );
             apply_inherited_text_declaration(
                 rule.declarations.word_spacing,
                 rule.selector.specificity,
@@ -2051,16 +2053,13 @@ impl NativeStylesheet {
                 true,
                 &mut word_break,
             );
-            if let Some(value) = declarations.text_overflow
-                && wins(u16::MAX, usize::MAX, true, text_overflow)
-            {
-                text_overflow = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_local_text_declaration(
+                declarations.text_overflow,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut text_overflow,
+            );
             apply_inherited_text_declaration(
                 declarations.vertical_align,
                 u16::MAX,
@@ -2068,16 +2067,13 @@ impl NativeStylesheet {
                 true,
                 &mut vertical_align,
             );
-            if let Some(value) = declarations.text_indent
-                && wins(u16::MAX, usize::MAX, true, text_indent)
-            {
-                text_indent = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_local_text_declaration(
+                declarations.text_indent,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut text_indent,
+            );
             apply_inherited_text_declaration(
                 declarations.word_spacing,
                 u16::MAX,
@@ -2395,12 +2391,12 @@ impl NativeStylesheet {
             font_weight: resolve_inherited_text_declaration(font_weight, inherited.font_weight),
             font_style: resolve_inherited_text_declaration(font_style, inherited.font_style),
             word_break: resolve_inherited_text_declaration(word_break, inherited.word_break),
-            text_overflow: text_overflow.map_or(TextOverflowValue::Clip, |value| value.value),
+            text_overflow: resolve_local_text_declaration(text_overflow, TextOverflowValue::Clip),
             vertical_align: resolve_inherited_text_declaration(
                 vertical_align,
                 inherited.vertical_align,
             ),
-            text_indent: text_indent.map_or(0, |value| value.value),
+            text_indent: resolve_local_text_declaration(text_indent, 0),
             word_spacing: resolve_inherited_text_declaration(word_spacing, inherited.word_spacing),
             letter_spacing: resolve_inherited_text_declaration(
                 letter_spacing,
@@ -2681,6 +2677,16 @@ fn resolve_inherited_text_declaration<T: Copy>(
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         InheritedTextDeclaration::Value(value) => Some(value),
         InheritedTextDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_text_declaration<T: Copy>(
+    candidates: [Option<CascadeValue<LocalTextDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+    fallback: T,
+) -> T {
+    resolve_alignment_candidates(candidates, fallback, |declaration| match declaration {
+        LocalTextDeclaration::Value(value) => Some(value),
+        LocalTextDeclaration::RevertLayer => None,
     })
 }
 
@@ -3108,6 +3114,27 @@ fn apply_inherited_text_declaration<T: Copy>(
     }
 }
 
+fn apply_local_text_declaration<T: Copy>(
+    declaration: Option<LocalTextDeclaration<T>>,
+    specificity: u16,
+    order: usize,
+    inline: bool,
+    candidates: &mut [Option<CascadeValue<LocalTextDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+) {
+    let Some(value) = declaration else {
+        return;
+    };
+    let layer = cascade_layer_index(specificity);
+    if wins(specificity, order, inline, candidates[layer]) {
+        candidates[layer] = Some(CascadeValue {
+            value,
+            specificity,
+            order,
+            inline,
+        });
+    }
+}
+
 fn apply_border_sides(
     declarations: &[Option<NativeBorderSide>; 4],
     specificity: u16,
@@ -3181,9 +3208,9 @@ struct NativeDeclarations {
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
     word_break: Option<InheritedTextDeclaration<WordBreakValue>>,
-    text_overflow: Option<TextOverflowValue>,
+    text_overflow: Option<LocalTextDeclaration<TextOverflowValue>>,
     vertical_align: Option<InheritedTextDeclaration<VerticalAlignValue>>,
-    text_indent: Option<u32>,
+    text_indent: Option<LocalTextDeclaration<u32>>,
     word_spacing: Option<InheritedTextDeclaration<u32>>,
     letter_spacing: Option<InheritedTextDeclaration<u32>>,
     gap: Option<GapShorthandDeclaration>,
@@ -3693,9 +3720,9 @@ fn parse_declarations_with_diagnostics(
             "font-weight" => parse_font_weight_declaration(value).is_some(),
             "font-style" => parse_font_style_declaration(value).is_some(),
             "word-break" => parse_word_break_declaration(value).is_some(),
-            "text-overflow" => parse_text_overflow(value).is_some(),
+            "text-overflow" => parse_text_overflow_declaration(value).is_some(),
             "vertical-align" => parse_vertical_align_declaration(value).is_some(),
-            "text-indent" => parse_dimension(value).is_some(),
+            "text-indent" => parse_text_indent_declaration(value).is_some(),
             "word-spacing" => parse_word_spacing_declaration(value).is_some(),
             "letter-spacing" => parse_letter_spacing_declaration(value).is_some(),
             "gap" => parse_gap_declaration(value).is_some(),
@@ -3989,7 +4016,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "text-overflow" => {
-                declarations.text_overflow = parse_text_overflow(value);
+                if let Some(parsed) = parse_text_overflow_declaration(value) {
+                    declarations.text_overflow = Some(parsed);
+                }
             }
             "vertical-align" => {
                 if let Some(parsed) = parse_vertical_align_declaration(value) {
@@ -3997,7 +4026,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "text-indent" => {
-                declarations.text_indent = parse_dimension(value);
+                if let Some(parsed) = parse_text_indent_declaration(value) {
+                    declarations.text_indent = Some(parsed);
+                }
             }
             "word-spacing" => {
                 if let Some(parsed) = parse_word_spacing_declaration(value) {
@@ -5078,6 +5109,17 @@ fn parse_inherited_text_declaration<T: Copy>(
     parse(value).map(InheritedTextDeclaration::Value)
 }
 
+fn parse_local_text_declaration<T: Copy>(
+    value: &str,
+    parse: fn(&str) -> Option<T>,
+) -> Option<LocalTextDeclaration<T>> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("revert-layer") {
+        return Some(LocalTextDeclaration::RevertLayer);
+    }
+    parse(value).map(LocalTextDeclaration::Value)
+}
+
 fn parse_text_transform_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<TextTransformValue>> {
@@ -5108,6 +5150,14 @@ fn parse_vertical_align_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<VerticalAlignValue>> {
     parse_inherited_text_declaration(value, parse_vertical_align)
+}
+
+fn parse_text_overflow_declaration(value: &str) -> Option<LocalTextDeclaration<TextOverflowValue>> {
+    parse_local_text_declaration(value, parse_text_overflow)
+}
+
+fn parse_text_indent_declaration(value: &str) -> Option<LocalTextDeclaration<u32>> {
+    parse_local_text_declaration(value, parse_dimension)
 }
 
 fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
@@ -5512,7 +5562,10 @@ mod tests {
             declarations.text_underline_offset,
             Some(NativeTextUnderlineOffsetDeclaration::Value(-2))
         );
-        assert_eq!(declarations.text_indent, Some(12));
+        assert_eq!(
+            declarations.text_indent,
+            Some(LocalTextDeclaration::Value(12))
+        );
         assert_eq!(
             declarations.word_spacing,
             Some(InheritedTextDeclaration::Value(12))
@@ -5550,7 +5603,7 @@ mod tests {
         );
         assert_eq!(
             declarations.text_overflow,
-            Some(TextOverflowValue::Ellipsis)
+            Some(LocalTextDeclaration::Value(TextOverflowValue::Ellipsis))
         );
         assert_eq!(
             declarations.vertical_align,
@@ -8475,6 +8528,44 @@ mod tests {
     }
 
     #[test]
+    fn local_text_declaration_parsers_accept_only_standalone_revert_layer() {
+        assert_eq!(
+            parse_text_overflow_declaration("ReVeRt-LaYeR"),
+            Some(LocalTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_text_overflow_declaration("ellipsis"),
+            Some(LocalTextDeclaration::Value(TextOverflowValue::Ellipsis))
+        );
+        assert_eq!(
+            parse_text_indent_declaration(" REVERT-LAYER "),
+            Some(LocalTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_text_indent_declaration("16px"),
+            Some(LocalTextDeclaration::Value(16))
+        );
+        assert_eq!(
+            parse_text_overflow_declaration("revert-layer ellipsis"),
+            None
+        );
+        assert_eq!(parse_text_indent_declaration("revert"), None);
+        assert_eq!(parse_text_indent_declaration("-1px"), None);
+        assert_eq!(parse_text_indent_declaration("50%"), None);
+        let declarations = parse_declarations(
+            "text-indent: 12px; text-indent: 1px 2px; text-overflow: ellipsis; text-overflow: fade;",
+        );
+        assert_eq!(
+            declarations.text_indent,
+            Some(LocalTextDeclaration::Value(12))
+        );
+        assert_eq!(
+            declarations.text_overflow,
+            Some(LocalTextDeclaration::Value(TextOverflowValue::Ellipsis))
+        );
+    }
+
+    #[test]
     fn text_overflow_parser_accepts_only_clip_and_ellipsis() {
         assert_eq!(parse_text_overflow("clip"), Some(TextOverflowValue::Clip));
         assert_eq!(
@@ -9087,6 +9178,38 @@ mod tests {
             24
         );
         assert_eq!(document.computed_style_for_layout(invalid).text_indent(), 0);
+    }
+
+    #[test]
+    fn local_text_declarations_revert_layer_resolve_independently() {
+        let document = NativeDocument::parse(
+            "<style>@layer base { #named { text-indent:8px; text-overflow:clip; } #repeat { text-indent:4px; text-overflow:ellipsis; } #inline { text-indent:12px; text-overflow:ellipsis; } #fallback { text-indent:revert-layer; text-overflow:revert-layer; } #invalid { text-indent:16px; text-overflow:ellipsis; } } @layer theme { #named { text-indent:20px; text-overflow:ellipsis; } #repeat { text-indent:revert-layer; text-overflow:revert-layer; } #inline { text-indent:16px; text-overflow:clip; } } @layer top { #repeat { text-indent:revert-layer; text-overflow:revert-layer; } } #named { text-indent:revert-layer; text-overflow:revert-layer; } #repeat { text-indent:revert-layer; text-overflow:revert-layer; } #invalid { text-indent:1px 2px; text-overflow:fade; }</style><div id='named'>Named</div><div id='repeat'>Repeat</div><div id='inline' style='text-indent:revert-layer;text-overflow:revert-layer'>Inline</div><div id='fallback'>Fallback</div><div id='invalid'>Invalid</div><div id='parent' style='text-indent:20px;text-overflow:ellipsis'><span id='child'>Child</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let named = document.resolve_target("id=named").unwrap();
+        let repeat = document.resolve_target("id=repeat").unwrap();
+        let inline = document.resolve_target("id=inline").unwrap();
+        let fallback = document.resolve_target("id=fallback").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+
+        let style = |node| document.computed_style_for_layout(node);
+        assert_eq!(style(named).text_indent(), 20);
+        assert_eq!(style(named).text_overflow(), TextOverflowValue::Ellipsis);
+        assert_eq!(style(repeat).text_indent(), 4);
+        assert_eq!(style(repeat).text_overflow(), TextOverflowValue::Ellipsis);
+        assert_eq!(style(inline).text_indent(), 16);
+        assert_eq!(style(inline).text_overflow(), TextOverflowValue::Clip);
+        assert_eq!(style(fallback).text_indent(), 0);
+        assert_eq!(style(fallback).text_overflow(), TextOverflowValue::Clip);
+        assert_eq!(style(invalid).text_indent(), 16);
+        assert_eq!(style(invalid).text_overflow(), TextOverflowValue::Ellipsis);
+        assert_eq!(style(parent).text_indent(), 20);
+        assert_eq!(style(parent).text_overflow(), TextOverflowValue::Ellipsis);
+        assert_eq!(style(child).text_indent(), 0);
+        assert_eq!(style(child).text_overflow(), TextOverflowValue::Clip);
     }
 
     #[test]

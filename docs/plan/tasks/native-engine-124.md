@@ -179,6 +179,8 @@ processes were preserved.
 ## Certification
 
 Local implementation, full validation, exact regenerable-output cleanup, and
-documentation audits are complete at `d6c8bc70`. Issue #40 synchronization is
-recorded in the maintainer handoff after this certification; remote CI remains
-pending because no push was authorized.
+documentation audits are complete at `d6c8bc70`. Issue #40 synchronization was
+verified in maintainer comment
+<https://github.com/wanazhar/glass/issues/40#issuecomment-5556525191> under the
+authenticated `wanazhar` account; remote CI remains pending because no push was
+authorized.

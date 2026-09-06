@@ -1098,10 +1098,19 @@ owner. Parser, cascade, display-list, command, and decoded-raster regressions
 passed; general CSS-wide keyword machinery, `currentColor`, multiple origins,
 layer statements, and unsupported values remain outside the slice. Exact local
 gate, issue-sync, and regenerable-output cleanup evidence is recorded in the
-task. The next dependency-ordered [native-engine-128](tasks/native-engine-128.md)
-boundary is designed separately for `text-decoration-line`/`text-decoration:
-revert-layer`, preserving their shared three-bit line-state owner and inherited
-fallback.
+task.
+
+The dependency-ordered [native-engine-128](tasks/native-engine-128.md)
+implementation is complete at `15fc761c`. It reuses the bounded layer registry
+for case-insensitive `text-decoration-line: revert-layer` and
+`text-decoration: revert-layer`, preserving their shared inherited three-bit
+line-state owner, declaration-order interaction, unlayered/inline bucket, and
+existing display-list, command, and fixed-cell raster geometry. Parser,
+cascade, inherited fallback, and decoded-raster regressions passed; other
+CSS-wide keywords, multiple origins, layer statements, and unsupported values
+remain typed diagnostics. Exact local gate, documentation-audit, issue-sync,
+and regenerable-output cleanup evidence is recorded in the task. Remote CI
+remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

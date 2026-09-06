@@ -273,6 +273,12 @@ agreement reports exact schema and capability status.
   unlayered/inline cascade buckets; when no concrete candidate remains it
   preserves the existing omitted-color fallback and keeps glyph and
   decoration paint colors separate.
+- The inherited decoration-line surface accepts case-insensitive
+  `text-decoration-line:revert-layer` and `text-decoration:revert-layer`
+  through the same bounded 15-layer and unlayered/inline cascade buckets. Both
+  forms share the existing three-bit line-state owner, roll back to the
+  inherited value when no lower candidate remains, and preserve
+  declaration-order, display-list, command, and fixed-cell raster behavior.
 - Native extensions require explicit opt-in and a platform sandbox gate.
 
 ## Documentation

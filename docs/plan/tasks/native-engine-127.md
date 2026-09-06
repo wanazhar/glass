@@ -205,6 +205,6 @@ Local implementation and all local gates are complete at `e27d7067` (the
 behavioral implementation is `8cad37c6` and the lint correction is
 `50a36545`). Issue #40 closeout synchronization is recorded in the authenticated
 comment at
-<https://github.com/wanazhar/glass/issues/40#issuecomment-5558274385>.
+<https://github.com/wanazhar/glass/issues/40#issuecomment-5558304835>.
 Exact-output cleanup is complete above. Remote CI remains pending because no
 push was authorized.

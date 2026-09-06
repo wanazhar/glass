@@ -7159,6 +7159,80 @@ fn native_gap_revert_layer_preserves_row_column_layout_and_artifacts() {
 }
 
 #[test]
+fn native_inherited_text_presentation_revert_layer_preserves_consumers() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block;width:40px; } @layer base { #transform { text-transform:lowercase; } #weight { font-weight:normal; } #style { font-style:normal; } #break { word-break:break-all; } #unlayered { text-transform:lowercase; } #inline { text-transform:lowercase; } #parent { text-transform:uppercase;font-weight:bold;font-style:italic;word-break:break-all; } } @layer theme { #transform { text-transform:revert-layer; } #weight { font-weight:bold; } #style { font-style:italic; } #break { word-break:normal; } #unlayered { text-transform:uppercase; } #inline { text-transform:uppercase; } #parent { text-transform:lowercase;font-weight:normal;font-style:normal;word-break:normal; } } @layer top { #transform { text-transform:revert-layer; } #weight { font-weight:revert-layer; } #style { font-style:revert-layer; } #break { word-break:revert-layer; } #parent { text-transform:revert-layer;font-weight:revert-layer;font-style:revert-layer;word-break:revert-layer; } } #unlayered { text-transform:revert-layer; }</style><div id='transform' class='line'>aB cD</div><div id='weight' class='line'>A</div><div id='style' class='line'>A</div><div id='break' class='line'>ABC DEFG</div><div id='unlayered' class='line'>aB</div><div id='inline' class='line' style='text-transform:revert-layer'>aB</div><div id='parent' class='line'>P<span id='child' style='text-transform:revert-layer;font-weight:revert-layer;font-style:revert-layer;word-break:revert-layer'>aB</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "text-transform" | "font-weight" | "font-style" | "word-break"
+            ))
+    }));
+
+    let transform = document.resolve_target("id=transform").unwrap();
+    let weight = document.resolve_target("id=weight").unwrap();
+    let style = document.resolve_target("id=style").unwrap();
+    let break_all = document.resolve_target("id=break").unwrap();
+    let unlayered = document.resolve_target("id=unlayered").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 220,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let text_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| run.text.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(text_for(transform), vec!["ab", " cd"]);
+    assert_eq!(text_for(break_all), vec!["ABC", "DEFG"]);
+    assert_eq!(text_for(unlayered), vec!["AB"]);
+    assert_eq!(text_for(inline), vec!["AB"]);
+    assert_eq!(text_for(child), vec!["ab"]);
+
+    let list = document.display_list(viewport).unwrap();
+    let style_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                bold,
+                italic,
+                ..
+            } if *command_node == node_id => Some((*bold, *italic)),
+            _ => None,
+        })
+    };
+    assert_eq!(style_for(weight), Some((true, false)));
+    assert_eq!(style_for(style), Some((false, true)));
+    assert_eq!(style_for(child), Some((false, false)));
+
+    let weight_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == weight)
+        .unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(weight_run.origin.x + 1, weight_run.origin.y + 1),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        layout.hit_test(1, i64::from(weight_run.origin.y + 1)),
+        Ok(Some(weight))
+    );
+}
+
+#[test]
 fn native_flex_align_items_moves_complete_subtrees_and_paint_artifacts() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:40px;height:31px;gap:2px;align-items:center'><button id='short' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></button><button id='tall' style='width:6px;height:20px;background-color:blue'>B</button></div>",

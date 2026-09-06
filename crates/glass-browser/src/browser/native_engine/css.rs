@@ -598,6 +598,12 @@ pub(crate) enum WordBreakValue {
     BreakAll,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InheritedTextDeclaration<T> {
+    Value(T),
+    RevertLayer,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextOverflowValue {
     #[default]
@@ -1207,10 +1213,14 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration_color: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut text_transform = None;
-        let mut font_weight = None;
-        let mut font_style = None;
-        let mut word_break = None;
+        let mut text_transform: [Option<CascadeValue<InheritedTextDeclaration<TextTransformValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut font_weight: [Option<CascadeValue<InheritedTextDeclaration<FontWeightValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut font_style: [Option<CascadeValue<InheritedTextDeclaration<FontStyleValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut word_break: [Option<CascadeValue<InheritedTextDeclaration<WordBreakValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_overflow = None;
         let mut vertical_align = None;
         let mut text_indent = None;
@@ -1456,46 +1466,34 @@ impl NativeStylesheet {
                     });
                 }
             }
-            if let Some(value) = rule.declarations.text_transform
-                && wins(rule.selector.specificity, rule.order, false, text_transform)
-            {
-                text_transform = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.font_weight
-                && wins(rule.selector.specificity, rule.order, false, font_weight)
-            {
-                font_weight = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.font_style
-                && wins(rule.selector.specificity, rule.order, false, font_style)
-            {
-                font_style = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.word_break
-                && wins(rule.selector.specificity, rule.order, false, word_break)
-            {
-                word_break = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_inherited_text_declaration(
+                rule.declarations.text_transform,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut text_transform,
+            );
+            apply_inherited_text_declaration(
+                rule.declarations.font_weight,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut font_weight,
+            );
+            apply_inherited_text_declaration(
+                rule.declarations.font_style,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut font_style,
+            );
+            apply_inherited_text_declaration(
+                rule.declarations.word_break,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut word_break,
+            );
             if let Some(value) = rule.declarations.text_overflow
                 && wins(rule.selector.specificity, rule.order, false, text_overflow)
             {
@@ -2031,46 +2029,34 @@ impl NativeStylesheet {
                     });
                 }
             }
-            if let Some(value) = declarations.text_transform
-                && wins(u16::MAX, usize::MAX, true, text_transform)
-            {
-                text_transform = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.font_weight
-                && wins(u16::MAX, usize::MAX, true, font_weight)
-            {
-                font_weight = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.font_style
-                && wins(u16::MAX, usize::MAX, true, font_style)
-            {
-                font_style = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.word_break
-                && wins(u16::MAX, usize::MAX, true, word_break)
-            {
-                word_break = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_inherited_text_declaration(
+                declarations.text_transform,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut text_transform,
+            );
+            apply_inherited_text_declaration(
+                declarations.font_weight,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut font_weight,
+            );
+            apply_inherited_text_declaration(
+                declarations.font_style,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut font_style,
+            );
+            apply_inherited_text_declaration(
+                declarations.word_break,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut word_break,
+            );
             if let Some(value) = declarations.text_overflow
                 && wins(u16::MAX, usize::MAX, true, text_overflow)
             {
@@ -2417,10 +2403,13 @@ impl NativeStylesheet {
                 inherited.text_underline_offset,
             ),
             text_decoration_color: resolve_text_decoration_color(text_decoration_color),
-            text_transform: text_transform.map_or(inherited.text_transform, |value| value.value),
-            font_weight: font_weight.map_or(inherited.font_weight, |value| value.value),
-            font_style: font_style.map_or(inherited.font_style, |value| value.value),
-            word_break: word_break.map_or(inherited.word_break, |value| value.value),
+            text_transform: resolve_inherited_text_declaration(
+                text_transform,
+                inherited.text_transform,
+            ),
+            font_weight: resolve_inherited_text_declaration(font_weight, inherited.font_weight),
+            font_style: resolve_inherited_text_declaration(font_style, inherited.font_style),
+            word_break: resolve_inherited_text_declaration(word_break, inherited.word_break),
             text_overflow: text_overflow.map_or(TextOverflowValue::Clip, |value| value.value),
             vertical_align: vertical_align.map_or(inherited.vertical_align, |value| value.value),
             text_indent: text_indent.map_or(0, |value| value.value),
@@ -2691,6 +2680,16 @@ fn resolve_text_justify(
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         TextJustifyDeclaration::Value(value) => Some(value),
         TextJustifyDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_inherited_text_declaration<T: Copy>(
+    candidates: [Option<CascadeValue<InheritedTextDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+    inherited: T,
+) -> T {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        InheritedTextDeclaration::Value(value) => Some(value),
+        InheritedTextDeclaration::RevertLayer => None,
     })
 }
 
@@ -3097,6 +3096,27 @@ fn apply_gap_declarations(
     }
 }
 
+fn apply_inherited_text_declaration<T: Copy>(
+    declaration: Option<InheritedTextDeclaration<T>>,
+    specificity: u16,
+    order: usize,
+    inline: bool,
+    candidates: &mut [Option<CascadeValue<InheritedTextDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+) {
+    let Some(value) = declaration else {
+        return;
+    };
+    let layer = cascade_layer_index(specificity);
+    if wins(specificity, order, inline, candidates[layer]) {
+        candidates[layer] = Some(CascadeValue {
+            value,
+            specificity,
+            order,
+            inline,
+        });
+    }
+}
+
 fn apply_border_sides(
     declarations: &[Option<NativeBorderSide>; 4],
     specificity: u16,
@@ -3166,10 +3186,10 @@ struct NativeDeclarations {
     text_decoration_thickness: Option<NativeTextDecorationThicknessDeclaration>,
     text_underline_offset: Option<NativeTextUnderlineOffsetDeclaration>,
     text_decoration_color: Option<NativeTextDecorationColorDeclaration>,
-    text_transform: Option<TextTransformValue>,
-    font_weight: Option<FontWeightValue>,
-    font_style: Option<FontStyleValue>,
-    word_break: Option<WordBreakValue>,
+    text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
+    font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
+    font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
+    word_break: Option<InheritedTextDeclaration<WordBreakValue>>,
     text_overflow: Option<TextOverflowValue>,
     vertical_align: Option<VerticalAlignValue>,
     text_indent: Option<u32>,
@@ -3678,10 +3698,10 @@ fn parse_declarations_with_diagnostics(
             "text-decoration-thickness" => parse_text_decoration_thickness(value).is_some(),
             "text-underline-offset" => parse_text_underline_offset(value).is_some(),
             "text-decoration-color" => parse_text_decoration_color(value).is_some(),
-            "text-transform" => parse_text_transform(value).is_some(),
-            "font-weight" => parse_font_weight(value).is_some(),
-            "font-style" => parse_font_style(value).is_some(),
-            "word-break" => parse_word_break(value).is_some(),
+            "text-transform" => parse_text_transform_declaration(value).is_some(),
+            "font-weight" => parse_font_weight_declaration(value).is_some(),
+            "font-style" => parse_font_style_declaration(value).is_some(),
+            "word-break" => parse_word_break_declaration(value).is_some(),
             "text-overflow" => parse_text_overflow(value).is_some(),
             "vertical-align" => parse_vertical_align(value).is_some(),
             "text-indent" => parse_dimension(value).is_some(),
@@ -3958,16 +3978,16 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.text_decoration_color = parse_text_decoration_color(value);
             }
             "text-transform" => {
-                declarations.text_transform = parse_text_transform(value);
+                declarations.text_transform = parse_text_transform_declaration(value);
             }
             "font-weight" => {
-                declarations.font_weight = parse_font_weight(value);
+                declarations.font_weight = parse_font_weight_declaration(value);
             }
             "font-style" => {
-                declarations.font_style = parse_font_style(value);
+                declarations.font_style = parse_font_style_declaration(value);
             }
             "word-break" => {
-                declarations.word_break = parse_word_break(value);
+                declarations.word_break = parse_word_break_declaration(value);
             }
             "text-overflow" => {
                 declarations.text_overflow = parse_text_overflow(value);
@@ -5042,6 +5062,35 @@ fn parse_word_break(value: &str) -> Option<WordBreakValue> {
     }
 }
 
+fn parse_inherited_text_declaration<T: Copy>(
+    value: &str,
+    parse: fn(&str) -> Option<T>,
+) -> Option<InheritedTextDeclaration<T>> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("revert-layer") {
+        return Some(InheritedTextDeclaration::RevertLayer);
+    }
+    parse(value).map(InheritedTextDeclaration::Value)
+}
+
+fn parse_text_transform_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<TextTransformValue>> {
+    parse_inherited_text_declaration(value, parse_text_transform)
+}
+
+fn parse_font_weight_declaration(value: &str) -> Option<InheritedTextDeclaration<FontWeightValue>> {
+    parse_inherited_text_declaration(value, parse_font_weight)
+}
+
+fn parse_font_style_declaration(value: &str) -> Option<InheritedTextDeclaration<FontStyleValue>> {
+    parse_inherited_text_declaration(value, parse_font_style)
+}
+
+fn parse_word_break_declaration(value: &str) -> Option<InheritedTextDeclaration<WordBreakValue>> {
+    parse_inherited_text_declaration(value, parse_word_break)
+}
+
 fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
     match value.trim().to_ascii_lowercase().as_str() {
         "clip" => Some(TextOverflowValue::Clip),
@@ -5462,9 +5511,18 @@ mod tests {
             declarations.column_gap,
             Some(GapComponentDeclaration::Value(15))
         );
-        assert_eq!(declarations.font_weight, Some(FontWeightValue::Bold));
-        assert_eq!(declarations.font_style, Some(FontStyleValue::Italic));
-        assert_eq!(declarations.word_break, Some(WordBreakValue::BreakAll));
+        assert_eq!(
+            declarations.font_weight,
+            Some(InheritedTextDeclaration::Value(FontWeightValue::Bold))
+        );
+        assert_eq!(
+            declarations.font_style,
+            Some(InheritedTextDeclaration::Value(FontStyleValue::Italic))
+        );
+        assert_eq!(
+            declarations.word_break,
+            Some(InheritedTextDeclaration::Value(WordBreakValue::BreakAll))
+        );
         assert_eq!(
             declarations.text_overflow,
             Some(TextOverflowValue::Ellipsis)
@@ -7284,6 +7342,46 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_inherited_text_presentation() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #transform { text-transform: lowercase; } #weight { font-weight: normal; } #style { font-style: normal; } #break { word-break: normal; } #repeated { text-transform: lowercase; } #fallback { text-transform: revert-layer; } } @layer theme { #transform { text-transform: uppercase; } #weight { font-weight: bold; } #style { font-style: italic; } #break { word-break: break-all; } #repeated { text-transform: revert-layer; } #fallback { text-transform: revert-layer; } } @layer top { #repeated { text-transform: revert-layer; } } #transform { text-transform: revert-layer; } #weight { font-weight: revert-layer; } #style { font-style: revert-layer; } #break { word-break: revert-layer; } #fallback { text-transform: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let transform = node("<div id='transform'>Target</div>");
+        let weight = node("<div id='weight'>Target</div>");
+        let style = node("<div id='style'>Target</div>");
+        let break_all = node("<div id='break'>Target</div>");
+        let repeated = node("<div id='repeated'>Target</div>");
+        let fallback = node("<div id='fallback'>Target</div>");
+
+        assert_eq!(
+            stylesheet.computed_for(&transform).text_transform(),
+            TextTransformValue::Uppercase
+        );
+        assert_eq!(
+            stylesheet.computed_for(&weight).font_weight(),
+            FontWeightValue::Bold
+        );
+        assert_eq!(
+            stylesheet.computed_for(&style).font_style(),
+            FontStyleValue::Italic
+        );
+        assert_eq!(
+            stylesheet.computed_for(&break_all).word_break(),
+            WordBreakValue::BreakAll
+        );
+        assert_eq!(
+            stylesheet.computed_for(&repeated).text_transform(),
+            TextTransformValue::Lowercase
+        );
+        assert_eq!(
+            stylesheet.computed_for(&fallback).text_transform(),
+            TextTransformValue::None
+        );
+    }
+
+    #[test]
     fn text_decoration_parser_accepts_bounded_line_sets() {
         assert_eq!(
             parse_text_decoration("UNDERLINE"),
@@ -8184,6 +8282,39 @@ mod tests {
         assert_eq!(parse_word_break("keep-all"), None);
         assert_eq!(parse_word_break("break-word"), None);
         assert_eq!(parse_word_break("initial"), None);
+    }
+
+    #[test]
+    fn inherited_text_declaration_parsers_accept_only_standalone_revert_layer() {
+        assert_eq!(
+            parse_text_transform_declaration("ReVeRt-LaYeR"),
+            Some(InheritedTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_font_weight_declaration("revert-layer"),
+            Some(InheritedTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_font_style_declaration(" REVERT-LAYER "),
+            Some(InheritedTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_word_break_declaration("revert-layer"),
+            Some(InheritedTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_text_transform_declaration("revert-layer uppercase"),
+            None
+        );
+        assert_eq!(parse_font_weight_declaration("revert"), None);
+        assert_eq!(parse_font_style_declaration("oblique"), None);
+        assert_eq!(parse_word_break_declaration("keep-all"), None);
+        assert_eq!(
+            parse_text_transform_declaration("uppercase"),
+            Some(InheritedTextDeclaration::Value(
+                TextTransformValue::Uppercase
+            ))
+        );
     }
 
     #[test]

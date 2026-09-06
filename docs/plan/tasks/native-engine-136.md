@@ -1,7 +1,7 @@
 ---
 id: native-engine-136
 scope: glass-browser/native-engine/cascade-layers-flex-shorthand-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-135]
 ---
 
@@ -83,17 +83,44 @@ It changes only which existing flex components win the cascade; it does not
 add intrinsic or percentage sizing, grid, general event behavior, or browser
 parity.
 
-## Planned implementation
+## Implementation and local result
 
-- Add a declaration-aware finite `flex` shorthand parser that recognizes the
-  standalone case-insensitive rollback token and otherwise delegates to the
-  existing concrete shorthand parser.
-- Feed the three resulting private component declarations through the current
-  stylesheet and inline candidate arrays, keeping component-level source-order
-  overrides intact.
-- Extend parser, diagnostic, cascade, layout, display-list, hit-test, and
-  decoded-raster regressions to cover named-layer, repeated, unlayered, inline,
-  fallback, and same-block longhand/shorthand precedence cases.
+The implementation is complete in `710ed3bb` (`feat(native-engine): add flex
+shorthand rollback`). It adds a
+declaration-aware `flex` shorthand parser for standalone, case-insensitive
+`revert-layer`, expanding it into the existing private grow, shrink, and basis
+rollback candidates. Finite shorthand forms continue to use concrete `Value`
+components, and parser assignment order preserves valid same-block longhand
+overrides while invalid later declarations remain ignored.
+
+The focused and affected-package gates passed:
+
+- locked `cargo check -p glass-browser --features native-engine --test
+  native_engine` passed in the fresh 136 target;
+- the shorthand parser/cascade filter passed 3/3;
+- the new shorthand layout-and-artifact integration regression passed 1/1;
+- full native integration passed 173/173;
+- the stack-adjusted full feature-enabled `glass-browser` library passed 938
+  tests with 1 ignored and 0 failures using `RUST_MIN_STACK=33554432`; and
+- warnings-denied affected-package Clippy, formatting, and diff checks passed.
+
+The integration and in-module fixtures verify named-layer priority, repeated
+rollback, unlayered and inline precedence, independent component fallback,
+same-block shorthand/longhand order, invalid later declarations, visual
+layout, hit testing, display-list geometry, decoded raster output, and the
+absence of false `revert-layer` diagnostics. No public schema, dependency,
+feature default, or crate boundary changed. Full two-crate, fuzz/security,
+source-built documentation coverage, and remote-CI gates remain issue-level
+gates. No remote CI, push, release, tag, registry publication, or browser
+parity claim is made.
+
+The exact regenerable `/tmp/glass-136-focused` target measured
+3,242,455,164 logical bytes across 4,136 files and 658 directories. The
+process/open-file check found no Cargo, rustc, or Clippy consumer; the target
+was removed with bounded `find -P ... -xdev -depth -delete`. No repository
+target, source, fixture, durable data, or unrelated temporary path was
+removed. Available filesystem bytes increased from 80,754,245,632 to
+84,009,848,832, a measured delta of 3,255,603,200 bytes.
 
 ## Tradeoffs
 

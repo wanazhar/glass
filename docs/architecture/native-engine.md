@@ -823,14 +823,18 @@ existing layout/artifact owners. Focused, full-native, affected-library, and
 strict affected-package local gates passed; exact test and cleanup evidence is
 recorded in the task. Remote CI remains pending because the checkout is
 local-only.
-The dependency-ordered 136 contract is planned in
-`docs/plan/tasks/native-engine-136.md`. It will extend the same private bounded
-layer resolver to `flex:revert-layer` by writing rollback candidates for the
-existing grow, shrink, and basis components, while preserving finite shorthand
-expansion, same-block longhand precedence, local fallbacks, and all current
-layout/display-list/hit-test/raster owners. Other CSS-wide keywords, multiple
-origins, layer statements, intrinsic or percentage sizing, and browser-wide
-Flexbox conformance remain outside the planned boundary.
+The dependency-ordered 136 implementation is complete in `710ed3bb` and is
+recorded in `docs/plan/tasks/native-engine-136.md`. It extends
+the same private bounded layer resolver to standalone case-insensitive
+`flex:revert-layer` by writing rollback candidates for the existing grow,
+shrink, and basis components, while preserving finite shorthand expansion,
+same-block longhand precedence, local fallbacks, and all current
+layout/display-list/hit-test/raster owners. Focused, full-native,
+affected-library, and strict affected-package local gates passed; exact
+evidence and cleanup are recorded in the task. Other CSS-wide keywords,
+multiple origins, layer statements, intrinsic or percentage sizing, and
+browser-wide Flexbox conformance remain outside the boundary. Remote CI remains
+pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

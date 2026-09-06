@@ -8257,6 +8257,68 @@ fn native_pre_wrap_preserves_whitespace_and_soft_wraps_at_fixed_cell_capacity() 
 }
 
 #[test]
+fn native_white_space_revert_layer_preserves_modes_and_flow() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; line-height:24px; } @layer base { #wrapped { white-space:pre; } #broken { white-space:pre-line; } #inline { white-space:nowrap; } #parent { white-space:pre; } } @layer theme { #wrapped { white-space:pre-wrap; } #broken { white-space:pre-wrap; } #inline { white-space:pre; } } @layer top { #broken { white-space:revert-layer; } } #wrapped { white-space:revert-layer; } #broken { white-space:revert-layer; }</style><div id='wrapped' class='line'>A  B C D E</div><div id='broken' class='line'>A\nB</div><div id='inline' class='line' style='white-space:REVERT-LAYER'> A  B\n C</div><div id='parent' class='line'><span id='child' style='white-space:revert-layer'> E  F</span></div><div id='fallback' class='line' style='white-space:ReVeRt-LaYeR'>A\nB</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "white-space")
+    }));
+    let viewport = Viewport {
+        width: 40,
+        height: 200,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let runs_for = |id: &str| {
+        let node = document.resolve_target(&format!("id={id}")).unwrap();
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node)
+            .map(|run| (run.origin, run.text.as_str()))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        runs_for("wrapped"),
+        vec![
+            (NativePoint { x: 0, y: 0 }, "A  B"),
+            (NativePoint { x: 0, y: 24 }, " C D"),
+            (NativePoint { x: 0, y: 48 }, " E"),
+        ]
+    );
+    assert_eq!(
+        runs_for("broken"),
+        vec![
+            (NativePoint { x: 0, y: 72 }, "A"),
+            (NativePoint { x: 0, y: 96 }, "B"),
+        ]
+    );
+    assert_eq!(
+        runs_for("inline"),
+        vec![
+            (NativePoint { x: 0, y: 120 }, " A  B"),
+            (NativePoint { x: 0, y: 144 }, " C"),
+        ]
+    );
+    assert_eq!(
+        runs_for("child"),
+        vec![(NativePoint { x: 0, y: 168 }, " E  F")]
+    );
+    assert_eq!(
+        runs_for("fallback"),
+        vec![
+            (NativePoint { x: 0, y: 192 }, "A"),
+            (NativePoint { x: 8, y: 192 }, " B"),
+        ]
+    );
+}
+
+#[test]
 fn native_nowrap_collapses_whitespace_without_soft_wrap_and_reaches_root_scroll() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {

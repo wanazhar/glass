@@ -286,6 +286,12 @@ pub(crate) enum WhiteSpaceValue {
     NoWrap,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhiteSpaceDeclaration {
+    Value(WhiteSpaceValue),
+    RevertLayer,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextAlignValue {
     #[default]
@@ -1070,7 +1076,8 @@ impl NativeStylesheet {
         let mut display = None;
         let mut visibility = None;
         let mut opacity = None;
-        let mut white_space = None;
+        let mut white_space: [Option<CascadeValue<WhiteSpaceDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_align: [Option<CascadeValue<TextAlignDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_align_last: [Option<CascadeValue<TextAlignLastDeclaration>>;
@@ -1167,17 +1174,22 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
+            let layer = cascade_layer_index(rule.selector.specificity);
             if let Some(value) = rule.declarations.white_space
-                && wins(rule.selector.specificity, rule.order, false, white_space)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    white_space[layer],
+                )
             {
-                white_space = Some(CascadeValue {
+                white_space[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
                     inline: false,
                 });
             }
-            let layer = cascade_layer_index(rule.selector.specificity);
             if let Some(value) = rule.declarations.text_align
                 && wins(
                     rule.selector.specificity,
@@ -1744,17 +1756,17 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            let layer = usize::from(UNLAYERED_CASCADE_LAYER);
             if let Some(value) = declarations.white_space
-                && wins(u16::MAX, usize::MAX, true, white_space)
+                && wins(u16::MAX, usize::MAX, true, white_space[layer])
             {
-                white_space = Some(CascadeValue {
+                white_space[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
                     inline: true,
                 });
             }
-            let layer = usize::from(UNLAYERED_CASCADE_LAYER);
             if let Some(value) = declarations.text_align
                 && wins(u16::MAX, usize::MAX, true, text_align[layer])
             {
@@ -2234,7 +2246,7 @@ impl NativeStylesheet {
             visibility_hidden: visibility
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
             opacity: opacity.map(|value| value.value),
-            white_space: white_space.map_or(inherited.white_space, |value| value.value),
+            white_space: resolve_white_space(white_space, inherited.white_space),
             text_align: resolve_text_align(text_align, inherited.text_align),
             text_align_last: resolve_text_align_last(text_align_last, inherited.text_align_last),
             text_justify: resolve_text_justify(text_justify, inherited.text_justify),
@@ -2365,6 +2377,16 @@ fn encode_cascade_specificity(specificity: u16, layer: Option<usize>) -> u16 {
     layer
         .saturating_mul(CASCADE_SPECIFICITY_STRIDE)
         .saturating_add(specificity.min(MAX_NATIVE_SELECTOR_SPECIFICITY))
+}
+
+fn resolve_white_space(
+    candidates: [Option<CascadeValue<WhiteSpaceDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    inherited: WhiteSpaceValue,
+) -> WhiteSpaceValue {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        WhiteSpaceDeclaration::Value(value) => Some(value),
+        WhiteSpaceDeclaration::RevertLayer => None,
+    })
 }
 
 fn resolve_text_align(
@@ -2813,7 +2835,7 @@ struct NativeDeclarations {
     display: Option<DisplayValue>,
     visibility: Option<VisibilityValue>,
     opacity: Option<u8>,
-    white_space: Option<WhiteSpaceValue>,
+    white_space: Option<WhiteSpaceDeclaration>,
     text_align: Option<TextAlignDeclaration>,
     text_align_last: Option<TextAlignLastDeclaration>,
     text_justify: Option<TextJustifyDeclaration>,
@@ -3320,7 +3342,7 @@ fn parse_declarations_with_diagnostics(
             }
             "visibility" => parse_visibility(value).is_some(),
             "opacity" => parse_opacity(value).is_some(),
-            "white-space" => parse_white_space(value).is_some(),
+            "white-space" => parse_white_space_declaration(value).is_some(),
             "text-align" => parse_text_align_declaration(value).is_some(),
             "text-align-last" => parse_text_align_last_declaration(value).is_some(),
             "text-justify" => parse_text_justify_declaration(value).is_some(),
@@ -3526,7 +3548,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.opacity = parse_opacity(value);
             }
             "white-space" => {
-                declarations.white_space = parse_white_space(value);
+                declarations.white_space = parse_white_space_declaration(value);
             }
             "text-align" => {
                 declarations.text_align = parse_text_align_declaration(value);
@@ -4206,6 +4228,14 @@ fn parse_white_space(value: &str) -> Option<WhiteSpaceValue> {
     }
 }
 
+fn parse_white_space_declaration(value: &str) -> Option<WhiteSpaceDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(WhiteSpaceDeclaration::RevertLayer)
+    } else {
+        parse_white_space(value).map(WhiteSpaceDeclaration::Value)
+    }
+}
+
 fn parse_text_align(value: &str) -> Option<TextAlignValue> {
     match value.to_ascii_lowercase().as_str() {
         "left" => Some(TextAlignValue::Left),
@@ -4854,7 +4884,10 @@ mod tests {
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.opacity, Some(128));
-        assert_eq!(declarations.white_space, Some(WhiteSpaceValue::PreLine));
+        assert_eq!(
+            declarations.white_space,
+            Some(WhiteSpaceDeclaration::Value(WhiteSpaceValue::PreLine))
+        );
         assert_eq!(
             declarations.text_align,
             Some(TextAlignDeclaration::Value(TextAlignValue::Center))
@@ -6011,6 +6044,25 @@ mod tests {
         assert_eq!(parse_text_align_declaration("center revert-layer"), None);
         assert_eq!(parse_text_align_last_declaration("inherit"), None);
         assert_eq!(parse_text_justify_declaration("none revert-layer"), None);
+    }
+
+    #[test]
+    fn white_space_declaration_parser_accepts_bounded_modes_and_revert_layer() {
+        assert_eq!(
+            parse_white_space_declaration("ReVeRt-LaYeR"),
+            Some(WhiteSpaceDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_white_space_declaration("PRE-WRAP"),
+            Some(WhiteSpaceDeclaration::Value(WhiteSpaceValue::PreWrap))
+        );
+        assert_eq!(
+            parse_white_space_declaration("pre-line"),
+            Some(WhiteSpaceDeclaration::Value(WhiteSpaceValue::PreLine))
+        );
+        assert_eq!(parse_white_space_declaration("inherit"), None);
+        assert_eq!(parse_white_space_declaration("pre wrap"), None);
+        assert_eq!(parse_white_space_declaration("revert-layer pre"), None);
     }
 
     #[test]
@@ -7334,6 +7386,49 @@ mod tests {
             document.computed_style_for_layout(invalid).text_justify(),
             TextJustifyValue::None
         );
+    }
+
+    #[test]
+    fn white_space_revert_layer_rolls_back_named_and_inline_candidates() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { white-space: pre; } #repeated { white-space: pre-line; } #inline { white-space: nowrap; } } @layer theme { #named { white-space: pre-wrap; } #repeated { white-space: revert-layer; } #inline { white-space: pre; } } @layer top { #repeated { white-space: revert-layer; } } #named { white-space: revert-layer; } #repeated { white-space: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named'>Named</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let inline = node("<div id='inline' style='white-space:REVERT-LAYER'>Inline</div>");
+        let fallback = node("<div id='fallback' style='white-space:ReVeRt-LaYeR'>Fallback</div>");
+
+        assert_eq!(
+            stylesheet.computed_for(&named).white_space(),
+            WhiteSpaceValue::PreWrap
+        );
+        assert_eq!(
+            stylesheet.computed_for(&repeated).white_space(),
+            WhiteSpaceValue::PreLine
+        );
+        assert_eq!(
+            stylesheet.computed_for(&inline).white_space(),
+            WhiteSpaceValue::Pre
+        );
+        assert_eq!(
+            stylesheet.computed_for(&fallback).white_space(),
+            WhiteSpaceValue::Normal
+        );
+
+        let mut diagnostics = NativeDiagnosticSink::default();
+        NativeStylesheet::from_sources_with_diagnostics(
+            vec!["#target { white-space: revert-layer; }".into()],
+            &mut diagnostics,
+        )
+        .unwrap();
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "white-space"
+        }));
     }
 
     #[test]

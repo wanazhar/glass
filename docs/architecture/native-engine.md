@@ -31,6 +31,7 @@ bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
 bounded-text-justification-control/bounded-text-decoration-lines/
 bounded-text-decoration-combinations,
+bounded-text-alignment-revert-layer,
 bounded-text-decoration-skip-spaces-line-edges,
 bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit/
 bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-revert,
@@ -102,8 +103,8 @@ separate glyph/decoration paint color and the existing `Option<NativeColor>`
 fallback, bounded inherited
 `text-decoration-line` and `text-decoration` rollback through the same
 15-layer registry with their shared three-bit line-state owner and inherited
-fallback, and the planned bounded inherited `text-align`, `text-align-last`,
-and `text-justify` rollback through the same 15-layer registry, and bounded
+fallback, and bounded inherited `text-align`, `text-align-last`, and
+`text-justify` rollback through the same 15-layer registry, and bounded
 inherited ASCII `text-transform:none|uppercase|lowercase` layout, and
 bounded inherited non-negative fixed-pixel `word-spacing` across the supported
 fixed-cell whitespace modes, and
@@ -750,13 +751,16 @@ CSS-wide keywords, multiple origins, layer statements, and unsupported values
 remain typed diagnostics. Exact local gate, documentation-audit, issue-sync,
 and regenerable-output cleanup evidence is recorded in the task. Remote CI
 remains pending because the checkout is local-only.
-The next designed dependency-ordered boundary is `native-engine-129`, recorded
-in `docs/plan/tasks/native-engine-129.md`. It adds private, case-insensitive
+The dependency-ordered 129 implementation is complete in `d26033af`, with the
+fixture assertion correction in `c32aeafe` and the diagnostic-classifier fix in
+`36a0f68`, and is recorded in
+`docs/plan/tasks/native-engine-129.md`. It adds private, case-insensitive
 `revert-layer` declarations for inherited `text-align`, `text-align-last`, and
 `text-justify`, reusing the existing 15-layer registry and unlayered/inline
 precedence while preserving the finite alignment values, direction mapping,
 final-line alignment, separator justification, and all existing line/artifact
-owners. The design remains unimplemented and makes no new capability claim.
+owners. The public computed values and downstream geometry remain unchanged;
+the supported-value diagnostic path recognizes the same declaration forms.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1667,6 +1671,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded inherited physical `text-align:left|center|right` parsing and
   cascade, deterministic fixed-cell line offsets across direct text and
   supported inline boxes, and shared layout/paint/raster/hit-test coordinates.
+- bounded 15-layer/unlayered `revert-layer` rollback for inherited
+  `text-align`, `text-align-last`, and `text-justify`, with private declaration
+  state and unchanged line/artifact owners.
 - bounded `rgba(R, G, B, A)` functional alpha parsing for background, border,
   and text colors, with shared fixed-point quantization, display-list color
   ownership, and integer source-over replay.

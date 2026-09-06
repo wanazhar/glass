@@ -600,6 +600,50 @@ fn native_text_alignment_shifts_complete_fixed_cell_line_items() {
 }
 
 #[test]
+fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let text_origin = |id: &str| {
+        let node = document.resolve_target(&format!("id={id}")).unwrap();
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node)
+            .map(|run| run.origin)
+            .unwrap()
+    };
+
+    // Unlayered rollback exposes the highest named candidate.
+    assert_eq!(text_origin("named").x, 12);
+    // Rollback in theme, top, and then the unlayered bucket reaches base.
+    assert_eq!(text_origin("repeat").x, 12);
+    // The child rollback is inherited from the centered parent, while the
+    // root rollback keeps the documented left default.
+    assert_eq!(text_origin("child").x, 12);
+    assert_eq!(text_origin("fallback").x, 0);
+
+    let final_node = document.resolve_target("id=final").unwrap();
+    let final_runs = layout
+        .text_runs
+        .iter()
+        .filter(|run| run.node_id == final_node)
+        .collect::<Vec<_>>();
+    assert_eq!(final_runs.len(), 2);
+    assert!(final_runs.iter().any(|run| run.justify_spacing > 0));
+    assert_eq!(final_runs[0].text, "A B");
+    assert_eq!(final_runs[1].text, "C");
+}
+
+#[test]
 fn native_text_alignment_maps_logical_edges_through_direction_and_artifacts() {
     let document = NativeDocument::parse(
         "<style>#ltr-start,#ltr-end,#rtl-start,#rtl-end,#physical-left,#physical-right,#inline { display:block; width:32px; height:20px; } #ltr-start { direction:ltr; text-align:start; } #ltr-end { direction:ltr; text-align:end; } #rtl-start { text-align:start; } #rtl-end { text-align:end; } #physical-left { text-align:left; } #physical-right { text-align:right; } #rtl-wrapped { display:block; width:32px; text-align:start; } #inline { text-align:start; } #chip { display:inline-block; width:8px; height:8px; background-color:red; }</style><div id='root' style='direction:rtl'><div id='ltr-start'>L</div><div id='ltr-end'>E</div><div id='rtl-start'>S</div><div id='rtl-end'>N</div><div id='physical-left'>P</div><div id='physical-right'>R</div><div id='rtl-wrapped'>A B C</div><div id='inline'><span id='chip'></span>Q</div></div>",

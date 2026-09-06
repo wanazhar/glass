@@ -341,7 +341,12 @@ root horizontal and vertical viewport scrolling, semantic click/type actions,
 revisioned effects for supported local controls, inherited text color
 for nested content, bounded `overflow:hidden` clips shared by paint, viewport
 projection, and point hit-testing, bounded axis-specific `overflow-x`/`overflow-y`
-`hidden`/`clip` clips through the same owner, bounded side-specific solid/dashed/dotted-border paint, bounded
+`hidden`/`clip` clips through the same owner, plus bounded case-insensitive
+15-layer/unlayered local `revert-layer` rollback for `overflow`, `overflow-x`,
+and `overflow-y`, preserving independent visible/no-clip fallbacks and shared
+paint, viewport-projection, point-hit, root-overflow, capture, and
+semantic/source-order owners; nested scrolling, scrollbars, and browser-wide
+overflow semantics remain outside the boundary, bounded side-specific solid/dashed/dotted-border paint, bounded
 physical circular border radii, bounded inline-box line placement, bounded
 fixed pixel line-height flow with bounded inherited line-height and
 case-insensitive 15-layer/unlayered `line-height: revert-layer` rollback with

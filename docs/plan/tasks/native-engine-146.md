@@ -1,7 +1,7 @@
 ---
 id: native-engine-146
 scope: glass-browser/native-engine/cascade-layers-overflow-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-145]
 ---
 
@@ -107,9 +107,19 @@ CSS overflow conformance.
 - synchronized native-engine architecture, analysis, plan, README, and issue
   records
 
+## Implementation
+
+- Design checkpoint: `d1cd1eab7ec92593c1f510dabed2ad168d98798a`.
+- Source checkpoint: `462d2a70`.
+- The source checkpoint updates `css.rs` and `native_engine.rs` only; the
+  public computed-style and artifact schemas, feature defaults, dependencies,
+  and two-crate boundary remain unchanged.
+- Product and authoritative planning documentation is synchronized in the
+  closeout checkpoint for this task.
+
 ## Verification
 
-The focused gate must cover:
+The completed gate covered:
 
 - standalone case-insensitive parsing and typed rejection of other CSS-wide,
   mixed, malformed, and unsupported forms for `overflow`, `overflow-x`, and
@@ -126,3 +136,31 @@ The focused gate must cover:
   final static documentation gates. Remote CI remains unclaimed until an
   explicitly authorized push.
 
+## Evidence
+
+- Focused locked `glass-browser` check passed.
+- Overflow parser/cascade tests passed 2/2.
+- Targeted native integration passed 1/1 with 183 filtered.
+- Full native integration passed 184/184.
+- Feature-enabled `glass-browser` library tests passed 956, with 1 ignored.
+- Strict affected-package Clippy passed with warnings denied.
+- Locked `glass-dev` and `glass-browser` inventory binaries passed in the
+  isolated focused target; documentation coverage was run with those explicit
+  binary paths and passed with 560 Markdown files, 345 full-product MCP tools
+  (100 browser-only), 17 examples, and 22 public modules.
+- Final static truth gates passed: version sync at 0.3.14; release
+  documentation with 560 Markdown files, 83 current-document records, 57
+  previous-version hits, 655 semantic-audit hits, and zero current-claim
+  failures; documentation depth with 93 current guides and 19 substantive
+  contracts; feature parity for 14 capabilities across 4 targets (baseline
+  0.3.0, next 0.3.14, checkout 0.3.14); TUI shortcut parity with 15
+  implementation help keys and 63 documentation markers; 5 public read-only
+  adapters; reliability with 6 scenarios across 4 targets; and Web IR with 8
+  fixtures, 8 scenarios, and 11 categories.
+- Formatting and diff checks passed.
+- After all checks completed, no Cargo/Rust process or open handle referenced
+  the exact regenerable target. `/tmp/glass-146-focused` measured
+  6,304,055,296 bytes (7,167 files, 1,046 directories) and was removed with
+  bounded same-filesystem deletion; the exact path is absent.
+  `/home/ubuntu/work/glass/target` remained absent. `/tmp` availability increased from
+  77,576,105,984 to 83,880,128,512 bytes, reclaiming 6,304,022,528 bytes.

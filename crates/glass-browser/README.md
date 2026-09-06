@@ -251,6 +251,12 @@ resolving through the existing `None`/parent-root fallbacks without changing
 fill/text display-list, clipping, opacity, capture, or raster owners.
 `currentColor`, gradients, system colors, border-color, percentages, color
 spaces, and multiple origins remain outside the boundary.
+The local overflow surface also accepts bounded case-insensitive
+15-layer/unlayered `revert-layer` for `overflow`, `overflow-x`, and `overflow-y`,
+resolving through independent visible/no-clip fallbacks while preserving the
+existing paint, viewport-projection, point-hit, root-overflow, capture, and
+semantic/source-order owners. Nested scrolling, scrollbars, and browser-wide
+overflow semantics remain outside the boundary.
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |

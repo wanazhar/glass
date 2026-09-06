@@ -118,7 +118,12 @@ fallbacks, plus bounded case-insensitive 15-layer/unlayered local
 including bounded `margin:auto`, with content-box/zero local fallbacks,
 bounded vertical viewport
 scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip`
-clips through the existing projection and point-hit owner, and bounded PNG
+clips through the existing projection and point-hit owner, plus bounded
+case-insensitive 15-layer/unlayered local `revert-layer` rollback for
+`overflow`, `overflow-x`, and `overflow-y`, preserving independent visible/no-clip
+fallbacks and the existing paint, projection, point-hit, root-overflow, capture,
+and semantic/source-order owners; nested scrolling, scrollbars, and browser-wide
+overflow semantics remain outside the boundary, and bounded PNG
 capture through the explicit backend operation,
 bounded local opacity subtree groups through transparent software layers,
 bounded inherited physical `text-align:left|center|right` line placement, and

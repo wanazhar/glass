@@ -1264,8 +1264,10 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut overflow_x = None;
-        let mut overflow_y = None;
+        let mut overflow_x: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut overflow_y: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         for rule in &self.rules {
             if !matches(&rule.selector) {
                 continue;
@@ -1817,26 +1819,20 @@ impl NativeStylesheet {
                 false,
                 &mut color,
             );
-            if let Some(value) = rule.declarations.overflow_x
-                && wins(rule.selector.specificity, rule.order, false, overflow_x)
-            {
-                overflow_x = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.overflow_y
-                && wins(rule.selector.specificity, rule.order, false, overflow_y)
-            {
-                overflow_y = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_local_cascade_declaration(
+                rule.declarations.overflow_x,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut overflow_x,
+            );
+            apply_local_cascade_declaration(
+                rule.declarations.overflow_y,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut overflow_y,
+            );
         }
 
         if let Some(inline_style) = node.attribute("style") {
@@ -2272,26 +2268,20 @@ impl NativeStylesheet {
                 true,
                 &mut color,
             );
-            if let Some(value) = declarations.overflow_x
-                && wins(u16::MAX, usize::MAX, true, overflow_x)
-            {
-                overflow_x = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.overflow_y
-                && wins(u16::MAX, usize::MAX, true, overflow_y)
-            {
-                overflow_y = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_local_cascade_declaration(
+                declarations.overflow_x,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut overflow_x,
+            );
+            apply_local_cascade_declaration(
+                declarations.overflow_y,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut overflow_y,
+            );
         }
 
         let resolved_padding = padding.map(resolve_local_optional_cascade_declaration);
@@ -2377,12 +2367,10 @@ impl NativeStylesheet {
             margin_auto: NativeAutoEdges::from_values(resolved_margin),
             box_sizing: resolve_local_cascade_declaration(box_sizing, NativeBoxSizing::ContentBox),
             color: resolve_local_optional_cascade_declaration(color).or(inherited.color),
-            overflow_clip_x: overflow_x.is_some_and(|value| {
-                matches!(value.value, OverflowValue::Hidden | OverflowValue::Clip)
-            }),
-            overflow_clip_y: overflow_y.is_some_and(|value| {
-                matches!(value.value, OverflowValue::Hidden | OverflowValue::Clip)
-            }),
+            overflow_clip_x: resolve_local_optional_cascade_declaration(overflow_x)
+                .is_some_and(|value| matches!(value, OverflowValue::Hidden | OverflowValue::Clip)),
+            overflow_clip_y: resolve_local_optional_cascade_declaration(overflow_y)
+                .is_some_and(|value| matches!(value, OverflowValue::Hidden | OverflowValue::Clip)),
         }
     }
 }
@@ -3198,9 +3186,9 @@ struct NativeDeclarations {
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
     box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
     color: Option<LocalCascadeDeclaration<NativeColor>>,
-    overflow: Option<OverflowValue>,
-    overflow_x: Option<OverflowValue>,
-    overflow_y: Option<OverflowValue>,
+    overflow: Option<LocalCascadeDeclaration<OverflowValue>>,
+    overflow_x: Option<LocalCascadeDeclaration<OverflowValue>>,
+    overflow_y: Option<LocalCascadeDeclaration<OverflowValue>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3710,8 +3698,16 @@ fn parse_declarations_with_diagnostics(
                 parse_local_margin_declaration(value).is_some()
             }
             "box-sizing" => parse_local_box_sizing_declaration(value).is_some(),
-            "overflow" | "overflow-x" | "overflow-y" => parse_overflow(value)
-                .is_some_and(|value| matches!(value, OverflowValue::Hidden | OverflowValue::Clip)),
+            "overflow" | "overflow-x" | "overflow-y" => parse_overflow_declaration(value)
+                .is_some_and(|value| {
+                    matches!(
+                        value,
+                        LocalCascadeDeclaration::RevertLayer
+                            | LocalCascadeDeclaration::Value(
+                                OverflowValue::Hidden | OverflowValue::Clip
+                            )
+                    )
+                }),
             _ => {
                 diagnostics.push(
                     NativeDiagnosticCode::UnsupportedCssProperty,
@@ -4142,16 +4138,21 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "overflow" => {
-                let parsed = parse_overflow(value);
-                declarations.overflow = parsed;
-                declarations.overflow_x = parsed;
-                declarations.overflow_y = parsed;
+                if let Some(parsed) = parse_overflow_declaration(value) {
+                    declarations.overflow = Some(parsed);
+                    declarations.overflow_x = Some(parsed);
+                    declarations.overflow_y = Some(parsed);
+                }
             }
             "overflow-x" => {
-                declarations.overflow_x = parse_overflow(value);
+                if let Some(parsed) = parse_overflow_declaration(value) {
+                    declarations.overflow_x = Some(parsed);
+                }
             }
             "overflow-y" => {
-                declarations.overflow_y = parse_overflow(value);
+                if let Some(parsed) = parse_overflow_declaration(value) {
+                    declarations.overflow_y = Some(parsed);
+                }
             }
             _ => {}
         }
@@ -5223,6 +5224,13 @@ fn parse_overflow(value: &str) -> Option<OverflowValue> {
     }
 }
 
+fn parse_overflow_declaration(value: &str) -> Option<LocalCascadeDeclaration<OverflowValue>> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some(LocalCascadeDeclaration::RevertLayer);
+    }
+    parse_overflow(value).map(LocalCascadeDeclaration::Value)
+}
+
 fn parse_selector(source: &str) -> Option<NativeSelector> {
     let source = source.trim();
     if source.is_empty() || source.len() > MAX_SELECTOR_BYTES {
@@ -5697,9 +5705,18 @@ mod tests {
             declarations.box_sizing,
             Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
         );
-        assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
-        assert_eq!(declarations.overflow_x, Some(OverflowValue::Hidden));
-        assert_eq!(declarations.overflow_y, Some(OverflowValue::Hidden));
+        assert_eq!(
+            declarations.overflow,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+        );
+        assert_eq!(
+            declarations.overflow_x,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+        );
+        assert_eq!(
+            declarations.overflow_y,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+        );
         assert_eq!(parse_white_space("normal"), Some(WhiteSpaceValue::Normal));
         assert_eq!(
             parse_white_space("pre-line"),
@@ -6519,8 +6536,71 @@ mod tests {
 
         let declarations =
             parse_declarations("overflow-x: hidden; overflow: clip; overflow-y: visible;");
-        assert_eq!(declarations.overflow_x, Some(OverflowValue::Clip));
-        assert_eq!(declarations.overflow_y, Some(OverflowValue::Other));
+        assert_eq!(
+            declarations.overflow_x,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Clip))
+        );
+        assert_eq!(
+            declarations.overflow_y,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Other))
+        );
+    }
+
+    #[test]
+    fn overflow_revert_layer_rolls_back_independent_axes_and_shorthand() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { overflow: hidden; } #axis { overflow-x: hidden; overflow-y: clip; } #repeat { overflow: hidden; } #fallback { overflow: revert-layer; } #inline { overflow: hidden; } #unsupported { overflow: visible; } } @layer theme { #named { overflow-x: clip; overflow-y: revert-layer; } #axis { overflow-x: revert-layer; overflow-y: hidden; } #repeat { overflow: revert-layer; } } @layer top { #named { overflow: revert-layer; } #repeat { overflow: revert-layer; } } #named { overflow: revert-layer; } #repeat { overflow: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named'>Named</div>");
+        let axis = node("<div id='axis'>Axis</div>");
+        let repeat = node("<div id='repeat'>Repeat</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let inline = node("<div id='inline' style='overflow:ReVeRt-LaYeR'>Inline</div>");
+        let unsupported = node("<div id='unsupported'>Unsupported</div>");
+
+        let style = |node| stylesheet.computed_for(node);
+        assert!(style(&named).overflow_clip_x());
+        assert!(style(&named).overflow_clip_y());
+        assert!(style(&axis).overflow_clip_x());
+        assert!(style(&axis).overflow_clip_y());
+        assert!(style(&repeat).overflow_clip_x());
+        assert!(style(&repeat).overflow_clip_y());
+        assert!(!style(&fallback).overflow_clip_x());
+        assert!(!style(&fallback).overflow_clip_y());
+        assert!(style(&inline).overflow_clip_x());
+        assert!(style(&inline).overflow_clip_y());
+        assert!(!style(&unsupported).overflow_clip_x());
+        assert!(!style(&unsupported).overflow_clip_y());
+
+        assert_eq!(
+            parse_overflow_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_overflow_declaration("visible"),
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Other))
+        );
+
+        let mut diagnostics = NativeDiagnosticSink::default();
+        NativeStylesheet::from_sources_with_diagnostics(
+            vec![
+                "#target { overflow: ReVeRt-LaYeR; overflow-x: visible; overflow-y: clip; }".into(),
+            ],
+            &mut diagnostics,
+        )
+        .unwrap();
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && matches!(diagnostic.detail.as_str(), "overflow" | "overflow-y")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "overflow-x"
+        }));
     }
 
     #[test]

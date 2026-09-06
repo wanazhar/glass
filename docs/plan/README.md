@@ -1354,6 +1354,16 @@ full-native, affected-library, strict Clippy, feature rustdoc, formatting, and
 static documentation gates are recorded in the task; remote CI remains pending
 because the checkout is local-only.
 
+The next dependency-ordered [native-engine-150](tasks/native-engine-150.md)
+contract is planned. It will reuse the same private bounded layer resolver for
+standalone, case-insensitive `revert-layer` on the existing physical `border`,
+`border-top`, `border-right`, `border-bottom`, and `border-left` owners,
+preserving the zero-width/no-paint fallback and the existing box-model inset,
+border display-list, capture, raster, point-hit, and semantic/source-order
+owners. Logical sides, border-image, gradients, other border styles, animation,
+multiple origins, and browser-wide CSS border conformance remain outside the
+planned boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

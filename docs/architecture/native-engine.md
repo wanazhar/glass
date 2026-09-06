@@ -30,6 +30,7 @@ bounded-inherited-text-presentation-revert-layer,
 bounded-inherited-text-spacing-revert-layer,
 bounded-inherited-vertical-align-revert-layer,
 bounded-local-text-geometry-revert-layer,
+bounded-local-dimension-revert-layer,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -919,15 +920,19 @@ integration tests, full-native integration/library tests, strict affected-
 package Clippy, formatting, and static documentation gates passed locally;
 exact evidence and cleanup are recorded in the task. Remote CI remains
 pending because the checkout is local-only.
-The next dependency-ordered 143 contract is planned in
-`docs/plan/tasks/native-engine-143.md`. It will extend the same private bounded
-layer resolver to standalone, case-insensitive `revert-layer` for local
-`width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`,
-preserving finite non-negative pixel dimensions, absent local fallbacks, and
-the existing box-model, normal-flow, flex, overflow, capture, hit-test,
-display-list, raster, and semantic/source-order owners. Percentages, negative
-dimensions, intrinsic sizing, aspect ratio, multiple origins, and browser-wide
-CSS sizing conformance remain outside the planned boundary.
+The dependency-ordered 143 implementation is complete in `b55751da` (design
+`edc29d7c`) and is recorded in `docs/plan/tasks/native-engine-143.md`. It
+extends the same private bounded layer resolver to standalone, case-insensitive
+`revert-layer` for local `width`, `height`, `min-width`, `max-width`,
+`min-height`, and `max-height`, preserving finite non-negative pixel dimensions,
+absent local fallbacks, and the existing box-model, normal-flow, flex, overflow,
+capture, hit-test, display-list, raster, and semantic/source-order owners.
+Percentages, negative dimensions, intrinsic sizing, aspect ratio, multiple
+origins, and browser-wide CSS sizing conformance remain outside the boundary.
+Focused parser/cascade and integration tests, full-native integration/library
+tests, strict affected-package Clippy, formatting, and static documentation
+gates passed locally; exact evidence and cleanup are recorded in the task.
+Remote CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

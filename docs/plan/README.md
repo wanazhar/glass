@@ -1253,16 +1253,19 @@ Focused, full-native, affected-library, strict Clippy, formatting, and static
 documentation gates passed locally; exact evidence and cleanup are recorded in
 the task. Remote CI remains pending because the checkout is local-only.
 
-The next dependency-ordered [native-engine-143](tasks/native-engine-143.md)
-contract is planned. It will add standalone case-insensitive `revert-layer` to
-the local `width`, `height`, `min-width`, `max-width`, `min-height`, and
-`max-height` owners through independent private candidates, preserving finite
-non-negative pixel dimensions, absent local fallbacks, and the existing
-box-model, normal-flow, flex, overflow, capture, hit-test, display-list,
-raster, and semantic/source-order owners. Percentages, negative dimensions,
-intrinsic sizing, aspect ratio, multiple origins, and browser-wide CSS sizing
-conformance remain outside the planned boundary; implementation and evidence
-remain pending.
+The dependency-ordered [native-engine-143](tasks/native-engine-143.md)
+implementation is complete in `b55751da` (design `edc29d7c`) and recorded in
+the task. It adds standalone case-insensitive `revert-layer` to the local
+`width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`
+owners through independent private candidates, preserving finite non-negative
+pixel dimensions, absent local fallbacks, and the existing box-model,
+normal-flow, flex, overflow, capture, hit-test, display-list, raster, and
+semantic/source-order owners. Percentages, negative dimensions, intrinsic
+sizing, aspect ratio, multiple origins, and browser-wide CSS sizing conformance
+remain outside the boundary. Focused, full-native, affected-library, strict
+Clippy, formatting, and static documentation gates passed locally; exact
+evidence and cleanup are recorded in the task. Remote CI remains pending
+because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

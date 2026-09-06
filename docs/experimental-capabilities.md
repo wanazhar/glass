@@ -131,7 +131,10 @@ Explicit references are revision-bound; ambiguous, stale, disabled, read-only,
 and unsupported targets fail before mutation. It provides only bounded
 presentation, normal-flow outer/content box geometry with bounded physical
 four-side padding/margin shorthands and longhands plus explicit box sizing and
-bounded physical min/max width/height constraints,
+bounded physical min/max width/height constraints with bounded
+case-insensitive 15-layer/unlayered local `revert-layer` rollback for finite
+non-negative integer-pixel `width`, `height`, `min-width`, `max-width`,
+`min-height`, and `max-height` with absent local fallbacks,
 bounded vertical viewport
 scrolling, inherited text color,
 bounded `overflow:hidden` clips shared by paint, viewport projection, and point

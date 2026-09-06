@@ -74,7 +74,10 @@ fail before browser input.
 The feature-gated native engine additionally derives bounded integer-pixel
 normal-flow rectangles, bounded physical four-side padding/margin shorthands
 and longhands, explicit content-box or border-box sizing, bounded physical
-min/max width/height constraints, outer/content rectangles, bounded vertical
+min/max width/height constraints with bounded case-insensitive 15-layer/
+unlayered local `revert-layer` rollback for finite non-negative integer-pixel
+`width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`
+with absent local fallbacks, outer/content rectangles, bounded vertical
 viewport scrolling, inherited text color, bounded `overflow:hidden` clips
 shared by paint, viewport projection, and point hit-testing, bounded
 axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips through the same

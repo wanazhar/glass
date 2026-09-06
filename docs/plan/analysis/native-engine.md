@@ -1109,15 +1109,19 @@ browser-wide text conformance remain outside the boundary. Focused,
 full-native, affected-library, strict Clippy, formatting, and static
 documentation gates passed locally; exact evidence and cleanup are recorded in
 the task. Remote CI remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-143` contract is planned in
-`docs/plan/tasks/native-engine-143.md`. It will reuse the private bounded layer
+The dependency-ordered `native-engine-143` implementation is complete in
+`b55751da` (design `edc29d7c`) and recorded in
+`docs/plan/tasks/native-engine-143.md`. It reuses the private bounded layer
 resolver for standalone, case-insensitive `revert-layer` on local `width`,
 `height`, `min-width`, `max-width`, `min-height`, and `max-height`, keeping
 finite non-negative pixel dimensions, absent local fallbacks, and the existing
 box-model, normal-flow, flex, overflow, capture, hit-test, display-list,
 raster, and semantic/source-order owners unchanged. Percentages, negative
 dimensions, intrinsic sizing, aspect ratio, multiple origins, and browser-wide
-CSS sizing conformance remain outside the planned boundary.
+CSS sizing conformance remain outside the boundary. Focused, full-native,
+affected-library, strict Clippy, formatting, and static documentation gates
+passed locally; exact evidence and cleanup are recorded in the task. Remote CI
+remains pending because the checkout is local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1405,7 +1409,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-140` | completed reuse of bounded named-layer priority and private per-property rollback for inherited `word-spacing:revert-layer` and `letter-spacing:revert-layer`, preserving finite non-negative pixel values, parent/root fallback, and existing fixed-cell spacing/layout/raster consumers | `native-engine-139` | other CSS-wide keywords, negative/relative/percentage/fractional spacing, `normal`, pair-boundary and cross-fragment semantics, multiple origins, `!important` inversion, layer statements, Unicode shaping/metrics, writing modes, and browser-wide text conformance |
 | `native-engine-141` | completed reuse of bounded named-layer priority and private rollback for inherited `vertical-align:revert-layer`, preserving finite `baseline|top|middle|bottom` values, parent/root fallback, and existing inline line-item/layout/raster consumers | `native-engine-140` | other CSS-wide keywords, baseline metrics, lengths, percentages, multiple origins, `!important` inversion, layer statements, bidi, writing modes, ruby/table-cell/replaced-element alignment, and browser-wide text conformance |
 | `native-engine-142` | completed reuse of bounded named-layer priority and private rollback for local `text-indent:revert-layer` and `text-overflow:revert-layer`, preserving finite non-negative fixed-pixel indentation, `clip|ellipsis`, local fallbacks, and existing text-flow/truncation/layout/raster consumers | `native-engine-141` | other CSS-wide keywords, negative or hanging indentation, percentages, font-relative units, inherited text-overflow, marker customization, multiple origins, `!important` inversion, layer statements, and browser-wide text conformance |
-| `native-engine-143` | planned reuse of bounded named-layer priority and private rollback for local `width:revert-layer`, `height:revert-layer`, `min-width:revert-layer`, `max-width:revert-layer`, `min-height:revert-layer`, and `max-height:revert-layer`, preserving finite non-negative pixel dimensions, absent local fallbacks, and existing box-model/layout/raster consumers | `native-engine-142` | other CSS-wide keywords, percentages, negative dimensions, intrinsic sizing, aspect ratio, multiple origins, `!important` inversion, layer statements, and browser-wide CSS sizing conformance |
+| `native-engine-143` | completed reuse of bounded named-layer priority and private rollback for local `width:revert-layer`, `height:revert-layer`, `min-width:revert-layer`, `max-width:revert-layer`, `min-height:revert-layer`, and `max-height:revert-layer`, preserving finite non-negative pixel dimensions, absent local fallbacks, and existing box-model/layout/raster consumers | `native-engine-142` | other CSS-wide keywords, percentages, negative dimensions, intrinsic sizing, aspect ratio, multiple origins, `!important` inversion, layer statements, and browser-wide CSS sizing conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1831,13 +1835,14 @@ visual stacking.
 | bounded inherited text-spacing rollback | completed extension of the proven layer rollback to inherited `word-spacing` and `letter-spacing` through independent private candidates without changing public computed values or text/display/raster schemas | two fixed candidate arrays add bounded style-walk state; shared parser hardening preserves earlier valid values before invalid later declarations; no generic CSS-wide semantics, negative/relative/percentage/fractional spacing, font metrics, or browser text parity | reuse the generic private resolver, keep spacing candidates property-local, and test standalone/repeated/unlayered/inline rollback, descendants, root fallback, invalid-later preservation, collapsed/preformatted flow, alignment, capture, raster, hit testing, and semantic/source order together |
 | bounded inherited vertical-align rollback | completed extension of the proven layer rollback to inherited `vertical-align` through a private candidate without changing public computed values or text/display/raster schemas | one fixed candidate array adds bounded style-walk state; line placement remains tied to the existing fixed-cell geometry owner; no baseline metrics, lengths, percentages, bidi, writing modes, or browser text parity | reuse the generic private resolver, keep the vertical-align candidate property-local, and test standalone/repeated/unlayered/inline rollback, descendants, root fallback, invalid-later preservation, all four finite values, line geometry, capture, raster, hit testing, and semantic/source order together |
 | bounded local text-geometry rollback | completed extension of the proven layer rollback to local `text-indent` and `text-overflow` through independent private candidates without changing public computed values or text/display/raster schemas | two fixed candidate arrays add bounded local cascade state; grouping first-line geometry with truncation broadens the focused behavioral surface and retains fixed-cell eligibility limits; no negative/hanging indentation, percentages, font-relative units, marker customization, multiple origins, or browser text parity | share the existing bounded resolver with local fallbacks, keep both candidate sequences property-local, and test same-block/invalid-later/repeated/unlayered/inline rollback together with first-line coordinates, clipped-nowrap ellipsis, text fragments, display/raster output, overflow, hit testing, and semantic/source order |
-| bounded local dimension rollback | planned extension of the proven layer rollback to six local pixel dimension owners through independent private candidates without changing public computed values or box/layout/raster schemas | six fixed candidate arrays add bounded local cascade state; grouping width/height and min/max constraints broadens the geometry regression and keeps absent-option fallbacks distinct; no percentages, negative values, intrinsic sizing, aspect-ratio, multiple origins, or browser sizing parity | share the existing local resolver with `None` fallbacks, keep each dimension candidate property-local, and test named/repeated/unlayered/inline rollback, same-block/invalid-later preservation, absent fallback, constraint interactions, box geometry, flex/flow, overflow, capture, raster, hit testing, and semantic/source order together |
+| bounded local dimension rollback | completed extension of the proven layer rollback to six local pixel dimension owners through independent private candidates without changing public computed values or box/layout/raster schemas | six fixed candidate arrays add bounded local cascade state; grouping width/height and min/max constraints broadens the geometry regression and keeps absent-option fallbacks distinct; no percentages, negative values, intrinsic sizing, aspect-ratio, multiple origins, or browser sizing parity | share the existing local resolver with `None` fallbacks, keep each dimension candidate property-local, and test named/repeated/unlayered/inline rollback, same-block/invalid-later preservation, absent fallback, constraint interactions, box geometry, flex/flow, overflow, capture, raster, hit testing, and semantic/source order together |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-142.md` is the latest completed task;
+`docs/plan/tasks/native-engine-143.md` is the latest completed task;
+`docs/plan/tasks/native-engine-142.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-141.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-140.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-139.md` is the preceding completed task;

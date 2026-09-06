@@ -1194,6 +1194,15 @@ implementation help keys/63 documentation markers; adapters passed at 5;
 reliability passed at 6 scenarios across 4 targets; and Web IR passed at 8
 fixtures/8 scenarios/11 categories. Remote CI remains pending because the
 checkout is local-only.
+The next dependency-ordered `native-engine-149` contract is planned in
+`docs/plan/tasks/native-engine-149.md`. It will reuse the same private bounded
+layer resolver for standalone, case-insensitive `revert-layer` on the existing
+local `display` and `visibility` owners, preserving the `display:auto`/visible
+fallbacks and the existing hidden-subtree, normal-flow, point-hit,
+display-list, capture, raster, and semantic/source-order owners. Inherited
+visibility, display decomposition, formatting-context parity, table/ruby/
+flow-root details, animation, multiple origins, and browser-wide CSS
+display/visibility conformance remain outside the planned boundary.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1487,6 +1496,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-146` | completed reuse of bounded named-layer priority and private rollback for local `overflow:revert-layer`, `overflow-x:revert-layer`, and `overflow-y:revert-layer`, preserving independent x/y visible fallbacks and existing clip consumers | `native-engine-145` | other CSS-wide keywords, nested scrolling, scrollbars, `visible`/`auto`/`scroll` used-value parity, multiple origins, `!important` inversion, layer statements, and browser-wide CSS overflow conformance |
 | `native-engine-147` | completed reuse of bounded named-layer priority and private rollback for local one-to-four-value integer `border-radius:revert-layer`, preserving zero-corner fallback and existing rounded fill/border/point-hit consumers | `native-engine-146` | other CSS-wide keywords, elliptical or percentage radii, corner longhands, nested clips, anti-aliasing, multiple origins, and browser-wide CSS border-radius conformance |
 | `native-engine-148` | completed reuse of bounded named-layer priority and private rollback for local 8-bit `opacity:revert-layer`, preserving full-opacity fallback, reduced-opacity group/compositing consumers, and unchanged geometry/artifact owners | `native-engine-147` | other CSS-wide keywords, inherited opacity, stacking-context/blending parity, filters, animation, multiple origins, and browser-wide CSS opacity conformance |
+| `native-engine-149` | planned reuse of bounded named-layer priority and private rollback for local `display:revert-layer` and `visibility:revert-layer`, preserving normal-flow/visible fallbacks and existing hidden-subtree/artifact consumers | `native-engine-148` | other CSS-wide keywords, inherited visibility, display decomposition, formatting-context parity, table/ruby/flow-root details, animation, multiple origins, and browser-wide CSS display/visibility conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current

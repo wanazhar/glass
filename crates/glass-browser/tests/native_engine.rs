@@ -4289,6 +4289,70 @@ fn native_border_radius_feeds_layout_hit_testing_and_rounded_replay() {
 }
 
 #[test]
+fn native_border_radius_revert_layer_preserves_rounded_consumers() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #card { width:12px;height:10px;border:2px solid blue;background-color:red;border-radius:4px; } } @layer theme { #card { border-radius:6px; } #card { border-radius: revert-layer; } } @layer top { #card { border-radius: revert-layer; } } #card { border-radius: revert-layer; } #fallback { width:12px;height:10px;border:2px solid blue;background-color:red;border-radius: revert-layer; }</style><div id='card'>Card</div><div id='fallback'>Fallback</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let card = document.resolve_target("id=card").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let card_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == card)
+        .unwrap();
+    let fallback_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == fallback)
+        .unwrap();
+    assert_eq!(
+        card_box.border_radius,
+        NativeBorderRadius {
+            top_left: 4,
+            top_right: 4,
+            bottom_right: 4,
+            bottom_left: 4,
+        }
+    );
+    assert_eq!(fallback_box.border_radius, NativeBorderRadius::default());
+    assert_eq!(layout.hit_test(0, 0).unwrap(), None);
+    assert_eq!(layout.hit_test(4, 4).unwrap(), Some(card));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, radius, .. }
+                if *node_id == card && *radius == card_box.border_radius
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::BorderRect { node_id, radius, .. }
+                if *node_id == card && *radius == card_box.border_radius
+        )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(0, 0), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(3, 0), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(4, 4), Some([255, 0, 0, 255]));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-radius"
+    }));
+}
+
+#[test]
 fn native_inline_boxes_wrap_before_layout_materializes_geometry() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:16px'><span id='first' style='display:inline;width:6px;height:4px;padding:1px;margin:1px;background-color:red'>A</span><span id='second' style='display:inline;width:6px;height:4px;padding:1px;margin:1px;background-color:blue'>B</span></div>",

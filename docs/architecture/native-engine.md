@@ -835,16 +835,20 @@ evidence and cleanup are recorded in the task. Other CSS-wide keywords,
 multiple origins, layer statements, intrinsic or percentage sizing, and
 browser-wide Flexbox conformance remain outside the boundary. Remote CI remains
 pending because the checkout is local-only.
-The dependency-ordered 137 contract is planned in
-`docs/plan/tasks/native-engine-137.md`. It will extend the same private bounded
-layer resolver to standalone `flex-flow:revert-layer` and
-`place-content:revert-layer`, writing rollback candidates for their existing
-direction/wrap and align-content/justify-content components while preserving
-finite shorthand expansion, same-block longhand precedence, local fallbacks,
-and all current flex layout/display-list/hit-test/raster owners. Other
-CSS-wide keywords, multiple origins, layer statements, intrinsic or percentage
-sizing, and browser-wide Flexbox conformance remain outside the planned
-boundary.
+The dependency-ordered 137 implementation is complete in `7da4dfd5` and is
+recorded in `docs/plan/tasks/native-engine-137.md`. Design was recorded in
+`79e2d2fa`. It extends the same private bounded layer resolver to standalone,
+case-insensitive `flex-flow:revert-layer` and `place-content:revert-layer`,
+writing rollback candidates for their existing direction/wrap and
+align-content/justify-content components while preserving finite shorthand
+expansion, same-block longhand precedence, local fallbacks, and all current
+flex layout/display-list/hit-test/raster owners. Focused parser/cascade,
+integration, full-native, affected-library, strict Clippy, formatting, and
+static documentation gates passed locally; exact evidence and cleanup are
+recorded in the task. Other CSS-wide keywords, multiple origins, layer
+statements, intrinsic or percentage sizing, and browser-wide Flexbox
+conformance remain outside the boundary. Remote CI remains pending because the
+checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1777,6 +1781,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   `align-content`, with private declaration state, native fallbacks, finite
   `flex-flow`/`place-content` expansion, and preserved flex line/item
   artifacts.
+- bounded 15-layer/unlayered `revert-layer` rollback for non-inherited flex
+  item sizing and the standalone `flex`, `flex-flow`, and `place-content`
+  shorthands, with private component state, finite expansion, independent
+  fallback resolution, and preserved flex line/item artifacts.
 - bounded `rgba(R, G, B, A)` functional alpha parsing for background, border,
   and text colors, with shared fixed-point quantization, display-list color
   ownership, and integer source-over replay.

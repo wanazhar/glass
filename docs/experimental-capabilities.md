@@ -192,8 +192,9 @@ source-order ties,
 bounded non-inherited `flex-grow:0..=1024` and `flex-shrink:0..=1024`
 allocation plus `flex-basis:auto|Npx` base-size selection, including
 case-insensitive 15-layer/unlayered `revert-layer` rollback for the components
-and standalone `flex:revert-layer` shorthand with native fallbacks and finite
-shorthand expansion,
+and standalone `flex:revert-layer`, `flex-flow:revert-layer`, and
+`place-content:revert-layer` shorthand rollback with native fallbacks and
+finite shorthand expansion,
 bounded case-insensitive 15-layer/unlayered rollback for non-inherited
 `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
 and `flex-direction` owners with their native fallbacks,

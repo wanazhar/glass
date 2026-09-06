@@ -116,8 +116,9 @@ owner, bounded
   bounded non-inherited `flex-grow:0..=1024` and `flex-shrink:0..=1024`
   allocation plus `flex-basis:auto|Npx` base-size selection, including
   case-insensitive 15-layer/unlayered `revert-layer` rollback for the
-  components and standalone `flex:revert-layer` shorthand with native
-  fallbacks and finite shorthand expansion,
+  components and standalone `flex:revert-layer`, `flex-flow:revert-layer`,
+  and `place-content:revert-layer` shorthand rollback with native fallbacks
+  and finite shorthand expansion,
   bounded case-insensitive 15-layer/unlayered rollback for non-inherited
   `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
   and `flex-direction` owners with their native fallbacks,
@@ -206,9 +207,10 @@ The native decoration surface also supports inherited signed fixed-pixel
 decreasing or increasing y, keeps overline and line-through origins stable, and
 clamps externally supplied display-list offsets to the same range.
 The native Flexbox rollback surface also accepts standalone case-insensitive
-`flex:revert-layer`, resolving its grow, shrink, and basis components through
-the existing bounded 15-layer/unlayered candidates while preserving finite
-shorthand expansion and same-block longhand precedence.
+`flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer`,
+resolving each shorthand through its existing bounded component candidates
+while preserving finite shorthand expansion and same-block longhand
+precedence.
 | Surfaces | `surfaces` | Multi-surface evidence, coverage, provenance, and bridge grants |
 | Presentation | `presentation`, `terminal_graphics` | Bounded latest-frame metadata and terminal adapters |
 | MCP/protocol | `mcp`, `protocol` | Negotiated stdio server and canonical request envelopes |
@@ -256,7 +258,8 @@ agreement reports exact schema and capability status.
   eligible rows, bounded non-inherited `flex-wrap`, `justify-content`,
   `align-items`, `align-self`, and `align-content` rollback, bounded
   non-inherited `order`, `flex-grow`, `flex-shrink`, and `flex-basis` rollback,
-  including standalone `flex:revert-layer` shorthand rollback,
+  including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and
+  `place-content:revert-layer` shorthand rollback,
   and revision effects for local controls. The CLI default configuration
   accepts `about:blank` and bounded `data:text/html`; fixtures remain a Rust
   configuration path. It is not a browser-parity claim or security boundary

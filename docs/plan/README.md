@@ -1213,6 +1213,16 @@ remain outside the boundary; exact implementation, validation, and cleanup
 evidence are recorded in the task. Remote CI remains pending because the
 checkout is local-only.
 
+The next dependency-ordered [native-engine-140](tasks/native-engine-140.md)
+contract is planned. It will add standalone case-insensitive `revert-layer` to
+inherited `word-spacing` and `letter-spacing` through private per-property
+candidates, preserving finite non-negative pixel values, parent/root fallback,
+and the existing text-flow, wrapping, alignment, display-list, raster,
+overflow, capture, hit-test, and semantic/source-order owners. Negative,
+relative, percentage, fractional, cross-fragment, font-metric, multi-origin,
+and browser-wide text semantics remain outside the planned boundary;
+implementation and evidence remain pending.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

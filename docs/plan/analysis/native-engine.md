@@ -1150,6 +1150,15 @@ conformance remain outside the boundary. Focused, full-native,
 affected-library, strict Clippy, formatting, and static documentation gates
 passed locally; exact evidence and cleanup are recorded in the task. Remote
 CI remains pending because the checkout is local-only.
+The next dependency-ordered `native-engine-146` contract is planned in
+`docs/plan/tasks/native-engine-146.md`. It will reuse the private bounded layer
+resolver for standalone, case-insensitive `revert-layer` on local `overflow`,
+`overflow-x`, and `overflow-y`, keeping independent x/y candidates, the
+existing visible fallback, and the shared paint, viewport projection, point-hit,
+root-overflow, capture, and semantic/source-order consumers unchanged. Nested
+scrolling, scrollbars, `visible`/`auto`/`scroll` used-value parity, multiple
+origins, and browser-wide CSS overflow conformance remain outside the planned
+boundary.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1440,6 +1449,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-143` | completed reuse of bounded named-layer priority and private rollback for local `width:revert-layer`, `height:revert-layer`, `min-width:revert-layer`, `max-width:revert-layer`, `min-height:revert-layer`, and `max-height:revert-layer`, preserving finite non-negative pixel dimensions, absent local fallbacks, and existing box-model/layout/raster consumers | `native-engine-142` | other CSS-wide keywords, percentages, negative dimensions, intrinsic sizing, aspect ratio, multiple origins, `!important` inversion, layer statements, and browser-wide CSS sizing conformance |
 | `native-engine-144` | completed reuse of bounded named-layer priority and private rollback for local `box-sizing:revert-layer`, physical padding/margin shorthand and longhands, and bounded `margin:auto`, preserving independent edge ownership, content-box/zero fallbacks, and existing box-model/layout/artifact consumers | `native-engine-143` | other CSS-wide keywords, percentages, negative/logical edges, margin collapsing, positioned/replaced sizing, multiple origins, `!important` inversion, layer statements, and browser-wide box-model conformance |
 | `native-engine-145` | completed reuse of bounded named-layer priority and private rollback for local `background-color:revert-layer` and inherited `color:revert-layer`, preserving independent `None`/inherited fallbacks and existing fill/text artifact consumers | `native-engine-144` | other CSS-wide keywords, `currentColor`, gradients, system colors, percentages, color spaces, border-color, multiple origins, `!important` inversion, layer statements, and browser-wide CSS color conformance |
+| `native-engine-146` | planned reuse of bounded named-layer priority and private rollback for local `overflow:revert-layer`, `overflow-x:revert-layer`, and `overflow-y:revert-layer`, preserving independent x/y visible fallbacks and existing clip consumers | `native-engine-145` | other CSS-wide keywords, nested scrolling, scrollbars, `visible`/`auto`/`scroll` used-value parity, multiple origins, `!important` inversion, layer statements, and browser-wide CSS overflow conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1868,11 +1878,13 @@ visual stacking.
 | bounded local dimension rollback | completed extension of the proven layer rollback to six local pixel dimension owners through independent private candidates without changing public computed values or box/layout/raster schemas | six fixed candidate arrays add bounded local cascade state; grouping width/height and min/max constraints broadens the geometry regression and keeps absent-option fallbacks distinct; no percentages, negative values, intrinsic sizing, aspect-ratio, multiple origins, or browser sizing parity | share the existing local resolver with `None` fallbacks, keep each dimension candidate property-local, and test named/repeated/unlayered/inline rollback, same-block/invalid-later preservation, absent fallback, constraint interactions, box geometry, flex/flow, overflow, capture, raster, hit testing, and semantic/source order together |
 | bounded local box-model rollback | completed extension of the proven layer rollback to local box sizing and eight physical padding/margin edge owners, including shorthand/longhand rollback and bounded auto-margin provenance without changing public computed values or artifact schemas | nine edge sequences plus one box-sizing sequence add bounded local cascade state; grouping box conversion, normal-flow margins, and flex auto margins broadens the geometry regression; no percentages, negative/logical edges, margin collapsing, multiple origins, or browser box-model parity | share the generic local resolver, keep each edge/box owner independent with zero/content-box fallbacks, and test shorthand/longhand/repeated/inline rollback with box conversion, flow, flex auto-space, overflow, capture, raster, hit testing, and semantic/source order together; focused and full-native gates passed locally |
 | bounded paint-color rollback | completed extension of the proven layer rollback to local `background-color` and inherited `color` through independent private candidates without changing public computed values or artifact schemas | two fixed candidate arrays add bounded paint cascade state; grouping fill and glyph color broadens the display/raster regression; no `currentColor`, gradients, system colors, color spaces, border-color, multiple origins, or browser color parity | share the optional local resolver, keep fill and inherited text candidates property-local, preserve `None`/inherited fallbacks, and test layer order, descendant inheritance, transparent override, fill/text display-list ownership, decoded raster, clipping, opacity, and source/semantic order together |
+| bounded overflow rollback | planned extension of the proven layer rollback to local `overflow`, `overflow-x`, and `overflow-y` through independent x/y candidates without changing public computed values or artifact schemas | two fixed candidate arrays add bounded clip cascade state; grouping shorthand expansion with axis-specific rollback broadens the clip/projection/hit-test regression; no nested scrolling, scrollbars, `visible`/`auto`/`scroll` used-value parity, multiple origins, or browser overflow parity | reuse the optional local resolver with visible/no-clip fallbacks, expand shorthand to both axes at the existing declaration boundary, keep x/y candidates independent, and test paint, projection, hit testing, root overflow, capture, and semantic/source order together |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-146.md` is the next planned task;
 `docs/plan/tasks/native-engine-145.md` is the latest completed task;
 `docs/plan/tasks/native-engine-144.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-143.md` is the preceding completed task;

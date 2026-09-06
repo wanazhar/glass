@@ -33,6 +33,7 @@ bounded-local-text-geometry-revert-layer,
 bounded-local-dimension-revert-layer,
 bounded-local-box-model-revert-layer,
 bounded-paint-color-revert-layer,
+bounded-overflow-revert-layer,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -962,6 +963,14 @@ integration tests, full-native integration/library tests, strict affected-
 package Clippy, formatting, and static documentation gates passed locally;
 exact evidence and cleanup are recorded in the task. Remote CI remains
 pending because the checkout is local-only.
+The next dependency-ordered 146 contract is planned in
+`docs/plan/tasks/native-engine-146.md`. It will extend standalone,
+case-insensitive `revert-layer` to local `overflow`, `overflow-x`, and
+`overflow-y` through independent x/y candidates, preserving the existing
+visible fallback and shared paint, viewport projection, point-hit, root-overflow,
+capture, and semantic/source-order owners. Nested scrolling, scrollbars,
+`visible`/`auto`/`scroll` used-value parity, multiple origins, and browser-wide
+CSS overflow conformance remain outside the planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

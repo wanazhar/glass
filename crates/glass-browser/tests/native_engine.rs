@@ -2574,6 +2574,96 @@ fn native_text_underline_offset_moves_only_underlines_through_shared_artifacts()
 }
 
 #[test]
+fn native_text_underline_offset_revert_layer_moves_only_underlines() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; text-decoration:underline overline line-through; text-decoration-style:solid; text-decoration-thickness:2px; } @layer base { #named { text-underline-offset:-1px; } #rollback { text-underline-offset:-1px; } #repeated { text-underline-offset:-1px; } #unlayered { text-underline-offset:-1px; } #inline { text-underline-offset:-1px; } #fallback { text-underline-offset:revert-layer; } } @layer theme { .named { text-underline-offset:-2px; } #rollback { text-underline-offset:revert-layer; } #repeated { text-underline-offset:revert-layer; } #unlayered { text-underline-offset:4px; } #inline { text-underline-offset:2px; } } @layer top { #repeated { text-underline-offset:revert-layer; } } #named { text-underline-offset:revert-layer; } #unlayered { text-underline-offset:revert-layer; }</style><div id='named' class='line named'>AB</div><div id='rollback' class='line'>AB</div><div id='repeated' class='line'>AB</div><div id='unlayered' class='line'>AB</div><div id='inline' class='line' style='text-underline-offset:revert-layer'>AB</div><div id='fallback' class='line'>AB</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 140,
+        device_scale_factor_milli: 1000,
+    };
+    let named = document.resolve_target("id=named").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let repeated = document.resolve_target("id=repeated").unwrap();
+    let unlayered = document.resolve_target("id=unlayered").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let text_command = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                underline_offset,
+                underline,
+                overline,
+                line_through,
+                ..
+            } if *command_node_id == node_id => Some((
+                *origin,
+                *underline_offset,
+                *underline,
+                *overline,
+                *line_through,
+            )),
+            _ => None,
+        })
+    };
+    let commands = [
+        (text_command(named).expect("named offset command"), -2),
+        (text_command(rollback).expect("rollback offset command"), -1),
+        (text_command(repeated).expect("repeated offset command"), -1),
+        (
+            text_command(unlayered).expect("unlayered offset command"),
+            4,
+        ),
+        (text_command(inline).expect("inline offset command"), 2),
+        (text_command(fallback).expect("fallback offset command"), 0),
+    ];
+    for (command, expected_offset) in commands {
+        assert_eq!(command.1, expected_offset);
+        assert!(command.2 && command.3 && command.4);
+    }
+
+    let surface = list.rasterize().unwrap();
+    for (command, expected_offset) in commands {
+        let pixel = |y: u32| surface.pixel(command.0.x.saturating_add(2), y);
+        let line_through_start = command.0.y.saturating_add(3);
+        let underline_start =
+            u32::try_from(i64::from(command.0.y) + 7 + i64::from(expected_offset))
+                .expect("bounded underline coordinate");
+        for offset in 0..2 {
+            assert_eq!(
+                pixel(line_through_start.saturating_add(offset)),
+                Some([0, 0, 0, 255]),
+                "line-through band at y={}",
+                line_through_start.saturating_add(offset)
+            );
+            assert_eq!(
+                pixel(underline_start.saturating_add(offset)),
+                Some([0, 0, 0, 255]),
+                "underline band at y={}",
+                underline_start.saturating_add(offset)
+            );
+        }
+        if command.0.y > 0 {
+            let overline_start = command.0.y.saturating_sub(1);
+            for offset in 0..2 {
+                assert_eq!(
+                    pixel(overline_start.saturating_add(offset)),
+                    Some([0, 0, 0, 255]),
+                    "overline band at y={}",
+                    overline_start.saturating_add(offset)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn native_text_double_decoration_preserves_style_inheritance_and_geometry() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:24px; line-height:20px; color:black; text-decoration:underline overline line-through; text-decoration-style:double; text-decoration-thickness:2px; text-underline-offset:1px; } #one { text-decoration-style:DoUbLe; text-decoration-thickness:1px; text-underline-offset:0px; } #two { text-decoration-style:double; text-decoration-thickness:2px; text-underline-offset:2px; } #parent { text-decoration-style:double; text-decoration-thickness:2px; }</style><div id='one' class='line'>AB</div><div id='two' class='line'>AB</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override' style='text-decoration-style:solid'>B</span></div>",

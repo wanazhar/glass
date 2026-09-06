@@ -72,7 +72,9 @@ inherited text color through DOM parent links, bounded `overflow:hidden`/
 bounded circular border radii, bounded outer/content box geometry with bounded
 min/max width/height constraints, explicit root
 horizontal and vertical viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
-line-height flow with bounded inheritance, bounded direct-text fragments at
+line-height flow with bounded inheritance, bounded case-insensitive
+15-layer/unlayered `line-height: revert-layer` rollback with inherited/root
+fallback, bounded direct-text fragments at
 actual flow origins,
 source-order text paint, bounded word-aware wrapping, bounded physical
 four-side padding/margin edges, bounded source-whitespace boundaries, and
@@ -773,6 +775,12 @@ integration gates, the full affected library suite, and strict affected-
 package Clippy passed locally; the package library gate used an explicit 32 MiB
 test-thread stack because one pre-existing CLI test overflows the default
 thread stack. Remote CI remains pending because the checkout is local-only.
+The next designed dependency-ordered boundary is `native-engine-131`, recorded
+in `docs/plan/tasks/native-engine-131.md`. It adds private, case-insensitive
+`line-height: revert-layer` declarations through the existing 15-layer and
+unlayered/inline cascade boundary while preserving the positive-pixel
+line-height grammar, inherited/root fallback, and all existing flow/artifact
+owners; implementation is not yet claimed.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1689,6 +1697,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded 15-layer/unlayered `revert-layer` rollback for inherited
   `white-space`, with private declaration state, five finite modes, inherited/
   root fallback, and unchanged line-flow/artifact owners.
+- planned bounded 15-layer/unlayered `revert-layer` rollback for inherited
+  `line-height`, with private declaration state, positive-pixel `Option<u32>`
+  fallback, and unchanged flow/artifact owners.
 - bounded `rgba(R, G, B, A)` functional alpha parsing for background, border,
   and text colors, with shared fixed-point quantization, display-list color
   ownership, and integer source-over replay.

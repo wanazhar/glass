@@ -1224,8 +1224,10 @@ impl NativeStylesheet {
         let mut text_overflow = None;
         let mut vertical_align = None;
         let mut text_indent = None;
-        let mut word_spacing = None;
-        let mut letter_spacing = None;
+        let mut word_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut letter_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut gap = GapCascade::default();
         let mut width = None;
         let mut height = None;
@@ -1524,26 +1526,20 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.word_spacing
-                && wins(rule.selector.specificity, rule.order, false, word_spacing)
-            {
-                word_spacing = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.letter_spacing
-                && wins(rule.selector.specificity, rule.order, false, letter_spacing)
-            {
-                letter_spacing = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_inherited_text_declaration(
+                rule.declarations.word_spacing,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut word_spacing,
+            );
+            apply_inherited_text_declaration(
+                rule.declarations.letter_spacing,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut letter_spacing,
+            );
             apply_gap_declarations(
                 rule.declarations,
                 rule.selector.specificity,
@@ -2087,26 +2083,20 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.word_spacing
-                && wins(u16::MAX, usize::MAX, true, word_spacing)
-            {
-                word_spacing = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.letter_spacing
-                && wins(u16::MAX, usize::MAX, true, letter_spacing)
-            {
-                letter_spacing = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_inherited_text_declaration(
+                declarations.word_spacing,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut word_spacing,
+            );
+            apply_inherited_text_declaration(
+                declarations.letter_spacing,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut letter_spacing,
+            );
             apply_gap_declarations(declarations, u16::MAX, usize::MAX, true, &mut gap);
             if let Some(value) = declarations.justify_content
                 && wins(u16::MAX, usize::MAX, true, justify_content[layer])
@@ -2413,8 +2403,11 @@ impl NativeStylesheet {
             text_overflow: text_overflow.map_or(TextOverflowValue::Clip, |value| value.value),
             vertical_align: vertical_align.map_or(inherited.vertical_align, |value| value.value),
             text_indent: text_indent.map_or(0, |value| value.value),
-            word_spacing: word_spacing.map_or(inherited.word_spacing, |value| value.value),
-            letter_spacing: letter_spacing.map_or(inherited.letter_spacing, |value| value.value),
+            word_spacing: resolve_inherited_text_declaration(word_spacing, inherited.word_spacing),
+            letter_spacing: resolve_inherited_text_declaration(
+                letter_spacing,
+                inherited.letter_spacing,
+            ),
             gap: resolve_gap_axis(gap.shorthand_column, gap.column_gap),
             row_gap: resolve_gap_axis(gap.shorthand_row, gap.row_gap),
             width: width.map(|value| value.value),
@@ -3193,8 +3186,8 @@ struct NativeDeclarations {
     text_overflow: Option<TextOverflowValue>,
     vertical_align: Option<VerticalAlignValue>,
     text_indent: Option<u32>,
-    word_spacing: Option<u32>,
-    letter_spacing: Option<u32>,
+    word_spacing: Option<InheritedTextDeclaration<u32>>,
+    letter_spacing: Option<InheritedTextDeclaration<u32>>,
     gap: Option<GapShorthandDeclaration>,
     gap_order: usize,
     row_gap: Option<GapComponentDeclaration>,
@@ -3705,8 +3698,8 @@ fn parse_declarations_with_diagnostics(
             "text-overflow" => parse_text_overflow(value).is_some(),
             "vertical-align" => parse_vertical_align(value).is_some(),
             "text-indent" => parse_dimension(value).is_some(),
-            "word-spacing" => parse_dimension(value).is_some(),
-            "letter-spacing" => parse_dimension(value).is_some(),
+            "word-spacing" => parse_word_spacing_declaration(value).is_some(),
+            "letter-spacing" => parse_letter_spacing_declaration(value).is_some(),
             "gap" => parse_gap_declaration(value).is_some(),
             "row-gap" | "column-gap" => parse_gap_component_declaration(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
@@ -3978,16 +3971,24 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.text_decoration_color = parse_text_decoration_color(value);
             }
             "text-transform" => {
-                declarations.text_transform = parse_text_transform_declaration(value);
+                if let Some(parsed) = parse_text_transform_declaration(value) {
+                    declarations.text_transform = Some(parsed);
+                }
             }
             "font-weight" => {
-                declarations.font_weight = parse_font_weight_declaration(value);
+                if let Some(parsed) = parse_font_weight_declaration(value) {
+                    declarations.font_weight = Some(parsed);
+                }
             }
             "font-style" => {
-                declarations.font_style = parse_font_style_declaration(value);
+                if let Some(parsed) = parse_font_style_declaration(value) {
+                    declarations.font_style = Some(parsed);
+                }
             }
             "word-break" => {
-                declarations.word_break = parse_word_break_declaration(value);
+                if let Some(parsed) = parse_word_break_declaration(value) {
+                    declarations.word_break = Some(parsed);
+                }
             }
             "text-overflow" => {
                 declarations.text_overflow = parse_text_overflow(value);
@@ -3999,10 +4000,14 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.text_indent = parse_dimension(value);
             }
             "word-spacing" => {
-                declarations.word_spacing = parse_dimension(value);
+                if let Some(parsed) = parse_word_spacing_declaration(value) {
+                    declarations.word_spacing = Some(parsed);
+                }
             }
             "letter-spacing" => {
-                declarations.letter_spacing = parse_dimension(value);
+                if let Some(parsed) = parse_letter_spacing_declaration(value) {
+                    declarations.letter_spacing = Some(parsed);
+                }
             }
             "gap" => {
                 if let Some(parsed) = parse_gap_declaration(value) {
@@ -5091,6 +5096,14 @@ fn parse_word_break_declaration(value: &str) -> Option<InheritedTextDeclaration<
     parse_inherited_text_declaration(value, parse_word_break)
 }
 
+fn parse_word_spacing_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
+    parse_inherited_text_declaration(value, parse_dimension)
+}
+
+fn parse_letter_spacing_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
+    parse_inherited_text_declaration(value, parse_dimension)
+}
+
 fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
     match value.trim().to_ascii_lowercase().as_str() {
         "clip" => Some(TextOverflowValue::Clip),
@@ -5494,8 +5507,14 @@ mod tests {
             Some(NativeTextUnderlineOffsetDeclaration::Value(-2))
         );
         assert_eq!(declarations.text_indent, Some(12));
-        assert_eq!(declarations.word_spacing, Some(12));
-        assert_eq!(declarations.letter_spacing, Some(12));
+        assert_eq!(
+            declarations.word_spacing,
+            Some(InheritedTextDeclaration::Value(12))
+        );
+        assert_eq!(
+            declarations.letter_spacing,
+            Some(InheritedTextDeclaration::Value(12))
+        );
         assert_eq!(
             declarations.gap,
             Some(GapShorthandDeclaration::Value(NativeGapValue {
@@ -7382,6 +7401,34 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_inherited_text_spacing() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { word-spacing: 4px; letter-spacing: 5px; } #rollback { word-spacing: 6px; letter-spacing: 7px; } #repeated { word-spacing: 8px; letter-spacing: 9px; } #fallback { word-spacing: revert-layer; letter-spacing: revert-layer; } #invalid { word-spacing: 10px; letter-spacing: 11px; } } @layer theme { #named { word-spacing: 12px; letter-spacing: 13px; } #rollback { word-spacing: 14px; letter-spacing: 15px; } #repeated { word-spacing: revert-layer; letter-spacing: revert-layer; } #invalid { word-spacing: 16px; letter-spacing: 17px; } } @layer top { #repeated { word-spacing: revert-layer; letter-spacing: revert-layer; } } #named { word-spacing: revert-layer; letter-spacing: revert-layer; } #rollback { word-spacing: 18px; letter-spacing: revert-layer; } #fallback { word-spacing: revert-layer; letter-spacing: revert-layer; } #inline { word-spacing: 22px; letter-spacing: 23px; } #invalid { word-spacing: 20px; word-spacing: 1px 2px; letter-spacing: 21px; letter-spacing: normal; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named'>Named</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let inline = node("<div id='inline'>Inline</div>");
+
+        let assert_values = |element: &NativeNode, word: u32, letter: u32| {
+            let style = stylesheet.computed_for(element);
+            assert_eq!(style.word_spacing(), word);
+            assert_eq!(style.letter_spacing(), letter);
+        };
+
+        assert_values(&named, 12, 13);
+        assert_values(&rollback, 18, 15);
+        assert_values(&repeated, 8, 9);
+        assert_values(&fallback, 0, 0);
+        assert_values(&invalid, 20, 21);
+        assert_values(&inline, 22, 23);
+    }
+
+    #[test]
     fn text_decoration_parser_accepts_bounded_line_sets() {
         assert_eq!(
             parse_text_decoration("UNDERLINE"),
@@ -8314,6 +8361,61 @@ mod tests {
             Some(InheritedTextDeclaration::Value(
                 TextTransformValue::Uppercase
             ))
+        );
+    }
+
+    #[test]
+    fn inherited_text_spacing_declaration_parsers_accept_only_standalone_revert_layer() {
+        assert_eq!(
+            parse_word_spacing_declaration("ReVeRt-LaYeR"),
+            Some(InheritedTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_letter_spacing_declaration(" REVERT-LAYER "),
+            Some(InheritedTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_word_spacing_declaration("16px"),
+            Some(InheritedTextDeclaration::Value(16))
+        );
+        assert_eq!(parse_letter_spacing_declaration("revert-layer 2px"), None);
+        assert_eq!(parse_word_spacing_declaration("revert"), None);
+        assert_eq!(parse_letter_spacing_declaration("normal"), None);
+        assert_eq!(parse_word_spacing_declaration("-1px"), None);
+        assert_eq!(parse_letter_spacing_declaration("1.5px"), None);
+        assert_eq!(parse_word_spacing_declaration("2em"), None);
+    }
+
+    #[test]
+    fn inherited_text_declarations_preserve_valid_values_before_invalid_later_values() {
+        let declarations = parse_declarations(
+            "text-transform: uppercase; text-transform: capitalize; font-weight: bold; font-weight: 500; font-style: italic; font-style: oblique; word-break: break-all; word-break: keep-all; word-spacing: 12px; word-spacing: 1px 2px; letter-spacing: 13px; letter-spacing: normal;",
+        );
+        assert_eq!(
+            declarations.text_transform,
+            Some(InheritedTextDeclaration::Value(
+                TextTransformValue::Uppercase
+            ))
+        );
+        assert_eq!(
+            declarations.font_weight,
+            Some(InheritedTextDeclaration::Value(FontWeightValue::Bold))
+        );
+        assert_eq!(
+            declarations.font_style,
+            Some(InheritedTextDeclaration::Value(FontStyleValue::Italic))
+        );
+        assert_eq!(
+            declarations.word_break,
+            Some(InheritedTextDeclaration::Value(WordBreakValue::BreakAll))
+        );
+        assert_eq!(
+            declarations.word_spacing,
+            Some(InheritedTextDeclaration::Value(12))
+        );
+        assert_eq!(
+            declarations.letter_spacing,
+            Some(InheritedTextDeclaration::Value(13))
         );
     }
 

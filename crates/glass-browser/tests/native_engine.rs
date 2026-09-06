@@ -3551,6 +3551,62 @@ fn native_letter_spacing_composes_with_word_spacing_across_consumers() {
 }
 
 #[test]
+fn native_inherited_text_spacing_revert_layer_preserves_consumers() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:48px; line-height:20px; } @layer base { #named { word-spacing:2px; letter-spacing:1px; } #repeated { word-spacing:4px; letter-spacing:2px; } #parent { word-spacing:3px; letter-spacing:1px; } } @layer theme { #named { word-spacing:6px; letter-spacing:3px; } #repeated { word-spacing:revert-layer; letter-spacing:revert-layer; } #parent { word-spacing:8px; letter-spacing:4px; } } @layer top { #repeated { word-spacing:revert-layer; letter-spacing:revert-layer; } } #named { word-spacing:ReVeRt-LaYeR; letter-spacing:revert-layer; } #parent { word-spacing:revert-layer; letter-spacing:revert-layer; }</style><div id='named' class='line'>A B</div><div id='repeated' class='line'>A B</div><div id='parent' class='line'>A <span id='child' style='word-spacing:revert-layer;letter-spacing:REVERT-LAYER'>B</span></div><div id='fallback' class='line' style='word-spacing:revert-layer;letter-spacing:revert-layer'>A B</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && (diagnostic.detail == "word-spacing" || diagnostic.detail == "letter-spacing"))
+    }));
+    let named = document.resolve_target("id=named").unwrap();
+    let repeated = document.resolve_target("id=repeated").unwrap();
+    let parent = document.resolve_target("id=parent").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 100,
+        device_scale_factor_milli: 1000,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let spacing_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                letter_spacing,
+                word_spacing,
+                ..
+            } if *command_node == node_id => Some((*word_spacing, *letter_spacing)),
+            _ => None,
+        })
+    };
+    assert_eq!(spacing_for(named), Some((6, 3)));
+    assert_eq!(spacing_for(repeated), Some((4, 2)));
+    assert_eq!(spacing_for(parent), Some((8, 4)));
+    assert_eq!(spacing_for(child), Some((8, 4)));
+    assert_eq!(spacing_for(fallback), Some((0, 0)));
+
+    let named_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == named)
+        .unwrap();
+    let surface = list.rasterize().unwrap();
+    let has_black_pixel = |origin: NativePoint| {
+        (0..8).any(|x| {
+            (0..12).any(|y| surface.pixel(origin.x + x, origin.y + y) == Some([0, 0, 0, 255]))
+        })
+    };
+    assert!(has_black_pixel(named_run.origin));
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(named));
+}
+
+#[test]
 fn native_font_weight_inherits_and_changes_only_fixed_cell_raster() {
     let document = NativeDocument::parse(
         "<style>#normal { display:block; width:16px; font-weight:400; } #bold { display:block; width:16px; font-weight:700; } #parent { display:block; width:48px; font-weight:bold; } #clear { font-weight:normal; } #numeric { font-weight:700; } #invalid { font-weight:500; }</style><div id='normal'>A</div><div id='bold'>A</div><div id='parent'>A<span id='clear'>B</span><span id='numeric'>C</span><span id='invalid'>D</span></div>",

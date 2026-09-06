@@ -2345,6 +2345,99 @@ fn native_text_decoration_thickness_shares_style_and_line_geometry() {
 }
 
 #[test]
+fn native_text_decoration_thickness_revert_layer_reaches_all_line_owners() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; text-decoration:underline overline line-through; text-decoration-style:solid; text-decoration-skip-ink:none; } @layer base { #named { text-decoration-thickness:1px; } #rollback { text-decoration-thickness:1px; } #repeated { text-decoration-thickness:1px; } #unlayered { text-decoration-thickness:2px; } #inline { text-decoration-thickness:1px; } #fallback { text-decoration-thickness:revert-layer; } } @layer theme { .named { text-decoration-thickness:2px; } #rollback { text-decoration-thickness:3px; } #repeated { text-decoration-thickness:revert-layer; } #unlayered { text-decoration-thickness:4px; } #inline { text-decoration-thickness:2px; } } @layer top { #repeated { text-decoration-thickness:revert-layer; } } #named { text-decoration-thickness:revert-layer; } #unlayered { text-decoration-thickness:revert-layer; }</style><div id='named' class='line named'>AB</div><div id='rollback' class='line'>AB</div><div id='repeated' class='line'>AB</div><div id='unlayered' class='line'>AB</div><div id='inline' class='line' style='text-decoration-thickness:revert-layer'>AB</div><div id='fallback' class='line'>AB</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 140,
+        device_scale_factor_milli: 1000,
+    };
+    let named = document.resolve_target("id=named").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let repeated = document.resolve_target("id=repeated").unwrap();
+    let unlayered = document.resolve_target("id=unlayered").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let list = document.display_list(viewport).unwrap();
+    let text_command = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                decoration_thickness,
+                underline,
+                overline,
+                line_through,
+                ..
+            } if *command_node_id == node_id => Some((
+                *origin,
+                *decoration_thickness,
+                *underline,
+                *overline,
+                *line_through,
+            )),
+            _ => None,
+        })
+    };
+    let commands = [
+        (text_command(named).expect("named thickness command"), 2),
+        (
+            text_command(rollback).expect("rollback thickness command"),
+            3,
+        ),
+        (
+            text_command(repeated).expect("repeated thickness command"),
+            1,
+        ),
+        (
+            text_command(unlayered).expect("unlayered thickness command"),
+            4,
+        ),
+        (text_command(inline).expect("inline thickness command"), 2),
+        (
+            text_command(fallback).expect("fallback thickness command"),
+            1,
+        ),
+    ];
+    for (command, expected_thickness) in commands {
+        assert_eq!(command.1, expected_thickness);
+        assert!(command.2 && command.3 && command.4);
+    }
+
+    let surface = list.rasterize().unwrap();
+    for (command, expected_thickness) in commands {
+        let pixel = |y: u32| surface.pixel(command.0.x.saturating_add(2), y);
+        let overline_start = command.0.y.saturating_sub(1);
+        let line_through_start = command.0.y.saturating_add(3);
+        let underline_start = command.0.y.saturating_add(7);
+        if command.0.y > 0 {
+            for offset in 0..expected_thickness {
+                assert_eq!(
+                    pixel(overline_start.saturating_add(offset)),
+                    Some([0, 0, 0, 255]),
+                    "overline band at y={}",
+                    overline_start.saturating_add(offset)
+                );
+            }
+        }
+        for start in [line_through_start, underline_start] {
+            for offset in 0..expected_thickness {
+                assert_eq!(
+                    pixel(start.saturating_add(offset)),
+                    Some([0, 0, 0, 255]),
+                    "decoration band at y={}",
+                    start.saturating_add(offset)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn native_text_underline_offset_moves_only_underlines_through_shared_artifacts() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline overline line-through; text-decoration-style:dashed; text-decoration-thickness:2px; } #negative { text-underline-offset:-2px; } #zero { text-underline-offset:0px; } #positive { text-underline-offset:3px; } #parent { text-decoration-style:dotted; text-underline-offset:-3px; }</style><div id='negative' class='line'>AB</div><div id='zero' class='line'>AB</div><div id='positive' class='line'>AB</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override' style='text-underline-offset:2px'>B</span></div>",

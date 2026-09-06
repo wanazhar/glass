@@ -1,7 +1,7 @@
 ---
 id: native-engine-135
 scope: glass-browser/native-engine/cascade-layers-flex-item-order-sizing-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-134]
 ---
 
@@ -85,6 +85,49 @@ The slice remains a horizontal-tb, fixed-cell, bounded local-content contract.
 It changes which existing flex-item declaration wins; it does not add
 intrinsic or percentage sizing, grid, general event behavior, or browser
 parity.
+
+## Implementation and local result
+
+The implementation is complete in `74195032` (`feat(native-engine): add flex
+item rollback family`). It adds private declaration enums and bounded
+per-layer candidates for `order`, `flex-grow`, `flex-shrink`, and `flex-basis`,
+resolves repeated rollback through each property's non-inherited native
+fallback, and keeps finite `flex` shorthand expansion concrete. The supported
+value diagnostic classifier and declaration parser share standalone,
+case-insensitive `revert-layer` parsers for all four properties. Invalid later
+declarations continue to be ignored rather than erasing an earlier valid
+declaration; the full-library gate exposed and corrected this compatibility
+regression before final certification.
+
+The focused and affected-package gates passed:
+
+- `cargo check -p glass-browser --features native-engine --test native_engine
+  --locked` passed in the fresh 135 target.
+- The family declaration-parser and cascade filter passed 1/1.
+- The new order/sizing layout and artifact integration regression passed 1/1.
+- Full native integration passed 172/172.
+- The affected feature-enabled `glass-browser` library passed 937 tests with
+  1 ignored and 0 failures using `RUST_MIN_STACK=33554432`.
+- Warnings-denied affected-package Clippy passed; formatting and diff checks
+  passed.
+
+The integration fixture verifies named-layer ordering, unlayered/inline
+rollback, local defaults, stable visual order with source/semantic order
+preserved, grow allocation, shrink deficit handling, flex-basis base sizing,
+hit testing, display-list order, decoded raster output, and absence of false
+unsupported-value diagnostics. No public schema, dependency, feature default,
+or crate boundary changed. Full two-crate, strict, fuzz/security,
+source-built documentation coverage, and remote-CI gates remain issue-level
+gates. No remote CI, push, release, tag, registry publication, or
+browser-parity claim is made.
+
+The exact regenerable `/tmp/glass-135-focused` target measured
+3,441,129,527 logical bytes across 4,391 files and 658 directories. The
+process check found no Cargo, rustc, or Clippy consumer after validation; the
+target was removed with bounded `find -P ... -xdev -depth -delete`. No
+repository target, source, fixture, durable data, or unrelated temporary path
+was removed. Available filesystem bytes increased from 80,696,868,864 to
+84,151,955,456, a measured delta of 3,455,086,592 bytes.
 
 ## Tradeoffs
 

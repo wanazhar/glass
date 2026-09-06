@@ -688,6 +688,13 @@ CSS-wide keyword machinery, multiple origins, layer statements, and
 unsupported values remain typed diagnostics. Exact local gate, issue-sync,
 and regenerable-output cleanup evidence is recorded in the task. Remote CI
 remains pending because the checkout is local-only.
+The next dependency-ordered 124 boundary is designed in
+`docs/plan/tasks/native-engine-124.md`: reuse the bounded layer registry and
+private rollback state for inherited `text-decoration-style: revert-layer`.
+It keeps the finite `Solid|Dashed|Dotted|Double|Wavy` public value and existing
+fixed-cell pattern replay unchanged, while leaving general CSS-wide keyword
+machinery, multiple origins, layer statements, and unsupported values as
+typed diagnostics.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

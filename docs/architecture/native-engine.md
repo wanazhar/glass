@@ -862,6 +862,14 @@ and cleanup evidence is recorded in the task. Percentages, other CSS-wide
 keywords, multiple origins, layer statements, and browser-wide gap conformance
 remain outside the boundary. Remote CI remains pending because the checkout is
 local-only.
+The next dependency-ordered 139 contract is planned in
+`docs/plan/tasks/native-engine-139.md`. It will extend the same private bounded
+layer resolver to standalone, case-insensitive `revert-layer` for inherited
+`text-transform`, `font-weight`, `font-style`, and `word-break`, preserving
+their finite public values, parent/root fallback, fixed-cell layout and raster
+owners, and all existing text artifacts. Unicode case mapping, font metrics,
+other word-break modes, multiple origins, and browser-wide text conformance
+remain outside the planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

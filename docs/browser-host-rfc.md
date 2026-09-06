@@ -110,7 +110,10 @@ source-order text paint, bounded word-aware wrapping,
 bounded source-whitespace boundaries across supported inline flow,
 bounded outer/content box geometry with physical four-side padding/margin
 shorthands and longhands plus explicit box sizing and bounded physical min/max
-width/height constraints, bounded vertical viewport
+width/height constraints with bounded case-insensitive 15-layer/unlayered local
+`revert-layer` rollback for finite non-negative integer-pixel `width`, `height`,
+`min-width`, `max-width`, `min-height`, and `max-height` with absent local
+fallbacks, bounded vertical viewport
 scrolling, bounded axis-specific `overflow-x`/`overflow-y` `hidden`/`clip`
 clips through the existing projection and point-hit owner, and bounded PNG
 capture through the explicit backend operation,

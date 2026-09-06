@@ -330,7 +330,10 @@ deterministic and limited to `about:blank`, `data:text/html`, and registered
 local fixtures, with bounded presentation, normal-flow geometry, point
 hit-testing, bounded physical four-side padding/margin shorthands and
 longhands, explicit content-box or border-box sizing, bounded physical
-min/max width/height constraints, outer/content layout rectangles, bounded
+min/max width/height constraints with bounded case-insensitive 15-layer/
+unlayered local `revert-layer` rollback for finite non-negative integer-pixel
+`width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`
+with absent local fallbacks, outer/content layout rectangles, bounded
 root horizontal and vertical viewport scrolling, semantic click/type actions,
 revisioned effects for supported local controls, inherited text color
 for nested content, bounded `overflow:hidden` clips shared by paint, viewport

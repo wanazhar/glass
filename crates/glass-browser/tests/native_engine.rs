@@ -1497,6 +1497,83 @@ fn native_text_decoration_style_patterns_share_command_and_geometry() {
 }
 
 #[test]
+fn native_text_decoration_style_revert_layer_reaches_all_pattern_owners() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; text-decoration-thickness:1px; } @layer base { #named { text-decoration-style:dashed; } #rollback { text-decoration-style:solid; } #repeated { text-decoration-style:dashed; } #unlayered { text-decoration-style:dotted; } #inline { text-decoration-style:solid; } #fallback { text-decoration-style:revert-layer; } } @layer theme { .named { text-decoration-style:dotted; } #rollback { text-decoration-style:double; } #repeated { text-decoration-style:revert-layer; } #unlayered { text-decoration-style:wavy; } #inline { text-decoration-style:dotted; } } @layer top { #repeated { text-decoration-style:revert-layer; } } #named { text-decoration-style:revert-layer; } #unlayered { text-decoration-style:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='repeated' class='line'>A</div><div id='unlayered' class='line'>A</div><div id='inline' class='line' style='text-decoration-style:revert-layer'>A</div><div id='fallback' class='line'>A</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 132,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let node_for = |id| document.resolve_target(&format!("id={id}")).unwrap();
+    let command_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                decoration_style,
+                ..
+            } if *command_node_id == node_id => Some((*origin, *decoration_style)),
+            _ => None,
+        })
+    };
+    let named = command_for(node_for("named")).expect("named text command");
+    let rollback = command_for(node_for("rollback")).expect("rollback text command");
+    let repeated = command_for(node_for("repeated")).expect("repeated text command");
+    let unlayered = command_for(node_for("unlayered")).expect("unlayered text command");
+    let inline = command_for(node_for("inline")).expect("inline text command");
+    let fallback = command_for(node_for("fallback")).expect("fallback text command");
+    assert_eq!(named.1, NativeTextDecorationStyle::Dotted);
+    assert_eq!(rollback.1, NativeTextDecorationStyle::Double);
+    assert_eq!(repeated.1, NativeTextDecorationStyle::Dashed);
+    assert_eq!(unlayered.1, NativeTextDecorationStyle::Wavy);
+    assert_eq!(inline.1, NativeTextDecorationStyle::Dotted);
+    assert_eq!(fallback.1, NativeTextDecorationStyle::Solid);
+
+    assert_eq!(
+        surface.pixel(named.0.x, named.0.y + 7),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(named.0.x + 1, named.0.y + 7),
+        Some([255, 255, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(rollback.0.x, rollback.0.y + 7),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(rollback.0.x, rollback.0.y + 9),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(repeated.0.x + 3, repeated.0.y + 7),
+        Some([255, 255, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(unlayered.0.x + 2, unlayered.0.y + 7),
+        Some([255, 255, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(inline.0.x + 1, inline.0.y + 7),
+        Some([255, 255, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(fallback.0.x, fallback.0.y + 7),
+        Some([0, 0, 0, 255])
+    );
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-style"
+    }));
+}
+
+#[test]
 fn native_text_decoration_skip_ink_cascades_to_display_commands() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline; text-decoration-style:wavy; } #none { text-decoration-skip-ink:none; } #parent { text-decoration-skip-ink:auto; } #invalid { text-decoration-skip-ink:all; }</style><div id='auto' class='line'>A</div><div id='none' class='line'>A</div><div id='parent' class='line'><span id='inherited'>A</span></div><div id='invalid' class='line'>A</div>",

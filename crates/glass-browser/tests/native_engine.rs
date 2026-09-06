@@ -5412,6 +5412,98 @@ fn native_direction_keeps_non_flex_flow_and_source_text_order_bounded() {
 }
 
 #[test]
+fn native_direction_revert_layer_preserves_text_flex_and_artifact_owners() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:8px; text-align:start; } @layer base { #named { direction:ltr; } #repeated { direction:ltr; } #inline { direction:ltr; } #parent { direction:rtl; } #row { display:flex; width:20px; height:8px; direction:ltr; flex-direction:row; align-items:flex-start; } #column { display:flex; width:20px; height:12px; direction:ltr; flex-direction:column; align-items:flex-start; } #wrapped { display:flex; width:24px; height:12px; direction:ltr; flex-direction:column; flex-wrap:wrap; row-gap:2px; column-gap:3px; align-items:flex-start; align-content:flex-start; } } @layer theme { #named { direction:rtl; } #repeated { direction:revert-layer; } #inline { direction:rtl; } #row { direction:rtl; } #column { direction:rtl; } #wrapped { direction:rtl; } } @layer top { #repeated { direction:revert-layer; } } #named { direction:revert-layer; } #repeated { direction:revert-layer; } #row { direction:revert-layer; } #column { direction:revert-layer; } #wrapped { direction:revert-layer; } #fallback { direction:revert-layer; } #child { display:block; width:24px; height:8px; text-align:start; }</style><div id='named' class='line'>N</div><div id='repeated' class='line'>R</div><div id='inline' class='line' style='direction:REVERT-LAYER'>I</div><div id='fallback' class='line'>F</div><div id='parent' class='line'><div id='child' style='direction:revert-layer'>C</div></div><div id='row'><div id='row-first' style='width:6px;height:8px;flex-shrink:0;background-color:red'>A</div><div id='row-second' style='width:8px;height:8px;flex-shrink:0;background-color:blue'>B</div></div><div id='column'><div id='column-first' style='width:6px;height:6px;flex-shrink:0;background-color:red'>D</div><div id='column-second' style='width:8px;height:6px;flex-shrink:0;background-color:blue'>E</div></div><div id='wrapped'><div id='wrapped-first' style='width:4px;height:6px;flex-shrink:0;background-color:red'>G</div><div id='wrapped-second' style='width:4px;height:6px;flex-shrink:0;background-color:blue'>H</div><div id='wrapped-third' style='width:4px;height:6px;flex-shrink:0;background-color:green'>J</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "direction")
+    }));
+
+    let viewport = Viewport {
+        width: 64,
+        height: 256,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let text_origin = |id: &str| {
+        let node = document.resolve_target(&format!("id={id}")).unwrap();
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node)
+            .map(|run| run.origin)
+            .unwrap()
+    };
+
+    // Unlayered rollback exposes the highest named candidate, while repeated
+    // rollback reaches the base layer and a candidate-free root is ltr.
+    assert_eq!(text_origin("named").x, 24);
+    assert_eq!(text_origin("repeated").x, 0);
+    assert_eq!(text_origin("inline").x, 24);
+    assert_eq!(text_origin("fallback").x, 0);
+    // A child rollback with no local concrete candidate keeps its rtl parent.
+    assert_eq!(text_origin("child").x, 16);
+
+    let row = document.resolve_target("id=row").unwrap();
+    let row_first = document.resolve_target("id=row-first").unwrap();
+    let row_second = document.resolve_target("id=row-second").unwrap();
+    let column_first = document.resolve_target("id=column-first").unwrap();
+    let column_second = document.resolve_target("id=column-second").unwrap();
+    let wrapped_first = document.resolve_target("id=wrapped-first").unwrap();
+    let wrapped_second = document.resolve_target("id=wrapped-second").unwrap();
+    let wrapped_third = document.resolve_target("id=wrapped-third").unwrap();
+    assert_eq!(layout.box_for(row_first).unwrap().x, 14);
+    assert_eq!(layout.box_for(row_second).unwrap().x, 6);
+    assert_eq!(layout.box_for(column_first).unwrap().x, 14);
+    assert_eq!(layout.box_for(column_second).unwrap().x, 12);
+    assert_eq!(layout.box_for(wrapped_first).unwrap().x, 20);
+    assert_eq!(layout.box_for(wrapped_second).unwrap().x, 13);
+    assert_eq!(layout.box_for(wrapped_third).unwrap().x, 6);
+
+    let row_order = layout
+        .text_runs
+        .iter()
+        .filter_map(|run| {
+            if run.node_id == row_first {
+                Some("first")
+            } else if run.node_id == row_second {
+                Some("second")
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(row_order, vec!["first", "second"]);
+    let row_rect = layout.box_for(row).unwrap();
+    assert_eq!(
+        layout.hit_test(
+            i64::from(row_rect.x + 15),
+            i64::from(row_rect.y + 1),
+        ),
+        Ok(Some(row_first))
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let row_first_rect = layout.box_for(row_first).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == row_first && *rect == row_first_rect
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(row_first_rect.x + 1, row_first_rect.y + 1),
+        Some([255, 0, 0, 255])
+    );
+}
+
+#[test]
 fn native_flex_row_preserves_fixed_width_overflow_and_fallback_content() {
     let overflow = NativeDocument::parse(
         "<div id='row' style='display:flex;width:16px'><div id='first' style='width:12px;height:8px;flex-shrink:0'>A</div><div id='second' style='width:12px;height:8px;flex-shrink:0'>B</div></div>",

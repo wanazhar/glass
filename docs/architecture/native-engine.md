@@ -710,13 +710,19 @@ multiple origins, layer statements, and unsupported values remain typed
 diagnostics. Exact local gate, issue-sync, and regenerable-output cleanup
 evidence is recorded in the task. Remote CI remains pending because the
 checkout is local-only.
-The next dependency-ordered 126 boundary is designed in
-`docs/plan/tasks/native-engine-126.md`: reuse the bounded layer registry and
-private rollback state for inherited
-`text-underline-offset: revert-layer`. It keeps the finite signed `-4px`
-through `4px` value and existing underline-only translation unchanged, while
-leaving general CSS-wide keyword machinery, multiple origins, layer
-statements, and unsupported values as typed diagnostics.
+The dependency-ordered 126 implementation is complete at `3ffe86f8` and is
+recorded in `docs/plan/tasks/native-engine-126.md`. It reuses the bounded layer
+registry and private rollback state for inherited
+`text-underline-offset: revert-layer`, keeping the finite signed `-4px`
+through `4px` value and existing underline-only translation unchanged.
+Parser, cascade, display-list, command, and decoded-raster regressions passed;
+general CSS-wide keyword machinery, multiple origins, layer statements, and
+unsupported values remain typed diagnostics. Exact local gate, issue-sync, and
+regenerable-output cleanup evidence is recorded in the task. Remote CI remains
+pending because the checkout is local-only.
+The next dependency-ordered 127 boundary will be designed separately for
+local `text-decoration-color: revert-layer`; it must preserve the existing
+`Option<NativeColor>` fallback and separate glyph/decoration paint owner.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

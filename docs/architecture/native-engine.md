@@ -761,6 +761,12 @@ precedence while preserving the finite alignment values, direction mapping,
 final-line alignment, separator justification, and all existing line/artifact
 owners. The public computed values and downstream geometry remain unchanged;
 the supported-value diagnostic path recognizes the same declaration forms.
+The next designed dependency-ordered boundary is `native-engine-130`, recorded
+in `docs/plan/tasks/native-engine-130.md`. It adds private, case-insensitive
+`white-space: revert-layer` declarations through the existing 15-layer and
+unlayered/inline cascade boundary while preserving the five finite whitespace
+modes and all existing line-flow/artifact owners; implementation is not yet
+claimed.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

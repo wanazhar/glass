@@ -297,6 +297,12 @@ pub(crate) enum TextAlignValue {
     Justify,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextAlignDeclaration {
+    Value(TextAlignValue),
+    RevertLayer,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextAlignLastValue {
     #[default]
@@ -307,6 +313,12 @@ pub(crate) enum TextAlignLastValue {
     Start,
     End,
     Justify,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextAlignLastDeclaration {
+    Value(TextAlignLastValue),
+    RevertLayer,
 }
 
 impl TextAlignLastValue {
@@ -332,6 +344,12 @@ pub(crate) enum TextJustifyValue {
     Auto,
     None,
     InterWord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextJustifyDeclaration {
+    Value(TextJustifyValue),
+    RevertLayer,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1053,9 +1071,12 @@ impl NativeStylesheet {
         let mut visibility = None;
         let mut opacity = None;
         let mut white_space = None;
-        let mut text_align = None;
-        let mut text_align_last = None;
-        let mut text_justify = None;
+        let mut text_align: [Option<CascadeValue<TextAlignDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut text_align_last: [Option<CascadeValue<TextAlignLastDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut text_justify: [Option<CascadeValue<TextJustifyDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut justify_content = None;
         let mut align_items = None;
         let mut align_self = None;
@@ -1156,10 +1177,16 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
+            let layer = cascade_layer_index(rule.selector.specificity);
             if let Some(value) = rule.declarations.text_align
-                && wins(rule.selector.specificity, rule.order, false, text_align)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    text_align[layer],
+                )
             {
-                text_align = Some(CascadeValue {
+                text_align[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1171,10 +1198,10 @@ impl NativeStylesheet {
                     rule.selector.specificity,
                     rule.order,
                     false,
-                    text_align_last,
+                    text_align_last[layer],
                 )
             {
-                text_align_last = Some(CascadeValue {
+                text_align_last[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1182,9 +1209,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.text_justify
-                && wins(rule.selector.specificity, rule.order, false, text_justify)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    text_justify[layer],
+                )
             {
-                text_justify = Some(CascadeValue {
+                text_justify[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1722,10 +1754,11 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
+            let layer = usize::from(UNLAYERED_CASCADE_LAYER);
             if let Some(value) = declarations.text_align
-                && wins(u16::MAX, usize::MAX, true, text_align)
+                && wins(u16::MAX, usize::MAX, true, text_align[layer])
             {
-                text_align = Some(CascadeValue {
+                text_align[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -1733,9 +1766,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.text_align_last
-                && wins(u16::MAX, usize::MAX, true, text_align_last)
+                && wins(u16::MAX, usize::MAX, true, text_align_last[layer])
             {
-                text_align_last = Some(CascadeValue {
+                text_align_last[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -1743,9 +1776,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.text_justify
-                && wins(u16::MAX, usize::MAX, true, text_justify)
+                && wins(u16::MAX, usize::MAX, true, text_justify[layer])
             {
-                text_justify = Some(CascadeValue {
+                text_justify[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2202,9 +2235,9 @@ impl NativeStylesheet {
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
             opacity: opacity.map(|value| value.value),
             white_space: white_space.map_or(inherited.white_space, |value| value.value),
-            text_align: text_align.map_or(inherited.text_align, |value| value.value),
-            text_align_last: text_align_last.map_or(inherited.text_align_last, |value| value.value),
-            text_justify: text_justify.map_or(inherited.text_justify, |value| value.value),
+            text_align: resolve_text_align(text_align, inherited.text_align),
+            text_align_last: resolve_text_align_last(text_align_last, inherited.text_align_last),
+            text_justify: resolve_text_justify(text_justify, inherited.text_justify),
             justify_content: justify_content
                 .map_or(JustifyContentValue::FlexStart, |value| value.value),
             align_items: align_items.map_or(AlignItemsValue::FlexStart, |value| value.value),
@@ -2332,6 +2365,66 @@ fn encode_cascade_specificity(specificity: u16, layer: Option<usize>) -> u16 {
     layer
         .saturating_mul(CASCADE_SPECIFICITY_STRIDE)
         .saturating_add(specificity.min(MAX_NATIVE_SELECTOR_SPECIFICITY))
+}
+
+fn resolve_text_align(
+    candidates: [Option<CascadeValue<TextAlignDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    inherited: TextAlignValue,
+) -> TextAlignValue {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        TextAlignDeclaration::Value(value) => Some(value),
+        TextAlignDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_text_align_last(
+    candidates: [Option<CascadeValue<TextAlignLastDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    inherited: TextAlignLastValue,
+) -> TextAlignLastValue {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        TextAlignLastDeclaration::Value(value) => Some(value),
+        TextAlignLastDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_text_justify(
+    candidates: [Option<CascadeValue<TextJustifyDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    inherited: TextJustifyValue,
+) -> TextJustifyValue {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        TextJustifyDeclaration::Value(value) => Some(value),
+        TextJustifyDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_alignment_candidates<T: Copy, U: Copy>(
+    candidates: [Option<CascadeValue<T>>; MAX_NATIVE_CASCADE_LAYERS],
+    inherited: U,
+    value: impl Fn(T) -> Option<U>,
+) -> U {
+    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    loop {
+        let Some((layer, candidate)) =
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(layer, candidate)| {
+                    if blocked[layer] {
+                        None
+                    } else {
+                        candidate.map(|candidate| (layer, candidate))
+                    }
+                })
+        else {
+            return inherited;
+        };
+        if value(candidate.value).is_none() {
+            blocked[layer] = true;
+            continue;
+        }
+        return value(candidate.value).unwrap_or(inherited);
+    }
 }
 
 fn resolve_text_decoration_skip_spaces(
@@ -2721,9 +2814,9 @@ struct NativeDeclarations {
     visibility: Option<VisibilityValue>,
     opacity: Option<u8>,
     white_space: Option<WhiteSpaceValue>,
-    text_align: Option<TextAlignValue>,
-    text_align_last: Option<TextAlignLastValue>,
-    text_justify: Option<TextJustifyValue>,
+    text_align: Option<TextAlignDeclaration>,
+    text_align_last: Option<TextAlignLastDeclaration>,
+    text_justify: Option<TextJustifyDeclaration>,
     justify_content: Option<JustifyContentValue>,
     align_items: Option<AlignItemsValue>,
     align_self: Option<AlignSelfValue>,
@@ -3436,13 +3529,13 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.white_space = parse_white_space(value);
             }
             "text-align" => {
-                declarations.text_align = parse_text_align(value);
+                declarations.text_align = parse_text_align_declaration(value);
             }
             "text-align-last" => {
-                declarations.text_align_last = parse_text_align_last(value);
+                declarations.text_align_last = parse_text_align_last_declaration(value);
             }
             "text-justify" => {
-                declarations.text_justify = parse_text_justify(value);
+                declarations.text_justify = parse_text_justify_declaration(value);
             }
             "justify-content" => {
                 if let Some(parsed) = parse_justify_content(value) {
@@ -4125,6 +4218,14 @@ fn parse_text_align(value: &str) -> Option<TextAlignValue> {
     }
 }
 
+fn parse_text_align_declaration(value: &str) -> Option<TextAlignDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(TextAlignDeclaration::RevertLayer)
+    } else {
+        parse_text_align(value).map(TextAlignDeclaration::Value)
+    }
+}
+
 fn parse_text_align_last(value: &str) -> Option<TextAlignLastValue> {
     match value.to_ascii_lowercase().as_str() {
         "auto" => Some(TextAlignLastValue::Auto),
@@ -4138,12 +4239,28 @@ fn parse_text_align_last(value: &str) -> Option<TextAlignLastValue> {
     }
 }
 
+fn parse_text_align_last_declaration(value: &str) -> Option<TextAlignLastDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(TextAlignLastDeclaration::RevertLayer)
+    } else {
+        parse_text_align_last(value).map(TextAlignLastDeclaration::Value)
+    }
+}
+
 fn parse_text_justify(value: &str) -> Option<TextJustifyValue> {
     match value.to_ascii_lowercase().as_str() {
         "auto" => Some(TextJustifyValue::Auto),
         "none" => Some(TextJustifyValue::None),
         "inter-word" => Some(TextJustifyValue::InterWord),
         _ => None,
+    }
+}
+
+fn parse_text_justify_declaration(value: &str) -> Option<TextJustifyDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(TextJustifyDeclaration::RevertLayer)
+    } else {
+        parse_text_justify(value).map(TextJustifyDeclaration::Value)
     }
 }
 
@@ -4738,9 +4855,18 @@ mod tests {
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
         assert_eq!(declarations.opacity, Some(128));
         assert_eq!(declarations.white_space, Some(WhiteSpaceValue::PreLine));
-        assert_eq!(declarations.text_align, Some(TextAlignValue::Center));
-        assert_eq!(declarations.text_align_last, Some(TextAlignLastValue::End));
-        assert_eq!(declarations.text_justify, Some(TextJustifyValue::InterWord));
+        assert_eq!(
+            declarations.text_align,
+            Some(TextAlignDeclaration::Value(TextAlignValue::Center))
+        );
+        assert_eq!(
+            declarations.text_align_last,
+            Some(TextAlignLastDeclaration::Value(TextAlignLastValue::End))
+        );
+        assert_eq!(
+            declarations.text_justify,
+            Some(TextJustifyDeclaration::Value(TextJustifyValue::InterWord))
+        );
         assert_eq!(
             declarations.justify_content,
             Some(JustifyContentValue::SpaceBetween)
@@ -5866,6 +5992,25 @@ mod tests {
         assert_eq!(parse_text_justify("inter-character"), None);
         assert_eq!(parse_text_justify("distribute"), None);
         assert_eq!(parse_text_justify("auto none"), None);
+    }
+
+    #[test]
+    fn alignment_declaration_parser_accepts_only_standalone_case_insensitive_revert_layer() {
+        assert_eq!(
+            parse_text_align_declaration("ReVeRt-LaYeR"),
+            Some(TextAlignDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_text_align_last_declaration(" REVERT-LAYER "),
+            Some(TextAlignLastDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_text_justify_declaration("revert-LAYER"),
+            Some(TextJustifyDeclaration::RevertLayer)
+        );
+        assert_eq!(parse_text_align_declaration("center revert-layer"), None);
+        assert_eq!(parse_text_align_last_declaration("inherit"), None);
+        assert_eq!(parse_text_justify_declaration("none revert-layer"), None);
     }
 
     #[test]

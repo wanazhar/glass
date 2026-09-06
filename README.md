@@ -345,6 +345,9 @@ source-whitespace boundaries across sibling direct text and supported inline
 flow items, bounded inherited `white-space: nowrap` collapsed one-line flow,
 bounded inherited case-insensitive 15-layer/unlayered
 `white-space: revert-layer` rollback with five-mode inherited/root fallback,
+bounded case-insensitive 15-layer/unlayered inherited
+`revert-layer` rollback for `text-transform`, `font-weight`, `font-style`, and
+`word-break` with finite parent/root fallbacks,
 bounded `overflow:hidden` clips shared by paint, viewport
 projection, and point hit-testing, bounded
 PNG capture through the explicit backend operation, and Rust-only
@@ -401,7 +404,10 @@ these flex-item owners, including standalone `flex:revert-layer`,
 `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback,
 with native fallbacks and finite shorthand expansion, bounded case-insensitive
 15-layer/unlayered gap-family `revert-layer` rollback for `gap`, `row-gap`, and
-`column-gap` with independent finite-pixel components, and bounded
+`column-gap` with independent finite-pixel components, bounded case-insensitive
+15-layer/unlayered inherited `revert-layer` rollback for `text-transform`,
+`font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks,
+and bounded
 non-inherited
 `align-items:flex-start|center|flex-end` cross-axis placement using an
 explicit content height or the auto row's maximum item outer height,
@@ -747,7 +753,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`, alongside the previously listed layout, text, decoration, navigation, and artifact surfaces; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
+| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`; inherited text presentation also has bounded case-insensitive 15-layer/unlayered rollback for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks, alongside the previously listed layout, text, decoration, navigation, and artifact surfaces; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
 The native engine also supports bounded 15-layer/unlayered `revert-layer`
 rollback for inherited `text-align`, `text-align-last`, and `text-justify`.
 The current native decoration-color surface additionally accepts bounded

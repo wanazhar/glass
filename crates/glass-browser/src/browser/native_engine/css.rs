@@ -2454,17 +2454,18 @@ fn resolve_text_decoration_color(
 ) -> Option<NativeColor> {
     let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
     loop {
-        let (layer, candidate) = candidates
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(layer, candidate)| {
-                if blocked[layer] {
-                    None
-                } else {
-                    candidate.map(|candidate| (layer, candidate))
-                }
-            })?;
+        let (layer, candidate) =
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(layer, candidate)| {
+                    if blocked[layer] {
+                        None
+                    } else {
+                        candidate.map(|candidate| (layer, candidate))
+                    }
+                })?;
         if matches!(
             candidate.value,
             NativeTextDecorationColorDeclaration::RevertLayer

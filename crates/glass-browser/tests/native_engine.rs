@@ -606,6 +606,13 @@ fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
         &NativeEngineLimits::default(),
     )
     .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "text-align" | "text-align-last" | "text-justify"
+            ))
+    }));
     let viewport = Viewport {
         width: 45,
         height: 120,

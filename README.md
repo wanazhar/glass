@@ -382,7 +382,9 @@ bounded non-negative fixed-pixel first-line `text-indent` for block flow,
 bounded inherited non-negative fixed-pixel `word-spacing` across collapsed
 and supported preformatted ASCII spaces, bounded inherited non-negative
 fixed-pixel `letter-spacing` after every rendered fixed-cell character in each
-emitted fragment, composed with word spacing,
+emitted fragment, composed with word spacing, plus bounded case-insensitive
+15-layer/unlayered inherited `revert-layer` rollback for `word-spacing` and
+`letter-spacing` with finite parent/root fallbacks,
 bounded inherited `font-weight:normal|bold|400|700` fixed-cell raster
 presentation with unchanged advances and clipped one-pixel bold dilation,
 bounded inherited `font-style:normal|italic` fixed-cell raster presentation

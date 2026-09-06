@@ -377,6 +377,12 @@ pub(crate) enum JustifyContentValue {
     SpaceEvenly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JustifyContentDeclaration {
+    Value(JustifyContentValue),
+    RevertLayer,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum AlignItemsValue {
     #[default]
@@ -385,6 +391,12 @@ pub(crate) enum AlignItemsValue {
     FlexEnd,
     Stretch,
     Normal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlignItemsDeclaration {
+    Value(AlignItemsValue),
+    RevertLayer,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -398,6 +410,12 @@ pub(crate) enum AlignSelfValue {
     Normal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlignSelfDeclaration {
+    Value(AlignSelfValue),
+    RevertLayer,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum AlignContentValue {
     #[default]
@@ -409,6 +427,12 @@ pub(crate) enum AlignContentValue {
     SpaceEvenly,
     Stretch,
     Normal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlignContentDeclaration {
+    Value(AlignContentValue),
+    RevertLayer,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -445,6 +469,12 @@ pub(crate) enum FlexWrapValue {
     NoWrap,
     Wrap,
     WrapReverse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlexWrapDeclaration {
+    Value(FlexWrapValue),
+    RevertLayer,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1104,13 +1134,18 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut direction: [Option<CascadeValue<DirectionDeclaration>>; MAX_NATIVE_CASCADE_LAYERS] =
             [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut justify_content = None;
-        let mut align_items = None;
-        let mut align_self = None;
-        let mut align_content = None;
+        let mut justify_content: [Option<CascadeValue<JustifyContentDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut align_items: [Option<CascadeValue<AlignItemsDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut align_self: [Option<CascadeValue<AlignSelfDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut align_content: [Option<CascadeValue<AlignContentDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut flex_direction: [Option<CascadeValue<FlexDirectionDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut flex_wrap = None;
+        let mut flex_wrap: [Option<CascadeValue<FlexWrapDeclaration>>; MAX_NATIVE_CASCADE_LAYERS] =
+            [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut flex_item_order = None;
         let mut flex_grow = None;
         let mut flex_shrink = None;
@@ -1487,10 +1522,10 @@ impl NativeStylesheet {
                     rule.selector.specificity,
                     rule.order,
                     false,
-                    justify_content,
+                    justify_content[layer],
                 )
             {
-                justify_content = Some(CascadeValue {
+                justify_content[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1543,9 +1578,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.align_items
-                && wins(rule.selector.specificity, rule.order, false, align_items)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    align_items[layer],
+                )
             {
-                align_items = Some(CascadeValue {
+                align_items[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1553,9 +1593,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.align_self
-                && wins(rule.selector.specificity, rule.order, false, align_self)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    align_self[layer],
+                )
             {
-                align_self = Some(CascadeValue {
+                align_self[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1563,9 +1608,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.align_content
-                && wins(rule.selector.specificity, rule.order, false, align_content)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    align_content[layer],
+                )
             {
-                align_content = Some(CascadeValue {
+                align_content[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -1588,9 +1638,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.flex_wrap
-                && wins(rule.selector.specificity, rule.order, false, flex_wrap)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    flex_wrap[layer],
+                )
             {
-                flex_wrap = Some(CascadeValue {
+                flex_wrap[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -2025,9 +2080,9 @@ impl NativeStylesheet {
                 &mut column_gap,
             );
             if let Some(value) = declarations.justify_content
-                && wins(u16::MAX, usize::MAX, true, justify_content)
+                && wins(u16::MAX, usize::MAX, true, justify_content[layer])
             {
-                justify_content = Some(CascadeValue {
+                justify_content[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2075,9 +2130,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.align_items
-                && wins(u16::MAX, usize::MAX, true, align_items)
+                && wins(u16::MAX, usize::MAX, true, align_items[layer])
             {
-                align_items = Some(CascadeValue {
+                align_items[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2085,9 +2140,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.align_self
-                && wins(u16::MAX, usize::MAX, true, align_self)
+                && wins(u16::MAX, usize::MAX, true, align_self[layer])
             {
-                align_self = Some(CascadeValue {
+                align_self[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2095,9 +2150,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.align_content
-                && wins(u16::MAX, usize::MAX, true, align_content)
+                && wins(u16::MAX, usize::MAX, true, align_content[layer])
             {
-                align_content = Some(CascadeValue {
+                align_content[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2115,9 +2170,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.flex_wrap
-                && wins(u16::MAX, usize::MAX, true, flex_wrap)
+                && wins(u16::MAX, usize::MAX, true, flex_wrap[layer])
             {
-                flex_wrap = Some(CascadeValue {
+                flex_wrap[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2286,14 +2341,13 @@ impl NativeStylesheet {
             text_align: resolve_text_align(text_align, inherited.text_align),
             text_align_last: resolve_text_align_last(text_align_last, inherited.text_align_last),
             text_justify: resolve_text_justify(text_justify, inherited.text_justify),
-            justify_content: justify_content
-                .map_or(JustifyContentValue::FlexStart, |value| value.value),
-            align_items: align_items.map_or(AlignItemsValue::FlexStart, |value| value.value),
-            align_self: align_self.map_or(AlignSelfValue::Auto, |value| value.value),
-            align_content: align_content.map_or(AlignContentValue::FlexStart, |value| value.value),
+            justify_content: resolve_justify_content(justify_content),
+            align_items: resolve_align_items(align_items),
+            align_self: resolve_align_self(align_self),
+            align_content: resolve_align_content(align_content),
             flex_direction: resolve_flex_direction(flex_direction),
             direction: resolve_direction(direction, inherited.direction),
-            flex_wrap: flex_wrap.map_or(FlexWrapValue::NoWrap, |value| value.value),
+            flex_wrap: resolve_flex_wrap(flex_wrap),
             flex_item_order: flex_item_order
                 .map_or(NativeOrderValue::default(), |value| value.value),
             flex_grow: flex_grow.map_or(0, |value| value.value),
@@ -2452,6 +2506,65 @@ fn resolve_flex_direction(
             FlexDirectionDeclaration::RevertLayer => None,
         }
     })
+}
+
+fn resolve_justify_content(
+    candidates: [Option<CascadeValue<JustifyContentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> JustifyContentValue {
+    resolve_alignment_candidates(candidates, JustifyContentValue::FlexStart, |declaration| {
+        match declaration {
+            JustifyContentDeclaration::Value(value) => Some(value),
+            JustifyContentDeclaration::RevertLayer => None,
+        }
+    })
+}
+
+fn resolve_align_items(
+    candidates: [Option<CascadeValue<AlignItemsDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> AlignItemsValue {
+    resolve_alignment_candidates(candidates, AlignItemsValue::FlexStart, |declaration| {
+        match declaration {
+            AlignItemsDeclaration::Value(value) => Some(value),
+            AlignItemsDeclaration::RevertLayer => None,
+        }
+    })
+}
+
+fn resolve_align_self(
+    candidates: [Option<CascadeValue<AlignSelfDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> AlignSelfValue {
+    resolve_alignment_candidates(
+        candidates,
+        AlignSelfValue::Auto,
+        |declaration| match declaration {
+            AlignSelfDeclaration::Value(value) => Some(value),
+            AlignSelfDeclaration::RevertLayer => None,
+        },
+    )
+}
+
+fn resolve_align_content(
+    candidates: [Option<CascadeValue<AlignContentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> AlignContentValue {
+    resolve_alignment_candidates(candidates, AlignContentValue::FlexStart, |declaration| {
+        match declaration {
+            AlignContentDeclaration::Value(value) => Some(value),
+            AlignContentDeclaration::RevertLayer => None,
+        }
+    })
+}
+
+fn resolve_flex_wrap(
+    candidates: [Option<CascadeValue<FlexWrapDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> FlexWrapValue {
+    resolve_alignment_candidates(
+        candidates,
+        FlexWrapValue::NoWrap,
+        |declaration| match declaration {
+            FlexWrapDeclaration::Value(value) => Some(value),
+            FlexWrapDeclaration::RevertLayer => None,
+        },
+    )
 }
 
 fn resolve_text_align(
@@ -2904,13 +3017,13 @@ struct NativeDeclarations {
     text_align: Option<TextAlignDeclaration>,
     text_align_last: Option<TextAlignLastDeclaration>,
     text_justify: Option<TextJustifyDeclaration>,
-    justify_content: Option<JustifyContentValue>,
-    align_items: Option<AlignItemsValue>,
-    align_self: Option<AlignSelfValue>,
-    align_content: Option<AlignContentValue>,
+    justify_content: Option<JustifyContentDeclaration>,
+    align_items: Option<AlignItemsDeclaration>,
+    align_self: Option<AlignSelfDeclaration>,
+    align_content: Option<AlignContentDeclaration>,
     flex_direction: Option<FlexDirectionDeclaration>,
     direction: Option<DirectionDeclaration>,
-    flex_wrap: Option<FlexWrapValue>,
+    flex_wrap: Option<FlexWrapDeclaration>,
     order: Option<NativeOrderValue>,
     flex_grow: Option<u32>,
     flex_shrink: Option<u32>,
@@ -3411,14 +3524,14 @@ fn parse_declarations_with_diagnostics(
             "text-align" => parse_text_align_declaration(value).is_some(),
             "text-align-last" => parse_text_align_last_declaration(value).is_some(),
             "text-justify" => parse_text_justify_declaration(value).is_some(),
-            "justify-content" => parse_justify_content(value).is_some(),
+            "justify-content" => parse_justify_content_declaration(value).is_some(),
             "place-content" => parse_place_content(value).is_some(),
-            "align-items" => parse_align_items(value).is_some(),
-            "align-self" => parse_align_self(value).is_some(),
-            "align-content" => parse_align_content(value).is_some(),
+            "align-items" => parse_align_items_declaration(value).is_some(),
+            "align-self" => parse_align_self_declaration(value).is_some(),
+            "align-content" => parse_align_content_declaration(value).is_some(),
             "flex-direction" => parse_flex_direction_declaration(value).is_some(),
             "direction" => parse_direction_declaration(value).is_some(),
-            "flex-wrap" => parse_flex_wrap(value).is_some(),
+            "flex-wrap" => parse_flex_wrap_declaration(value).is_some(),
             "flex-flow" => parse_flex_flow(value).is_some(),
             "order" => parse_flex_item_order(value).is_some(),
             "flex" => parse_flex_shorthand(value).is_some(),
@@ -3625,26 +3738,28 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.text_justify = parse_text_justify_declaration(value);
             }
             "justify-content" => {
-                if let Some(parsed) = parse_justify_content(value) {
+                if let Some(parsed) = parse_justify_content_declaration(value) {
                     declarations.justify_content = Some(parsed);
                 }
             }
             "place-content" => {
                 if let Some((align_content, justify_content)) = parse_place_content(value) {
-                    declarations.align_content = Some(align_content);
-                    declarations.justify_content = Some(justify_content);
+                    declarations.align_content =
+                        Some(AlignContentDeclaration::Value(align_content));
+                    declarations.justify_content =
+                        Some(JustifyContentDeclaration::Value(justify_content));
                 }
             }
             "align-items" => {
-                declarations.align_items = parse_align_items(value);
+                declarations.align_items = parse_align_items_declaration(value);
             }
             "align-self" => {
-                if let Some(parsed) = parse_align_self(value) {
+                if let Some(parsed) = parse_align_self_declaration(value) {
                     declarations.align_self = Some(parsed);
                 }
             }
             "align-content" => {
-                if let Some(parsed) = parse_align_content(value) {
+                if let Some(parsed) = parse_align_content_declaration(value) {
                     declarations.align_content = Some(parsed);
                 }
             }
@@ -3655,12 +3770,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.direction = parse_direction_declaration(value);
             }
             "flex-wrap" => {
-                declarations.flex_wrap = parse_flex_wrap(value);
+                declarations.flex_wrap = parse_flex_wrap_declaration(value);
             }
             "flex-flow" => {
                 if let Some((direction, wrap)) = parse_flex_flow(value) {
                     declarations.flex_direction = Some(FlexDirectionDeclaration::Value(direction));
-                    declarations.flex_wrap = Some(wrap);
+                    declarations.flex_wrap = Some(FlexWrapDeclaration::Value(wrap));
                 }
             }
             "order" => {
@@ -4381,6 +4496,14 @@ fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
     }
 }
 
+fn parse_justify_content_declaration(value: &str) -> Option<JustifyContentDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(JustifyContentDeclaration::RevertLayer)
+    } else {
+        parse_justify_content(value).map(JustifyContentDeclaration::Value)
+    }
+}
+
 fn parse_place_content(value: &str) -> Option<(AlignContentValue, JustifyContentValue)> {
     let values = value.split_ascii_whitespace().collect::<Vec<_>>();
     match values.as_slice() {
@@ -4408,6 +4531,14 @@ fn parse_align_items(value: &str) -> Option<AlignItemsValue> {
     }
 }
 
+fn parse_align_items_declaration(value: &str) -> Option<AlignItemsDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(AlignItemsDeclaration::RevertLayer)
+    } else {
+        parse_align_items(value).map(AlignItemsDeclaration::Value)
+    }
+}
+
 fn parse_align_self(value: &str) -> Option<AlignSelfValue> {
     match value.to_ascii_lowercase().as_str() {
         "auto" => Some(AlignSelfValue::Auto),
@@ -4417,6 +4548,14 @@ fn parse_align_self(value: &str) -> Option<AlignSelfValue> {
         "stretch" => Some(AlignSelfValue::Stretch),
         "normal" => Some(AlignSelfValue::Normal),
         _ => None,
+    }
+}
+
+fn parse_align_self_declaration(value: &str) -> Option<AlignSelfDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(AlignSelfDeclaration::RevertLayer)
+    } else {
+        parse_align_self(value).map(AlignSelfDeclaration::Value)
     }
 }
 
@@ -4431,6 +4570,14 @@ fn parse_align_content(value: &str) -> Option<AlignContentValue> {
         "stretch" => Some(AlignContentValue::Stretch),
         "normal" => Some(AlignContentValue::Normal),
         _ => None,
+    }
+}
+
+fn parse_align_content_declaration(value: &str) -> Option<AlignContentDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(AlignContentDeclaration::RevertLayer)
+    } else {
+        parse_align_content(value).map(AlignContentDeclaration::Value)
     }
 }
 
@@ -4474,6 +4621,14 @@ fn parse_flex_wrap(value: &str) -> Option<FlexWrapValue> {
         "wrap" => Some(FlexWrapValue::Wrap),
         "wrap-reverse" => Some(FlexWrapValue::WrapReverse),
         _ => None,
+    }
+}
+
+fn parse_flex_wrap_declaration(value: &str) -> Option<FlexWrapDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(FlexWrapDeclaration::RevertLayer)
+    } else {
+        parse_flex_wrap(value).map(FlexWrapDeclaration::Value)
     }
 }
 
@@ -4991,11 +5146,22 @@ mod tests {
         );
         assert_eq!(
             declarations.justify_content,
-            Some(JustifyContentValue::SpaceBetween)
+            Some(JustifyContentDeclaration::Value(
+                JustifyContentValue::SpaceBetween
+            ))
         );
-        assert_eq!(declarations.align_items, Some(AlignItemsValue::FlexEnd));
-        assert_eq!(declarations.align_self, Some(AlignSelfValue::Center));
-        assert_eq!(declarations.align_content, Some(AlignContentValue::Stretch));
+        assert_eq!(
+            declarations.align_items,
+            Some(AlignItemsDeclaration::Value(AlignItemsValue::FlexEnd))
+        );
+        assert_eq!(
+            declarations.align_self,
+            Some(AlignSelfDeclaration::Value(AlignSelfValue::Center))
+        );
+        assert_eq!(
+            declarations.align_content,
+            Some(AlignContentDeclaration::Value(AlignContentValue::Stretch))
+        );
         assert_eq!(
             declarations.flex_direction,
             Some(FlexDirectionDeclaration::Value(
@@ -5006,7 +5172,10 @@ mod tests {
             declarations.direction,
             Some(DirectionDeclaration::Value(DirectionValue::Rtl))
         );
-        assert_eq!(declarations.flex_wrap, Some(FlexWrapValue::WrapReverse));
+        assert_eq!(
+            declarations.flex_wrap,
+            Some(FlexWrapDeclaration::Value(FlexWrapValue::WrapReverse))
+        );
         assert_eq!(declarations.order, Some(NativeOrderValue(-12)));
         assert_eq!(declarations.flex_grow, Some(2));
         assert_eq!(declarations.flex_shrink, Some(3));
@@ -6140,7 +6309,7 @@ mod tests {
             ),
             NativeDeclarations {
                 flex_direction: Some(FlexDirectionDeclaration::Value(FlexDirectionValue::Row)),
-                flex_wrap: Some(FlexWrapValue::NoWrap),
+                flex_wrap: Some(FlexWrapDeclaration::Value(FlexWrapValue::NoWrap)),
                 ..NativeDeclarations::default()
             }
         );
@@ -6498,6 +6667,35 @@ mod tests {
         );
         assert_eq!(parse_flex_wrap("row"), None);
         assert_eq!(parse_flex_wrap("normal"), None);
+    }
+
+    #[test]
+    fn flexbox_declaration_parsers_accept_only_standalone_case_insensitive_revert_layer() {
+        assert_eq!(
+            parse_justify_content_declaration("ReVeRt-LaYeR"),
+            Some(JustifyContentDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_align_items_declaration(" REVERT-LAYER "),
+            Some(AlignItemsDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_align_self_declaration("revert-layer"),
+            Some(AlignSelfDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_align_content_declaration("ReVeRt-LaYeR"),
+            Some(AlignContentDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_flex_wrap_declaration("REVERT-LAYER"),
+            Some(FlexWrapDeclaration::RevertLayer)
+        );
+        assert_eq!(parse_justify_content_declaration("safe center"), None);
+        assert_eq!(parse_align_items_declaration("inherit"), None);
+        assert_eq!(parse_align_self_declaration("center flex-end"), None);
+        assert_eq!(parse_align_content_declaration("revert-layer center"), None);
+        assert_eq!(parse_flex_wrap_declaration("wrap reverse"), None);
     }
 
     #[test]

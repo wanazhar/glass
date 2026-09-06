@@ -352,8 +352,9 @@ text paint, bounded inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using
 the existing fixed palette and alpha grammar with separate glyph and line
-paint, bounded `text-decoration-line` longhand combinations sharing the same
-line-state owner, bounded inherited
+paint, including bounded 15-layer/unlayered `revert-layer` rollback with the
+existing local fallback, bounded `text-decoration-line` longhand combinations
+sharing the same line-state owner, bounded inherited
 `text-decoration-style:solid|dashed|dotted|double|wavy` presentation, where
 `double` paints two thickness-preserving solid bands separated by one pixel
 and `wavy` paints a fixed eight-pixel phase `[0,1,2,1,0,-1,-2,-1]`,
@@ -723,6 +724,11 @@ workflows.
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
 | Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts, including root horizontal and vertical viewport scrolling, bounded physical min/max dimensions, bounded inherited fixed-pixel letter spacing composed with word spacing, bounded inherited vertical-align offsets for fixed-cell inline items, bounded block-level `display:flex` single-row placement for eligible direct element children with fixed widths/margins, one non-negative fixed-pixel flex-row gap between visible items, bounded `justify-content:flex-start|center|flex-end|space-between` free-space placement for eligible fixed-width rows, bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable source-order ties, and bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis placement using explicit content height or the auto row's maximum item outer height, bounded non-inherited `flex-direction:row|row-reverse` physical placement with item-attached margins, existing gap/justification/alignment, bounded inherited `text-decoration:none|underline|overline|line-through` lines including distinct shorthand combinations, bounded local `text-decoration-color` using the existing fixed palette and alpha grammar with separate glyph and line paint, bounded `text-decoration-line` longhand combinations sharing the same line-state owner, bounded inherited `text-decoration-style:solid|dashed|dotted|double|wavy` presentation with double's two separated solid bands and wavy's fixed eight-pixel phase, bounded inherited `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with thickness-scaled integer dash/dot periods, bounded inherited `text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for underline and overline with unchanged line-through, bounded inherited `text-decoration-skip-spaces:none|all` same-run ASCII-space interval skipping across underline, overline, and line-through including adjacent letter/word/final-line justification spacing, bounded inherited final-line alignment and explicit final-line justification, bounded inherited `text-justify:auto|none|inter-word` control over that separator spacing, bounded overflow translation, root horizontal scrolling, and unchanged semantic/source order; explicit Rust or feature-gated local CLI path |
+The current native decoration-color surface additionally accepts bounded
+case-insensitive `text-decoration-color:revert-layer` through the existing
+15-layer registry and unlayered/inline bucket; no-candidate resolution remains
+the local omitted-color fallback, and glyph/decoration paint colors remain
+separate.
 The native engine also supports bounded inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; the offset moves only the underline toward
 decreasing or increasing y while overline and line-through origins remain

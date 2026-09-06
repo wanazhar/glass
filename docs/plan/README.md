@@ -1089,10 +1089,19 @@ unlayered/inline layer boundary. Parser, cascade, display-list, command, and
 decoded-raster regressions passed; general CSS-wide keyword machinery, multiple
 origins, layer statements, and unsupported values remain outside the slice.
 Exact local gate, issue-sync, and regenerable-output cleanup evidence is
-recorded in the task. The next dependency-ordered 127 boundary will be
-designed separately for local `text-decoration-color: revert-layer`, preserving
-its existing `Option<NativeColor>` fallback and separate glyph/decoration paint
-owner.
+recorded in the task. The dependency-ordered
+[native-engine-127](tasks/native-engine-127.md) implementation is complete at
+`50a36545`. It reuses the bounded layer registry for local
+`text-decoration-color: revert-layer`, preserving the existing
+`Option<NativeColor>` no-candidate fallback and separate glyph/decoration paint
+owner. Parser, cascade, display-list, command, and decoded-raster regressions
+passed; general CSS-wide keyword machinery, `currentColor`, multiple origins,
+layer statements, and unsupported values remain outside the slice. Exact local
+gate, issue-sync, and regenerable-output cleanup evidence is recorded in the
+task. The next dependency-ordered [native-engine-128](tasks/native-engine-128.md)
+boundary is designed separately for `text-decoration-line`/`text-decoration:
+revert-layer`, preserving their shared three-bit line-state owner and inherited
+fallback.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

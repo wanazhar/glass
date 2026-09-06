@@ -188,14 +188,19 @@ bytes. Process and recursive handle checks reported no Cargo/rustc/rustdoc/
 Clippy/fuzz/package writer and no open handle for those exact paths. They were
 removed with bounded `find -P <exact-path> -xdev -depth -delete` operations; no
 process was terminated and no source, fixture, durable data, or unrelated
-`/tmp` entry was touched. Available filesystem bytes before and after cleanup,
-and the resulting byte delta, are recorded in the certification checkpoint
-below after deletion. The exact target, report, and scratch paths are absent;
-no repository-local `target/` and no top-level `/tmp/target/` remain. The three
-pre-existing Glass processes were preserved.
+`/tmp` entry was touched. The final cleanup recorder reported
+85,516,836,864 available bytes on `/` (about 80 GiB; 59% used). The earlier
+foreground sample was not retained by the background cleanup command, so this
+record deliberately does not invent a filesystem byte delta; the exact
+logical target/report/scratch totals above are the reclaimable-output evidence.
+The exact target, report, and scratch paths are absent; no repository-local
+`target/` and no top-level `/tmp/target/` remain. The three pre-existing Glass
+processes were preserved.
 
 ## Certification
 
-Local implementation and full validation are complete at `3ffe86f8`; exact
-regenerable-output cleanup and issue synchronization are pending the final
-closeout checkpoint. Remote CI remains pending because no push was authorized.
+Local implementation, full validation, and exact regenerable-output cleanup are
+complete at `3ffe86f8`. Issue #40 synchronization is recorded in the
+authenticated implementation checkpoint at
+<https://github.com/wanazhar/glass/issues/40#issuecomment-5557661602>.
+Remote CI remains pending because no push was authorized.

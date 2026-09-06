@@ -1123,6 +1123,14 @@ existing fixed-cell line/artifact owner. Focused and full affected-package
 local gates are recorded in the task; remote CI remains pending because the
 checkout is local-only.
 
+The next designed dependency-ordered [native-engine-130](tasks/native-engine-130.md)
+boundary adds private case-insensitive `white-space: revert-layer` declarations
+through the bounded 15-layer and unlayered/inline cascade boundary. It
+preserves the five finite whitespace modes, inherited/root fallback, existing
+hard-break and fixed-cell wrapping behavior, and the current line/artifact
+owner. The design is recorded before implementation; no current capability
+claim is made until the slice is implemented and locally certified.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

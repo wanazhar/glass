@@ -1133,14 +1133,16 @@ package local gates passed; the package library gate used an explicit 32 MiB
 test-thread stack to accommodate one pre-existing CLI stack-overflow test.
 Remote CI remains pending because the checkout is local-only.
 
-The next designed dependency-ordered [native-engine-131](tasks/native-engine-131.md)
-boundary adds private case-insensitive `line-height: revert-layer`
-declarations through the bounded 15-layer and unlayered/inline cascade
-boundary. It preserves the positive-pixel line-height grammar,
-inherited/root `Option<u32>` fallback, inline auto-height and explicit-height
-precedence, and the current flow/artifact owner. The design is recorded before
-implementation; no current capability claim is made until the slice is
-implemented and locally certified.
+The dependency-ordered [native-engine-131](tasks/native-engine-131.md)
+implementation is complete in `e35a13fd`. It adds private case-insensitive
+`line-height: revert-layer` declarations through the bounded 15-layer and
+unlayered/inline cascade boundary. It preserves the positive-pixel line-height
+grammar, inherited/root `Option<u32>` fallback, inline auto-height and
+explicit-height precedence, and the current flow/artifact owner. Focused and
+complete affected-package local gates passed; the package library gate used an
+explicit 32 MiB test-thread stack to accommodate one pre-existing CLI
+stack-overflow test. Remote CI remains pending because the checkout is
+local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

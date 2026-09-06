@@ -1,7 +1,7 @@
 ---
 id: native-engine-131
 scope: glass-browser/native-engine/cascade-layers-line-height-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-130]
 ---
 
@@ -72,6 +72,54 @@ default, or crate boundary changes are permitted.
 The slice remains a horizontal-tb, fixed-cell, bounded local-content contract;
 it does not claim browser parity, full CSS cascade semantics, font metrics, or
 a complete browser engine.
+
+## Implementation and local result
+
+The implementation is complete in `e35a13fd` (`feat(native-engine): support
+line-height rollback`). `LineHeightDeclaration` keeps `revert-layer` private,
+stores stylesheet and inline candidates in the existing bounded cascade-layer
+array, resolves repeated rollback before inherited/root fallback, and leaves
+the public `Option<u32>` computed value and all downstream flow/artifact owners
+unchanged. The supported-value diagnostic classifier uses the same declaration
+parser, so valid case variants do not produce false unsupported-value
+diagnostics.
+
+The focused and affected-package gates passed:
+
+- `cargo check -p glass-browser --features native-engine --test native_engine
+  --locked` — passed in 2m15s.
+- line-height parser/cascade filters — 5 tests passed; the new integration
+  regression plus the two existing line-height regressions — 3 passed.
+- `cargo test -p glass-browser --features native-engine --lib --locked` with
+  `RUST_MIN_STACK=33554432` — 931 passed, 1 ignored.
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  --locked` — 168 passed.
+- `cargo clippy -p glass-browser --features native-engine --all-targets
+  --locked -- -D warnings` — passed in 1m35s.
+
+The 131 integration fixture initially exposed only an over-wide test string:
+the existing fixed-cell wrapping correctly produced a 96px box where the
+test expected 32px. The fixture was narrowed to one-cell strings and the same
+three-test filter passed; no production behavior was changed. Full native,
+two-crate, strict, fuzz/security, static-documentation, and remote-CI gates
+remain issue-level gates. Remote CI is unclaimed because this checkout has
+not been pushed.
+
+The documentation closeout also passed: version sync, feature parity, release
+truth (545 Markdown documents, 83 current documents, 57 previous-version
+references, 642 semantic audit hits, and 0 current-claim failures), release
+documentation unit tests (9/9), TUI shortcut inventory (15/63), documentation
+depth (93 guides/19 contracts), reliability (6 scenarios/4 targets),
+read-only adapters (5), Web IR (8 fixtures/8 scenarios/11 categories), and
+live documentation coverage (545 Markdown files, 345 full-product MCP tools,
+100 browser-only tools, 17 examples, and 22 public modules) all passed.
+Formatting and diff checks passed. After process and `/proc` descriptor checks
+found no target consumer, `/tmp/glass-131-focused` measured 5,020,057,600
+bytes across 6,647 files and was removed, along with the exact 131 logs and
+release report; no repository target, source, fixture, durable data, or
+unrelated temporary path was removed. Available filesystem bytes increased
+from 80,515,428,352 to 85,535,768,576, a measured delta of 5,020,340,224
+bytes.
 
 ## Tradeoffs
 

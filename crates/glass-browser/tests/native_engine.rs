@@ -6944,6 +6944,53 @@ fn native_flex_item_order_sizing_revert_layer_preserves_layout_and_artifacts() {
 }
 
 #[test]
+fn native_flex_shorthand_revert_layer_preserves_components_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #row { display:flex;width:24px;height:8px;gap:2px; } #first { flex:0 1 4px; width:4px;height:8px;background-color:red; } #second { flex:2 3 5px; width:5px;height:8px;background-color:blue; } #inline { flex:2 3 4px; } #repeated { flex:2 3 7px; } #mixed { flex:2 3 6px; } } @layer theme { #first { flex:1 0 10px; } #second { flex:0 0 8px; } #inline { flex:5 0 9px; } #repeated { flex:4 2 9px; } #mixed { flex:revert-layer; flex-grow:5; } } @layer top { #second { flex:revert-layer; } #repeated { flex:revert-layer; } } #first { flex:revert-layer; } #second { flex:revert-layer; } #inline { flex:revert-layer; } #repeated { flex:revert-layer; } #mixed { flex:revert-layer; } #fallback { flex:revert-layer; } #same-before { flex:2 3 6px; flex-grow:4; } #same-after { flex-grow:4; flex:2 3 6px; } #invalid { flex:2 3 6px; flex:1 2 3%; }</style><div id='row'><div id='first'>A</div><div id='second'>B</div></div><div id='inline' style='flex:REVERT-LAYER'>Inline</div><div id='repeated'>Repeated</div><div id='mixed'>Mixed</div><div id='fallback'>Fallback</div><div id='same-before'>Before</div><div id='same-after'>After</div><div id='invalid'>Invalid</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "flex"
+    }));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "revert-layer"
+    }));
+
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let first_rect = layout.box_for(first).unwrap();
+    let second_rect = layout.box_for(second).unwrap();
+    assert_eq!(first_rect.width, 14);
+    assert_eq!(second_rect.x, 16);
+    assert_eq!(second_rect.width, 8);
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(first));
+    assert_eq!(layout.hit_test(17, 1).unwrap(), Some(second));
+    assert_eq!(layout.box_for(row).unwrap().width, 24);
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == first && *rect == first_rect
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(17, 1), Some([0, 0, 255, 255]));
+}
+
+#[test]
 fn native_flex_align_items_moves_complete_subtrees_and_paint_artifacts() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:40px;height:31px;gap:2px;align-items:center'><button id='short' style='width:6px;height:8px;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></button><button id='tall' style='width:6px;height:20px;background-color:blue'>B</button></div>",

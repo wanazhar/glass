@@ -3618,7 +3618,7 @@ fn parse_declarations_with_diagnostics(
             "flex-wrap" => parse_flex_wrap_declaration(value).is_some(),
             "flex-flow" => parse_flex_flow(value).is_some(),
             "order" => parse_flex_item_order_declaration(value).is_some(),
-            "flex" => parse_flex_shorthand(value).is_some(),
+            "flex" => parse_flex_shorthand_declaration(value).is_some(),
             "flex-grow" => parse_flex_grow_declaration(value).is_some(),
             "flex-shrink" => parse_flex_shrink_declaration(value).is_some(),
             "flex-basis" => parse_flex_basis_declaration(value).is_some(),
@@ -3868,10 +3868,10 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "flex" => {
-                if let Some((grow, shrink, basis)) = parse_flex_shorthand(value) {
-                    declarations.flex_grow = Some(FlexGrowDeclaration::Value(grow));
-                    declarations.flex_shrink = Some(FlexShrinkDeclaration::Value(shrink));
-                    declarations.flex_basis = Some(FlexBasisDeclaration::Value(basis));
+                if let Some((grow, shrink, basis)) = parse_flex_shorthand_declaration(value) {
+                    declarations.flex_grow = Some(grow);
+                    declarations.flex_shrink = Some(shrink);
+                    declarations.flex_basis = Some(basis);
                 }
             }
             "flex-grow" => {
@@ -4838,6 +4838,28 @@ fn parse_flex_shorthand(value: &str) -> Option<(u32, u32, FlexBasisValue)> {
         )),
         _ => None,
     }
+}
+
+fn parse_flex_shorthand_declaration(
+    value: &str,
+) -> Option<(
+    FlexGrowDeclaration,
+    FlexShrinkDeclaration,
+    FlexBasisDeclaration,
+)> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some((
+            FlexGrowDeclaration::RevertLayer,
+            FlexShrinkDeclaration::RevertLayer,
+            FlexBasisDeclaration::RevertLayer,
+        ));
+    }
+    let (grow, shrink, basis) = parse_flex_shorthand(value)?;
+    Some((
+        FlexGrowDeclaration::Value(grow),
+        FlexShrinkDeclaration::Value(shrink),
+        FlexBasisDeclaration::Value(basis),
+    ))
 }
 
 fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
@@ -6366,11 +6388,39 @@ mod tests {
         assert_eq!(parse_flex_shorthand("1 2 3%"), None);
         assert_eq!(parse_flex_shorthand("1 2 3 4px"), None);
         assert_eq!(
+            parse_flex_shorthand_declaration("ReVeRt-LaYeR"),
+            Some((
+                FlexGrowDeclaration::RevertLayer,
+                FlexShrinkDeclaration::RevertLayer,
+                FlexBasisDeclaration::RevertLayer,
+            ))
+        );
+        assert_eq!(parse_flex_shorthand_declaration("revert-layer 1"), None);
+        assert_eq!(parse_flex_shorthand_declaration("initial"), None);
+        assert_eq!(
             parse_declarations("flex: 2 3 12px; flex-grow: 4; flex-basis: auto"),
             NativeDeclarations {
                 flex_grow: Some(FlexGrowDeclaration::Value(4)),
                 flex_shrink: Some(FlexShrinkDeclaration::Value(3)),
                 flex_basis: Some(FlexBasisDeclaration::Value(FlexBasisValue::Auto)),
+                ..NativeDeclarations::default()
+            }
+        );
+        assert_eq!(
+            parse_declarations("flex: 2 3 12px; flex: revert-layer"),
+            NativeDeclarations {
+                flex_grow: Some(FlexGrowDeclaration::RevertLayer),
+                flex_shrink: Some(FlexShrinkDeclaration::RevertLayer),
+                flex_basis: Some(FlexBasisDeclaration::RevertLayer),
+                ..NativeDeclarations::default()
+            }
+        );
+        assert_eq!(
+            parse_declarations("flex: revert-layer; flex-grow: 4"),
+            NativeDeclarations {
+                flex_grow: Some(FlexGrowDeclaration::Value(4)),
+                flex_shrink: Some(FlexShrinkDeclaration::RevertLayer),
+                flex_basis: Some(FlexBasisDeclaration::RevertLayer),
                 ..NativeDeclarations::default()
             }
         );
@@ -6933,6 +6983,34 @@ mod tests {
         assert_eq!(parent_style.flex_shrink(), 7);
         assert_eq!(parent_style.flex_basis(), FlexBasisValue::Length(20));
         assert_values(&child, 0, 0, 1, FlexBasisValue::Auto);
+    }
+
+    #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_flex_shorthand_components() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #first { flex: 0 1 4px; } #repeated { flex: 2 3 7px; } #mixed { flex: 2 3 6px; } } @layer theme { #first { flex: 1 0 10px; } #repeated { flex: 4 2 9px; } #mixed { flex: revert-layer; flex-grow: 5; } } @layer top { #repeated { flex: revert-layer; } } #first { flex: revert-layer; } #repeated { flex: revert-layer; } #mixed { flex: revert-layer; } #fallback { flex: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let first = node("<div id='first'>First</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let mixed = node("<div id='mixed'>Mixed</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let inline = node("<div id='first' style='flex:REVERT-LAYER'>Inline</div>");
+
+        let assert_values =
+            |element: &NativeNode, grow: u32, shrink: u32, basis: FlexBasisValue| {
+                let style = stylesheet.computed_for(element);
+                assert_eq!(style.flex_grow(), grow);
+                assert_eq!(style.flex_shrink(), shrink);
+                assert_eq!(style.flex_basis(), basis);
+            };
+
+        assert_values(&first, 1, 0, FlexBasisValue::Length(10));
+        assert_values(&repeated, 4, 2, FlexBasisValue::Length(9));
+        assert_values(&mixed, 5, 3, FlexBasisValue::Length(6));
+        assert_values(&fallback, 0, 1, FlexBasisValue::Auto);
+        assert_values(&inline, 1, 0, FlexBasisValue::Length(10));
     }
 
     #[test]

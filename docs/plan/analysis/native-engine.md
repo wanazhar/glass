@@ -962,11 +962,14 @@ origins, `!important` inversion, layer statements, and unsupported values
 remain excluded. Exact evidence, issue-sync, and regenerable-output cleanup
 evidence is recorded in the task. Remote CI remains pending because the
 checkout is local-only.
-The next designed dependency-ordered `native-engine-129` boundary is recorded
-in `docs/plan/tasks/native-engine-129.md`. It will reuse the bounded cascade
-layer registry for private `revert-layer` declarations on the inherited
-`text-align`, `text-align-last`, and `text-justify` owners without changing the
-finite alignment values or fixed-cell line/artifact path.
+The dependency-ordered `native-engine-129` implementation is complete in
+`d26033af`, with its fixture assertion correction in `c32aeafe` and
+diagnostic-classifier fix in `36a0f68`, and is recorded in
+`docs/plan/tasks/native-engine-129.md`. It reuses the bounded cascade layer
+registry for private `revert-layer` declarations on the inherited `text-align`,
+`text-align-last`, and `text-justify` owners without changing the finite
+alignment values or fixed-cell line/artifact path; valid rollback declarations
+also remain absent from unsupported-value diagnostics.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1241,7 +1244,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-126` | completed reuse of bounded named-layer priority and private rollback for inherited `text-underline-offset:revert-layer`, preserving finite signed `-4px` through `4px` underline translation and stable overline/line-through origins | `native-engine-125` | other CSS-wide keywords, `auto`/percentages/fractional/font-derived values, dimensions outside the bounded range, overline/line-through offsets, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
 | `native-engine-127` | completed reuse of bounded named-layer priority and private rollback for local `text-decoration-color:revert-layer`, preserving the existing `Option<NativeColor>` fallback and separate glyph/decoration paint owner | `native-engine-126` | other CSS-wide keywords, `currentColor`, gradients, system colors, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
 | `native-engine-128` | completed reuse of bounded named-layer priority and private rollback for `text-decoration-line`/`text-decoration:revert-layer`, preserving the shared inherited three-bit line-state owner, declaration-order interaction, and existing display/raster geometry | `native-engine-127` | other CSS-wide keywords, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
-| `native-engine-129` | planned reuse of bounded named-layer priority and private rollback for inherited `text-align`, `text-align-last`, and `text-justify`, preserving direction mapping, final-line alignment, separator justification, and the existing fixed-cell line/artifact owners | `native-engine-128` | other CSS-wide keywords, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
+| `native-engine-129` | completed reuse of bounded named-layer priority and private rollback for inherited `text-align`, `text-align-last`, and `text-justify`, preserving direction mapping, final-line alignment, separator justification, and the existing fixed-cell line/artifact owners | `native-engine-128` | other CSS-wide keywords, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1647,12 +1650,14 @@ visual stacking.
 | bounded flex wrapped auto margins | makes common wrapped rows and fixed-height column lines resolve `margin:auto` independently per formed line without adding a second line or artifact owner | auto-height columns, new intrinsic/percentage sizing, fractional lengths, normal-flow centering, logical writing modes, baseline alignment, grid, and browser Flexbox parity | keep auto edges zero for line formation and provisional sizing, resolve positive main/cross remainder after final line and `align-content` sizing with deterministic per-line shares, preserve reverse and wrap-reverse physical mapping, and reuse shared layout, overflow, hit-test, paint, raster, capture, and semantic consumers |
 | bounded text justification | makes collapsed soft-wrapped text consume positive line remainder through explicit, observable separator expansion | final-line/hard-break behavior, preformatted and break-all whitespace, bidi/shaping, language-specific line breaking, logical properties, vertical writing, and browser text conformance | record a soft-wrap line boundary, count emitted eligible separators, distribute integer remainder in source order, and carry the extra per-space advance through text layout, display-list, raster, overflow, scrolling, capture, and inline subtree translation |
 | bounded text-justification control | makes explicit inherited `none` suppression and `auto`/`inter-word` selection observable without changing line ownership or base word spacing | inter-character distribution, language-specific word boundaries, bidi/shaping, font metrics, logical properties, vertical writing, fractional metrics, and browser text conformance | inherit a three-state bounded value, gate the existing soft-wrap/final-line separator expansion at the shared flush owner, preserve base spacing and all artifact consumers, and retain typed diagnostics for unsupported modes |
+| bounded alignment rollback | extends the proven layer rollback across the three related inherited line-alignment owners without changing artifact schemas | private declaration types and candidate arrays add small parser/cascade code and do not provide generic CSS-wide semantics | keep the public enums finite, resolve before line flush, test ordinary/final-line/justification paths together, and retain typed boundaries for unsupported origins and keywords |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-128.md` is the latest completed task;
+`docs/plan/tasks/native-engine-129.md` is the latest completed task;
+`docs/plan/tasks/native-engine-128.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-127.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-126.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-125.md` is the preceding completed task;

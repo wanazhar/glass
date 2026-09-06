@@ -1,7 +1,7 @@
 ---
 id: native-engine-129
 scope: glass-browser/native-engine/cascade-layers-text-alignment-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-128]
 ---
 
@@ -107,6 +107,23 @@ browser engine.
 - synchronized native-engine architecture, analysis, plan, README, and issue
   records
 
+## Implementation
+
+Implemented in `d26033af` (`feat(native-engine): support alignment
+revert-layer`) in `css.rs` and `tests/native_engine.rs`. The implementation
+adds private declaration enums for all three inherited alignment properties,
+per-layer candidate arrays, a shared bounded rollback resolver, and
+case-insensitive declaration parsing. A fixture-width assertion correction was
+recorded separately in `c32aeafe` (`test(native-engine): correct alignment
+rollback fixture`); no production behavior changed in that correction. The
+diagnostic classifier was then synchronized with the declaration parsers in
+`36a0f68` (`fix(native-engine): classify alignment rollback as supported`) so
+valid rollback declarations do not produce false unsupported-value reports.
+
+The public `TextAlignValue`, `TextAlignLastValue`, and `TextJustifyValue`
+enums, inherited-style shape, direction mapping, line flush, display-list,
+capture, raster, layout, and two-crate boundary remain unchanged.
+
 ## Verification
 
 The focused gate must cover:
@@ -125,3 +142,51 @@ Targeted checks follow the completed behavioral unit. Full native, two-crate,
 strict, package, fuzz/security, and static documentation gates are final
 validation only; remote CI remains unclaimed until an explicitly authorized
 push.
+
+### Results
+
+- `cargo check -p glass-browser --features native-engine --test
+  native_engine --locked` passed in 2m14s.
+- Focused parser/cascade coverage passed: the new declaration parser 1/1 and
+  the existing text-alignment unit filter 5/5.
+- Focused native integration coverage passed: physical/logical alignment 3/3,
+  final-line alignment 2/2, and justification control 1/1. The first run
+  caught an incorrect 32px fixture expectation; the fixture was corrected to
+  the established 45px final-line shape and the rerun passed 1/1.
+- Full affected-package tests passed: `glass-browser` library 927 passed with
+  1 ignored and native integration 166/166.
+- `cargo clippy -p glass-browser --features native-engine --all-targets
+  --locked -- -D warnings` passed in 1m36s.
+- After the diagnostic-classifier fix, the locked affected-target check passed
+  and `native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths`
+  passed 1/1, including the no-false-diagnostic regression.
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- Documentation truth passed: release audit reported 543 Markdown documents,
+  83 current documents, 57 previous-version references, 641 semantic audit
+  hits, and 0 current-claim failures; its contract suite passed 9/9.
+- Documentation coverage passed with 543 Markdown files, 345 full-product MCP
+  tools, 100 browser-only MCP tools, 17 examples, and 22 public modules.
+  Documentation depth passed with 93 routed/audited guides and 19 substantive
+  contracts. Version sync passed at 0.3.14; feature parity passed for 14
+  capabilities across 4 targets; TUI inventory passed with 15 implementation
+  keys and 63 documentation markers; the read-only adapter inventory passed
+  with 5 adapters; the reliability matrix passed with 6 scenarios across 4
+  targets; and the Web IR corpus passed with 8 fixtures, 8 scenarios, and 11
+  categories with recorded runtime goldens.
+- No remote CI, push, release, tag, registry publication, or browser-parity
+  claim is made by this task.
+
+## Cleanup
+
+The isolated `/tmp/glass-129-focused` target and exact validator logs are
+regenerable outputs. The final documentation/static gate is complete; after
+writer/open-handle checks they will be removed with bounded exact path
+deletion. Source, fixtures, durable data, and unrelated temporary paths are
+not cleanup candidates.
+
+## Certification
+
+The implementation, affected-package verification, and documentation audit
+are complete locally at `36a0f68`. Exact-output cleanup and final issue
+synchronization remain. Remote CI remains pending because this checkout is
+local-only.

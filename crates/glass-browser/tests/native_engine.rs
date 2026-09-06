@@ -528,6 +528,76 @@ fn native_nested_opacity_and_zero_opacity_keep_geometry_but_change_pixels() {
 }
 
 #[test]
+fn native_opacity_revert_layer_preserves_group_compositing_and_geometry() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #group { display:block;width:20px;height:12px;background-color:red;opacity:50%; } #zero { display:block;width:20px;height:12px;background-color:blue;opacity:0; } #fallback { display:block;width:20px;height:12px;background-color:green;opacity:revert-layer; } } @layer theme { #group { opacity:75%; } #group { opacity:revert-layer; } } @layer top { #group { opacity:revert-layer; } } #group { opacity:revert-layer; }</style><button id='group'>Group</button><button id='zero'>Zero</button><button id='fallback'>Fallback</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let group = document.resolve_target("id=group").unwrap();
+    let zero = document.resolve_target("id=zero").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(group),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 12,
+        })
+    );
+    assert_eq!(layout.box_for(zero).unwrap().y, 12);
+    assert_eq!(layout.box_for(fallback).unwrap().y, 24);
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(group));
+    assert_eq!(layout.hit_test(1, 13).unwrap(), Some(zero));
+    assert_eq!(layout.hit_test(1, 25).unwrap(), Some(fallback));
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in [group, zero, fallback] {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| { node.node_id == node_id && !node.hidden })
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let groups = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::BeginOpacityGroup { node_id, opacity } => {
+                Some((*node_id, *opacity))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(groups, vec![(group, 128), (zero, 0)]);
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, .. } if *node_id == fallback
+        )
+    }));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "opacity"
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 127, 127, 255]));
+    assert_eq!(surface.pixel(1, 13), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(1, 25), Some([0, 128, 0, 255]));
+}
+
+#[test]
 fn native_text_alignment_shifts_complete_fixed_cell_line_items() {
     let document = NativeDocument::parse(
         "<style>#center { display: block; width: 32px; text-align: center; } #right { display: block; width: 32px; text-align: right; } #inline { display: block; width: 32px; text-align: center; } #chip { display: inline-block; width: 8px; height: 8px; background-color: red; }</style><div id='center'>A B C</div><div id='right'>D</div><div id='inline'><span id='chip'></span>Q</div>",

@@ -1171,7 +1171,8 @@ impl NativeStylesheet {
     ) -> NativeComputedStyle {
         let mut display = None;
         let mut visibility = None;
-        let mut opacity = None;
+        let mut opacity: [Option<CascadeValue<LocalCascadeDeclaration<u8>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut white_space: [Option<CascadeValue<WhiteSpaceDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_align: [Option<CascadeValue<TextAlignDeclaration>>;
@@ -1293,16 +1294,13 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.opacity
-                && wins(rule.selector.specificity, rule.order, false, opacity)
-            {
-                opacity = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_local_cascade_declaration(
+                rule.declarations.opacity,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut opacity,
+            );
             let layer = cascade_layer_index(rule.selector.specificity);
             if let Some(value) = rule.declarations.white_space
                 && wins(
@@ -1855,16 +1853,13 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.opacity
-                && wins(u16::MAX, usize::MAX, true, opacity)
-            {
-                opacity = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_local_cascade_declaration(
+                declarations.opacity,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut opacity,
+            );
             let layer = usize::from(UNLAYERED_CASCADE_LAYER);
             if let Some(value) = declarations.white_space
                 && wins(u16::MAX, usize::MAX, true, white_space[layer])
@@ -2286,7 +2281,7 @@ impl NativeStylesheet {
             display: display.map_or(DisplayValue::Auto, |value| value.value),
             visibility_hidden: visibility
                 .is_some_and(|value| value.value == VisibilityValue::Hidden),
-            opacity: opacity.map(|value| value.value),
+            opacity: resolve_local_optional_cascade_declaration(opacity),
             white_space: resolve_white_space(white_space, inherited.white_space),
             text_align: resolve_text_align(text_align, inherited.text_align),
             text_align_last: resolve_text_align_last(text_align_last, inherited.text_align_last),
@@ -3132,7 +3127,7 @@ fn apply_border_sides(
 struct NativeDeclarations {
     display: Option<DisplayValue>,
     visibility: Option<VisibilityValue>,
-    opacity: Option<u8>,
+    opacity: Option<LocalCascadeDeclaration<u8>>,
     white_space: Option<WhiteSpaceDeclaration>,
     text_align: Option<TextAlignDeclaration>,
     text_align_last: Option<TextAlignLastDeclaration>,
@@ -3639,7 +3634,7 @@ fn parse_declarations_with_diagnostics(
                 )
             }
             "visibility" => parse_visibility(value).is_some(),
-            "opacity" => parse_opacity(value).is_some(),
+            "opacity" => parse_opacity_declaration(value).is_some(),
             "white-space" => parse_white_space_declaration(value).is_some(),
             "text-align" => parse_text_align_declaration(value).is_some(),
             "text-align-last" => parse_text_align_last_declaration(value).is_some(),
@@ -3851,7 +3846,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.visibility = parse_visibility(value);
             }
             "opacity" => {
-                declarations.opacity = parse_opacity(value);
+                if let Some(parsed) = parse_opacity_declaration(value) {
+                    declarations.opacity = Some(parsed);
+                }
             }
             "white-space" => {
                 declarations.white_space = parse_white_space_declaration(value);
@@ -4590,6 +4587,10 @@ fn parse_opacity(value: &str) -> Option<u8> {
     let alpha = (u64::from(scaled) * u64::from(u8::MAX) + u64::from(denominator / 2))
         / u64::from(denominator);
     u8::try_from(alpha).ok()
+}
+
+fn parse_opacity_declaration(value: &str) -> Option<LocalCascadeDeclaration<u8>> {
+    parse_local_cascade_declaration(value, parse_opacity)
 }
 
 fn parse_decimal_milli(value: &str) -> Option<u32> {
@@ -5525,7 +5526,10 @@ mod tests {
         );
         assert_eq!(declarations.display, Some(DisplayValue::None));
         assert_eq!(declarations.visibility, Some(VisibilityValue::Other));
-        assert_eq!(declarations.opacity, Some(128));
+        assert_eq!(
+            declarations.opacity,
+            Some(LocalCascadeDeclaration::Value(128))
+        );
         assert_eq!(
             declarations.white_space,
             Some(WhiteSpaceDeclaration::Value(WhiteSpaceValue::PreLine))
@@ -7154,6 +7158,70 @@ mod tests {
         assert_eq!(parse_opacity("-0.1"), None);
         assert_eq!(parse_opacity("0.1234"), None);
         assert_eq!(parse_opacity("1e-1"), None);
+        assert_eq!(
+            parse_opacity_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_opacity_declaration("50%"),
+            Some(LocalCascadeDeclaration::Value(128))
+        );
+        for value in [
+            "revert-layer 50%",
+            "50% revert-layer",
+            "inherit",
+            "unset",
+            "revert",
+            "initial",
+        ] {
+            assert_eq!(parse_opacity_declaration(value), None, "value={value}");
+        }
+        assert_eq!(
+            parse_declarations("opacity: 50%; opacity: 1.001").opacity,
+            Some(LocalCascadeDeclaration::Value(128))
+        );
+        assert_eq!(
+            parse_declarations("opacity: 50% !important").opacity,
+            Some(LocalCascadeDeclaration::Value(128))
+        );
+    }
+
+    #[test]
+    fn opacity_revert_layer_rolls_back_named_and_inline_candidates() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { opacity: 25%; } #repeat { opacity: 50%; } #fallback { opacity: revert-layer; } #inline { opacity: 75%; } } @layer theme { #named { opacity: 75%; } #repeat { opacity: revert-layer; } } @layer top { #repeat { opacity: revert-layer; } } #named { opacity: revert-layer; } #repeat { opacity: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named'>Named</div>");
+        let repeat = node("<div id='repeat'>Repeat</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let inline = node("<div id='inline' style='opacity:ReVeRt-LaYeR'>Inline</div>");
+
+        let opacity = |node: &NativeNode| stylesheet.computed_for(node).opacity();
+        assert_eq!(opacity(&named), 191);
+        assert_eq!(opacity(&repeat), 128);
+        assert_eq!(opacity(&fallback), u8::MAX);
+        assert_eq!(opacity(&inline), 191);
+
+        let mut diagnostics = NativeDiagnosticSink::default();
+        NativeStylesheet::from_sources_with_diagnostics(
+            vec!["#target { opacity: ReVeRt-LaYeR; } #other { opacity: 50% revert-layer; }".into()],
+            &mut diagnostics,
+        )
+        .unwrap();
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                        && diagnostic.detail == "opacity"
+                })
+                .count(),
+            1
+        );
     }
 
     #[test]

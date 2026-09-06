@@ -1308,14 +1308,18 @@ affected-library, strict Clippy, formatting, and static documentation gates
 passed locally; exact evidence and cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
 
-The next dependency-ordered [native-engine-147](tasks/native-engine-147.md)
-contract is planned. It will reuse the same private bounded layer resolver for
-standalone case-insensitive `revert-layer` on the local bounded one-to-four-
-value integer `border-radius` shorthand, keeping the zero-corner fallback and
-the existing rounded fill, border, point-hit, capture, raster, and
-semantic/source-order owners. Elliptical, percentage, corner-longhand,
-nested-clip, anti-aliasing, multiple-origin, and browser-wide border-radius
-conformance remain outside the planned boundary.
+The dependency-ordered [native-engine-147](tasks/native-engine-147.md)
+implementation is complete in `74cc1cf9` (design `f76720f7`). It reuses the
+same private bounded layer resolver for standalone case-insensitive
+`revert-layer` on the local bounded one-to-four-value integer `border-radius`
+shorthand, preserving the zero-corner fallback and the existing rounded fill,
+border, point-hit, capture, raster, overflow, and semantic/source-order
+owners. Elliptical, percentage, corner-longhand, nested-clip, anti-aliasing,
+multiple-origin, and browser-wide border-radius conformance remain outside the
+boundary. Focused, full-native, affected-library, strict Clippy, formatting,
+and static documentation gates passed locally; exact evidence and cleanup are
+recorded in the task. Remote CI remains pending because the checkout is
+local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

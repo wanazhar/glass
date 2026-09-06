@@ -131,6 +131,13 @@ preserving independent visible/no-clip fallbacks and the existing paint,
 projection, point-hit, root-overflow, capture, and semantic/source-order owners;
 nested scrolling, scrollbars, and browser-wide overflow semantics remain
 outside the boundary,
+plus bounded case-insensitive 15-layer/unlayered local
+`border-radius:revert-layer` rollback for the one-to-four-value integer
+shorthand, preserving the zero-corner fallback and the existing rounded
+layout, fill, border, point-hit, capture, raster, overflow, and
+semantic/source-order owners; elliptical, percentage, corner-longhand,
+nested-clip, anti-aliasing, multiple-origin, and browser-wide border-radius
+conformance remain outside the boundary,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

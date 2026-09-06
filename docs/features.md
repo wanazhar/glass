@@ -73,6 +73,12 @@ source-behavior reference.
   visible/no-clip fallbacks and the existing paint, projection, point-hit,
   root-overflow, capture, and semantic/source-order owners; nested scrolling,
   scrollbars, and browser-wide overflow semantics remain outside the boundary,
+  plus bounded case-insensitive 15-layer/unlayered local `border-radius:revert-layer`
+  rollback for the one-to-four-value integer shorthand, preserving the
+  zero-corner fallback and existing rounded layout, fill, border, point-hit,
+  capture, raster, overflow, and semantic/source-order owners; elliptical,
+  percentage, corner-longhand, nested-clip, anti-aliasing, multiple-origin,
+  and browser-wide border-radius conformance remain outside the boundary,
   side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow with bounded inherited line-height, bounded direct-text
@@ -353,6 +359,12 @@ bounded direct-text flow fragments and source-order text paint, bounded
 word-aware wrapping, bounded source-whitespace boundaries across supported
 inline flow, bounded `overflow:hidden` clips shared by paint, viewport
 projection, and point hit-testing,
+  plus bounded case-insensitive 15-layer/unlayered local `border-radius:revert-layer`
+  rollback for the one-to-four-value integer shorthand with a zero-corner
+  fallback and shared rounded layout, fill, border, point-hit, capture, raster,
+  overflow, and semantic/source-order owners; elliptical, percentage,
+  corner-longhand, nested-clip, anti-aliasing, multiple-origin, and browser-wide
+  border-radius conformance remain outside the boundary,
   normal-flow outer/content box geometry with physical four-side padding/margin
   shorthands and longhands, bounded physical min/max width/height constraints
   with bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback

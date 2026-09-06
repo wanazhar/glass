@@ -429,6 +429,113 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
 }
 
 #[test]
+fn native_display_visibility_revert_layer_preserves_hidden_subtree_owners() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #rolled { display:none;visibility:hidden;width:12px;height:8px;background-color:red; } #repeat { display:block;visibility:visible;width:12px;height:8px;background-color:red; } #contents { display:contents;visibility:visible; } #fallback { display:revert-layer;visibility:revert-layer;width:12px;height:8px;background-color:green; } #inline { display:block;visibility:hidden;width:12px;height:8px;background-color:yellow; } #child { display:block;width:12px;height:8px;background-color:blue; } } @layer theme { #rolled { display:block;visibility:visible; } #rolled { display:revert-layer;visibility:revert-layer; } #repeat { display:revert-layer;visibility:revert-layer; } #contents { display:block;visibility:hidden; } #contents { display:revert-layer;visibility:revert-layer; } } @layer top { #repeat { display:revert-layer;visibility:revert-layer; } } #rolled { display:revert-layer;visibility:revert-layer; } #repeat { display:revert-layer;visibility:revert-layer; } #contents { display:revert-layer;visibility:revert-layer; }</style><button id='rolled'>Rolled</button><button id='repeat'>Repeat</button><div id='contents'><button id='child'>Child</button></div><button id='fallback'>Fallback</button><button id='inline' style='display:ReVeRt-LaYeR;visibility:revert-layer'>Inline</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let rolled = document.resolve_target("id=rolled").unwrap();
+    let repeat = document.resolve_target("id=repeat").unwrap();
+    let contents = document.resolve_target("id=contents").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(rolled), None);
+    assert_eq!(layout.box_for(contents), None);
+    assert_eq!(
+        layout.box_for(repeat),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 12,
+            height: 8,
+        })
+    );
+    assert_eq!(layout.box_for(child).unwrap().y, 8);
+    assert_eq!(layout.box_for(fallback).unwrap().y, 16);
+    assert_eq!(layout.box_for(inline), None);
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(repeat));
+    assert_eq!(layout.hit_test(1, 9).unwrap(), Some(child));
+    assert_eq!(layout.hit_test(1, 17).unwrap(), Some(fallback));
+
+    let semantic_nodes = document.semantic_nodes();
+    assert!(
+        semantic_nodes
+            .iter()
+            .any(|node| node.node_id == rolled && node.hidden)
+    );
+    assert!(
+        semantic_nodes
+            .iter()
+            .any(|node| node.node_id == repeat && !node.hidden)
+    );
+    assert!(
+        semantic_nodes
+            .iter()
+            .any(|node| node.node_id == child && !node.hidden)
+    );
+    assert!(
+        semantic_nodes
+            .iter()
+            .any(|node| node.node_id == fallback && !node.hidden)
+    );
+    assert!(
+        semantic_nodes
+            .iter()
+            .any(|node| node.node_id == inline && node.hidden)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, color, .. }
+                if *node_id == repeat && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, color, .. }
+                if *node_id == child && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, color, .. }
+                if *node_id == fallback && *color == NativeColor { red: 0, green: 128, blue: 0, alpha: 255 }
+        )
+    }));
+    assert!(!list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, .. }
+                | NativeDisplayCommand::BorderRect { node_id, .. }
+                | NativeDisplayCommand::TextRun { node_id, .. }
+                if *node_id == rolled || *node_id == inline
+        )
+    }));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(diagnostic.detail.as_str(), "display" | "visibility")
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(1, 9), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(1, 17), Some([0, 128, 0, 255]));
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

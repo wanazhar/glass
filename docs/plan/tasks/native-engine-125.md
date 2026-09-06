@@ -193,7 +193,8 @@ processes were preserved.
 
 ## Certification
 
-Local implementation, full validation, and exact regenerable-output cleanup
-are complete at `271702ae`. The issue body and maintainer comment still need
-to be synchronized to this completed slice before the next slice is designed;
+Local implementation, full validation, exact regenerable-output cleanup, and
+issue synchronization are complete at `271702ae`/`a112ab1e`. The authenticated
+maintainer completion comment is
+<https://github.com/wanazhar/glass/issues/40#issuecomment-5557160661>;
 remote CI remains pending because no push was authorized.

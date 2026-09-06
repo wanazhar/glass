@@ -931,6 +931,13 @@ three line owners. Other CSS-wide keywords, `all`, multiple origins,
 excluded. Exact local gate, issue-sync, and regenerable-output cleanup evidence
 is recorded in the task. Remote CI remains pending because the checkout is
 local-only.
+The next planned `native-engine-126` boundary is recorded in
+`docs/plan/tasks/native-engine-126.md`: reuse bounded cascade layers and the
+private rollback representation for inherited
+`text-underline-offset: revert-layer`, preserving finite signed `-4px` through
+`4px` underline translation and the existing display-list/raster owner. Other
+CSS-wide keywords, `all`, multiple origins, `!important` inversion, layer
+statements, and unsupported values remain excluded.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1202,6 +1209,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-123` | completed reuse of bounded named-layer priority and private rollback for inherited `text-decoration-skip-ink:revert-layer`, preserving finite `Auto|None` paint replay | `native-engine-122` | other CSS-wide keywords, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
 | `native-engine-124` | completed reuse of bounded named-layer priority and private rollback for inherited `text-decoration-style:revert-layer`, preserving finite `Solid|Dashed|Dotted|Double|Wavy` paint replay | `native-engine-123` | other CSS-wide keywords, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
 | `native-engine-125` | completed reuse of bounded named-layer priority and private rollback for inherited `text-decoration-thickness:revert-layer`, preserving finite `1px` through `4px` decoration geometry | `native-engine-124` | other CSS-wide keywords, `auto`/`from-font`/percentages, lengths outside the bounded range, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
+| `native-engine-126` | planned reuse of bounded named-layer priority and private rollback for inherited `text-underline-offset:revert-layer`, preserving finite signed `-4px` through `4px` underline translation | `native-engine-125` | other CSS-wide keywords, `auto`/percentages/fractional/font-derived values, dimensions outside the bounded range, overline/line-through offsets, `all`, multiple origins, `!important` inversion, layer statements, anonymous/comma/nested layers, changed layout/geometry/paint owners, and browser-wide text conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1613,6 +1621,7 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-124.md` is the preceding completed slice;
 `docs/plan/tasks/native-engine-123.md` is the preceding completed slice;
 `docs/plan/tasks/native-engine-122.md` is the preceding completed slice;
+`docs/plan/tasks/native-engine-126.md` is the next planned slice;
 `docs/plan/tasks/native-engine-121.md` is the earlier completed task;
 `docs/plan/tasks/native-engine-120.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-119.md` is the earlier completed task;

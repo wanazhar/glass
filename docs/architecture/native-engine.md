@@ -801,12 +801,15 @@ finite `flex-flow` expansion, and existing row/column/wrapped flex owners.
 Focused, full-native, affected-library, and strict affected-package local
 gates passed; exact test and cleanup evidence is recorded in the task. Remote
 CI remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-134` contract is planned in
-`docs/plan/tasks/native-engine-134.md`; it will extend the bounded rollback
-boundary to the non-inherited `flex-wrap`, `justify-content`, `align-items`,
-`align-self`, and `align-content` owners while retaining their native defaults,
-finite `flex-flow`/`place-content` expansion, and existing flex artifacts. No
-implementation or validation claim is made for 134 yet.
+The dependency-ordered 134 implementation is complete in `f2e20121` and is
+recorded in `docs/plan/tasks/native-engine-134.md`. It extends the bounded
+rollback boundary to non-inherited `flex-wrap`, `justify-content`,
+`align-items`, `align-self`, and `align-content`, retaining their native
+fallbacks, finite `flex-flow`/`place-content` expansion, and existing flex
+line/item artifact owners. Focused, full-native, affected-library, and strict
+affected-package local gates passed; exact test and cleanup evidence is
+recorded in the task. Remote CI remains pending because the checkout is
+local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -1734,6 +1737,11 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   `flex-direction`, with private declaration state, finite row/row-reverse/
   column/column-reverse values, local row fallback, finite `flex-flow`
   expansion, and preserved flex/artifact owners.
+- bounded 15-layer/unlayered `revert-layer` rollback for non-inherited
+  `flex-wrap`, `justify-content`, `align-items`, `align-self`, and
+  `align-content`, with private declaration state, native fallbacks, finite
+  `flex-flow`/`place-content` expansion, and preserved flex line/item
+  artifacts.
 - bounded `rgba(R, G, B, A)` functional alpha parsing for background, border,
   and text colors, with shared fixed-point quantization, display-list color
   ownership, and integer source-over replay.

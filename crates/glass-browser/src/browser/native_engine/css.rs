@@ -420,6 +420,12 @@ pub(crate) enum FlexDirectionValue {
     ColumnReverse,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlexDirectionDeclaration {
+    Value(FlexDirectionValue),
+    RevertLayer,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum DirectionValue {
     #[default]
@@ -1102,7 +1108,8 @@ impl NativeStylesheet {
         let mut align_items = None;
         let mut align_self = None;
         let mut align_content = None;
-        let mut flex_direction = None;
+        let mut flex_direction: [Option<CascadeValue<FlexDirectionDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut flex_wrap = None;
         let mut flex_item_order = None;
         let mut flex_grow = None;
@@ -1566,9 +1573,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.flex_direction
-                && wins(rule.selector.specificity, rule.order, false, flex_direction)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    flex_direction[layer],
+                )
             {
-                flex_direction = Some(CascadeValue {
+                flex_direction[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -2093,9 +2105,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.flex_direction
-                && wins(u16::MAX, usize::MAX, true, flex_direction)
+                && wins(u16::MAX, usize::MAX, true, flex_direction[layer])
             {
-                flex_direction = Some(CascadeValue {
+                flex_direction[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2279,7 +2291,7 @@ impl NativeStylesheet {
             align_items: align_items.map_or(AlignItemsValue::FlexStart, |value| value.value),
             align_self: align_self.map_or(AlignSelfValue::Auto, |value| value.value),
             align_content: align_content.map_or(AlignContentValue::FlexStart, |value| value.value),
-            flex_direction: flex_direction.map_or(FlexDirectionValue::Row, |value| value.value),
+            flex_direction: resolve_flex_direction(flex_direction),
             direction: resolve_direction(direction, inherited.direction),
             flex_wrap: flex_wrap.map_or(FlexWrapValue::NoWrap, |value| value.value),
             flex_item_order: flex_item_order
@@ -2428,6 +2440,17 @@ fn resolve_direction(
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         DirectionDeclaration::Value(value) => Some(value),
         DirectionDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_flex_direction(
+    candidates: [Option<CascadeValue<FlexDirectionDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> FlexDirectionValue {
+    resolve_alignment_candidates(candidates, FlexDirectionValue::Row, |declaration| {
+        match declaration {
+            FlexDirectionDeclaration::Value(value) => Some(value),
+            FlexDirectionDeclaration::RevertLayer => None,
+        }
     })
 }
 
@@ -2885,7 +2908,7 @@ struct NativeDeclarations {
     align_items: Option<AlignItemsValue>,
     align_self: Option<AlignSelfValue>,
     align_content: Option<AlignContentValue>,
-    flex_direction: Option<FlexDirectionValue>,
+    flex_direction: Option<FlexDirectionDeclaration>,
     direction: Option<DirectionDeclaration>,
     flex_wrap: Option<FlexWrapValue>,
     order: Option<NativeOrderValue>,
@@ -3393,7 +3416,7 @@ fn parse_declarations_with_diagnostics(
             "align-items" => parse_align_items(value).is_some(),
             "align-self" => parse_align_self(value).is_some(),
             "align-content" => parse_align_content(value).is_some(),
-            "flex-direction" => parse_flex_direction(value).is_some(),
+            "flex-direction" => parse_flex_direction_declaration(value).is_some(),
             "direction" => parse_direction_declaration(value).is_some(),
             "flex-wrap" => parse_flex_wrap(value).is_some(),
             "flex-flow" => parse_flex_flow(value).is_some(),
@@ -3626,7 +3649,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "flex-direction" => {
-                declarations.flex_direction = parse_flex_direction(value);
+                declarations.flex_direction = parse_flex_direction_declaration(value);
             }
             "direction" => {
                 declarations.direction = parse_direction_declaration(value);
@@ -3636,7 +3659,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "flex-flow" => {
                 if let Some((direction, wrap)) = parse_flex_flow(value) {
-                    declarations.flex_direction = Some(direction);
+                    declarations.flex_direction = Some(FlexDirectionDeclaration::Value(direction));
                     declarations.flex_wrap = Some(wrap);
                 }
             }
@@ -4421,6 +4444,14 @@ fn parse_flex_direction(value: &str) -> Option<FlexDirectionValue> {
     }
 }
 
+fn parse_flex_direction_declaration(value: &str) -> Option<FlexDirectionDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(FlexDirectionDeclaration::RevertLayer)
+    } else {
+        parse_flex_direction(value).map(FlexDirectionDeclaration::Value)
+    }
+}
+
 fn parse_direction(value: &str) -> Option<DirectionValue> {
     match value.to_ascii_lowercase().as_str() {
         "ltr" => Some(DirectionValue::Ltr),
@@ -4967,7 +4998,9 @@ mod tests {
         assert_eq!(declarations.align_content, Some(AlignContentValue::Stretch));
         assert_eq!(
             declarations.flex_direction,
-            Some(FlexDirectionValue::RowReverse)
+            Some(FlexDirectionDeclaration::Value(
+                FlexDirectionValue::RowReverse
+            ))
         );
         assert_eq!(
             declarations.direction,
@@ -6106,7 +6139,7 @@ mod tests {
                 "flex-flow: row-reverse wrap; flex-direction: row; flex-wrap: nowrap"
             ),
             NativeDeclarations {
-                flex_direction: Some(FlexDirectionValue::Row),
+                flex_direction: Some(FlexDirectionDeclaration::Value(FlexDirectionValue::Row)),
                 flex_wrap: Some(FlexWrapValue::NoWrap),
                 ..NativeDeclarations::default()
             }
@@ -6432,6 +6465,27 @@ mod tests {
         );
         assert_eq!(parse_flex_direction("start"), None);
         assert_eq!(parse_flex_direction("row reverse"), None);
+    }
+
+    #[test]
+    fn flex_direction_declaration_parser_accepts_only_standalone_case_insensitive_revert_layer() {
+        assert_eq!(
+            parse_flex_direction_declaration("ReVeRt-LaYeR"),
+            Some(FlexDirectionDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_flex_direction_declaration("COLUMN-REVERSE"),
+            Some(FlexDirectionDeclaration::Value(
+                FlexDirectionValue::ColumnReverse
+            ))
+        );
+        assert_eq!(
+            parse_flex_direction_declaration(" REVERT-LAYER "),
+            Some(FlexDirectionDeclaration::RevertLayer)
+        );
+        assert_eq!(parse_flex_direction_declaration("inherit"), None);
+        assert_eq!(parse_flex_direction_declaration("revert-layer row"), None);
+        assert_eq!(parse_flex_direction_declaration("row reverse"), None);
     }
 
     #[test]

@@ -146,4 +146,10 @@ help keys/63 documentation markers; adapters passed at 5; reliability passed
 at 6 scenarios across 4 targets; and Web IR passed at 8 fixtures/8
 scenarios/11 categories. Remote CI is unclaimed because no push was
 authorized. The complete semantic audit report is retained at
-`/tmp/glass-release-documentation-148.json`.
+`/tmp/glass-release-documentation-148.json`. After validation, the exact
+regenerable `/tmp/glass-148-focused` target measured 5,445,799,936 bytes
+(9,189 files and 1,186 directories); no Cargo/Rust process or open handle
+remained, and bounded `find -P ... -xdev -depth -delete` removed only that
+target. Available `/tmp` bytes increased from 78,422,491,136 to
+83,868,291,072, reclaiming 5,445,799,936 bytes; the repository `target/`
+remained absent.

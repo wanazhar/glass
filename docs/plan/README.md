@@ -1080,13 +1080,19 @@ general CSS-wide keyword machinery, multiple origins, layer statements, and
 unsupported values remain outside the slice. Exact local gate, issue-sync, and
 regenerable-output cleanup evidence is recorded in the task. Remote CI remains
 pending because the checkout is local-only.
-The next dependency-ordered [native-engine-126](tasks/native-engine-126.md)
-boundary is designed to reuse the bounded layer registry and private rollback
-boundary proven by 125 for inherited `text-underline-offset: revert-layer`.
-It preserves the finite signed `-4px` through `4px` value, existing
-underline-only translation, and the unlayered/inline layer boundary; general
-CSS-wide keyword machinery, multiple origins, layer statements, and
-unsupported values remain outside the slice.
+The dependency-ordered [native-engine-126](tasks/native-engine-126.md)
+implementation is complete at `3ffe86f8`. It reuses the bounded layer registry
+and private rollback boundary proven by 125 for inherited
+`text-underline-offset: revert-layer`, preserving the finite signed `-4px`
+through `4px` value, existing underline-only translation, and the
+unlayered/inline layer boundary. Parser, cascade, display-list, command, and
+decoded-raster regressions passed; general CSS-wide keyword machinery, multiple
+origins, layer statements, and unsupported values remain outside the slice.
+Exact local gate, issue-sync, and regenerable-output cleanup evidence is
+recorded in the task. The next dependency-ordered 127 boundary will be
+designed separately for local `text-decoration-color: revert-layer`, preserving
+its existing `Option<NativeColor>` fallback and separate glyph/decoration paint
+owner.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

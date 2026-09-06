@@ -9800,6 +9800,129 @@ fn native_min_max_dimensions_constrain_content_and_border_box_geometry() {
 }
 
 #[test]
+fn native_box_model_revert_layer_preserves_geometry_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #box { display:block; width:32px; height:20px; padding:2px; border:1px solid red; box-sizing:content-box; margin:1px 2px 3px 4px; background-color:red; } } @layer theme { #box { padding:4px 5px 6px 7px; box-sizing:border-box; margin:5px 6px 7px 8px; } } #box { padding:ReVeRt-LaYeR; box-sizing:revert-layer; margin:revert-layer; }</style><button id='box'>Box</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let box_id = document.resolve_target("id=box").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(box_id),
+        Some(NativeRect {
+            x: 8,
+            y: 5,
+            width: 32,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == box_id)
+            .unwrap()
+            .content_rect,
+        NativeRect {
+            x: 16,
+            y: 10,
+            width: 18,
+            height: 8,
+        }
+    );
+    assert_eq!(layout.hit_test(16, 10).unwrap(), Some(box_id));
+    assert!(
+        document
+            .semantic_nodes()
+            .iter()
+            .any(|semantic_node| semantic_node.node_id == box_id)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == box_id
+                    && *rect == (NativeRect { x: 8, y: 5, width: 32, height: 20 })
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(12, 8), Some([255, 0, 0, 255]));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "box-sizing" | "padding" | "margin"
+            )
+    }));
+}
+
+#[test]
+fn native_box_model_revert_layer_reaches_flex_auto_margin_and_source_order() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #flex { display:flex; width:40px; height:12px; } #first { width:8px; height:6px; background-color:blue; } #auto { width:8px; height:6px; margin:1px 1px 2px auto; background-color:red; } } @layer theme { #auto { margin-left:revert-layer; margin-top:4px; } } @layer top { #auto { margin-left:revert-layer; margin-top:revert-layer; } } #auto { margin-left:revert-layer; margin-top:revert-layer; }</style><div id='flex'><button id='first'>First</button><button id='auto'>Auto</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let first = document.resolve_target("id=first").unwrap();
+    let auto = document.resolve_target("id=auto").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(auto),
+        Some(NativeRect {
+            x: 31,
+            y: 4,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(layout.hit_test(32, 5).unwrap(), Some(auto));
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(first));
+    let semantic_nodes = document.semantic_nodes();
+    assert!(
+        semantic_nodes
+            .iter()
+            .position(|semantic_node| semantic_node.node_id == first)
+            < semantic_nodes
+                .iter()
+                .position(|semantic_node| semantic_node.node_id == auto)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, .. }
+                if *node_id == auto
+                    && *rect == (NativeRect { x: 31, y: 4, width: 8, height: 6 })
+        )
+    }));
+    assert_eq!(
+        list.rasterize().unwrap().pixel(32, 5),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "margin" | "margin-left" | "margin-top"
+            )
+    }));
+}
+
+#[test]
 fn native_engine_display_list_revision_tracks_accepted_actions() {
     let config = NativeEngineConfig::default()
         .with_fixture("fixture://paint", "<button id='save'>Save</button>")

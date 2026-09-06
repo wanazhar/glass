@@ -724,21 +724,21 @@ pub(crate) struct NativeBoxEdges {
 }
 
 impl NativeBoxEdges {
-    fn from_cascade(values: [Option<CascadeValue<u32>>; 4]) -> Self {
+    fn from_values(values: [Option<u32>; 4]) -> Self {
         Self {
-            top: values[0].map_or(0, |value| value.value),
-            right: values[1].map_or(0, |value| value.value),
-            bottom: values[2].map_or(0, |value| value.value),
-            left: values[3].map_or(0, |value| value.value),
+            top: values[0].unwrap_or(0),
+            right: values[1].unwrap_or(0),
+            bottom: values[2].unwrap_or(0),
+            left: values[3].unwrap_or(0),
         }
     }
 
-    fn from_margin_cascade(values: [Option<CascadeValue<NativeMarginValue>>; 4]) -> Self {
+    fn from_margin_values(values: [Option<NativeMarginValue>; 4]) -> Self {
         Self {
-            top: values[0].map_or(0, |value| value.value.length()),
-            right: values[1].map_or(0, |value| value.value.length()),
-            bottom: values[2].map_or(0, |value| value.value.length()),
-            left: values[3].map_or(0, |value| value.value.length()),
+            top: values[0].map_or(0, NativeMarginValue::length),
+            right: values[1].map_or(0, NativeMarginValue::length),
+            bottom: values[2].map_or(0, NativeMarginValue::length),
+            left: values[3].map_or(0, NativeMarginValue::length),
         }
     }
 
@@ -792,12 +792,12 @@ pub(crate) struct NativeAutoEdges {
 }
 
 impl NativeAutoEdges {
-    fn from_cascade(values: [Option<CascadeValue<NativeMarginValue>>; 4]) -> Self {
+    fn from_values(values: [Option<NativeMarginValue>; 4]) -> Self {
         Self {
-            top: values[0].is_some_and(|value| value.value.is_auto()),
-            right: values[1].is_some_and(|value| value.value.is_auto()),
-            bottom: values[2].is_some_and(|value| value.value.is_auto()),
-            left: values[3].is_some_and(|value| value.value.is_auto()),
+            top: values[0].is_some_and(NativeMarginValue::is_auto),
+            right: values[1].is_some_and(NativeMarginValue::is_auto),
+            bottom: values[2].is_some_and(NativeMarginValue::is_auto),
+            left: values[3].is_some_and(NativeMarginValue::is_auto),
         }
     }
 
@@ -1255,9 +1255,12 @@ impl NativeStylesheet {
         let mut background_color = None;
         let mut border: [Option<CascadeValue<NativeBorderSide>>; 4] = [None; 4];
         let mut border_radius = None;
-        let mut padding: [Option<CascadeValue<u32>>; 4] = [None; 4];
-        let mut margin: [Option<CascadeValue<NativeMarginValue>>; 4] = [None; 4];
-        let mut box_sizing = None;
+        let mut padding: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
+        let mut margin: [[Option<CascadeValue<LocalCascadeDeclaration<NativeMarginValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
+        let mut box_sizing: [Option<CascadeValue<LocalCascadeDeclaration<NativeBoxSizing>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut color = None;
         let mut overflow_x = None;
         let mut overflow_y = None;
@@ -1792,30 +1795,27 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            apply_box_edges(
+            apply_local_cascade_edges(
                 &rule.declarations.padding,
                 rule.selector.specificity,
                 rule.order,
                 false,
                 &mut padding,
             );
-            apply_box_edges(
+            apply_local_cascade_edges(
                 &rule.declarations.margin,
                 rule.selector.specificity,
                 rule.order,
                 false,
                 &mut margin,
             );
-            if let Some(value) = rule.declarations.box_sizing
-                && wins(rule.selector.specificity, rule.order, false, box_sizing)
-            {
-                box_sizing = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_local_cascade_declaration(
+                rule.declarations.box_sizing,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut box_sizing,
+            );
             if let Some(value) = rule.declarations.color
                 && wins(rule.selector.specificity, rule.order, false, color)
             {
@@ -2256,30 +2256,27 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            apply_box_edges(
+            apply_local_cascade_edges(
                 &declarations.padding,
                 u16::MAX,
                 usize::MAX,
                 true,
                 &mut padding,
             );
-            apply_box_edges(
+            apply_local_cascade_edges(
                 &declarations.margin,
                 u16::MAX,
                 usize::MAX,
                 true,
                 &mut margin,
             );
-            if let Some(value) = declarations.box_sizing
-                && wins(u16::MAX, usize::MAX, true, box_sizing)
-            {
-                box_sizing = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_local_cascade_declaration(
+                declarations.box_sizing,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut box_sizing,
+            );
             if let Some(value) = declarations.color
                 && wins(u16::MAX, usize::MAX, true, color)
             {
@@ -2311,6 +2308,9 @@ impl NativeStylesheet {
                 });
             }
         }
+
+        let resolved_padding = padding.map(resolve_local_optional_cascade_declaration);
+        let resolved_margin = margin.map(resolve_local_optional_cascade_declaration);
 
         NativeComputedStyle {
             display: display.map_or(DisplayValue::Auto, |value| value.value),
@@ -2387,10 +2387,10 @@ impl NativeStylesheet {
             background_color: background_color.map(|value| value.value),
             border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
             border_radius: border_radius.map_or(NativeBorderRadius::default(), |value| value.value),
-            padding: NativeBoxEdges::from_cascade(padding),
-            margin: NativeBoxEdges::from_margin_cascade(margin),
-            margin_auto: NativeAutoEdges::from_cascade(margin),
-            box_sizing: box_sizing.map_or(NativeBoxSizing::ContentBox, |value| value.value),
+            padding: NativeBoxEdges::from_values(resolved_padding),
+            margin: NativeBoxEdges::from_margin_values(resolved_margin),
+            margin_auto: NativeAutoEdges::from_values(resolved_margin),
+            box_sizing: resolve_local_cascade_declaration(box_sizing, NativeBoxSizing::ContentBox),
             color: color.map(|value| value.value).or(inherited.color),
             overflow_clip_x: overflow_x.is_some_and(|value| {
                 matches!(value.value, OverflowValue::Hidden | OverflowValue::Clip)
@@ -3117,6 +3117,25 @@ fn apply_local_cascade_declaration<T: Copy>(
     }
 }
 
+fn apply_local_cascade_edges<T: Copy>(
+    declarations: &[Option<LocalCascadeDeclaration<T>>; 4],
+    specificity: u16,
+    order: usize,
+    inline: bool,
+    candidates: &mut [[Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS];
+             4],
+) {
+    for (index, declaration) in declarations.iter().copied().enumerate() {
+        apply_local_cascade_declaration(
+            declaration,
+            specificity,
+            order,
+            inline,
+            &mut candidates[index],
+        );
+    }
+}
+
 fn apply_border_sides(
     declarations: &[Option<NativeBorderSide>; 4],
     specificity: u16,
@@ -3129,27 +3148,6 @@ fn apply_border_sides(
             && wins(specificity, order, inline, border[index])
         {
             border[index] = Some(CascadeValue {
-                value: *value,
-                specificity,
-                order,
-                inline,
-            });
-        }
-    }
-}
-
-fn apply_box_edges<T: Copy>(
-    declarations: &[Option<T>; 4],
-    specificity: u16,
-    order: usize,
-    inline: bool,
-    edges: &mut [Option<CascadeValue<T>>; 4],
-) {
-    for (index, value) in declarations.iter().enumerate() {
-        if let Some(value) = value
-            && wins(specificity, order, inline, edges[index])
-        {
-            edges[index] = Some(CascadeValue {
                 value: *value,
                 specificity,
                 order,
@@ -3211,9 +3209,9 @@ struct NativeDeclarations {
     background_color: Option<NativeColor>,
     border: [Option<NativeBorderSide>; 4],
     border_radius: Option<NativeBorderRadius>,
-    padding: [Option<u32>; 4],
-    margin: [Option<NativeMarginValue>; 4],
-    box_sizing: Option<NativeBoxSizing>,
+    padding: [Option<LocalCascadeDeclaration<u32>>; 4],
+    margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
+    box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
     color: Option<NativeColor>,
     overflow: Option<OverflowValue>,
     overflow_x: Option<OverflowValue>,
@@ -3718,15 +3716,15 @@ fn parse_declarations_with_diagnostics(
                 parse_border(value).is_some()
             }
             "border-radius" => parse_border_radius(value).is_some(),
-            "padding" => parse_box_edges(value).is_some(),
-            "margin" => parse_margin_edges(value).is_some(),
+            "padding" => parse_local_box_edges(value).is_some(),
+            "margin" => parse_local_margin_edges(value).is_some(),
             "padding-top" | "padding-right" | "padding-bottom" | "padding-left" => {
-                parse_dimension(value).is_some()
+                parse_local_padding_declaration(value).is_some()
             }
             "margin-top" | "margin-right" | "margin-bottom" | "margin-left" => {
-                parse_margin_value(value).is_some()
+                parse_local_margin_declaration(value).is_some()
             }
-            "box-sizing" => parse_box_sizing(value).is_some(),
+            "box-sizing" => parse_local_box_sizing_declaration(value).is_some(),
             "overflow" | "overflow-x" | "overflow-y" => parse_overflow(value)
                 .is_some_and(|value| matches!(value, OverflowValue::Hidden | OverflowValue::Clip)),
             _ => {
@@ -4097,57 +4095,59 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.border_radius = parse_border_radius(value);
             }
             "padding" => {
-                if let Some(values) = parse_box_edges(value) {
+                if let Some(values) = parse_local_box_edges(value) {
                     declarations.padding = values.map(Some);
                 }
             }
             "margin" => {
-                if let Some(values) = parse_margin_edges(value) {
+                if let Some(values) = parse_local_margin_edges(value) {
                     declarations.margin = values.map(Some);
                 }
             }
             "padding-top" => {
-                if let Some(value) = parse_dimension(value) {
+                if let Some(value) = parse_local_padding_declaration(value) {
                     declarations.padding[0] = Some(value);
                 }
             }
             "padding-right" => {
-                if let Some(value) = parse_dimension(value) {
+                if let Some(value) = parse_local_padding_declaration(value) {
                     declarations.padding[1] = Some(value);
                 }
             }
             "padding-bottom" => {
-                if let Some(value) = parse_dimension(value) {
+                if let Some(value) = parse_local_padding_declaration(value) {
                     declarations.padding[2] = Some(value);
                 }
             }
             "padding-left" => {
-                if let Some(value) = parse_dimension(value) {
+                if let Some(value) = parse_local_padding_declaration(value) {
                     declarations.padding[3] = Some(value);
                 }
             }
             "margin-top" => {
-                if let Some(value) = parse_margin_value(value) {
+                if let Some(value) = parse_local_margin_declaration(value) {
                     declarations.margin[0] = Some(value);
                 }
             }
             "margin-right" => {
-                if let Some(value) = parse_margin_value(value) {
+                if let Some(value) = parse_local_margin_declaration(value) {
                     declarations.margin[1] = Some(value);
                 }
             }
             "margin-bottom" => {
-                if let Some(value) = parse_margin_value(value) {
+                if let Some(value) = parse_local_margin_declaration(value) {
                     declarations.margin[2] = Some(value);
                 }
             }
             "margin-left" => {
-                if let Some(value) = parse_margin_value(value) {
+                if let Some(value) = parse_local_margin_declaration(value) {
                     declarations.margin[3] = Some(value);
                 }
             }
             "box-sizing" => {
-                declarations.box_sizing = parse_box_sizing(value);
+                if let Some(value) = parse_local_box_sizing_declaration(value) {
+                    declarations.box_sizing = Some(value);
+                }
             }
             "color" => {
                 declarations.color = parse_color(value);
@@ -4227,6 +4227,13 @@ fn parse_box_edges(value: &str) -> Option<[u32; 4]> {
     expand_box_edges(&values)
 }
 
+fn parse_local_box_edges(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 4]> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some([LocalCascadeDeclaration::RevertLayer; 4]);
+    }
+    parse_box_edges(value).map(|values| values.map(LocalCascadeDeclaration::Value))
+}
+
 fn parse_margin_value(value: &str) -> Option<NativeMarginValue> {
     if value.eq_ignore_ascii_case("auto") {
         Some(NativeMarginValue::Auto)
@@ -4241,6 +4248,15 @@ fn parse_margin_edges(value: &str) -> Option<[NativeMarginValue; 4]> {
         .map(parse_margin_value)
         .collect::<Option<Vec<_>>>()?;
     expand_box_edges(&values)
+}
+
+fn parse_local_margin_edges(
+    value: &str,
+) -> Option<[LocalCascadeDeclaration<NativeMarginValue>; 4]> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some([LocalCascadeDeclaration::RevertLayer; 4]);
+    }
+    parse_margin_edges(value).map(|values| values.map(LocalCascadeDeclaration::Value))
 }
 
 fn expand_box_edges<T: Copy>(values: &[T]) -> Option<[T; 4]> {
@@ -5160,6 +5176,22 @@ fn parse_local_dimension_declaration(value: &str) -> Option<LocalCascadeDeclarat
     parse_local_cascade_declaration(value, parse_dimension)
 }
 
+fn parse_local_padding_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
+    parse_local_cascade_declaration(value, parse_dimension)
+}
+
+fn parse_local_margin_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeMarginValue>> {
+    parse_local_cascade_declaration(value, parse_margin_value)
+}
+
+fn parse_local_box_sizing_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeBoxSizing>> {
+    parse_local_cascade_declaration(value, parse_box_sizing)
+}
+
 fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
     match value.trim().to_ascii_lowercase().as_str() {
         "clip" => Some(TextOverflowValue::Clip),
@@ -5654,9 +5686,18 @@ mod tests {
                 bottom_left: 4,
             })
         );
-        assert_eq!(declarations.padding, [Some(4); 4]);
-        assert_eq!(declarations.margin, [Some(NativeMarginValue::Length(3)); 4]);
-        assert_eq!(declarations.box_sizing, Some(NativeBoxSizing::BorderBox));
+        assert_eq!(
+            declarations.padding,
+            [Some(LocalCascadeDeclaration::Value(4)); 4]
+        );
+        assert_eq!(
+            declarations.margin,
+            [Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(3))); 4]
+        );
+        assert_eq!(
+            declarations.box_sizing,
+            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
+        );
         assert_eq!(declarations.overflow, Some(OverflowValue::Hidden));
         assert_eq!(declarations.overflow_x, Some(OverflowValue::Hidden));
         assert_eq!(declarations.overflow_y, Some(OverflowValue::Hidden));
@@ -5804,30 +5845,44 @@ mod tests {
         let declarations = parse_declarations(
             "padding: 1px 2px 3px 4px; padding-left: 5px; margin: 6px 7px; margin-bottom: 8px",
         );
-        assert_eq!(declarations.padding, [Some(1), Some(2), Some(3), Some(5)]);
+        assert_eq!(
+            declarations.padding,
+            [
+                Some(LocalCascadeDeclaration::Value(1)),
+                Some(LocalCascadeDeclaration::Value(2)),
+                Some(LocalCascadeDeclaration::Value(3)),
+                Some(LocalCascadeDeclaration::Value(5)),
+            ]
+        );
         assert_eq!(
             declarations.margin,
             [
-                Some(NativeMarginValue::Length(6)),
-                Some(NativeMarginValue::Length(7)),
-                Some(NativeMarginValue::Length(8)),
-                Some(NativeMarginValue::Length(7)),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(6))),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(7))),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(8))),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(7))),
             ]
         );
         let declarations = parse_declarations("margin: 6px 7px; margin-bottom: 8px");
         assert_eq!(
             declarations.margin,
             [
-                Some(NativeMarginValue::Length(6)),
-                Some(NativeMarginValue::Length(7)),
-                Some(NativeMarginValue::Length(8)),
-                Some(NativeMarginValue::Length(7)),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(6))),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(7))),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(8))),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(7))),
             ]
         );
         let declarations =
             parse_declarations("padding: 4px; padding-left: 50%; margin: 2px; margin-top: -1px");
-        assert_eq!(declarations.padding, [Some(4); 4]);
-        assert_eq!(declarations.margin, [Some(NativeMarginValue::Length(2)); 4]);
+        assert_eq!(
+            declarations.padding,
+            [Some(LocalCascadeDeclaration::Value(4)); 4]
+        );
+        assert_eq!(
+            declarations.margin,
+            [Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))); 4]
+        );
     }
 
     #[test]
@@ -5858,10 +5913,10 @@ mod tests {
         assert_eq!(
             declarations.margin,
             [
-                Some(NativeMarginValue::Auto),
-                Some(NativeMarginValue::Length(2)),
-                Some(NativeMarginValue::Auto),
-                Some(NativeMarginValue::Length(4)),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Auto)),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Auto)),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(4))),
             ]
         );
     }
@@ -8616,6 +8671,80 @@ mod tests {
     }
 
     #[test]
+    fn local_box_model_declaration_parsers_accept_only_standalone_revert_layer() {
+        assert_eq!(
+            parse_local_box_edges(" ReVeRt-LaYeR "),
+            Some([LocalCascadeDeclaration::RevertLayer; 4])
+        );
+        assert_eq!(
+            parse_local_padding_declaration("4px"),
+            Some(LocalCascadeDeclaration::Value(4))
+        );
+        assert_eq!(
+            parse_local_padding_declaration("revert-layer"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(parse_local_box_edges("revert-layer 4px"), None);
+        assert_eq!(parse_local_box_edges("50%"), None);
+        assert_eq!(parse_local_box_edges("-1px"), None);
+        assert_eq!(parse_local_box_edges("1px 2px 3px 4px 5px"), None);
+        assert_eq!(
+            parse_local_margin_edges("revert-layer"),
+            Some([LocalCascadeDeclaration::RevertLayer; 4])
+        );
+        assert_eq!(
+            parse_local_margin_declaration("auto"),
+            Some(LocalCascadeDeclaration::Value(NativeMarginValue::Auto))
+        );
+        assert_eq!(
+            parse_local_margin_declaration("revert-layer"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(parse_local_margin_edges("revert-layer auto"), None);
+        assert_eq!(parse_local_margin_edges("50%"), None);
+        assert_eq!(parse_local_margin_edges("-1px"), None);
+        assert_eq!(
+            parse_local_box_sizing_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_local_box_sizing_declaration("border-box"),
+            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
+        );
+        assert_eq!(
+            parse_local_box_sizing_declaration("revert-layer border-box"),
+            None
+        );
+        assert_eq!(parse_local_box_sizing_declaration("auto"), None);
+
+        let declarations = parse_declarations(
+            "padding: 1px 2px 3px 4px; padding-left: revert-layer; padding-right: 6px; padding-right: revert-layer; margin: auto 2px; margin-bottom: revert-layer; box-sizing: border-box; box-sizing: invalid;",
+        );
+        assert_eq!(
+            declarations.padding,
+            [
+                Some(LocalCascadeDeclaration::Value(1)),
+                Some(LocalCascadeDeclaration::RevertLayer),
+                Some(LocalCascadeDeclaration::Value(3)),
+                Some(LocalCascadeDeclaration::RevertLayer),
+            ]
+        );
+        assert_eq!(
+            declarations.margin,
+            [
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Auto)),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))),
+                Some(LocalCascadeDeclaration::RevertLayer),
+                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))),
+            ]
+        );
+        assert_eq!(
+            declarations.box_sizing,
+            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
+        );
+    }
+
+    #[test]
     fn text_overflow_parser_accepts_only_clip_and_ellipsis() {
         assert_eq!(parse_text_overflow("clip"), Some(TextOverflowValue::Clip));
         assert_eq!(
@@ -9306,6 +9435,96 @@ mod tests {
         assert_dimensions(
             invalid,
             [Some(30), Some(18), Some(8), Some(70), Some(10), Some(40)],
+        );
+    }
+
+    #[test]
+    fn local_box_model_declarations_revert_layer_resolve_independently() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { box-sizing: content-box; padding: 1px 2px 3px 4px; margin: 1px 2px 3px 4px; } #repeated { box-sizing: border-box; padding: 2px; margin: auto 2px 3px 4px; } #fallback { box-sizing: revert-layer; padding: revert-layer; margin: revert-layer; } #invalid { box-sizing: border-box; padding: 4px; margin: 5px; } } @layer theme { #named { box-sizing: border-box; padding: 5px 6px 7px 8px; margin: 5px 6px 7px 8px; } #repeated { box-sizing: content-box; padding: 6px; margin: revert-layer; } #inline { box-sizing: border-box; padding: 7px; margin: 8px; } } @layer top { #repeated { box-sizing: revert-layer; padding: revert-layer; margin: revert-layer; } } #named { box-sizing: revert-layer; padding: revert-layer; margin: revert-layer; } #repeated { box-sizing: revert-layer; padding: revert-layer; margin: revert-layer; } #invalid { box-sizing: auto; padding: 1px 2px 3px 4px 5px; margin: -1px; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named' class='named'>Named</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let inline = node(
+            "<div id='inline' style='box-sizing:revert-layer;padding:revert-layer;margin:revert-layer'>Inline</div>",
+        );
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+
+        let named_style = stylesheet.computed_for(&named);
+        assert!(named_style.is_border_box());
+        assert_eq!(
+            named_style.padding(),
+            NativeBoxEdges {
+                top: 5,
+                right: 6,
+                bottom: 7,
+                left: 8,
+            }
+        );
+        assert_eq!(
+            named_style.margin(),
+            NativeBoxEdges {
+                top: 5,
+                right: 6,
+                bottom: 7,
+                left: 8,
+            }
+        );
+
+        let repeated_style = stylesheet.computed_for(&repeated);
+        assert!(!repeated_style.is_border_box());
+        assert_eq!(
+            repeated_style.padding(),
+            NativeBoxEdges {
+                top: 6,
+                right: 6,
+                bottom: 6,
+                left: 6,
+            }
+        );
+        assert_eq!(
+            repeated_style.margin(),
+            NativeBoxEdges {
+                top: 0,
+                right: 2,
+                bottom: 3,
+                left: 4,
+            }
+        );
+        assert!(repeated_style.margin_auto().top());
+        assert!(!repeated_style.margin_auto().right());
+        assert!(!repeated_style.margin_auto().bottom());
+        assert!(!repeated_style.margin_auto().left());
+
+        let inline_style = stylesheet.computed_for(&inline);
+        assert!(inline_style.is_border_box());
+        assert_eq!(
+            inline_style.padding(),
+            NativeBoxEdges::from_values([Some(7); 4])
+        );
+        assert_eq!(
+            inline_style.margin(),
+            NativeBoxEdges::from_values([Some(8); 4])
+        );
+
+        let fallback_style = stylesheet.computed_for(&fallback);
+        assert!(!fallback_style.is_border_box());
+        assert_eq!(fallback_style.padding(), NativeBoxEdges::default());
+        assert_eq!(fallback_style.margin(), NativeBoxEdges::default());
+        assert_eq!(fallback_style.margin_auto(), NativeAutoEdges::default());
+
+        let invalid_style = stylesheet.computed_for(&invalid);
+        assert!(invalid_style.is_border_box());
+        assert_eq!(
+            invalid_style.padding(),
+            NativeBoxEdges::from_values([Some(4); 4])
+        );
+        assert_eq!(
+            invalid_style.margin(),
+            NativeBoxEdges::from_values([Some(5); 4])
         );
     }
 

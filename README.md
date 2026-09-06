@@ -346,7 +346,14 @@ projection, and point hit-testing, bounded axis-specific `overflow-x`/`overflow-
 and `overflow-y`, preserving independent visible/no-clip fallbacks and shared
 paint, viewport-projection, point-hit, root-overflow, capture, and
 semantic/source-order owners; nested scrolling, scrollbars, and browser-wide
-overflow semantics remain outside the boundary, bounded side-specific solid/dashed/dotted-border paint, bounded
+overflow semantics remain outside the boundary. The same bounded local cascade
+path now accepts standalone, case-insensitive 15-layer/unlayered
+`border-radius:revert-layer` for the one-to-four-value integer shorthand,
+preserving the zero-corner fallback and rounded layout, fill, border, point-hit,
+capture, raster, overflow, and semantic/source-order owners. Elliptical,
+percentage, corner-longhand, nested-clip, anti-aliasing, multiple-origin, and
+browser-wide border-radius conformance remain outside the boundary. It also
+provides bounded side-specific solid/dashed/dotted-border paint, bounded
 physical circular border radii, bounded inline-box line placement, bounded
 fixed pixel line-height flow with bounded inherited line-height and
 case-insensitive 15-layer/unlayered `line-height: revert-layer` rollback with

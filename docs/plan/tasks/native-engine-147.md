@@ -1,7 +1,7 @@
 ---
 id: native-engine-147
 scope: glass-browser/native-engine/cascade-layers-border-radius-revert-layer
-status: planned
+status: complete
 depends-on: [native-engine-146]
 ---
 
@@ -124,8 +124,42 @@ The completed slice must cover:
 
 ## Implementation
 
-Pending the implementation checkpoint.
+- Design checkpoint: `f76720f775ed1204f982734a59e070b7bb6ee203`.
+- Source checkpoint: `74cc1cf9783b67487b585c1ea54b283e6e66b39c`.
+- The source checkpoint updates `css.rs` and `tests/native_engine.rs` only; the
+  public computed-style and artifact schemas, feature defaults, dependencies,
+  and two-crate boundary remain unchanged.
+- Product and authoritative planning documentation is synchronized in this
+  closeout checkpoint.
 
 ## Evidence
 
-Pending implementation and local certification.
+- Focused locked `glass-browser` check passed.
+- Border-radius parser/cascade unit tests passed 3/3.
+- Targeted native integration passed 1/1 with 184 filtered.
+- Full native integration passed 185/185.
+- Feature-enabled `glass-browser` library tests passed 957, with 1 ignored.
+- Strict affected-package Clippy passed with warnings denied.
+- Locked isolated `glass-dev` and `glass-browser` inventory binaries passed
+  check/build gates; documentation coverage was run with explicit binary paths
+  and passed with 561 Markdown files, 345 full-product MCP tools (100
+  browser-only), 17 examples, and 22 public modules.
+- Static truth gates passed: version sync at 0.3.14; release documentation
+  with 561 Markdown files, 83 current-document records, 57 previous-version
+  hits, 656 semantic-audit hits, and zero current-claim failures;
+  documentation-depth with 93 current guides and 19 substantive contracts;
+  feature parity for 14 capabilities across 4 targets (baseline 0.3.0, next
+  0.3.14, checkout 0.3.14); TUI shortcut parity with 15 implementation help
+  keys and 63 documentation markers; 5 public read-only adapters; reliability
+  with 6 scenarios across 4 targets; and Web IR with 8 fixtures, 8 scenarios,
+  and 11 categories.
+- The semantic audit report is retained at
+  `/tmp/glass-release-documentation-147.json`; it contains all 656 entries,
+  classified as 164 current, 338 historical, and 154 record hits, with zero
+  unresolved current claims.
+- Feature-enabled `glass-browser` rustdoc passed with warnings denied and no
+  dependencies.
+- Formatting and diff checks passed.
+
+Cleanup remains to be recorded after the exact focused target is inventoried
+and removed.

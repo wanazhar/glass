@@ -147,8 +147,15 @@ local `revert-layer` rollback for `overflow`, `overflow-x`, and `overflow-y`,
 preserving independent visible/no-clip fallbacks and the existing paint,
 projection, point-hit, root-overflow, capture, and semantic/source-order owners;
 nested scrolling, scrollbars, and browser-wide overflow semantics remain
-outside the boundary, side-specific solid/dashed/dotted-border paint, bounded physical circular
-border radii, bounded inline-box line placement, bounded fixed pixel line-height
+outside the boundary. The same bounded local cascade path also accepts
+standalone, case-insensitive 15-layer/unlayered local
+`border-radius:revert-layer` for the one-to-four-value integer shorthand,
+preserving the zero-corner fallback and the existing rounded layout, fill,
+border, point-hit, capture, raster, overflow, and semantic/source-order owners;
+elliptical, percentage, corner-longhand, nested-clip, anti-aliasing,
+multiple-origin, and browser-wide border-radius conformance remain outside the
+boundary. It also provides side-specific solid/dashed/dotted-border paint,
+bounded physical circular border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and
 source-order text paint, bounded
 word-aware wrapping, bounded source-whitespace boundaries across supported

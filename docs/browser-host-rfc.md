@@ -123,8 +123,14 @@ case-insensitive 15-layer/unlayered local `revert-layer` rollback for
 `overflow`, `overflow-x`, and `overflow-y`, preserving independent visible/no-clip
 fallbacks and the existing paint, projection, point-hit, root-overflow, capture,
 and semantic/source-order owners; nested scrolling, scrollbars, and browser-wide
-overflow semantics remain outside the boundary, and bounded PNG
-capture through the explicit backend operation,
+overflow semantics remain outside the boundary, and bounded PNG capture through
+the explicit backend operation. The same bounded local cascade path also accepts
+standalone, case-insensitive 15-layer/unlayered `border-radius:revert-layer`
+for the one-to-four-value integer shorthand, preserving the zero-corner
+fallback and the existing rounded layout, fill, border, point-hit, capture,
+raster, overflow, and semantic/source-order owners; elliptical, percentage,
+corner-longhand, nested-clip, anti-aliasing, multiple-origin, and browser-wide
+border-radius conformance remain outside the boundary.
 bounded local opacity subtree groups through transparent software layers,
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and

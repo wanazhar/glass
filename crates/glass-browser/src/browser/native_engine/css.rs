@@ -605,7 +605,7 @@ enum InheritedTextDeclaration<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocalTextDeclaration<T> {
+enum LocalCascadeDeclaration<T> {
     Value(T),
     RevertLayer,
 }
@@ -1227,23 +1227,29 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut word_break: [Option<CascadeValue<InheritedTextDeclaration<WordBreakValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut text_overflow: [Option<CascadeValue<LocalTextDeclaration<TextOverflowValue>>>;
+        let mut text_overflow: [Option<CascadeValue<LocalCascadeDeclaration<TextOverflowValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut vertical_align: [Option<CascadeValue<InheritedTextDeclaration<VerticalAlignValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut text_indent: [Option<CascadeValue<LocalTextDeclaration<u32>>>;
+        let mut text_indent: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut word_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut letter_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut gap = GapCascade::default();
-        let mut width = None;
-        let mut height = None;
-        let mut min_width = None;
-        let mut max_width = None;
-        let mut min_height = None;
-        let mut max_height = None;
+        let mut width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut min_width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut max_width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut min_height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut max_height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut line_height: [Option<CascadeValue<LineHeightDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut background_color = None;
@@ -1505,7 +1511,7 @@ impl NativeStylesheet {
                 false,
                 &mut word_break,
             );
-            apply_local_text_declaration(
+            apply_local_cascade_declaration(
                 rule.declarations.text_overflow,
                 rule.selector.specificity,
                 rule.order,
@@ -1519,7 +1525,7 @@ impl NativeStylesheet {
                 false,
                 &mut vertical_align,
             );
-            apply_local_text_declaration(
+            apply_local_cascade_declaration(
                 rule.declarations.text_indent,
                 rule.selector.specificity,
                 rule.order,
@@ -1697,66 +1703,48 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.width
-                && wins(rule.selector.specificity, rule.order, false, width)
-            {
-                width = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.height
-                && wins(rule.selector.specificity, rule.order, false, height)
-            {
-                height = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.min_width
-                && wins(rule.selector.specificity, rule.order, false, min_width)
-            {
-                min_width = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.max_width
-                && wins(rule.selector.specificity, rule.order, false, max_width)
-            {
-                max_width = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.min_height
-                && wins(rule.selector.specificity, rule.order, false, min_height)
-            {
-                min_height = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.max_height
-                && wins(rule.selector.specificity, rule.order, false, max_height)
-            {
-                max_height = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_local_cascade_declaration(
+                rule.declarations.width,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut width,
+            );
+            apply_local_cascade_declaration(
+                rule.declarations.height,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut height,
+            );
+            apply_local_cascade_declaration(
+                rule.declarations.min_width,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut min_width,
+            );
+            apply_local_cascade_declaration(
+                rule.declarations.max_width,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut max_width,
+            );
+            apply_local_cascade_declaration(
+                rule.declarations.min_height,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut min_height,
+            );
+            apply_local_cascade_declaration(
+                rule.declarations.max_height,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut max_height,
+            );
             if let Some(value) = rule.declarations.line_height
                 && wins(
                     rule.selector.specificity,
@@ -2053,7 +2041,7 @@ impl NativeStylesheet {
                 true,
                 &mut word_break,
             );
-            apply_local_text_declaration(
+            apply_local_cascade_declaration(
                 declarations.text_overflow,
                 u16::MAX,
                 usize::MAX,
@@ -2067,7 +2055,7 @@ impl NativeStylesheet {
                 true,
                 &mut vertical_align,
             );
-            apply_local_text_declaration(
+            apply_local_cascade_declaration(
                 declarations.text_indent,
                 u16::MAX,
                 usize::MAX,
@@ -2189,66 +2177,48 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.width
-                && wins(u16::MAX, usize::MAX, true, width)
-            {
-                width = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.height
-                && wins(u16::MAX, usize::MAX, true, height)
-            {
-                height = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.min_width
-                && wins(u16::MAX, usize::MAX, true, min_width)
-            {
-                min_width = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.max_width
-                && wins(u16::MAX, usize::MAX, true, max_width)
-            {
-                max_width = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.min_height
-                && wins(u16::MAX, usize::MAX, true, min_height)
-            {
-                min_height = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.max_height
-                && wins(u16::MAX, usize::MAX, true, max_height)
-            {
-                max_height = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_local_cascade_declaration(
+                declarations.width,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut width,
+            );
+            apply_local_cascade_declaration(
+                declarations.height,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut height,
+            );
+            apply_local_cascade_declaration(
+                declarations.min_width,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut min_width,
+            );
+            apply_local_cascade_declaration(
+                declarations.max_width,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut max_width,
+            );
+            apply_local_cascade_declaration(
+                declarations.min_height,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut min_height,
+            );
+            apply_local_cascade_declaration(
+                declarations.max_height,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut max_height,
+            );
             if let Some(value) = declarations.line_height
                 && wins(u16::MAX, usize::MAX, true, line_height[layer])
             {
@@ -2391,12 +2361,15 @@ impl NativeStylesheet {
             font_weight: resolve_inherited_text_declaration(font_weight, inherited.font_weight),
             font_style: resolve_inherited_text_declaration(font_style, inherited.font_style),
             word_break: resolve_inherited_text_declaration(word_break, inherited.word_break),
-            text_overflow: resolve_local_text_declaration(text_overflow, TextOverflowValue::Clip),
+            text_overflow: resolve_local_cascade_declaration(
+                text_overflow,
+                TextOverflowValue::Clip,
+            ),
             vertical_align: resolve_inherited_text_declaration(
                 vertical_align,
                 inherited.vertical_align,
             ),
-            text_indent: resolve_local_text_declaration(text_indent, 0),
+            text_indent: resolve_local_cascade_declaration(text_indent, 0),
             word_spacing: resolve_inherited_text_declaration(word_spacing, inherited.word_spacing),
             letter_spacing: resolve_inherited_text_declaration(
                 letter_spacing,
@@ -2404,12 +2377,12 @@ impl NativeStylesheet {
             ),
             gap: resolve_gap_axis(gap.shorthand_column, gap.column_gap),
             row_gap: resolve_gap_axis(gap.shorthand_row, gap.row_gap),
-            width: width.map(|value| value.value),
-            height: height.map(|value| value.value),
-            min_width: min_width.map(|value| value.value),
-            max_width: max_width.map(|value| value.value),
-            min_height: min_height.map(|value| value.value),
-            max_height: max_height.map(|value| value.value),
+            width: resolve_local_optional_cascade_declaration(width),
+            height: resolve_local_optional_cascade_declaration(height),
+            min_width: resolve_local_optional_cascade_declaration(min_width),
+            max_width: resolve_local_optional_cascade_declaration(max_width),
+            min_height: resolve_local_optional_cascade_declaration(min_height),
+            max_height: resolve_local_optional_cascade_declaration(max_height),
             line_height: resolve_line_height(line_height, inherited.line_height),
             background_color: background_color.map(|value| value.value),
             border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
@@ -2680,13 +2653,22 @@ fn resolve_inherited_text_declaration<T: Copy>(
     })
 }
 
-fn resolve_local_text_declaration<T: Copy>(
-    candidates: [Option<CascadeValue<LocalTextDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+fn resolve_local_cascade_declaration<T: Copy>(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
     fallback: T,
 ) -> T {
     resolve_alignment_candidates(candidates, fallback, |declaration| match declaration {
-        LocalTextDeclaration::Value(value) => Some(value),
-        LocalTextDeclaration::RevertLayer => None,
+        LocalCascadeDeclaration::Value(value) => Some(value),
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_optional_cascade_declaration<T: Copy>(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+) -> Option<T> {
+    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => Some(Some(value)),
+        LocalCascadeDeclaration::RevertLayer => None,
     })
 }
 
@@ -3114,12 +3096,12 @@ fn apply_inherited_text_declaration<T: Copy>(
     }
 }
 
-fn apply_local_text_declaration<T: Copy>(
-    declaration: Option<LocalTextDeclaration<T>>,
+fn apply_local_cascade_declaration<T: Copy>(
+    declaration: Option<LocalCascadeDeclaration<T>>,
     specificity: u16,
     order: usize,
     inline: bool,
-    candidates: &mut [Option<CascadeValue<LocalTextDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: &mut [Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
 ) {
     let Some(value) = declaration else {
         return;
@@ -3208,9 +3190,9 @@ struct NativeDeclarations {
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
     word_break: Option<InheritedTextDeclaration<WordBreakValue>>,
-    text_overflow: Option<LocalTextDeclaration<TextOverflowValue>>,
+    text_overflow: Option<LocalCascadeDeclaration<TextOverflowValue>>,
     vertical_align: Option<InheritedTextDeclaration<VerticalAlignValue>>,
-    text_indent: Option<LocalTextDeclaration<u32>>,
+    text_indent: Option<LocalCascadeDeclaration<u32>>,
     word_spacing: Option<InheritedTextDeclaration<u32>>,
     letter_spacing: Option<InheritedTextDeclaration<u32>>,
     gap: Option<GapShorthandDeclaration>,
@@ -3219,12 +3201,12 @@ struct NativeDeclarations {
     row_gap_order: usize,
     column_gap: Option<GapComponentDeclaration>,
     column_gap_order: usize,
-    width: Option<u32>,
-    height: Option<u32>,
-    min_width: Option<u32>,
-    max_width: Option<u32>,
-    min_height: Option<u32>,
-    max_height: Option<u32>,
+    width: Option<LocalCascadeDeclaration<u32>>,
+    height: Option<LocalCascadeDeclaration<u32>>,
+    min_width: Option<LocalCascadeDeclaration<u32>>,
+    max_width: Option<LocalCascadeDeclaration<u32>>,
+    min_height: Option<LocalCascadeDeclaration<u32>>,
+    max_height: Option<LocalCascadeDeclaration<u32>>,
     line_height: Option<LineHeightDeclaration>,
     background_color: Option<NativeColor>,
     border: [Option<NativeBorderSide>; 4],
@@ -3728,7 +3710,7 @@ fn parse_declarations_with_diagnostics(
             "gap" => parse_gap_declaration(value).is_some(),
             "row-gap" | "column-gap" => parse_gap_component_declaration(value).is_some(),
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
-                parse_dimension(value).is_some()
+                parse_local_dimension_declaration(value).is_some()
             }
             "line-height" => parse_line_height_declaration(value).is_some(),
             "background-color" | "color" => parse_color(value).is_some(),
@@ -4059,22 +4041,34 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "width" => {
-                declarations.width = parse_dimension(value);
+                if let Some(parsed) = parse_local_dimension_declaration(value) {
+                    declarations.width = Some(parsed);
+                }
             }
             "height" => {
-                declarations.height = parse_dimension(value);
+                if let Some(parsed) = parse_local_dimension_declaration(value) {
+                    declarations.height = Some(parsed);
+                }
             }
             "min-width" => {
-                declarations.min_width = parse_dimension(value);
+                if let Some(parsed) = parse_local_dimension_declaration(value) {
+                    declarations.min_width = Some(parsed);
+                }
             }
             "max-width" => {
-                declarations.max_width = parse_dimension(value);
+                if let Some(parsed) = parse_local_dimension_declaration(value) {
+                    declarations.max_width = Some(parsed);
+                }
             }
             "min-height" => {
-                declarations.min_height = parse_dimension(value);
+                if let Some(parsed) = parse_local_dimension_declaration(value) {
+                    declarations.min_height = Some(parsed);
+                }
             }
             "max-height" => {
-                declarations.max_height = parse_dimension(value);
+                if let Some(parsed) = parse_local_dimension_declaration(value) {
+                    declarations.max_height = Some(parsed);
+                }
             }
             "line-height" => {
                 declarations.line_height = parse_line_height_declaration(value);
@@ -5109,15 +5103,15 @@ fn parse_inherited_text_declaration<T: Copy>(
     parse(value).map(InheritedTextDeclaration::Value)
 }
 
-fn parse_local_text_declaration<T: Copy>(
+fn parse_local_cascade_declaration<T: Copy>(
     value: &str,
     parse: fn(&str) -> Option<T>,
-) -> Option<LocalTextDeclaration<T>> {
+) -> Option<LocalCascadeDeclaration<T>> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("revert-layer") {
-        return Some(LocalTextDeclaration::RevertLayer);
+        return Some(LocalCascadeDeclaration::RevertLayer);
     }
-    parse(value).map(LocalTextDeclaration::Value)
+    parse(value).map(LocalCascadeDeclaration::Value)
 }
 
 fn parse_text_transform_declaration(
@@ -5152,12 +5146,18 @@ fn parse_vertical_align_declaration(
     parse_inherited_text_declaration(value, parse_vertical_align)
 }
 
-fn parse_text_overflow_declaration(value: &str) -> Option<LocalTextDeclaration<TextOverflowValue>> {
-    parse_local_text_declaration(value, parse_text_overflow)
+fn parse_text_overflow_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<TextOverflowValue>> {
+    parse_local_cascade_declaration(value, parse_text_overflow)
 }
 
-fn parse_text_indent_declaration(value: &str) -> Option<LocalTextDeclaration<u32>> {
-    parse_local_text_declaration(value, parse_dimension)
+fn parse_text_indent_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
+    parse_local_cascade_declaration(value, parse_dimension)
+}
+
+fn parse_local_dimension_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
+    parse_local_cascade_declaration(value, parse_dimension)
 }
 
 fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
@@ -5564,7 +5564,7 @@ mod tests {
         );
         assert_eq!(
             declarations.text_indent,
-            Some(LocalTextDeclaration::Value(12))
+            Some(LocalCascadeDeclaration::Value(12))
         );
         assert_eq!(
             declarations.word_spacing,
@@ -5603,18 +5603,36 @@ mod tests {
         );
         assert_eq!(
             declarations.text_overflow,
-            Some(LocalTextDeclaration::Value(TextOverflowValue::Ellipsis))
+            Some(LocalCascadeDeclaration::Value(TextOverflowValue::Ellipsis))
         );
         assert_eq!(
             declarations.vertical_align,
             Some(InheritedTextDeclaration::Value(VerticalAlignValue::Bottom))
         );
-        assert_eq!(declarations.width, Some(240));
-        assert_eq!(declarations.height, Some(30));
-        assert_eq!(declarations.min_width, Some(12));
-        assert_eq!(declarations.max_width, Some(400));
-        assert_eq!(declarations.min_height, Some(14));
-        assert_eq!(declarations.max_height, Some(500));
+        assert_eq!(
+            declarations.width,
+            Some(LocalCascadeDeclaration::Value(240))
+        );
+        assert_eq!(
+            declarations.height,
+            Some(LocalCascadeDeclaration::Value(30))
+        );
+        assert_eq!(
+            declarations.min_width,
+            Some(LocalCascadeDeclaration::Value(12))
+        );
+        assert_eq!(
+            declarations.max_width,
+            Some(LocalCascadeDeclaration::Value(400))
+        );
+        assert_eq!(
+            declarations.min_height,
+            Some(LocalCascadeDeclaration::Value(14))
+        );
+        assert_eq!(
+            declarations.max_height,
+            Some(LocalCascadeDeclaration::Value(500))
+        );
         assert_eq!(
             declarations.line_height,
             Some(LineHeightDeclaration::Value(28))
@@ -8531,19 +8549,19 @@ mod tests {
     fn local_text_declaration_parsers_accept_only_standalone_revert_layer() {
         assert_eq!(
             parse_text_overflow_declaration("ReVeRt-LaYeR"),
-            Some(LocalTextDeclaration::RevertLayer)
+            Some(LocalCascadeDeclaration::RevertLayer)
         );
         assert_eq!(
             parse_text_overflow_declaration("ellipsis"),
-            Some(LocalTextDeclaration::Value(TextOverflowValue::Ellipsis))
+            Some(LocalCascadeDeclaration::Value(TextOverflowValue::Ellipsis))
         );
         assert_eq!(
             parse_text_indent_declaration(" REVERT-LAYER "),
-            Some(LocalTextDeclaration::RevertLayer)
+            Some(LocalCascadeDeclaration::RevertLayer)
         );
         assert_eq!(
             parse_text_indent_declaration("16px"),
-            Some(LocalTextDeclaration::Value(16))
+            Some(LocalCascadeDeclaration::Value(16))
         );
         assert_eq!(
             parse_text_overflow_declaration("revert-layer ellipsis"),
@@ -8557,11 +8575,43 @@ mod tests {
         );
         assert_eq!(
             declarations.text_indent,
-            Some(LocalTextDeclaration::Value(12))
+            Some(LocalCascadeDeclaration::Value(12))
         );
         assert_eq!(
             declarations.text_overflow,
-            Some(LocalTextDeclaration::Value(TextOverflowValue::Ellipsis))
+            Some(LocalCascadeDeclaration::Value(TextOverflowValue::Ellipsis))
+        );
+    }
+
+    #[test]
+    fn local_dimension_declaration_parser_accepts_only_standalone_revert_layer() {
+        assert_eq!(
+            parse_local_dimension_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_local_dimension_declaration("24px"),
+            Some(LocalCascadeDeclaration::Value(24))
+        );
+        assert_eq!(parse_local_dimension_declaration("revert-layer 24px"), None);
+        assert_eq!(parse_local_dimension_declaration("-1px"), None);
+        assert_eq!(parse_local_dimension_declaration("50%"), None);
+        assert_eq!(parse_local_dimension_declaration("auto"), None);
+        let declarations = parse_declarations(
+            "width:24px;width:1px 2px;height:30px;height:bad;min-width:8px;min-width:-1px;max-height:40px;max-height:50%;",
+        );
+        assert_eq!(declarations.width, Some(LocalCascadeDeclaration::Value(24)));
+        assert_eq!(
+            declarations.height,
+            Some(LocalCascadeDeclaration::Value(30))
+        );
+        assert_eq!(
+            declarations.min_width,
+            Some(LocalCascadeDeclaration::Value(8))
+        );
+        assert_eq!(
+            declarations.max_height,
+            Some(LocalCascadeDeclaration::Value(40))
         );
     }
 
@@ -9210,6 +9260,53 @@ mod tests {
         assert_eq!(style(parent).text_overflow(), TextOverflowValue::Ellipsis);
         assert_eq!(style(child).text_indent(), 0);
         assert_eq!(style(child).text_overflow(), TextOverflowValue::Clip);
+    }
+
+    #[test]
+    fn local_dimension_declarations_revert_layer_resolve_independently() {
+        let document = NativeDocument::parse(
+            "<style>@layer base { #named { width:24px; height:12px; min-width:4px; max-width:80px; min-height:6px; max-height:90px; } #repeat { width:20px; height:10px; min-width:2px; max-width:70px; min-height:4px; max-height:60px; } #fallback { width:revert-layer; height:revert-layer; min-width:revert-layer; max-width:revert-layer; min-height:revert-layer; max-height:revert-layer; } #invalid { width:30px; height:18px; min-width:8px; max-width:70px; min-height:10px; max-height:40px; } } @layer theme { #named { width:48px; height:20px; min-width:16px; max-width:100px; min-height:10px; max-height:110px; } #repeat { width:36px; height:16px; min-width:12px; max-width:90px; min-height:8px; max-height:80px; } #inline { width:32px; height:22px; min-width:14px; max-width:92px; min-height:12px; max-height:82px; } } @layer top { #repeat { width:revert-layer; height:revert-layer; min-width:revert-layer; max-width:revert-layer; min-height:revert-layer; max-height:revert-layer; } } #named { width:revert-layer; height:revert-layer; min-width:revert-layer; max-width:revert-layer; min-height:revert-layer; max-height:revert-layer; } #repeat { width:revert-layer; height:revert-layer; min-width:revert-layer; max-width:revert-layer; min-height:revert-layer; max-height:revert-layer; } #invalid { width:1px 2px; height:1px 2px; min-width:1px 2px; max-width:1px 2px; min-height:1px 2px; max-height:50%; }</style><div id='named'>Named</div><div id='repeat'>Repeat</div><div id='inline' style='width:revert-layer;height:revert-layer;min-width:revert-layer;max-width:revert-layer;min-height:revert-layer;max-height:revert-layer'>Inline</div><div id='fallback'>Fallback</div><div id='invalid'>Invalid</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let named = document.resolve_target("id=named").unwrap();
+        let repeat = document.resolve_target("id=repeat").unwrap();
+        let inline = document.resolve_target("id=inline").unwrap();
+        let fallback = document.resolve_target("id=fallback").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        let style = |node| document.computed_style_for_layout(node);
+        let assert_dimensions = |node, expected: [Option<u32>; 6]| {
+            let computed = style(node);
+            assert_eq!(
+                [
+                    computed.width(),
+                    computed.height(),
+                    computed.min_width(),
+                    computed.max_width(),
+                    computed.min_height(),
+                    computed.max_height(),
+                ],
+                expected
+            );
+        };
+        assert_dimensions(
+            named,
+            [Some(48), Some(20), Some(16), Some(100), Some(10), Some(110)],
+        );
+        assert_dimensions(
+            repeat,
+            [Some(36), Some(16), Some(12), Some(90), Some(8), Some(80)],
+        );
+        assert_dimensions(
+            inline,
+            [Some(32), Some(22), Some(14), Some(92), Some(12), Some(82)],
+        );
+        assert_dimensions(fallback, [None, None, None, None, None, None]);
+        assert_dimensions(
+            invalid,
+            [Some(30), Some(18), Some(8), Some(70), Some(10), Some(40)],
+        );
     }
 
     #[test]

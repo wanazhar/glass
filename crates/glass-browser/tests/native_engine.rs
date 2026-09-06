@@ -9817,6 +9817,130 @@ fn native_axis_specific_overflow_clips_only_selected_axis_across_consumers() {
 }
 
 #[test]
+fn native_overflow_revert_layer_preserves_axis_clips_across_consumers() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #named { overflow: hidden; width: 16px; height: 10px; white-space: nowrap; } #inline { overflow: hidden; width: 16px; height: 10px; white-space: nowrap; } #axis { overflow-y: clip; width: 16px; height: 10px; white-space: nowrap; } } @layer theme { #named { overflow-x: clip; overflow-y: revert-layer; } #axis { overflow-x: hidden; } } @layer top { #named { overflow: revert-layer; } #axis { overflow-x: revert-layer; } } #named { overflow: revert-layer; } #fallback { overflow: revert-layer; width: 16px; height: 10px; white-space: nowrap; }</style><div id='named'><div id='named-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Named</div></div><div id='fallback'><div id='fallback-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Fallback</div></div><div id='inline' style='overflow:ReVeRt-LaYeR'><div id='inline-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Inline</div></div><div id='axis'><div id='axis-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Axis</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let named_child = document.resolve_target("id=named-child").unwrap();
+    let fallback_child = document.resolve_target("id=fallback-child").unwrap();
+    let inline_child = document.resolve_target("id=inline-child").unwrap();
+    let axis_child = document.resolve_target("id=axis-child").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.viewport_rect_for(named_child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(fallback_child),
+        Some(NativeRect {
+            x: 0,
+            y: 10,
+            width: 16,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(inline_child),
+        Some(NativeRect {
+            x: 0,
+            y: 20,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(axis_child),
+        Some(NativeRect {
+            x: 0,
+            y: 30,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(layout.content_width, 64);
+    assert_eq!(layout.max_scroll_offset().x, 32);
+    assert_eq!(layout.hit_test(5, 15).unwrap(), Some(fallback_child));
+    assert_eq!(layout.hit_test(5, 35).unwrap(), Some(axis_child));
+    assert_eq!(layout.hit_test(5, 40).unwrap(), None);
+
+    let list = document.display_list(viewport).unwrap();
+    let text_clip_for = |node_id| {
+        list.commands.iter().find_map(|command| {
+            if let NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                clip,
+                ..
+            } = command
+                && *command_node_id == node_id
+            {
+                Some(*clip)
+            } else {
+                None
+            }
+        })
+    };
+    assert_eq!(
+        text_clip_for(named_child),
+        Some(Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 10,
+        }))
+    );
+    assert_eq!(text_clip_for(fallback_child), Some(None));
+    assert_eq!(
+        text_clip_for(inline_child),
+        Some(Some(NativeRect {
+            x: 0,
+            y: 20,
+            width: 16,
+            height: 10,
+        }))
+    );
+    assert_eq!(
+        text_clip_for(axis_child),
+        Some(Some(NativeRect {
+            x: 0,
+            y: 30,
+            width: 16,
+            height: 10,
+        }))
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(15, 5), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(16, 5), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(5, 15), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(15, 25), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(16, 25), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(5, 40), Some([255, 255, 255, 255]));
+
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code,
+            NativeDiagnosticCode::UnsupportedCssProperty
+                | NativeDiagnosticCode::UnsupportedCssValue
+        ) && matches!(
+            diagnostic.detail.as_str(),
+            "overflow" | "overflow-x" | "overflow-y"
+        )
+    }));
+}
+
+#[test]
 fn native_min_max_dimensions_constrain_content_and_border_box_geometry() {
     let document = NativeDocument::parse(
         "<style>#min { min-width: 40px; min-height: 30px; } #max { width: 24px; height: 20px; max-width: 16px; max-height: 10px; } #border { box-sizing: border-box; width: 20px; height: 20px; min-width: 28px; max-width: 32px; min-height: 26px; max-height: 30px; padding: 2px; border: 2px solid red; }</style><div id='min'>Min</div><div id='max'>Max</div><div id='border'>Border</div>",

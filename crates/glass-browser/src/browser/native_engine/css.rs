@@ -1222,7 +1222,8 @@ impl NativeStylesheet {
         let mut word_break: [Option<CascadeValue<InheritedTextDeclaration<WordBreakValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_overflow = None;
-        let mut vertical_align = None;
+        let mut vertical_align: [Option<CascadeValue<InheritedTextDeclaration<VerticalAlignValue>>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_indent = None;
         let mut word_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
@@ -1506,16 +1507,13 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.vertical_align
-                && wins(rule.selector.specificity, rule.order, false, vertical_align)
-            {
-                vertical_align = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_inherited_text_declaration(
+                rule.declarations.vertical_align,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut vertical_align,
+            );
             if let Some(value) = rule.declarations.text_indent
                 && wins(rule.selector.specificity, rule.order, false, text_indent)
             {
@@ -2063,16 +2061,13 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.vertical_align
-                && wins(u16::MAX, usize::MAX, true, vertical_align)
-            {
-                vertical_align = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_inherited_text_declaration(
+                declarations.vertical_align,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut vertical_align,
+            );
             if let Some(value) = declarations.text_indent
                 && wins(u16::MAX, usize::MAX, true, text_indent)
             {
@@ -2401,7 +2396,10 @@ impl NativeStylesheet {
             font_style: resolve_inherited_text_declaration(font_style, inherited.font_style),
             word_break: resolve_inherited_text_declaration(word_break, inherited.word_break),
             text_overflow: text_overflow.map_or(TextOverflowValue::Clip, |value| value.value),
-            vertical_align: vertical_align.map_or(inherited.vertical_align, |value| value.value),
+            vertical_align: resolve_inherited_text_declaration(
+                vertical_align,
+                inherited.vertical_align,
+            ),
             text_indent: text_indent.map_or(0, |value| value.value),
             word_spacing: resolve_inherited_text_declaration(word_spacing, inherited.word_spacing),
             letter_spacing: resolve_inherited_text_declaration(
@@ -3184,7 +3182,7 @@ struct NativeDeclarations {
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
     word_break: Option<InheritedTextDeclaration<WordBreakValue>>,
     text_overflow: Option<TextOverflowValue>,
-    vertical_align: Option<VerticalAlignValue>,
+    vertical_align: Option<InheritedTextDeclaration<VerticalAlignValue>>,
     text_indent: Option<u32>,
     word_spacing: Option<InheritedTextDeclaration<u32>>,
     letter_spacing: Option<InheritedTextDeclaration<u32>>,
@@ -3696,7 +3694,7 @@ fn parse_declarations_with_diagnostics(
             "font-style" => parse_font_style_declaration(value).is_some(),
             "word-break" => parse_word_break_declaration(value).is_some(),
             "text-overflow" => parse_text_overflow(value).is_some(),
-            "vertical-align" => parse_vertical_align(value).is_some(),
+            "vertical-align" => parse_vertical_align_declaration(value).is_some(),
             "text-indent" => parse_dimension(value).is_some(),
             "word-spacing" => parse_word_spacing_declaration(value).is_some(),
             "letter-spacing" => parse_letter_spacing_declaration(value).is_some(),
@@ -3994,7 +3992,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.text_overflow = parse_text_overflow(value);
             }
             "vertical-align" => {
-                declarations.vertical_align = parse_vertical_align(value);
+                if let Some(parsed) = parse_vertical_align_declaration(value) {
+                    declarations.vertical_align = Some(parsed);
+                }
             }
             "text-indent" => {
                 declarations.text_indent = parse_dimension(value);
@@ -5104,6 +5104,12 @@ fn parse_letter_spacing_declaration(value: &str) -> Option<InheritedTextDeclarat
     parse_inherited_text_declaration(value, parse_dimension)
 }
 
+fn parse_vertical_align_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<VerticalAlignValue>> {
+    parse_inherited_text_declaration(value, parse_vertical_align)
+}
+
 fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
     match value.trim().to_ascii_lowercase().as_str() {
         "clip" => Some(TextOverflowValue::Clip),
@@ -5548,7 +5554,7 @@ mod tests {
         );
         assert_eq!(
             declarations.vertical_align,
-            Some(VerticalAlignValue::Bottom)
+            Some(InheritedTextDeclaration::Value(VerticalAlignValue::Bottom))
         );
         assert_eq!(declarations.width, Some(240));
         assert_eq!(declarations.height, Some(30));
@@ -7429,6 +7435,31 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_inherited_vertical_align() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { vertical-align: top; } #rollback { vertical-align: middle; } #repeated { vertical-align: bottom; } #fallback { vertical-align: revert-layer; } #invalid { vertical-align: top; } } @layer theme { #named { vertical-align: bottom; } #rollback { vertical-align: top; } #repeated { vertical-align: revert-layer; } #invalid { vertical-align: middle; } } @layer top { #repeated { vertical-align: revert-layer; } } #named { vertical-align: revert-layer; } #rollback { vertical-align: middle; vertical-align: revert-layer; } #fallback { vertical-align: revert-layer; } #invalid { vertical-align: bottom; vertical-align: 1px; } #inline { vertical-align: top; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named'>Named</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let inline = node("<div id='inline'>Inline</div>");
+
+        let assert_value = |element: &NativeNode, expected: VerticalAlignValue| {
+            assert_eq!(stylesheet.computed_for(element).vertical_align(), expected);
+        };
+        assert_value(&named, VerticalAlignValue::Bottom);
+        assert_value(&rollback, VerticalAlignValue::Top);
+        assert_value(&repeated, VerticalAlignValue::Bottom);
+        assert_value(&fallback, VerticalAlignValue::Baseline);
+        assert_value(&invalid, VerticalAlignValue::Bottom);
+        assert_value(&inline, VerticalAlignValue::Top);
+    }
+
+    #[test]
     fn text_decoration_parser_accepts_bounded_line_sets() {
         assert_eq!(
             parse_text_decoration("UNDERLINE"),
@@ -8416,6 +8447,30 @@ mod tests {
         assert_eq!(
             declarations.letter_spacing,
             Some(InheritedTextDeclaration::Value(13))
+        );
+    }
+
+    #[test]
+    fn inherited_vertical_align_declaration_parser_accepts_only_standalone_revert_layer() {
+        assert_eq!(
+            parse_vertical_align_declaration("ReVeRt-LaYeR"),
+            Some(InheritedTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_vertical_align_declaration("middle"),
+            Some(InheritedTextDeclaration::Value(VerticalAlignValue::Middle))
+        );
+        assert_eq!(
+            parse_vertical_align_declaration("revert-layer middle"),
+            None
+        );
+        assert_eq!(parse_vertical_align_declaration("1px"), None);
+        assert_eq!(parse_vertical_align_declaration("50%"), None);
+        assert_eq!(parse_vertical_align_declaration("text-top"), None);
+        let declarations = parse_declarations("vertical-align: bottom; vertical-align: 1px;");
+        assert_eq!(
+            declarations.vertical_align,
+            Some(InheritedTextDeclaration::Value(VerticalAlignValue::Bottom))
         );
     }
 

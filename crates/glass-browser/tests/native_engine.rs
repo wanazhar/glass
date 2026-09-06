@@ -4710,6 +4710,40 @@ fn native_vertical_align_moves_inline_items_and_text_within_fixed_line_box() {
 }
 
 #[test]
+fn native_inherited_vertical_align_revert_layer_preserves_line_geometry() {
+    let document = NativeDocument::parse(
+        "<style>#flow { display:block; width:80px; line-height:40px; } .item { display:inline-block; width:8px; height:10px; } @layer base { #named { vertical-align:top; } #repeat { vertical-align:middle; } #parent { vertical-align:top; } } @layer theme { #named { vertical-align:bottom; } #repeat { vertical-align:revert-layer; } #parent { vertical-align:bottom; } } @layer top { #repeat { vertical-align:revert-layer; } } #named { vertical-align:revert-layer; } #parent { vertical-align:revert-layer; }</style><div id='flow'><span id='named' class='item'></span><span id='repeat' class='item'></span><span id='parent' class='item'><span id='child' class='item' style='vertical-align:ReVeRt-LaYeR'></span></span><span id='fallback' class='item' style='vertical-align:revert-layer'></span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "vertical-align")
+    }));
+    let flow = document.resolve_target("id=flow").unwrap();
+    let named = document.resolve_target("id=named").unwrap();
+    let repeat = document.resolve_target("id=repeat").unwrap();
+    let parent = document.resolve_target("id=parent").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let layout = document
+        .layout(Viewport {
+            width: 96,
+            height: 64,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+
+    assert_eq!(layout.box_for(flow).unwrap().height, 40);
+    assert_eq!(layout.box_for(named).unwrap().y, 30);
+    assert_eq!(layout.box_for(repeat).unwrap().y, 15);
+    assert_eq!(layout.box_for(parent).unwrap().y, 30);
+    assert_eq!(layout.box_for(child).unwrap().y, 60);
+    assert_eq!(layout.box_for(fallback).unwrap().y, 0);
+    assert_eq!(layout.hit_test(1, 31).unwrap(), Some(named));
+}
+
+#[test]
 fn native_flex_row_places_eligible_element_children_in_source_order() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:40px;height:20px'> \n<div id='first' style='display:block;width:8px;height:6px;margin:1px;background-color:red'>A</div> \n<button id='second' style='display:block;width:12px;height:10px;margin:2px;background-color:blue'>B</button> \n<span id='third' style='display:inline-block;width:8px;height:8px;margin:1px;background-color:green'>C</span> \n</div><div id='below' style='height:8px'>Below</div>",

@@ -458,6 +458,21 @@ impl TextDecorationValue {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeTextDecorationDeclaration {
+    Value(TextDecorationValue),
+    RevertLayer,
+}
+
+impl NativeTextDecorationDeclaration {
+    const fn resolve(self, inherited: TextDecorationValue) -> TextDecorationValue {
+        match self {
+            Self::Value(value) => value,
+            Self::RevertLayer => inherited,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextTransformValue {
     #[default]
@@ -1052,7 +1067,8 @@ impl NativeStylesheet {
         let mut flex_grow = None;
         let mut flex_shrink = None;
         let mut flex_basis = None;
-        let mut text_decoration = None;
+        let mut text_decoration: [Option<CascadeValue<NativeTextDecorationDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration_style: [Option<CascadeValue<NativeTextDecorationStyleDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration_skip_ink: [Option<
@@ -1175,20 +1191,21 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            if let Some(value) = rule.declarations.text_decoration
-                && wins(
+            if let Some(value) = rule.declarations.text_decoration {
+                let layer = cascade_layer_index(rule.selector.specificity);
+                if wins(
                     rule.selector.specificity,
                     rule.order,
                     false,
-                    text_decoration,
-                )
-            {
-                text_decoration = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
+                    text_decoration[layer],
+                ) {
+                    text_decoration[layer] = Some(CascadeValue {
+                        value,
+                        specificity: rule.selector.specificity,
+                        order: rule.order,
+                        inline: false,
+                    });
+                }
             }
             if let Some(value) = rule.declarations.text_decoration_style {
                 let layer = cascade_layer_index(rule.selector.specificity);
@@ -1735,15 +1752,16 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            if let Some(value) = declarations.text_decoration
-                && wins(u16::MAX, usize::MAX, true, text_decoration)
-            {
-                text_decoration = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
+            if let Some(value) = declarations.text_decoration {
+                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
+                if wins(u16::MAX, usize::MAX, true, text_decoration[layer]) {
+                    text_decoration[layer] = Some(CascadeValue {
+                        value,
+                        specificity: u16::MAX,
+                        order: usize::MAX,
+                        inline: true,
+                    });
+                }
             }
             if let Some(value) = declarations.text_decoration_style {
                 let layer = usize::from(UNLAYERED_CASCADE_LAYER);
@@ -2200,7 +2218,7 @@ impl NativeStylesheet {
             flex_grow: flex_grow.map_or(0, |value| value.value),
             flex_shrink: flex_shrink.map_or(1, |value| value.value),
             flex_basis: flex_basis.map_or(FlexBasisValue::Auto, |value| value.value),
-            text_decoration: text_decoration.map_or(inherited.text_decoration, |value| value.value),
+            text_decoration: resolve_text_decoration(text_decoration, inherited.text_decoration),
             text_decoration_style: resolve_text_decoration_style(
                 text_decoration_style,
                 inherited.text_decoration_style,
@@ -2448,6 +2466,38 @@ fn resolve_text_underline_offset(
     }
 }
 
+fn resolve_text_decoration(
+    candidates: [Option<CascadeValue<NativeTextDecorationDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    inherited: TextDecorationValue,
+) -> TextDecorationValue {
+    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    loop {
+        let Some((layer, candidate)) =
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(layer, candidate)| {
+                    if blocked[layer] {
+                        None
+                    } else {
+                        candidate.map(|candidate| (layer, candidate))
+                    }
+                })
+        else {
+            return inherited;
+        };
+        if matches!(
+            candidate.value,
+            NativeTextDecorationDeclaration::RevertLayer
+        ) {
+            blocked[layer] = true;
+            continue;
+        }
+        return candidate.value.resolve(inherited);
+    }
+}
+
 fn resolve_text_decoration_color(
     candidates: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
         MAX_NATIVE_CASCADE_LAYERS],
@@ -2685,7 +2735,7 @@ struct NativeDeclarations {
     flex_grow: Option<u32>,
     flex_shrink: Option<u32>,
     flex_basis: Option<FlexBasisValue>,
-    text_decoration: Option<TextDecorationValue>,
+    text_decoration: Option<NativeTextDecorationDeclaration>,
     text_decoration_style: Option<NativeTextDecorationStyleDeclaration>,
     text_decoration_skip_ink: Option<NativeTextDecorationSkipInkDeclaration>,
     text_decoration_skip_spaces: Option<NativeTextDecorationSkipSpacesDeclaration>,
@@ -3195,7 +3245,9 @@ fn parse_declarations_with_diagnostics(
             "flex-grow" => parse_flex_grow(value).is_some(),
             "flex-shrink" => parse_flex_shrink(value).is_some(),
             "flex-basis" => parse_flex_basis(value).is_some(),
-            "text-decoration" | "text-decoration-line" => parse_text_decoration(value).is_some(),
+            "text-decoration" | "text-decoration-line" => {
+                parse_text_decoration_declaration(value).is_some()
+            }
             "text-decoration-style" => parse_text_decoration_style(value).is_some(),
             "text-decoration-skip-ink" => parse_text_decoration_skip_ink(value).is_some(),
             "text-decoration-skip-spaces" => parse_text_decoration_skip_spaces(value).is_some(),
@@ -3457,7 +3509,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "text-decoration" | "text-decoration-line" => {
-                declarations.text_decoration = parse_text_decoration(value);
+                declarations.text_decoration = parse_text_decoration_declaration(value);
             }
             "text-decoration-style" => {
                 declarations.text_decoration_style = parse_text_decoration_style(value);
@@ -4324,6 +4376,13 @@ fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
     }
 }
 
+fn parse_text_decoration_declaration(value: &str) -> Option<NativeTextDecorationDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some(NativeTextDecorationDeclaration::RevertLayer);
+    }
+    parse_text_decoration(value).map(NativeTextDecorationDeclaration::Value)
+}
+
 fn parse_text_transform(value: &str) -> Option<TextTransformValue> {
     match value.to_ascii_lowercase().as_str() {
         "none" => Some(TextTransformValue::None),
@@ -4701,7 +4760,9 @@ mod tests {
         assert_eq!(declarations.flex_basis, Some(FlexBasisValue::Length(40)));
         assert_eq!(
             declarations.text_decoration,
-            Some(TextDecorationValue::new(true, false, false))
+            Some(NativeTextDecorationDeclaration::Value(
+                TextDecorationValue::new(true, false, false)
+            ))
         );
         assert_eq!(
             declarations.text_decoration_style,
@@ -6078,7 +6139,9 @@ mod tests {
         );
         assert_eq!(
             shorthand_then_longhand.text_decoration,
-            Some(TextDecorationValue::new(false, true, true))
+            Some(NativeTextDecorationDeclaration::Value(
+                TextDecorationValue::new(false, true, true)
+            ))
         );
 
         let longhand_then_shorthand = parse_declarations(
@@ -6086,11 +6149,15 @@ mod tests {
         );
         assert_eq!(
             longhand_then_shorthand.text_decoration,
-            Some(TextDecorationValue::new(true, false, false))
+            Some(NativeTextDecorationDeclaration::Value(
+                TextDecorationValue::new(true, false, false)
+            ))
         );
         assert_eq!(
             parse_declarations("text-decoration-line: none").text_decoration,
-            Some(TextDecorationValue::none())
+            Some(NativeTextDecorationDeclaration::Value(
+                TextDecorationValue::none()
+            ))
         );
         assert_eq!(
             parse_declarations("text-decoration-line: underline underline").text_decoration,
@@ -6800,6 +6867,85 @@ mod tests {
         assert_eq!(color_for("inline"), Some(blue));
         assert_eq!(color_for("fallback"), None);
         assert_eq!(color_for("child"), None);
+    }
+
+    #[test]
+    fn text_decoration_declaration_parser_accepts_only_revert_layer_or_line_values() {
+        assert_eq!(
+            parse_text_decoration_declaration("ReVeRt-LaYeR"),
+            Some(NativeTextDecorationDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_text_decoration_declaration("underline overline line-through"),
+            Some(NativeTextDecorationDeclaration::Value(
+                TextDecorationValue::new(true, true, true)
+            ))
+        );
+        assert_eq!(
+            parse_text_decoration_declaration("text-decoration-line: revert-layer"),
+            None
+        );
+        for value in [
+            "initial",
+            "inherit",
+            "unset",
+            "revert",
+            "all",
+            "revert-layer underline",
+            "underline revert-layer",
+            "none underline",
+            "underline underline",
+            "",
+        ] {
+            assert_eq!(parse_text_decoration_declaration(value), None, "{value}");
+        }
+        assert_eq!(
+            parse_declarations("text-decoration-line: revert-layer").text_decoration,
+            Some(NativeTextDecorationDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_declarations("text-decoration: revert-layer").text_decoration,
+            Some(NativeTextDecorationDeclaration::RevertLayer)
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_revert_layer_rolls_back_text_decoration_candidates() {
+        let document = NativeDocument::parse(
+            "<style>.line { display:block; width:24px; height:20px; line-height:20px; } @layer base { #named { text-decoration-line:underline; } #rollback { text-decoration:underline; } #repeated { text-decoration:underline; } #unlayered { text-decoration:underline; } #inline { text-decoration:underline; } #fallback { text-decoration-line:revert-layer; } } @layer theme { .named { text-decoration-line:overline; } #rollback { text-decoration-line:revert-layer; } #repeated { text-decoration-line:revert-layer; } #unlayered { text-decoration-line:overline; } #inline { text-decoration-line:overline; } } @layer top { #repeated { text-decoration-line:revert-layer; } } #named { text-decoration-line:revert-layer; } #unlayered { text-decoration-line:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='repeated' class='line'>A</div><div id='unlayered' class='line'>A</div><div id='inline' class='line' style='text-decoration-line:revert-layer'>A</div><div id='fallback' class='line'>A</div><div id='parent' class='line' style='text-decoration:line-through'><span id='child' style='text-decoration-line:revert-layer'>A</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let line_for = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_decoration()
+        };
+        assert_eq!(
+            line_for("named"),
+            TextDecorationValue::new(false, true, false)
+        );
+        assert_eq!(
+            line_for("rollback"),
+            TextDecorationValue::new(true, false, false)
+        );
+        assert_eq!(
+            line_for("repeated"),
+            TextDecorationValue::new(true, false, false)
+        );
+        assert_eq!(
+            line_for("unlayered"),
+            TextDecorationValue::new(false, true, false)
+        );
+        assert_eq!(
+            line_for("inline"),
+            TextDecorationValue::new(false, true, false)
+        );
+        assert_eq!(line_for("fallback"), TextDecorationValue::none());
+        assert_eq!(
+            line_for("child"),
+            TextDecorationValue::new(false, false, true)
+        );
     }
 
     #[test]

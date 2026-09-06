@@ -1179,12 +1179,14 @@ and existing layout/artifact consumers. Focused, full-native,
 affected-library, and strict affected-package local gates passed; exact test
 and cleanup evidence is recorded in the task. Remote CI remains pending
 because the checkout is local-only.
-The next dependency-ordered [native-engine-136](tasks/native-engine-136.md)
-contract is planned. It will add standalone case-insensitive `flex:revert-layer`
-through the existing private grow/shrink/basis rollback components, preserving
-finite shorthand expansion, same-block longhand precedence, local fallbacks,
-and the current layout/artifact owners. Its implementation and evidence remain
-unclaimed until the bounded slice is completed.
+The dependency-ordered [native-engine-136](tasks/native-engine-136.md)
+implementation is complete in `710ed3bb`. It adds standalone
+case-insensitive `flex:revert-layer` through the existing private
+grow/shrink/basis rollback components, preserving finite shorthand expansion,
+same-block longhand precedence, local fallbacks, and the current
+layout/artifact owners. Focused, full-native, affected-library, and strict
+affected-package local gates passed; exact evidence and cleanup are recorded in
+the task. Remote CI remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

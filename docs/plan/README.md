@@ -1295,6 +1295,15 @@ formatting, and static documentation gates passed locally; exact evidence and
 cleanup are recorded in the task. Remote CI remains pending because the
 checkout is local-only.
 
+The next dependency-ordered [native-engine-146](tasks/native-engine-146.md)
+contract is planned. It will reuse the same private bounded layer resolver for
+standalone case-insensitive `revert-layer` on local `overflow`, `overflow-x`,
+and `overflow-y`, keeping independent x/y candidates, the existing visible
+fallback, and the shared paint, viewport projection, point-hit, root-overflow,
+capture, and semantic/source-order owners. Nested scrolling, scrollbars,
+`visible`/`auto`/`scroll` used-value parity, multiple origins, and browser-wide
+CSS overflow conformance remain outside the planned boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

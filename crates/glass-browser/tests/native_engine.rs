@@ -3958,6 +3958,84 @@ fn native_display_list_inherits_text_color_and_preserves_transparent_override() 
 }
 
 #[test]
+fn native_paint_color_revert_layer_preserves_fill_glyph_and_inheritance_owners() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; } @layer base { #named { color:red; background-color:red; } #rollback { color:red; background-color:red; } #repeated { color:red; background-color:red; } #unlayered { color:red; background-color:red; } #inline { color:red; background-color:red; } #independent { color:red; background-color:red; } #parent { color:red; } } @layer theme { .named { color:blue; background-color:blue; } #rollback { color:revert-layer; background-color:revert-layer; } #repeated { color:revert-layer; background-color:revert-layer; } #unlayered { color:blue; background-color:blue; } #inline { color:blue; background-color:blue; } #independent { color:revert-layer; background-color:blue; } #parent { color:blue; } } @layer top { #repeated { color:revert-layer; background-color:revert-layer; } } #named { color:revert-layer; background-color:revert-layer; } #unlayered { color:revert-layer; background-color:revert-layer; } #parent { color:revert-layer; } #fallback { color:revert-layer; background-color:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='repeated' class='line'>A</div><div id='unlayered' class='line'>A</div><div id='inline' class='line' style='color:revert-layer;background-color:revert-layer'>A</div><div id='independent' class='line'>A</div><div id='parent' class='line'>P<span id='child'>C</span></div><div id='fallback' class='line'>F</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().is_empty());
+    let viewport = Viewport {
+        width: 32,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+
+    let text_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        list.commands
+            .iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::TextRun {
+                    node_id: command_node_id,
+                    origin,
+                    color,
+                    ..
+                } if *command_node_id == node_id => Some((*origin, *color)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text command for {id}"))
+    };
+    let fill_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                rect,
+                color,
+                ..
+            } if *command_node_id == node_id => Some((*rect, *color)),
+            _ => None,
+        })
+    };
+
+    assert_eq!(text_for("named").1, blue);
+    assert_eq!(fill_for("named").unwrap().1, blue);
+    assert_eq!(text_for("rollback").1, NativeColor::RED);
+    assert_eq!(fill_for("rollback").unwrap().1, NativeColor::RED);
+    assert_eq!(text_for("repeated").1, NativeColor::RED);
+    assert_eq!(fill_for("repeated").unwrap().1, NativeColor::RED);
+    assert_eq!(text_for("unlayered").1, blue);
+    assert_eq!(fill_for("unlayered").unwrap().1, blue);
+    assert_eq!(text_for("inline").1, blue);
+    assert_eq!(fill_for("inline").unwrap().1, blue);
+    assert_eq!(text_for("independent").1, NativeColor::RED);
+    assert_eq!(fill_for("independent").unwrap().1, blue);
+    assert_eq!(text_for("child").1, blue);
+    assert_eq!(text_for("fallback").1, NativeColor::BLACK);
+    assert!(fill_for("fallback").is_none());
+
+    let independent_text = text_for("independent");
+    let independent_fill = fill_for("independent").unwrap();
+    assert_eq!(
+        surface.pixel(independent_fill.0.x, independent_fill.0.y),
+        Some([0, 0, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(independent_text.0.x.saturating_add(1), independent_text.0.y,),
+        Some([255, 0, 0, 255])
+    );
+}
+
+#[test]
 fn native_display_list_emits_uniform_border_after_box_model_layout() {
     let document = NativeDocument::parse(
         "<div id='card' style='width: 8px; height: 8px; border: 2px solid blue'>Card</div>",

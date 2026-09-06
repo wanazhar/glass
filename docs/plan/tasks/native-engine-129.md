@@ -184,9 +184,18 @@ writer/open-handle checks they will be removed with bounded exact path
 deletion. Source, fixtures, durable data, and unrelated temporary paths are
 not cleanup candidates.
 
+Final cleanup completed without terminating any process: the focused target
+was measured at 5,736,705,777 bytes across 7,111 files and the 20 exact
+`/tmp/glass-129-*.log` reports totaled 128,245 bytes; both exact scopes are
+absent. The separate repository `target/` was also verified as Cargo output,
+measured at 426,058,047 bytes across 1,739 files, and removed; `/tmp/target/`
+was absent. Available filesystem bytes increased from 79,366,098,944 to
+85,557,026,816, a measured delta of 6,190,927,872 bytes. No source,
+fixture, durable data, or unrelated temporary path was removed.
+
 ## Certification
 
-The implementation, affected-package verification, and documentation audit
-are complete locally at `36a0f68`. Exact-output cleanup and final issue
-synchronization remain. Remote CI remains pending because this checkout is
+The implementation, affected-package verification, documentation audit, and
+exact-output cleanup are complete locally at `3cb2f02c`, pending only final
+issue synchronization. Remote CI remains pending because this checkout is
 local-only.

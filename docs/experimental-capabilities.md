@@ -161,7 +161,16 @@ reduced-opacity group markers and software compositing, and unchanged layout,
 point-hit, capture, raster, overflow, and semantic/source-order owners;
 inherited opacity, stacking-context/blending parity, filters, animation,
 multiple origins, and browser-wide opacity conformance remain outside the
-boundary. It also provides side-specific solid/dashed/dotted-border paint,
+boundary. The same bounded local cascade path also accepts standalone,
+case-insensitive 15-layer/unlayered `revert-layer` for the existing local
+`display` and `visibility` owners. It resolves through lower concrete
+candidates or the normal-flow `display:auto` and visible fallbacks, preserving
+`display:none`, `visibility:hidden`, and `display:contents` behavior across
+hidden-subtree layout, point hit testing, display-list, capture, raster, and
+semantic/source-order owners. Inherited visibility, display decomposition,
+formatting-context parity, table/ruby/flow-root details, animation, multiple
+origins, and browser-wide CSS display/visibility conformance remain outside
+the boundary. It also provides side-specific solid/dashed/dotted-border paint,
 bounded physical circular border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and
 source-order text paint, bounded

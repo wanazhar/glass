@@ -792,6 +792,15 @@ workflows.
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
 | Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`; inherited text presentation also has bounded case-insensitive 15-layer/unlayered rollback for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks, alongside the previously listed layout, text, decoration, navigation, and artifact surfaces; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
+The native engine also accepts bounded case-insensitive 15-layer/unlayered
+`revert-layer` for local `display` and `visibility`. Rollback resolves through
+lower concrete candidates or the established normal-flow `display:auto` and
+visible fallbacks, preserving `display:none`, `visibility:hidden`, and
+`display:contents` behavior across hidden-subtree layout, point hit testing,
+display-list, capture, raster, and semantic/source-order owners. Inherited
+visibility, display decomposition, formatting-context parity, table/ruby/
+flow-root details, animation, multiple origins, and browser-wide CSS
+display/visibility conformance remain outside the boundary.
 The native engine also supports bounded 15-layer/unlayered `revert-layer`
 rollback for inherited `text-align`, `text-align-last`, and `text-justify`.
 The current native decoration-color surface additionally accepts bounded

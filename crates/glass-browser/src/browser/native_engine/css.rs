@@ -292,6 +292,12 @@ enum WhiteSpaceDeclaration {
     RevertLayer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineHeightDeclaration {
+    Value(u32),
+    RevertLayer,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextAlignValue {
     #[default]
@@ -1130,7 +1136,8 @@ impl NativeStylesheet {
         let mut max_width = None;
         let mut min_height = None;
         let mut max_height = None;
-        let mut line_height = None;
+        let mut line_height: [Option<CascadeValue<LineHeightDeclaration>>;
+            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut background_color = None;
         let mut border: [Option<CascadeValue<NativeBorderSide>>; 4] = [None; 4];
         let mut border_radius = None;
@@ -1627,9 +1634,14 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = rule.declarations.line_height
-                && wins(rule.selector.specificity, rule.order, false, line_height)
+                && wins(
+                    rule.selector.specificity,
+                    rule.order,
+                    false,
+                    line_height[layer],
+                )
             {
-                line_height = Some(CascadeValue {
+                line_height[layer] = Some(CascadeValue {
                     value,
                     specificity: rule.selector.specificity,
                     order: rule.order,
@@ -2149,9 +2161,9 @@ impl NativeStylesheet {
                 });
             }
             if let Some(value) = declarations.line_height
-                && wins(u16::MAX, usize::MAX, true, line_height)
+                && wins(u16::MAX, usize::MAX, true, line_height[layer])
             {
-                line_height = Some(CascadeValue {
+                line_height[layer] = Some(CascadeValue {
                     value,
                     specificity: u16::MAX,
                     order: usize::MAX,
@@ -2302,9 +2314,7 @@ impl NativeStylesheet {
             max_width: max_width.map(|value| value.value),
             min_height: min_height.map(|value| value.value),
             max_height: max_height.map(|value| value.value),
-            line_height: line_height
-                .map(|value| value.value)
-                .or(inherited.line_height),
+            line_height: resolve_line_height(line_height, inherited.line_height),
             background_color: background_color.map(|value| value.value),
             border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
             border_radius: border_radius.map_or(NativeBorderRadius::default(), |value| value.value),
@@ -2386,6 +2396,16 @@ fn resolve_white_space(
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         WhiteSpaceDeclaration::Value(value) => Some(value),
         WhiteSpaceDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_line_height(
+    candidates: [Option<CascadeValue<LineHeightDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    inherited: Option<u32>,
+) -> Option<u32> {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        LineHeightDeclaration::Value(value) => Some(Some(value)),
+        LineHeightDeclaration::RevertLayer => None,
     })
 }
 
@@ -2878,7 +2898,7 @@ struct NativeDeclarations {
     max_width: Option<u32>,
     min_height: Option<u32>,
     max_height: Option<u32>,
-    line_height: Option<u32>,
+    line_height: Option<LineHeightDeclaration>,
     background_color: Option<NativeColor>,
     border: [Option<NativeBorderSide>; 4],
     border_radius: Option<NativeBorderRadius>,
@@ -3383,7 +3403,7 @@ fn parse_declarations_with_diagnostics(
             "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => {
                 parse_dimension(value).is_some()
             }
-            "line-height" => parse_line_height(value).is_some(),
+            "line-height" => parse_line_height_declaration(value).is_some(),
             "background-color" | "color" => parse_color(value).is_some(),
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
                 parse_border(value).is_some()
@@ -3708,7 +3728,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.max_height = parse_dimension(value);
             }
             "line-height" => {
-                declarations.line_height = parse_line_height(value);
+                declarations.line_height = parse_line_height_declaration(value);
             }
             "background-color" => {
                 declarations.background_color = parse_color(value);
@@ -4167,6 +4187,14 @@ fn parse_gap(value: &str) -> Option<NativeGapValue> {
 
 fn parse_line_height(value: &str) -> Option<u32> {
     parse_dimension(value).filter(|value| *value > 0)
+}
+
+fn parse_line_height_declaration(value: &str) -> Option<LineHeightDeclaration> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        Some(LineHeightDeclaration::RevertLayer)
+    } else {
+        parse_line_height(value).map(LineHeightDeclaration::Value)
+    }
 }
 
 fn parse_opacity(value: &str) -> Option<u8> {
@@ -4966,7 +4994,10 @@ mod tests {
         assert_eq!(declarations.max_width, Some(400));
         assert_eq!(declarations.min_height, Some(14));
         assert_eq!(declarations.max_height, Some(500));
-        assert_eq!(declarations.line_height, Some(28));
+        assert_eq!(
+            declarations.line_height,
+            Some(LineHeightDeclaration::Value(28))
+        );
         assert_eq!(declarations.color, Some(NativeColor::RED));
         let parsed_color = NativeColor {
             red: 16,
@@ -5592,6 +5623,37 @@ mod tests {
     }
 
     #[test]
+    fn line_height_revert_layer_rolls_back_named_and_inline_candidates() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { line-height: 16px; } #repeated { line-height: 20px; } #inline { line-height: 24px; } } @layer theme { #named { line-height: 28px; } #repeated { line-height: revert-layer; } #inline { line-height: 32px; } } @layer top { #repeated { line-height: revert-layer; } } #named { line-height: revert-layer; } #repeated { line-height: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named'>Named</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let inline = node("<div id='inline' style='line-height:ReVeRt-LaYeR'>Inline</div>");
+        let fallback = node("<div id='fallback' style='line-height:revert-layer'>Fallback</div>");
+
+        assert_eq!(stylesheet.computed_for(&named).line_height(), Some(28));
+        assert_eq!(stylesheet.computed_for(&repeated).line_height(), Some(20));
+        assert_eq!(stylesheet.computed_for(&inline).line_height(), Some(32));
+        assert_eq!(stylesheet.computed_for(&fallback).line_height(), None);
+
+        let mut diagnostics = NativeDiagnosticSink::default();
+        NativeStylesheet::from_sources_with_diagnostics(
+            vec!["#target { line-height: revert-layer; }".into()],
+            &mut diagnostics,
+        )
+        .unwrap();
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "line-height"
+        }));
+    }
+
+    #[test]
     fn overflow_axis_longhands_cascade_independently_from_shorthand() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             ".card { overflow: hidden; } #card { overflow-x: clip; overflow-y: visible; }".into(),
@@ -5705,6 +5767,25 @@ mod tests {
         assert_eq!(parse_line_height("1.5"), None);
         assert_eq!(parse_line_height("50%"), None);
         assert_eq!(parse_line_height("20000px"), None);
+    }
+
+    #[test]
+    fn line_height_declaration_parser_accepts_only_standalone_case_insensitive_revert_layer() {
+        assert_eq!(
+            parse_line_height_declaration("ReVeRt-LaYeR"),
+            Some(LineHeightDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_line_height_declaration("28px"),
+            Some(LineHeightDeclaration::Value(28))
+        );
+        assert_eq!(
+            parse_line_height_declaration(" REVERT-LAYER "),
+            Some(LineHeightDeclaration::RevertLayer)
+        );
+        assert_eq!(parse_line_height_declaration("inherit"), None);
+        assert_eq!(parse_line_height_declaration("0px"), None);
+        assert_eq!(parse_line_height_declaration("revert-layer 28px"), None);
     }
 
     #[test]

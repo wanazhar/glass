@@ -4184,6 +4184,70 @@ fn native_inherited_line_height_controls_nested_auto_height_and_preserves_explic
 }
 
 #[test]
+fn native_line_height_revert_layer_preserves_flow_inheritance_and_explicit_height() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:16px; } @layer base { #named { line-height:20px; } #repeated { line-height:24px; } #inline { line-height:28px; } #parent { line-height:28px; } #explicit { line-height:20px; } } @layer theme { #named { line-height:32px; } #repeated { line-height:revert-layer; } #inline { line-height:36px; } #parent { line-height:32px; } #explicit { line-height:32px; } } @layer top { #repeated { line-height:revert-layer; } } #named { line-height:revert-layer; } #repeated { line-height:revert-layer; } #parent { line-height:revert-layer; } #explicit { line-height:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeated' class='line'>A</div><div id='inline' class='line' style='line-height:ReVeRt-LaYeR'>A</div><div id='parent' class='line'><span id='child'>A</span></div><div id='fallback' class='line' style='line-height:revert-layer'>A</div><div id='explicit' class='line' style='line-height:revert-layer;height:4px'>A</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "line-height")
+    }));
+    let viewport = Viewport {
+        width: 32,
+        height: 256,
+        device_scale_factor_milli: 1000,
+    };
+    let named = document.resolve_target("id=named").unwrap();
+    let repeated = document.resolve_target("id=repeated").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let parent = document.resolve_target("id=parent").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let explicit = document.resolve_target("id=explicit").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(layout.box_for(named).unwrap().height, 32);
+    assert_eq!(layout.box_for(repeated).unwrap().height, 24);
+    assert_eq!(layout.box_for(inline).unwrap().height, 36);
+    assert_eq!(layout.box_for(parent).unwrap().height, 32);
+    assert_eq!(layout.box_for(child).unwrap().height, 32);
+    assert_eq!(layout.box_for(fallback).unwrap().height, 20);
+    assert_eq!(layout.box_for(explicit).unwrap().height, 4);
+    assert_eq!(layout.box_for(named).unwrap().y, 0);
+    assert_eq!(layout.box_for(repeated).unwrap().y, 32);
+    assert_eq!(layout.box_for(inline).unwrap().y, 56);
+    assert_eq!(layout.box_for(parent).unwrap().y, 92);
+    assert_eq!(layout.box_for(child).unwrap().y, 92);
+    assert_eq!(layout.box_for(fallback).unwrap().y, 124);
+    assert_eq!(layout.box_for(explicit).unwrap().y, 144);
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(named));
+    assert_eq!(layout.hit_test(1, 33).unwrap(), Some(repeated));
+    assert_eq!(layout.hit_test(1, 57).unwrap(), Some(inline));
+    assert_eq!(layout.hit_test(1, 125).unwrap(), Some(fallback));
+    assert_eq!(layout.hit_test(1, 145).unwrap(), Some(explicit));
+
+    let list = document.display_list(viewport).unwrap();
+    let text_origins = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id, origin, ..
+            } => Some((*node_id, *origin)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(text_origins.contains(&(named, NativePoint { x: 0, y: 0 })));
+    assert!(text_origins.contains(&(repeated, NativePoint { x: 0, y: 32 })));
+    assert!(text_origins.contains(&(inline, NativePoint { x: 0, y: 56 })));
+    assert!(text_origins.contains(&(child, NativePoint { x: 0, y: 92 })));
+    assert!(text_origins.contains(&(fallback, NativePoint { x: 0, y: 124 })));
+    assert!(text_origins.contains(&(explicit, NativePoint { x: 0, y: 144 })));
+}
+
+#[test]
 fn native_text_fragments_follow_inline_flow_and_source_order() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:24px'>AB<span id='middle' style='display:inline;width:8px;color:red'>C</span>DE</div>",

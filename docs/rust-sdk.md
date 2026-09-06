@@ -145,6 +145,15 @@ software compositing, and unchanged layout, point-hit, capture, raster,
 overflow, and semantic/source-order owners; inherited opacity,
 stacking-context/blending parity, filters, animation, multiple origins, and
 browser-wide opacity conformance remain outside the boundary,
+plus bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback
+for `display` and `visibility`, resolving through lower concrete candidates or
+the normal-flow `display:auto` and visible fallbacks while preserving
+`display:none`, `visibility:hidden`, and `display:contents` behavior across
+hidden-subtree layout, point-hit, display-list, capture, raster, and
+semantic/source-order owners; inherited visibility, display decomposition,
+formatting-context parity, table/ruby/flow-root details, animation, multiple
+origins, and browser-wide CSS display/visibility conformance remain outside
+the boundary,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

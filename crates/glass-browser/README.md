@@ -235,6 +235,16 @@ compositing, and unchanged layout, point-hit, capture, raster, overflow, and
 semantic/source-order owners; inherited opacity, stacking-context/blending
 parity, filters, animation, multiple origins, and browser-wide opacity
 conformance remain outside the boundary.
+The same bounded local cascade path also accepts standalone,
+case-insensitive 15-layer/unlayered `revert-layer` for the existing local
+`display` and `visibility` owners. It resolves rollback through lower concrete
+candidates or the established normal-flow `display:auto` and visible
+fallbacks, preserving `display:none`, `visibility:hidden`, and
+`display:contents` behavior across hidden-subtree layout, point hit testing,
+display-list, capture, raster, and semantic/source-order owners. Inherited
+visibility, display decomposition, formatting-context parity, table/ruby/
+flow-root details, animation, multiple origins, and browser-wide CSS
+display/visibility conformance remain outside the boundary.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and

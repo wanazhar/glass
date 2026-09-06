@@ -1,7 +1,7 @@
 ---
 id: native-engine-149
 scope: glass-browser/native-engine/cascade-layers-display-visibility-revert-layer
-status: planned
+status: done
 depends-on: [native-engine-148]
 ---
 
@@ -127,8 +127,30 @@ The completed slice must cover:
 
 ## Implementation
 
-Pending the implementation checkpoint.
+Implemented in `6a7dc305`; the diagnostics compatibility follow-up is
+`3072f6e5`. The implementation keeps `display` and `visibility` as independent
+private local candidate arrays, reuses the bounded 15-layer resolver, and adds
+no public computed-style, display-list, raster, diagnostic transport,
+dependency, feature-default, or crate-boundary changes.
 
 ## Evidence
 
-Pending implementation and local certification.
+Local certification completed:
+
+- `CARGO_TARGET_DIR=/tmp/glass-149-focused cargo check -q -p glass-browser --features native-engine --tests --locked` passed.
+- Focused parser/cascade unit: 1 passed, 959 filtered.
+- Focused integration: 1 passed, 186 filtered.
+- Full native integration: 187 passed, 0 failed.
+- Affected library with `RUST_MIN_STACK=16777216`: 959 passed, 1 ignored.
+- Strict affected-package Clippy with `-D warnings` passed.
+- Feature rustdoc with `RUSTDOCFLAGS=-Dwarnings` passed.
+- `cargo fmt --all` and `git diff --check` passed.
+- Static gates passed: release documentation 563 Markdown files, 83 current
+  documents, 57 previous-version hits, 656 semantic-audit hits, and 0
+  current-claim failures; feature parity 14 capabilities across 4 targets;
+  TUI 15 implementation help keys/63 documentation markers; documentation
+  depth 93 guides/19 substantive contracts; reliability 6 scenarios across 4
+  targets; read-only adapters 5; Web IR 8 fixtures/8 scenarios/11
+  categories; and documentation coverage 563 Markdown files, 345 full-product
+  MCP tools (100 browser-only), 17 examples, and 22 public modules.
+- Remote CI remains unclaimed because the checkout is local-only.

@@ -1815,15 +1815,18 @@ documentation audits, and task-specific cleanup pass locally; issue-level
 final gates and remote CI remain pending until issue #40 reaches its final
 validation boundary.
 
-The dependency-ordered [native-engine-186](tasks/native-engine-186.md) slice is
-in progress. It will extend bounded author-origin `!important` priority to the
-six supported horizontal-tb logical complete/side border shorthands by
-carrying one private importance bit per logical side into the existing doubled
+The completed dependency-ordered [native-engine-186](tasks/native-engine-186.md)
+slice is implemented at `274441e1`, with the strict-lint helper correction at
+`758b891a`. It extends bounded author-origin `!important` priority to the six
+supported horizontal-tb logical complete/side border shorthands by carrying
+one private importance bit per logical side into the existing doubled
 width/style/color component streams before resolved `ltr`/`rtl` projection.
 Independent component composition, CSS-wide and omitted `none`/`hidden`/
 `revert-layer` behavior, physical layout/paint consumers, public schemas, and
 the two-crate boundary remain unchanged. Vertical writing modes and
-browser-wide logical-border conformance remain outside this slice; issue-level
+browser-wide logical-border conformance remain outside this slice. Focused,
+full-native, feature-library, strict Clippy, warning-denied rustdoc, current
+documentation audits, and task-specific cleanup pass locally; issue-level
 final gates and remote CI remain pending until issue #40 reaches its final
 validation boundary.
 

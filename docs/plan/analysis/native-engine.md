@@ -2347,13 +2347,13 @@ visual stacking.
 
 | `native-engine-185` | completed bounded author-origin `!important` priority for complete physical `border` and four physical side-border shorthands by carrying one private importance bit per side into the existing doubled width/style/color component streams; preserved independent component composition, CSS-wide/omitted `none`/`hidden`/`revert-layer` behavior, public schemas, and the two-crate boundary; implementation `bfcb6dc9`; focused/full-native/library, strict Clippy, warning-denied rustdoc, current documentation, and cleanup evidence recorded locally | `native-engine-184` | logical complete shorthands, vertical writing modes, table conflict resolution, border-image, gradients, multiple origins, transitions, animations, percentages, elliptical radii, arbitrary CSS border values, and browser-wide conformance |
 
-| `native-engine-186` | in progress: extend bounded author-origin `!important` priority to the six supported horizontal-tb logical complete/side border shorthands by carrying one private importance bit per logical side into the existing doubled width/style/color component streams before resolved `ltr`/`rtl` projection; preserve independent component composition, CSS-wide/omitted `none`/`hidden`/`revert-layer` behavior, public schemas, and the two-crate boundary | `native-engine-185` | vertical writing modes, logical radius, table conflict resolution, border-image, gradients, multiple origins, transitions, animations, percentages, elliptical radii, arbitrary logical-border values, and browser-wide conformance |
+| `native-engine-186` | completed bounded author-origin `!important` priority for the six supported horizontal-tb logical complete/side border shorthands by carrying one private importance bit per logical side into the existing doubled width/style/color component streams before resolved `ltr`/`rtl` projection; preserved independent component composition, CSS-wide/omitted `none`/`hidden`/`revert-layer` behavior, public schemas, and the two-crate boundary; implementation `274441e1`, strict-lint helper correction `758b891a`; focused/full-native/library, strict Clippy, warning-denied rustdoc, current documentation, and cleanup evidence recorded locally | `native-engine-185` | vertical writing modes, logical radius, table conflict resolution, border-image, gradients, multiple origins, transitions, animations, percentages, elliptical radii, arbitrary logical-border values, and browser-wide conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-185.md` is the latest completed task;
-`docs/plan/tasks/native-engine-184.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-186.md` is the latest completed task;
+`docs/plan/tasks/native-engine-185.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-183.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-180.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-177.md` is the preceding completed task;

@@ -150,8 +150,8 @@ same terminal priority, as do the six supported horizontal-tb logical
 `border-block-color`, `border-block-start-color`, `border-block-end-color`,
 `border-inline-color`, `border-inline-start-color`, and
 `border-inline-end-color` declarations through their existing `ltr`/`rtl`
-physical-side projection; logical complete/side border shorthands and other
-properties remain outside this bounded paint-color priority,
+physical-side projection; other properties remain outside this bounded
+paint-color priority,
 plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
 one-author-origin `revert` for the radius owner: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width
@@ -248,9 +248,15 @@ and side-border shorthand priority is described below. The complete physical
 terminal case-insensitive `!important` marker: important shorthand projections
 outrank normal projections, use earliest-named-layer priority inside the
 bounded author-important partition, preserve per-side `revert-layer` and
-inline behavior, and carry the marker through the existing independent
-width/style/color component streams. Logical complete and side-border
-shorthands remain normal-only. A winning `none`
+  inline behavior, and carry the marker through the existing independent
+  width/style/color component streams. The six supported horizontal-tb logical
+  complete/side border shorthands also accept a terminal case-insensitive
+  `!important` marker: important logical shorthand projections outrank normal
+  projections, use earliest-named-layer priority inside the bounded
+  author-important partition, preserve per-side `revert-layer` and inline
+  behavior, and carry the marker through resolved `ltr`/`rtl` projection into
+  the existing independent physical width/style/color component streams. A
+  winning `none`
 or `hidden` blocks lower
 styles and resolves to no
 side/zero width before layout and paint; `hidden` remains a private distinction
@@ -272,15 +278,15 @@ supported logical border-width declarations also accept a terminal
 case-insensitive `!important` marker: important logical widths outrank normal
 widths, use earliest-named-layer priority inside the bounded author-important
 partition, preserve per-side `revert-layer`, and carry that partition through
-resolved `ltr`/`rtl` projection; logical complete/side border shorthands remain
-normal-only for this width priority slice. The six supported logical
+resolved `ltr`/`rtl` projection; complete/side shorthand projections use the
+logical shorthand priority described above. The six supported logical
 border-style declarations also accept a terminal case-insensitive
 `!important` marker: important logical styles outrank normal styles, use
 earliest-named-layer priority inside the bounded author-important partition,
 preserve per-side `revert-layer`, carry that partition through resolved
 `ltr`/`rtl` projection, and retain private `none`/`hidden` no-paint behavior;
-logical complete/side border shorthands remain normal-only for this style priority
-slice. Complete logical shorthands, CSS-wide keywords, `currentColor`, bounded
+complete/side shorthand projections use the logical shorthand priority
+described above. Complete logical shorthands, CSS-wide keywords, `currentColor`, bounded
 named-layer and
 unlayered `revert-layer`, physical/logical precedence, and component composition
 reuse the existing physical border streams and box-model, display-list,

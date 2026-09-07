@@ -315,9 +315,21 @@ pub struct NativeBorderRadius {
     pub bottom_left: u32,
 }
 
+impl NativeBorderRadius {
+    const fn corner(self, index: usize) -> u32 {
+        match index {
+            0 => self.top_left,
+            1 => self.top_right,
+            2 => self.bottom_right,
+            _ => self.bottom_left,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeBorderRadiusValue {
     Radius(NativeBorderRadius),
+    Corner(u32),
     Inherit,
     Unset,
     Initial,
@@ -1482,9 +1494,9 @@ impl NativeStylesheet {
             CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>,
         >; MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES] =
             [[None; MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
-        let mut border_radius: [Option<
+        let mut border_radius: [[Option<
             CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>,
-        >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        >; MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut padding: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut margin: [[Option<CascadeValue<LocalCascadeDeclaration<NativeMarginValue>>>;
@@ -2034,8 +2046,8 @@ impl NativeStylesheet {
                     color: &mut logical_border_color,
                 },
             );
-            apply_local_cascade_declaration(
-                rule.declarations.border_radius,
+            apply_border_radius_cascade(
+                &rule.declarations,
                 rule.selector.specificity,
                 rule.order,
                 false,
@@ -2504,8 +2516,8 @@ impl NativeStylesheet {
                     color: &mut logical_border_color,
                 },
             );
-            apply_local_cascade_declaration(
-                declarations.border_radius,
+            apply_border_radius_cascade(
+                &declarations,
                 u16::MAX,
                 usize::MAX,
                 true,
@@ -3078,21 +3090,24 @@ fn resolve_local_border_style_declaration(
 }
 
 fn resolve_local_border_radius_declaration(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>>;
+        MAX_NATIVE_CASCADE_LAYERS]; 4],
     inherited_radius: NativeBorderRadius,
 ) -> NativeBorderRadius {
-    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => Some(Some(match value {
-            NativeBorderRadiusValue::Radius(radius) => radius,
-            NativeBorderRadiusValue::Inherit => inherited_radius,
-            NativeBorderRadiusValue::Unset
-            | NativeBorderRadiusValue::Initial
-            | NativeBorderRadiusValue::Revert => NativeBorderRadius::default(),
-        })),
-        LocalCascadeDeclaration::RevertLayer => None,
+    std::array::from_fn(|index| {
+        resolve_alignment_candidates(candidates[index], None, |declaration| match declaration {
+            LocalCascadeDeclaration::Value(value) => Some(Some(match value {
+                NativeBorderRadiusValue::Radius(radius) => radius.corner(index),
+                NativeBorderRadiusValue::Corner(radius) => radius,
+                NativeBorderRadiusValue::Inherit => inherited_radius.corner(index),
+                NativeBorderRadiusValue::Unset
+                | NativeBorderRadiusValue::Initial
+                | NativeBorderRadiusValue::Revert => 0,
+            })),
+            LocalCascadeDeclaration::RevertLayer => None,
+        })
+        .unwrap_or_default()
     })
-    .unwrap_or_default()
 }
 
 fn resolve_alignment_candidates<T: Copy, U: Copy>(
@@ -3741,6 +3756,41 @@ fn apply_border_color_cascade(
     }
 }
 
+fn apply_border_radius_cascade(
+    declarations: &NativeDeclarations,
+    specificity: u16,
+    rule_order: usize,
+    inline: bool,
+    candidates: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>>;
+             MAX_NATIVE_CASCADE_LAYERS]; 4],
+) {
+    if let Some(border_radius) = declarations.border_radius {
+        let order = border_cascade_order(rule_order, declarations.border_radius_order, inline);
+        for candidate in candidates.iter_mut() {
+            apply_local_cascade_declaration(
+                Some(border_radius),
+                specificity,
+                order,
+                inline,
+                candidate,
+            );
+        }
+    }
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        apply_local_cascade_declaration(
+            declarations.border_radius_corners[index],
+            specificity,
+            border_cascade_order(
+                rule_order,
+                declarations.border_radius_corner_orders[index],
+                inline,
+            ),
+            inline,
+            candidate,
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeLogicalBorderDeclarations {
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; LOGICAL_BORDER_SIDES],
@@ -4012,6 +4062,9 @@ struct NativeDeclarations {
     border_color: [Option<LocalCascadeDeclaration<NativeBorderColorValue>>; 4],
     border_color_order: [usize; 4],
     border_radius: Option<LocalCascadeDeclaration<NativeBorderRadiusValue>>,
+    border_radius_order: usize,
+    border_radius_corners: [Option<LocalCascadeDeclaration<NativeBorderRadiusValue>>; 4],
+    border_radius_corner_orders: [usize; 4],
     padding: [Option<LocalCascadeDeclaration<u32>>; 4],
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
     box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
@@ -4317,6 +4370,10 @@ fn parse_style_rule(
         || declarations.border_style.iter().any(Option::is_some)
         || declarations.border_color.iter().any(Option::is_some)
         || declarations.border_radius.is_some()
+        || declarations
+            .border_radius_corners
+            .iter()
+            .any(Option::is_some)
         || declarations.padding.iter().any(Option::is_some)
         || declarations.margin.iter().any(Option::is_some)
         || declarations.box_sizing.is_some()
@@ -4551,6 +4608,12 @@ fn parse_declarations_with_diagnostics(
             | "border-inline-start-color"
             | "border-inline-end-color" => parse_border_color_side_declaration(value).is_some(),
             "border-radius" => parse_border_radius_declaration(value).is_some(),
+            "border-top-left-radius"
+            | "border-top-right-radius"
+            | "border-bottom-right-radius"
+            | "border-bottom-left-radius" => {
+                parse_border_radius_corner_declaration(value).is_some()
+            }
             "padding" => parse_local_box_edges(value).is_some(),
             "margin" => parse_local_margin_edges(value).is_some(),
             "padding-top" | "padding-right" | "padding-bottom" | "padding-left" => {
@@ -4698,6 +4761,10 @@ fn is_known_css_property(property: &str) -> bool {
             | "border-inline-start-color"
             | "border-inline-end-color"
             | "border-radius"
+            | "border-top-left-radius"
+            | "border-top-right-radius"
+            | "border-bottom-right-radius"
+            | "border-bottom-left-radius"
             | "padding"
             | "margin"
             | "padding-top"
@@ -5361,7 +5428,44 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "border-radius" => {
                 if let Some(parsed) = parse_border_radius_declaration(value) {
                     declarations.border_radius = Some(parsed);
+                    declarations.border_radius_order = declaration_order;
                 }
+            }
+            "border-top-left-radius" => {
+                set_border_radius_corner(
+                    &mut declarations.border_radius_corners,
+                    &mut declarations.border_radius_corner_orders,
+                    0,
+                    value,
+                    declaration_order,
+                );
+            }
+            "border-top-right-radius" => {
+                set_border_radius_corner(
+                    &mut declarations.border_radius_corners,
+                    &mut declarations.border_radius_corner_orders,
+                    1,
+                    value,
+                    declaration_order,
+                );
+            }
+            "border-bottom-right-radius" => {
+                set_border_radius_corner(
+                    &mut declarations.border_radius_corners,
+                    &mut declarations.border_radius_corner_orders,
+                    2,
+                    value,
+                    declaration_order,
+                );
+            }
+            "border-bottom-left-radius" => {
+                set_border_radius_corner(
+                    &mut declarations.border_radius_corners,
+                    &mut declarations.border_radius_corner_orders,
+                    3,
+                    value,
+                    declaration_order,
+                );
             }
             "padding" => {
                 if let Some(values) = parse_local_box_edges(value) {
@@ -5810,6 +5914,29 @@ fn parse_border_radius_declaration(
         .map(LocalCascadeDeclaration::Value)
 }
 
+fn parse_border_radius_corner_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeBorderRadiusValue>> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("revert-layer") {
+        return Some(LocalCascadeDeclaration::RevertLayer);
+    }
+    let css_wide = if value.eq_ignore_ascii_case("inherit") {
+        Some(NativeBorderRadiusValue::Inherit)
+    } else if value.eq_ignore_ascii_case("unset") {
+        Some(NativeBorderRadiusValue::Unset)
+    } else if value.eq_ignore_ascii_case("initial") {
+        Some(NativeBorderRadiusValue::Initial)
+    } else if value.eq_ignore_ascii_case("revert") {
+        Some(NativeBorderRadiusValue::Revert)
+    } else {
+        None
+    };
+    css_wide
+        .or_else(|| parse_dimension(value).map(NativeBorderRadiusValue::Corner))
+        .map(LocalCascadeDeclaration::Value)
+}
+
 fn parse_box_edges(value: &str) -> Option<[u32; 4]> {
     let values = value
         .split_ascii_whitespace()
@@ -6061,6 +6188,19 @@ fn set_border_side(
 ) {
     if let Some(border) = parse_border_declaration(value) {
         sides[index] = Some(border);
+        orders[index] = declaration_order;
+    }
+}
+
+fn set_border_radius_corner(
+    corners: &mut [Option<LocalCascadeDeclaration<NativeBorderRadiusValue>>; 4],
+    orders: &mut [usize; 4],
+    index: usize,
+    value: &str,
+    declaration_order: usize,
+) {
+    if let Some(radius) = parse_border_radius_corner_declaration(value) {
+        corners[index] = Some(radius);
         orders[index] = declaration_order;
     }
 }
@@ -7832,6 +7972,156 @@ mod tests {
             );
         }
         assert_eq!(parse_border_radius_declaration("1px revert-layer"), None);
+    }
+
+    #[test]
+    fn border_radius_corner_parser_preserves_bounded_values_and_order() {
+        assert_eq!(
+            parse_border_radius_corner_declaration("9px"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderRadiusValue::Corner(9),
+            ))
+        );
+        for (value, expected) in [
+            (
+                "InHeRiT",
+                LocalCascadeDeclaration::Value(NativeBorderRadiusValue::Inherit),
+            ),
+            (
+                "UNSET",
+                LocalCascadeDeclaration::Value(NativeBorderRadiusValue::Unset),
+            ),
+            (
+                "initial",
+                LocalCascadeDeclaration::Value(NativeBorderRadiusValue::Initial),
+            ),
+            (
+                "ReVeRt",
+                LocalCascadeDeclaration::Value(NativeBorderRadiusValue::Revert),
+            ),
+            ("revert-layer", LocalCascadeDeclaration::RevertLayer),
+        ] {
+            assert_eq!(
+                parse_border_radius_corner_declaration(value),
+                Some(expected)
+            );
+        }
+        for value in [
+            "1px 2px",
+            "50%",
+            "-1px",
+            "1.5px",
+            "20000px",
+            "inherit 1px",
+            "1px revert-layer",
+        ] {
+            assert_eq!(
+                parse_border_radius_corner_declaration(value),
+                None,
+                "value={value}"
+            );
+        }
+
+        let declarations = parse_declarations(
+            "border-radius: 1px 2px 3px 4px; border-top-left-radius: 9px; border-bottom-left-radius: 10px;",
+        );
+        assert_eq!(declarations.border_radius_order, 0);
+        assert_eq!(
+            declarations.border_radius_corners,
+            [
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderRadiusValue::Corner(9)
+                )),
+                None,
+                None,
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderRadiusValue::Corner(10)
+                )),
+            ]
+        );
+        assert_eq!(declarations.border_radius_corner_orders, [1, 0, 0, 2]);
+    }
+
+    #[test]
+    fn stylesheet_cascade_composes_border_radius_shorthand_and_corners() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#all { border-radius: 1px 2px 3px 4px; border-top-left-radius: 9px; border-bottom-right-radius: 8px; } #reverse { border-top-left-radius: 9px; border-radius: 1px 2px 3px 4px; } #invalid { border-radius: 5px 6px 7px 8px; border-top-right-radius: 50%; } #inherit { border-radius: 1px; border-top-left-radius: inherit; }".into(),
+        ])
+        .unwrap();
+        let inherited_radius = NativeBorderRadius {
+            top_left: 11,
+            top_right: 12,
+            bottom_right: 13,
+            bottom_left: 14,
+        };
+        let computed = |id: &str| {
+            let element = node(&format!("<div id='{id}'>Radius</div>"));
+            stylesheet
+                .computed_for_with_matcher(
+                    &element,
+                    NativeInheritedStyle {
+                        border_radius: inherited_radius,
+                        ..NativeInheritedStyle::default()
+                    },
+                    |selector| selector.matches(&element),
+                )
+                .border_radius()
+        };
+        assert_eq!(
+            computed("all"),
+            NativeBorderRadius {
+                top_left: 9,
+                top_right: 2,
+                bottom_right: 8,
+                bottom_left: 4,
+            }
+        );
+        assert_eq!(
+            computed("reverse"),
+            NativeBorderRadius {
+                top_left: 1,
+                top_right: 2,
+                bottom_right: 3,
+                bottom_left: 4,
+            }
+        );
+        assert_eq!(
+            computed("invalid"),
+            NativeBorderRadius {
+                top_left: 5,
+                top_right: 6,
+                bottom_right: 7,
+                bottom_left: 8,
+            }
+        );
+        assert_eq!(
+            computed("inherit"),
+            NativeBorderRadius {
+                top_left: 11,
+                top_right: 1,
+                bottom_right: 1,
+                bottom_left: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn border_radius_corner_revert_layer_rolls_back_only_selected_corner() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #card { border-radius: 1px 2px 3px 4px; } } @layer theme { #card { border-radius: 9px; border-top-left-radius: revert-layer; border-bottom-right-radius: 7px; } }".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            stylesheet
+                .computed_for(&node("<div id='card'>Radius</div>"))
+                .border_radius(),
+            NativeBorderRadius {
+                top_left: 1,
+                top_right: 9,
+                bottom_right: 7,
+                bottom_left: 9,
+            }
+        );
     }
 
     #[test]

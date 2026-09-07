@@ -21,6 +21,8 @@ const MAX_NATIVE_SELECTOR_SPECIFICITY: u16 = CASCADE_SPECIFICITY_STRIDE - 1;
 const MAX_NATIVE_CASCADE_LAYERS: usize = MAX_NATIVE_NAMED_CASCADE_LAYERS + 1;
 const MAX_NATIVE_RADIUS_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
 const IMPORTANT_RADIUS_CASCADE_OFFSET: usize = MAX_NATIVE_CASCADE_LAYERS;
+const MAX_NATIVE_PAINT_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
+const IMPORTANT_PAINT_CASCADE_OFFSET: usize = MAX_NATIVE_CASCADE_LAYERS;
 const CASCADE_DECLARATION_ORDER_STRIDE: usize = 256 * 1024 + 1;
 const LOGICAL_BORDER_BLOCK_START: usize = 0;
 const LOGICAL_BORDER_BLOCK_END: usize = 1;
@@ -1436,7 +1438,7 @@ impl NativeStylesheet {
         let mut text_underline_offset: [Option<CascadeValue<NativeTextUnderlineOffsetDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration_color: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
         let mut text_transform: [Option<CascadeValue<InheritedTextDeclaration<TextTransformValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut font_weight: [Option<CascadeValue<InheritedTextDeclaration<FontWeightValue>>>;
@@ -1472,7 +1474,7 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut background_color: [Option<
             CascadeValue<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
-        >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
         let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut logical_border: [[Option<
@@ -1515,7 +1517,7 @@ impl NativeStylesheet {
         let mut box_sizing: [Option<CascadeValue<LocalCascadeDeclaration<NativeBoxSizing>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColorValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
         let mut overflow_x: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut overflow_y: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
@@ -1717,22 +1719,14 @@ impl NativeStylesheet {
                     });
                 }
             }
-            if let Some(value) = rule.declarations.text_decoration_color {
-                let layer = cascade_layer_index(rule.selector.specificity);
-                if wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_decoration_color[layer],
-                ) {
-                    text_decoration_color[layer] = Some(CascadeValue {
-                        value,
-                        specificity: rule.selector.specificity,
-                        order: rule.order,
-                        inline: false,
-                    });
-                }
-            }
+            apply_paint_cascade_declaration(
+                rule.declarations.text_decoration_color,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_decoration_color_important,
+                &mut text_decoration_color,
+            );
             apply_inherited_text_declaration(
                 rule.declarations.text_transform,
                 rule.selector.specificity,
@@ -2010,11 +2004,12 @@ impl NativeStylesheet {
                     inline: false,
                 });
             }
-            apply_local_cascade_declaration(
+            apply_paint_cascade_declaration(
                 rule.declarations.background_color,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.background_color_important,
                 &mut background_color,
             );
             apply_local_cascade_edges(
@@ -2092,11 +2087,12 @@ impl NativeStylesheet {
                 false,
                 &mut box_sizing,
             );
-            apply_local_cascade_declaration(
+            apply_paint_cascade_declaration(
                 rule.declarations.color,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.color_important,
                 &mut color,
             );
             apply_local_cascade_declaration(
@@ -2260,17 +2256,14 @@ impl NativeStylesheet {
                     });
                 }
             }
-            if let Some(value) = declarations.text_decoration_color {
-                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
-                if wins(u16::MAX, usize::MAX, true, text_decoration_color[layer]) {
-                    text_decoration_color[layer] = Some(CascadeValue {
-                        value,
-                        specificity: u16::MAX,
-                        order: usize::MAX,
-                        inline: true,
-                    });
-                }
-            }
+            apply_paint_cascade_declaration(
+                declarations.text_decoration_color,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_decoration_color_important,
+                &mut text_decoration_color,
+            );
             apply_inherited_text_declaration(
                 declarations.text_transform,
                 u16::MAX,
@@ -2487,11 +2480,12 @@ impl NativeStylesheet {
                     inline: true,
                 });
             }
-            apply_local_cascade_declaration(
+            apply_paint_cascade_declaration(
                 declarations.background_color,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.background_color_important,
                 &mut background_color,
             );
             apply_local_cascade_edges(
@@ -2569,11 +2563,12 @@ impl NativeStylesheet {
                 true,
                 &mut box_sizing,
             );
-            apply_local_cascade_declaration(
+            apply_paint_cascade_declaration(
                 declarations.color,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.color_important,
                 &mut color,
             );
             apply_local_cascade_declaration(
@@ -3046,7 +3041,7 @@ fn resolve_local_optional_cascade_declaration<T: Copy>(
 
 fn resolve_local_color_declaration(
     candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeColorValue>>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+        MAX_NATIVE_PAINT_CASCADE_LAYERS],
     inherited: Option<NativeColor>,
 ) -> Option<NativeColor> {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
@@ -3057,7 +3052,7 @@ fn resolve_local_color_declaration(
 
 fn resolve_local_background_color_declaration(
     candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundColorValue>>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+        MAX_NATIVE_PAINT_CASCADE_LAYERS],
     inherited_background: Option<NativeColor>,
     current_color: NativeColor,
 ) -> Option<NativeColor> {
@@ -3342,11 +3337,11 @@ fn resolve_text_decoration(
 
 fn resolve_text_decoration_color(
     candidates: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+        MAX_NATIVE_PAINT_CASCADE_LAYERS],
     current_color: NativeColor,
     inherited_color: NativeColor,
 ) -> Option<NativeColor> {
-    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    let mut blocked = [false; MAX_NATIVE_PAINT_CASCADE_LAYERS];
     loop {
         let (layer, candidate) =
             candidates
@@ -3631,6 +3626,38 @@ fn apply_radius_cascade_declaration(
         return;
     };
     let layer = radius_cascade_layer(specificity, important);
+    if wins(specificity, order, inline, candidates[layer]) {
+        candidates[layer] = Some(CascadeValue {
+            value,
+            specificity,
+            order,
+            inline,
+        });
+    }
+}
+
+fn paint_cascade_layer(specificity: u16, important: bool) -> usize {
+    let layer = cascade_layer_index(specificity);
+    if important {
+        IMPORTANT_PAINT_CASCADE_OFFSET
+            .saturating_add(usize::from(UNLAYERED_CASCADE_LAYER).saturating_sub(layer))
+    } else {
+        layer
+    }
+}
+
+fn apply_paint_cascade_declaration<T: Copy>(
+    declaration: Option<T>,
+    specificity: u16,
+    order: usize,
+    inline: bool,
+    important: bool,
+    candidates: &mut [Option<CascadeValue<T>>; MAX_NATIVE_PAINT_CASCADE_LAYERS],
+) {
+    let Some(value) = declaration else {
+        return;
+    };
+    let layer = paint_cascade_layer(specificity, important);
     if wins(specificity, order, inline, candidates[layer]) {
         candidates[layer] = Some(CascadeValue {
             value,
@@ -4186,6 +4213,7 @@ struct NativeDeclarations {
     text_decoration_thickness: Option<NativeTextDecorationThicknessDeclaration>,
     text_underline_offset: Option<NativeTextUnderlineOffsetDeclaration>,
     text_decoration_color: Option<NativeTextDecorationColorDeclaration>,
+    text_decoration_color_important: bool,
     text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
@@ -4209,6 +4237,7 @@ struct NativeDeclarations {
     max_height: Option<LocalCascadeDeclaration<u32>>,
     line_height: Option<LineHeightDeclaration>,
     background_color: Option<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
+    background_color_important: bool,
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; 4],
     border_order: [usize; 4],
     logical_border: NativeLogicalBorderDeclarations,
@@ -4229,6 +4258,7 @@ struct NativeDeclarations {
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
     box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
     color: Option<LocalCascadeDeclaration<NativeColorValue>>,
+    color_important: bool,
     overflow: Option<LocalCascadeDeclaration<OverflowValue>>,
     overflow_x: Option<LocalCascadeDeclaration<OverflowValue>>,
     overflow_y: Option<LocalCascadeDeclaration<OverflowValue>>,
@@ -5111,6 +5141,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "text-decoration-color" => {
                 if let Some(parsed) = parse_text_decoration_color(value) {
                     declarations.text_decoration_color = Some(parsed);
+                    declarations.text_decoration_color_important = important;
                 }
             }
             "text-transform" => {
@@ -5212,6 +5243,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "background-color" => {
                 if let Some(parsed) = parse_background_color_declaration(value) {
                     declarations.background_color = Some(parsed);
+                    declarations.background_color_important = important;
                 }
             }
             "border" => {
@@ -5759,6 +5791,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "color" => {
                 if let Some(parsed) = parse_local_color_declaration(value) {
                     declarations.color = Some(parsed);
+                    declarations.color_important = important;
                 }
             }
             "overflow" => {
@@ -12869,6 +12902,93 @@ mod tests {
             )
             .text_decoration_color();
         assert_eq!(omitted, None);
+    }
+
+    #[test]
+    fn paint_color_important_parser_tracks_valid_terminal_markers() {
+        let declarations = parse_declarations(
+            "background-color: red !IMPORTANT; color: blue !important; text-decoration-color: green !important; background-color: invalid !important;",
+        );
+        assert_eq!(
+            declarations.background_color,
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundColorValue::Color(NativeColor::RED),
+            ))
+        );
+        assert!(declarations.background_color_important);
+        assert_eq!(
+            declarations.color,
+            Some(LocalCascadeDeclaration::Value(NativeColorValue::Color(
+                NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: u8::MAX,
+                    alpha: u8::MAX,
+                },
+            )))
+        );
+        assert!(declarations.color_important);
+        assert_eq!(
+            declarations.text_decoration_color,
+            Some(NativeTextDecorationColorDeclaration::Value(NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: u8::MAX,
+            }))
+        );
+        assert!(declarations.text_decoration_color_important);
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_paint_color_important_priority_and_rollback() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #layered { background-color: red !important; color: red !important; text-decoration-color: red !important; } #rollback { background-color: red !important; background-color: revert-layer !important; color: red !important; color: revert-layer !important; text-decoration-color: red !important; text-decoration-color: revert-layer !important; } #normal { background-color: red; color: red; text-decoration-color: red; } #mixed { background-color: red !important; color: red !important; text-decoration-color: red !important; } } @layer theme { #layered { background-color: blue !important; color: blue !important; text-decoration-color: blue !important; } #rollback { background-color: green !important; color: green !important; text-decoration-color: green !important; } #normal { background-color: blue; color: blue; text-decoration-color: blue; } } #layered { background-color: green !important; color: green !important; text-decoration-color: green !important; } #normal { background-color: green; color: green; text-decoration-color: green; } #mixed { background-color: green; color: green; text-decoration-color: green; } #inline { background-color: red !important; color: red !important; text-decoration-color: red !important; }".into(),
+        ])
+        .unwrap();
+        let computed = |id: &str| {
+            let style = stylesheet.computed_for(&node(&format!("<div id='{id}'>Text</div>")));
+            (
+                style.background_color(),
+                style.color(),
+                style.text_decoration_color(),
+            )
+        };
+        let red = NativeColor::RED;
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        let green = NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: u8::MAX,
+        };
+
+        assert_eq!(computed("layered"), (Some(red), Some(red), Some(red)));
+        assert_eq!(
+            computed("rollback"),
+            (Some(green), Some(green), Some(green))
+        );
+        assert_eq!(computed("normal"), (Some(green), Some(green), Some(green)));
+        assert_eq!(computed("mixed"), (Some(red), Some(red), Some(red)));
+
+        let inline = node(
+            "<div id='inline' style='background-color:green !important; color:green !important; text-decoration-color:green !important'>Inline</div>",
+        );
+        assert_eq!(
+            stylesheet.computed_for(&inline).background_color(),
+            Some(green)
+        );
+        assert_eq!(stylesheet.computed_for(&inline).color(), Some(green));
+        assert_eq!(
+            stylesheet.computed_for(&inline).text_decoration_color(),
+            Some(green)
+        );
+        assert_ne!(computed("layered").0, Some(blue));
     }
 
     #[test]

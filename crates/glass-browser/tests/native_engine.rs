@@ -1003,16 +1003,16 @@ fn native_border_color_css_wide_keywords_preserve_physical_paint_and_consumers()
     let targets = [
         parent, inherit, physical, reset, initial, revert, omitted, invalid, mixed, layered, inline,
     ];
-    let blue = NativeColor {
-        red: 0,
-        green: 0,
-        blue: u8::MAX,
-        alpha: u8::MAX,
-    };
     let green = NativeColor {
         red: 0,
         green: 128,
         blue: 0,
+        alpha: u8::MAX,
+    };
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
         alpha: u8::MAX,
     };
     let parent_colors = [NativeColor::RED, green, blue, NativeColor::BLACK];
@@ -4133,6 +4133,133 @@ fn native_text_decoration_color_separates_glyph_and_line_paint() {
     let surface = list.rasterize().unwrap();
     assert_eq!(surface.pixel(1, 0), Some([255, 0, 0, 255]));
     assert_eq!(surface.pixel(0, 7), Some([0, 0, 255, 255]));
+}
+
+#[test]
+fn native_paint_color_important_priority_reaches_fill_and_text_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            .box { display:block;width:48px;height:20px;line-height:20px;border:1px solid blue;text-decoration:underline; }
+            @layer base {
+                #early { background-color:red !important;color:red !important;text-decoration-color:red !important; }
+                #rollback { background-color:red !important;background-color:revert-layer !important;color:red !important;color:revert-layer !important;text-decoration-color:red !important;text-decoration-color:revert-layer !important; }
+                #normal { background-color:red;color:red;text-decoration-color:red; }
+                #mixed { background-color:red !important;color:red !important;text-decoration-color:red !important; }
+                #invalid { background-color:red !important;background-color:invalid !important;color:red !important;color:invalid !important;text-decoration-color:red !important;text-decoration-color:invalid !important; }
+            }
+            @layer theme {
+                #early { background-color:blue !important;color:blue !important;text-decoration-color:blue !important; }
+                #rollback { background-color:green !important;color:green !important;text-decoration-color:green !important; }
+                #normal { background-color:blue;color:blue;text-decoration-color:blue; }
+            }
+            #early { background-color:green !important;color:green !important;text-decoration-color:green !important; }
+            #normal { background-color:green;color:green;text-decoration-color:green; }
+            #mixed { background-color:green;color:green;text-decoration-color:green; }
+            #inline { background-color:red !important;color:red !important;text-decoration-color:red !important; }
+        </style>
+        <div id='early' class='box' role='button'>Early</div>
+        <div id='rollback' class='box' role='button'>Rollback</div>
+        <div id='normal' class='box' role='button'>Normal</div>
+        <div id='mixed' class='box' role='button'>Mixed</div>
+        <div id='invalid' class='box' role='button'>Invalid</div>
+        <div id='inline' class='box' role='button' style='background-color:green !important;color:green !important;text-decoration-color:green !important'>Inline</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 56,
+        height: 140,
+        device_scale_factor_milli: 1000,
+    };
+    let early = document.resolve_target("id=early").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let targets = [early, rollback, normal, mixed, invalid, inline];
+    let red = NativeColor::RED;
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let layout = document.layout(viewport).unwrap();
+    for node_id in targets {
+        assert!(
+            layout.box_for(node_id).is_some(),
+            "missing paint box for {node_id:?}"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let fill_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                color,
+                ..
+            } if *command_node_id == node_id => Some(*color),
+            _ => None,
+        })
+    };
+    let text_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                color,
+                decoration_color,
+                ..
+            } if *command_node_id == node_id => Some((*color, *decoration_color)),
+            _ => None,
+        })
+    };
+    for (node_id, expected) in [
+        (early, red),
+        (rollback, green),
+        (normal, green),
+        (mixed, red),
+        (invalid, red),
+        (inline, green),
+    ] {
+        assert_eq!(fill_for(node_id), Some(expected), "fill for {node_id:?}");
+        assert_eq!(
+            text_for(node_id),
+            Some((expected, expected)),
+            "text for {node_id:?}"
+        );
+    }
+    assert_eq!(layout.hit_test(10, 10).unwrap(), Some(early));
+    let early_box = layout.box_for(early).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(early_box.x + early_box.width - 5, early_box.y + 10),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in targets.windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    for detail in ["background-color", "color", "text-decoration-color"] {
+        assert!(
+            document.diagnostics().iter().any(|diagnostic| {
+                diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                    && diagnostic.detail == detail
+            }),
+            "missing diagnostic for {detail}"
+        );
+    }
 }
 
 #[test]

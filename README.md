@@ -351,14 +351,20 @@ path now accepts standalone, case-insensitive 15-layer/unlayered
 `border-radius:revert-layer` for the one-to-four-value integer shorthand,
 preserving the zero-corner fallback and rounded layout, fill, border, point-hit,
 capture, raster, overflow, and semantic/source-order owners. Elliptical,
-percentage, corner-longhand, nested-clip, anti-aliasing, multiple-origin, and
+percentage, logical-corner, nested-clip, anti-aliasing, multiple-origin, and
 browser-wide border-radius conformance remain outside the boundary. The same
 bounded radius owner also accepts exact case-insensitive CSS-wide `inherit`,
 `unset`, `initial`, and one-author-origin `revert`: explicit `inherit` copies
 the parent's effective four-corner radius, including from unpainted or
 zero-width parents; reset forms resolve to zero corners and ordinary omission
 remains zero. Mixed CSS-wide/concrete and slash-separated radius forms remain
-unsupported. The same
+unsupported. Physical circular corner longhands
+`border-top-left-radius`, `border-top-right-radius`,
+`border-bottom-right-radius`, and `border-bottom-left-radius` accept one
+bounded integer-pixel value or the same standalone CSS-wide keywords and
+compose with the shorthand through per-corner source order and
+`revert-layer`. Elliptical and percentage corner values remain unsupported.
+The same
 bounded local cascade path now accepts standalone, case-insensitive
 15-layer/unlayered `opacity:revert-layer` for the existing local 8-bit opacity
 owner, preserving the full-opacity (`255`) fallback, reduced-opacity group

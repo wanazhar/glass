@@ -46,6 +46,7 @@ bounded-border-width-css-wide-keywords,
 bounded-border-style-css-wide-keywords,
 bounded-border-radius-css-wide-keywords,
 bounded-complete-border-css-wide-keywords,
+bounded-logical-border-family,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -1368,15 +1369,24 @@ evidence is recorded in the task. Logical sides, table conflict resolution,
 multiple origins, `!important` inversion, and browser-wide border conformance
 remain outside the completed boundary. Remote CI remains pending because the
 checkout is local-only.
-The next dependency-ordered `native-engine-174` slice is designed in
-`docs/plan/tasks/native-engine-174.md` before implementation. It will add the
-bounded logical border shorthand and width/style/color component family by
-projecting logical block sides to physical top/bottom and logical inline sides
-through the current resolved ltr/rtl `direction` owner. It will reuse the
-physical cascade, layout, display, raster, capture, point-hit, and semantic
-owners. Vertical writing modes, logical radius, border images, table conflict
-resolution, multiple origins, and browser-wide logical-border conformance are
-not part of the planned boundary.
+The completed dependency-ordered `native-engine-174` slice is recorded in
+`docs/plan/tasks/native-engine-174.md`; implementation is `f6953813`, with the
+strict-cascade cleanup at `23b09864`. It adds bounded horizontal-tb logical
+`border-block`, `border-block-start`, `border-block-end`, `border-inline`,
+`border-inline-start`, and `border-inline-end` shorthands plus their
+width/style/color component families. Block start/end map to physical
+top/bottom; inline start/end map through the resolved inherited `direction` to
+left/right for `ltr` and right/left for `rtl`. Logical declarations project
+into the existing physical candidate streams, preserving component
+composition, layer/source-order precedence, `currentColor`, CSS-wide values,
+and `revert-layer` while reusing box-model, display-list, capture, raster,
+point-hit, and semantic/source-order owners. Vertical writing modes, logical
+radius, border-image, gradients, table conflict resolution, multiple origins,
+and browser-wide logical-border conformance remain outside the completed
+boundary. Focused/full-native/library, strict Clippy, warning-denied rustdoc,
+paired-crate check/build, and formatting gates pass locally; package, static,
+workspace, and cleanup evidence is recorded in the task. Remote CI remains
+pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

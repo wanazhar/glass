@@ -262,8 +262,8 @@ unlayered local `revert-layer` for the physical `border`, `border-top`,
 each side through lower concrete candidates or the existing zero-width/no-paint
 fallback, preserving shorthand/longhand precedence and the existing box-model
 inset, border display-list, capture, raster, point-hit, and semantic/source-order
-owners. Logical sides, border-image, gradients, `wavy` and other unsupported
-border styles, animation,
+owners. Vertical writing modes, logical radius, border-image, gradients, `wavy`
+and other unsupported border styles, animation,
 multiple origins, and browser-wide CSS border conformance remain outside the
 boundary. The same native border owner also accepts bounded case-insensitive
 15-layer/unlayered `border-color`, `border-top-color`, `border-right-color`,
@@ -335,6 +335,20 @@ color side values, including private `none`/`hidden`, zero-width, and unpainted
 states; reset forms project zero width, private `none`, and `currentColor` so
 later component declarations can compose, while ordinary omission remains
 omission. Mixed CSS-wide/concrete forms remain unsupported.
+The native border surface also accepts bounded horizontal-tb logical
+`border-block`, `border-block-start`, `border-block-end`, `border-inline`,
+`border-inline-start`, and `border-inline-end` shorthands plus their
+`-width`, `-style`, and `-color` component families. One- or two-value block
+and inline component pairs map to logical start/end; block sides map to
+physical top/bottom, while inline sides map to physical left/right for `ltr`
+and right/left for `rtl` through the resolved inherited `direction`. Complete
+logical shorthands, CSS-wide keywords, `currentColor`, bounded named-layer and
+unlayered `revert-layer`, physical/logical precedence, and component composition
+reuse the existing physical border streams and box-model, display-list,
+capture, raster, point-hit, and semantic/source-order owners. Vertical writing
+modes, logical radius, border-image, gradients, table conflict resolution,
+multiple origins, and browser-wide logical-border conformance remain outside
+the boundary.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and

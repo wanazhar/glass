@@ -161,8 +161,8 @@ unlayered local `revert-layer` for the physical `border`, `border-top`,
 each side through lower concrete candidates or the existing zero-width/no-paint
 fallback, preserving shorthand/longhand precedence and the existing box-model
 inset, border display-list, capture, raster, point-hit, and semantic/source-order
-owners. Logical sides, border-image, gradients, `wavy` and other unsupported
-border styles, animation, multiple origins, and browser-wide CSS border
+owners. Vertical writing modes, logical radius, border-image, gradients, `wavy`
+and other unsupported border styles, animation, multiple origins, and browser-wide CSS border
 conformance remain outside the
 boundary. The same native border owner also accepts bounded case-insensitive
 15-layer/unlayered `border-color`, `border-top-color`, `border-right-color`,
@@ -209,9 +209,23 @@ to no side/zero width before layout and paint; `hidden` remains a private
 distinction for future table conflict resolution. Width, style, and color
 components compose only after independent resolution, and width-only or
 style-only declarations do not invent missing paint components;
-collapsed-table border conflict resolution, logical sides, fractional/percentage
-widths, `wavy` and other unsupported styles, and browser-wide border conformance
-remain outside the boundary. The complete and physical border shorthands also
+collapsed-table border conflict resolution, fractional/percentage widths,
+logical radius, vertical writing modes, `wavy` and other unsupported styles,
+and browser-wide border conformance remain outside the boundary. The native
+border surface also accepts bounded horizontal-tb logical `border-block`,
+`border-block-start`, `border-block-end`, `border-inline`, `border-inline-start`,
+and `border-inline-end` shorthands plus their `-width`, `-style`, and `-color`
+component families. One- or two-value block and inline component pairs map to
+logical start/end; block sides map to physical top/bottom, while inline sides
+map to physical left/right for `ltr` and right/left for `rtl` through the
+resolved inherited `direction`. Complete logical shorthands, CSS-wide
+keywords, `currentColor`, bounded named-layer and unlayered `revert-layer`,
+physical/logical precedence, and component composition reuse the existing
+physical border streams and box-model, display-list, capture, raster, point-hit,
+and semantic/source-order owners. Vertical writing modes, logical radius,
+border-image, gradients, table conflict resolution, multiple origins, and
+browser-wide logical-border conformance remain outside the boundary. The
+complete and physical border shorthands also
 accept the exact case-insensitive omitted-component `none` and `hidden` forms
 through private no-paint style sentinels; winning omitted-component `hidden`
 remains private for future table conflict resolution and arbitrary
@@ -326,8 +340,8 @@ gap/justification/alignment, shared subtree artifacts, bounded overflow
 translation, root horizontal scrolling, and unchanged semantic/source order,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
 Rust diagnostics for unsupported CSS. It does not yet provide
-general CSS/nested/horizontal/stacking layout, logical writing-mode sides,
-negative/percentage/auto box-model values, positioned layout or general
+general CSS/nested/horizontal/stacking layout, vertical writing modes and
+logical border-radius, negative/percentage/auto box-model values, positioned layout or general
 flex/grid layout beyond the bounded single-row `display:flex` subset,
 screen-shot-containing evidence, JPEG/PDF capture, or physical-pixel capture,
 font/image fidelity, JavaScript, network/security policy, cookies/storage,

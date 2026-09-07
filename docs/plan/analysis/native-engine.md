@@ -1517,16 +1517,21 @@ recorded in the task. Logical sides, table conflict resolution, multiple
 origins, `!important` inversion, and browser-wide border conformance remain
 outside the completed boundary. Remote CI remains pending because the checkout
 is local-only.
-The next dependency-ordered `native-engine-174` slice is designed in
-`docs/plan/tasks/native-engine-174.md` before implementation. It adds the
-bounded logical border shorthand and width/style/color component family,
-mapping block-start/end to physical top/bottom and inline-start/end through
-the existing resolved ltr/rtl `direction` owner. Logical declarations will be
-projected into the existing physical per-side component streams so cascade,
-layout, display, raster, capture, hit, and semantic owners remain shared.
-Writing modes, logical radius, border images, table conflict resolution,
-multiple origins, and browser-wide logical-border conformance remain outside
-the planned boundary.
+The completed dependency-ordered `native-engine-174` slice is recorded in
+`docs/plan/tasks/native-engine-174.md`; implementation is `f6953813`, with the
+strict-cascade cleanup at `23b09864`. It adds bounded horizontal-tb logical
+border shorthands and their width/style/color component families, mapping
+block-start/end to physical top/bottom and inline-start/end through the
+resolved ltr/rtl `direction` owner. Logical declarations project into the
+existing physical per-side component streams so cascade, layer/source-order
+precedence, `currentColor`, CSS-wide values, `revert-layer`, layout, display,
+raster, capture, hit, and semantic owners remain shared. Vertical writing
+modes, logical radius, border images, table conflict resolution, multiple
+origins, and browser-wide logical-border conformance remain outside the
+completed boundary. Focused/full-native/library, strict Clippy,
+warning-denied rustdoc, paired-crate check/build, and formatting gates pass
+locally; remaining package, static, workspace, and cleanup evidence is recorded
+in the task. Remote CI remains pending because the checkout is local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2289,13 +2294,13 @@ visual stacking.
 | `native-engine-171` | completed bounded local physical `border-style` and four physical style-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying effective parent styles and reset/omission preserving the private no-style fallback; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-170` | multiple origins, `!important` inversion, logical sides, table conflict resolution, border conflict/collapse, gradients, border-image, animation, unsupported styles, and browser-wide border conformance |
 | `native-engine-172` | completed bounded local physical `border-radius` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying an effective parent radius and reset/omission preserving the default zero-corner fallback; implementation `b0bbe45a` | `native-engine-171` | multiple origins, `!important` inversion, corner longhands, elliptical/percentage radii, logical sides, table conflict resolution, gradients, border-image, animation, and browser-wide border conformance |
 | `native-engine-173` | completed bounded complete physical `border` and four side-border shorthand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` projected through the existing private width/style/color component streams, preserving concrete and omitted-component forms, independent composition, geometry, and artifacts; implementation `f5f53cec` | `native-engine-172` | multiple origins, `!important` inversion, logical sides, table conflict resolution, gradients, border-image, animation, arbitrary omitted defaults, and browser-wide border conformance |
-| `native-engine-174` | planned bounded logical `border-block`, `border-inline`, logical start/end shorthands, and their width/style/color component longhands projected into the existing physical streams through resolved horizontal-tb ltr/rtl direction; no public schema or crate change | `native-engine-173` | vertical writing modes, logical radius, border-image, gradients, table conflict resolution, multiple origins, `!important` inversion, arbitrary values, and browser-wide logical-border conformance |
+| `native-engine-174` | completed bounded logical `border-block`, `border-inline`, logical start/end shorthands, and their width/style/color component longhands projected into the existing physical streams through resolved horizontal-tb ltr/rtl direction; no public schema or crate change; implementation `f6953813`, strict-cascade cleanup `23b09864` | `native-engine-173` | vertical writing modes, logical radius, border-image, gradients, table conflict resolution, multiple origins, `!important` inversion, arbitrary values, and browser-wide logical-border conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-173.md` is the latest completed task;
-`docs/plan/tasks/native-engine-174.md` is the next planned task;
+`docs/plan/tasks/native-engine-174.md` is the latest completed task;
+`docs/plan/tasks/native-engine-173.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-171.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-169.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-168.md` is the preceding completed task;

@@ -1,7 +1,7 @@
 ---
 id: native-engine-174
 scope: glass-browser/native-engine/cascade-logical-border-family
-status: planned
+status: complete
 depends-on: [native-engine-173]
 ---
 
@@ -153,16 +153,54 @@ Read with:
 
 ## Cleanup
 
-Pending exact-path regenerable-output cleanup until all Cargo/Rust processes
-and open handles exit. Only task-specific isolated targets and reports may be
-removed; source, durable data, repository history, and unrelated workloads
-must remain untouched.
+Task-specific isolated targets and reports are safe to remove after all
+Cargo/Rust processes and open handles exit. Only the exact paths used by this
+task may be reclaimed; source, durable data, repository history, and unrelated
+workloads must remain untouched. Final byte counts and free-space verification
+are recorded below after cleanup.
 
 ## Evidence
 
-Implementation: pending.
+Implementation: `f6953813`, with the strict-cascade/formatting cleanup at
+`23b09864`. The implementation adds private logical declaration storage,
+horizontal-tb direction-aware projection into the existing physical border
+candidate streams, bounded pair parsing, diagnostics recognition, and
+integration coverage without changing public schemas, dependencies, or the
+two-crate boundary.
 
-Documentation/certification: pending.
+Documentation/certification: the architecture record, plan history, analysis
+matrix, root README, crate README, feature reference, experimental capability
+guide, Rust SDK guide, and browser-host RFC now describe the bounded logical
+border family and its explicit exclusions. Static documentation discovery
+includes 588 Markdown files and reports zero current-claim failures.
+
+Passed local gates:
+
+- `cargo fmt --all -- --check`.
+- Locked native-feature check, parser unit test, and logical-border integration
+  test in the isolated `/tmp/glass-174-focused` target.
+- Full native integration: 212 passed; full feature-enabled browser library:
+  976 passed, 1 ignored.
+- Workspace all-target/all-feature check, strict Clippy for both crates, and
+  workspace all-target/all-feature tests: browser library 977 passed, 1
+  ignored; native integration 212 passed; `glass-dev` library 365 passed;
+  browser smoke 18 passed; development-runtime 4 passed; TUI PTY 15 passed;
+  all other workspace targets passed with zero failures.
+- Warning-denied workspace rustdoc and paired locked `glass-dev` check/build.
+- Locked package flows for both crates; archives contained 196
+  (`glass-browser`) and 69 (`glass-dev`) entries. The packaged dependency
+  check resolved `glass-browser` exactly at `0.3.14`.
+- `cargo deny check`, `cargo audit`, and offline locked all-target fuzz check.
+- Version sync, feature parity, release documentation, documentation
+  coverage/depth, TUI shortcut inventory, reliability matrix, public read-only
+  adapters, and Web IR corpus checks. The observed counts were 0 current-claim
+  failures, 345 full-product MCP tools, 14 capabilities across 4 targets, 93
+  guides/19 contracts, 15/63 TUI markers, 6 scenarios across 4 targets, 5
+  adapters, and 8 fixtures/8 scenarios/11 categories.
+
+Remote CI, push, release, tag, registry publication, browser-parity,
+security-boundary, and promotion claims are not made. The checkout remains
+local-only and issue #40 remains open for later dependency-ordered slices.
 
 Remote CI, push, release, tag, registry publication, browser-parity,
 security-boundary, and promotion claims: not made.

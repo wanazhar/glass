@@ -1,7 +1,7 @@
 ---
 id: native-engine-162
 scope: glass-browser/native-engine/cascade-border-complete-current-color
-status: planned
+status: complete
 depends-on: [native-engine-161]
 ---
 
@@ -25,11 +25,11 @@ machinery, or general CSS color syntax.
 
 `native-engine-161` added private `NativeBorderColorValue::CurrentColor` to
 standalone physical `border-color` and its four physical color longhands. The
-complete border parser still requires `parse_color`, so
+complete border parser now uses that same typed color path, so
 `border: 2px solid currentColor` and the corresponding complete `none` and
-`hidden` forms are rejected. The existing complete declaration wrapper already
-projects width, style, and concrete color independently; this slice adds
-deferred-color complete variants that reuse the same component projections.
+`hidden` forms project deferred color through the existing independent
+component streams. The complete declaration wrapper retains concrete public
+values while this slice adds private deferred-color variants.
 
 Normative references:
 
@@ -83,7 +83,7 @@ Read with:
   semantic/source-order projection.
 - The slice remains fixture-relative, horizontal-tb, integer-pixel, non-table,
   and feature-gated behind `native-engine`. It does not implement omitted
-  `medium`/`currentColor` inference, logical border sides, gradients, system
+  `medium`/color inference, logical border sides, gradients, system
   colors, color spaces, percentages, animations, multiple origins,
   `!important` inversion, collapsed-table conflict resolution, or browser-wide
   CSS color/border conformance.
@@ -130,7 +130,50 @@ The completed slice must cover:
 
 ## Implementation
 
-Pending. The design is recorded before implementation so complete physical
-border shorthand `currentColor` cannot be accepted without explicit coverage
-of painted and private no-paint variants.
+Implemented in `44b887c4` from design checkpoint `4272f0fa`.
 
+- Added private complete deferred-color declaration variants for painted,
+  `none`, and `hidden` physical shorthands without changing public border
+  structs or artifact schemas.
+- Reused the bounded case-insensitive `currentColor` parser and projected
+  complete width, style, and color through independent cascade streams at the
+  original declaration order. Explicit complete `none`/`hidden` remains
+  no-paint in the current non-table engine.
+- Added parser coverage for all five physical complete shorthand names,
+  concrete-value preservation, case-insensitive forms, malformed/incomplete
+  values, CSS-wide keywords, unsupported styles/colors, and extra components.
+- Added integration coverage for local current color, all physical complete
+  forms, painted styles, no-paint behavior, layout, hit testing, semantics,
+  display-list output, and raster output.
+
+## Evidence
+
+- `cargo fmt --all` and `git diff --check` passed.
+- Focused feature check passed:
+  `RUST_MIN_STACK=16777216 CARGO_TARGET_DIR=/tmp/glass-162-focused cargo check -q -p glass-browser --features native-engine --tests --locked`.
+- Focused border unit tests passed: 18/18. The existing current-color
+  integration test passed: 1/1. The new complete-physical integration test
+  passed: 1/1.
+- Full native integration passed: 200/200. Feature-enabled library tests
+  passed: 968 passed, 1 ignored.
+- Strict affected-package Clippy passed with all targets/features and
+  `-D warnings`; feature rustdoc passed with `RUSTDOCFLAGS=-Dwarnings`.
+- Paired `glass-dev` check and build passed in the isolated target.
+- Static gates passed: version sync 0.3.14; feature parity 14 capabilities
+  across 4 targets; release docs 576 Markdown/current-claim failures 0; TUI
+  15 implementation keys/63 documentation markers; documentation depth 93
+  guides/19 contracts; reliability 6 scenarios/4 targets; adapters 5; Web IR
+  8 fixtures/8 scenarios/11 categories; documentation coverage 576 Markdown,
+  345 full-product MCP tools, 17 examples, and 22 public modules.
+- `RUST_MIN_STACK=33554432 CARGO_TARGET_DIR=/tmp/glass-162-workspace bash
+  scripts/check-rust-workspace.sh` passed for the all-target/all-feature
+  workspace test matrix; successful output was redirected to the named log.
+- Before cleanup, `/tmp/glass-162-focused` contained 5,923,680,256 bytes
+  (9,259 files/1,201 directories), `/tmp/glass-162-workspace` contained
+  5,040,406,528 bytes (6,215 files/694 directories), and the named log was
+  163,840 bytes. No cargo/rustc/rustdoc/clippy process or open handle targeted
+  these paths. Exact bounded deletion reclaimed 10,964,250,624 measured bytes;
+  free space rose from 71,862,439,936 to 82,826,702,848 bytes. All three
+  temporary paths and the repository `target/` were verified absent afterward.
+- Remote CI, push, release, tag, registry publication, browser parity, and
+  security-boundary claims remain unmade because this checkout is local-only.

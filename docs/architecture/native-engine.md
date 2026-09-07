@@ -1184,23 +1184,25 @@ documentation, and bounded cleanup gates are recorded in the task; remote CI
 remains pending because the checkout is local-only.
 The completed dependency-ordered `native-engine-161` slice is recorded in
 `docs/plan/tasks/native-engine-161.md`; design is `c5a58f29` and implementation
-is `299de40d` with the test-lint follow-up `2042fb3e`. It adds only standalone
+is `299de40d` with the test-lint follow-up `2042fb3e`. It adds standalone
 physical `border-color` and `border-top|right|bottom|left-color` `currentColor`
 substitution through private declaration state, resolving against the existing
-element/inherited color owner while keeping complete border shorthands,
-public/artifact schemas, and broader CSS color semantics unchanged. Focused,
+element/inherited color owner while keeping public/artifact schemas and broader
+CSS color semantics unchanged. Focused, full-native/library, strict Clippy,
+rustdoc, two-crate, formatting, static documentation, and bounded cleanup gates
+passed locally; exact evidence is recorded in the task. Remote CI remains
+pending because the checkout is local-only.
+The completed dependency-ordered `native-engine-162` slice is recorded in
+`docs/plan/tasks/native-engine-162.md`; design is `4272f0fa` and implementation
+is `44b887c4`. It extends the private deferred-color path to complete physical
+`Npx <style> currentColor` values for painted, `none`, and `hidden` forms,
+resolving explicit current color from the local or inherited element color while
+preserving concrete public border values and the existing no-paint behavior.
+Omitted width/style defaults, logical sides, broader color semantics, and
+browser-wide border conformance remain outside the boundary. Focused,
 full-native/library, strict Clippy, rustdoc, two-crate, formatting, static
-documentation, and bounded cleanup gates passed locally; exact evidence is
-recorded in the task. Remote CI remains pending because the checkout is
-local-only. Complete border shorthands with `currentColor` and broader
-`currentColor` semantics remain outside the boundary.
-The next dependency-ordered `native-engine-162` slice is designed and recorded
-in `docs/plan/tasks/native-engine-162.md`. It will extend the private deferred
-color path to complete physical `Npx <style> currentColor` values, including
-the existing private `none` and `hidden` style forms, while preserving concrete
-public border values and leaving omitted defaults and broader color semantics
-outside the boundary. It remains planned until implementation and local gates
-are complete.
+documentation, and bounded cleanup gates are recorded in the task; remote CI
+remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

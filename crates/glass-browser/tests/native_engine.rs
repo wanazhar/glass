@@ -1578,6 +1578,164 @@ fn native_physical_border_style_important_priority_reaches_border_artifacts() {
 }
 
 #[test]
+fn native_logical_border_width_important_priority_reaches_projected_border_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            .box { display:block;width:16px;height:8px;border:2px solid black; }
+            @layer base {
+                #ltr { direction:ltr;border-inline-start-width:1px !important; }
+                #rtl { direction:rtl;border-inline-start-width:1px !important; }
+                #pair { border-block-width:1px 2px !important; }
+                #rollback { border-block-width:1px !important; }
+                #rollback { border-block-width:revert-layer !important; }
+                #normal { border-block-width:1px; }
+                #mixed { border-inline-width:1px !important; }
+                #invalid { border-inline-width:1px !important;border-inline-width:invalid !important; }
+            }
+            @layer theme {
+                #ltr { border-inline-start-width:2px !important; }
+                #rtl { border-inline-start-width:2px !important; }
+                #pair { border-block-width:3px 4px !important; }
+                #rollback { border-block-width:5px !important; }
+                #normal { border-block-width:2px; }
+            }
+            #ltr { border-inline-start-width:3px !important; }
+            #rtl { border-inline-start-width:3px !important; }
+            #normal { border-block-width:3px; }
+            #mixed { border-inline-width:4px; }
+            #invalid { border-inline-width:4px; }
+        </style>
+        <div id='ltr' class='box' role='button'>Ltr</div>
+        <div id='rtl' class='box' role='button'>Rtl</div>
+        <div id='pair' class='box' role='button'>Pair</div>
+        <div id='rollback' class='box' role='button'>Rollback</div>
+        <div id='normal' class='box' role='button'>Normal</div>
+        <div id='mixed' class='box' role='button'>Mixed</div>
+        <div id='invalid' class='box' role='button'>Invalid</div>
+        <div id='inline' class='box' role='button' style='border-inline-start-width:4px !important'>Inline</div>
+        <div id='width-only' style='display:block;width:8px;height:6px;border-inline-width:3px !important'>Only</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let ltr = document.resolve_target("id=ltr").unwrap();
+    let rtl = document.resolve_target("id=rtl").unwrap();
+    let pair = document.resolve_target("id=pair").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let width_only = document.resolve_target("id=width-only").unwrap();
+    let targets = [ltr, rtl, pair, rollback, normal, mixed, invalid, inline];
+    let layout = document.layout(viewport).unwrap();
+    for (node_id, (expected_width, expected_height)) in [
+        (ltr, (19, 12)),
+        (rtl, (19, 12)),
+        (pair, (20, 11)),
+        (rollback, (20, 18)),
+        (normal, (20, 14)),
+        (mixed, (18, 12)),
+        (invalid, (18, 12)),
+        (inline, (22, 12)),
+    ] {
+        let rectangle = layout
+            .box_for(node_id)
+            .expect("logical border-width layout box");
+        assert_eq!(rectangle.width, expected_width);
+        assert_eq!(rectangle.height, expected_height);
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 3).into(), (rectangle.y + 3).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+    let width_only_box = layout.box_for(width_only).expect("width-only layout box");
+    assert_eq!((width_only_box.width, width_only_box.height), (8, 6));
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    for (node_id, expected_widths) in [
+        (ltr, [2, 2, 2, 1]),
+        (rtl, [2, 1, 2, 2]),
+        (pair, [1, 2, 2, 2]),
+        (rollback, [5, 2, 5, 2]),
+        (normal, [3, 2, 3, 2]),
+        (mixed, [2, 1, 2, 1]),
+        (invalid, [2, 1, 2, 1]),
+        (inline, [2, 2, 2, 4]),
+    ] {
+        let borders = border_for(node_id).expect("logical border-width command");
+        assert_eq!(
+            [
+                borders.top.width,
+                borders.right.width,
+                borders.bottom.width,
+                borders.left.width,
+            ],
+            expected_widths,
+            "logical border widths for {node_id:?}"
+        );
+        assert_eq!(
+            [
+                borders.top.style,
+                borders.right.style,
+                borders.bottom.style,
+                borders.left.style,
+            ],
+            [NativeBorderStyle::Solid; 4]
+        );
+        assert_eq!(
+            [
+                borders.top.color,
+                borders.right.color,
+                borders.bottom.color,
+                borders.left.color,
+            ],
+            [NativeColor::BLACK; 4]
+        );
+    }
+    assert!(border_for(width_only).is_none());
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in targets.windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-inline-width"
+    }));
+    let ltr_box = layout.box_for(ltr).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(ltr_box.x + ltr_box.width / 2, ltr_box.y),
+        Some([0, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_logical_border_color_important_priority_reaches_projected_border_artifacts() {
     let document = NativeDocument::parse(
         r#"<style>

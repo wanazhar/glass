@@ -1,7 +1,7 @@
 ---
 id: native-engine-188
 scope: glass-browser/native-engine/cascade-local-presentation-important-priority
-status: planned
+status: complete
 depends-on: [native-engine-187]
 ---
 
@@ -80,3 +80,40 @@ adds priority semantics without changing those owners.
 Only exact task-specific regenerable targets and reports may be removed after
 Cargo/Rust process and open-handle checks. Source, durable data, repository
 targets, issue snapshots, and unrelated workloads remain untouched.
+
+## Evidence
+
+- Implementation checkpoint: `ca0b47bd`.
+- `RUST_MIN_STACK=8388608 CARGO_TARGET_DIR=/tmp/glass-188-focused cargo check -q -p glass-browser --features native-engine --tests --locked` passed.
+- Focused parser/cascade unit tests passed: 2/2.
+- Focused native integration regression passed: 1/1.
+- Full native integration passed: 226/226.
+- Strict native-feature Clippy with `-D warnings` passed.
+- Warning-denied native-feature rustdoc passed.
+- `cargo fmt --all` and `git diff --check` passed.
+
+The integration fixture verified the resolved display and visibility hidden
+owners, semantic hidden projection, point hit testing, important-over-normal
+priority, reversed named-layer priority, inline important precedence,
+inline `revert-layer`, invalid-later preservation, reduced-opacity display
+groups, software source-over replay, and PNG capture. No public schema,
+dependency, default-feature, or crate-boundary change was made.
+
+## Cleanup
+
+- Exact target inventory before deletion: `/tmp/glass-188-focused`,
+  5,383,944,304 bytes, 9,096 files, and 1,180 directories.
+- Exact report inventory before deletion:
+  `/tmp/glass-release-documentation-188.json`, 191,907 bytes.
+- `ps` found no active `cargo`, `rustc`, `rustdoc`, or Clippy process, and
+  `timeout 30s lsof -nP +D /tmp/glass-188-focused` found no open handles.
+- Removed only the exact task target and report with bounded
+  `find -P <path> -xdev -depth -delete` commands.
+- Verified both paths are absent after deletion.
+- Final static release-audit rerun report inventory:
+  `/tmp/glass-release-documentation-188-final.json`, 191,907 bytes; it was
+  removed with the same bounded exact-path command and verified absent.
+- `/tmp` available bytes increased from 76,641,693,696 to 82,054,823,936
+  (5,413,130,240 bytes, approximately 5.04 GiB reclaimed).
+- Source, durable data, repository targets, issue snapshots, and unrelated
+  workloads were not touched.

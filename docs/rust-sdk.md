@@ -146,7 +146,9 @@ text-presentation set (`white-space`, `text-align`, `text-align-last`,
 thickness/underline-offset, `text-transform`, `font-weight`, `font-style`,
 `word-break`, `text-overflow`, `vertical-align`, `text-indent`, `word-spacing`,
 `letter-spacing`, and `line-height`) also honors the same terminal priority;
-remaining properties remain outside generic `!important` semantics. The bounded
+local `display`, `visibility`, and `opacity` declarations honor the same
+terminal priority; remaining properties remain outside generic `!important`
+semantics. The bounded
 `background-color`, inherited `color`, and `text-decoration-color` owners
 also honor terminal case-insensitive `!important` with the same
 important-over-normal and reversed named-layer ordering. The standalone

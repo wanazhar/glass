@@ -95,7 +95,9 @@ source-behavior reference.
   thickness/underline-offset, `text-transform`, `font-weight`, `font-style`,
   `word-break`, `text-overflow`, `vertical-align`, `text-indent`, `word-spacing`,
   `letter-spacing`, and `line-height`) also honors the same terminal priority;
-  remaining properties remain outside generic `!important` semantics,
+  local `display`, `visibility`, and `opacity` declarations honor the same
+  terminal priority; remaining properties remain outside generic `!important`
+  semantics,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or

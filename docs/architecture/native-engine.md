@@ -34,8 +34,8 @@ bounded-local-dimension-revert-layer,
 bounded-local-box-model-revert-layer,
 bounded-paint-color-revert-layer,
 bounded-paint-color-important/bounded-physical-border-color-important,
-bounded-logical-border-color-important,
-bounded-text-presentation-important,
+bounded-logical-border-color-important/bounded-text-presentation-important/
+bounded-local-presentation-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
 bounded-inherited-color-current-color,
@@ -162,9 +162,11 @@ fixed-cell inline and inline-block line items. These supported
 text-presentation declarations also accept a terminal case-insensitive
 `!important` marker through a private doubled author-origin partition with
 reversed named-layer order, inline important precedence, invalid-later
-preservation, and `revert-layer` rollback; remaining properties retain their
-existing bounded priority behavior. The inherited/local value owners and
-artifact consumers remain unchanged, and
+preservation, and `revert-layer` rollback. The local `display`, `visibility`,
+and `opacity` declarations also accept that bounded priority through a private
+doubled local partition; remaining properties retain their existing bounded
+priority behavior. The inherited/local value owners and artifact consumers
+remain unchanged, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
@@ -1559,6 +1561,19 @@ bounded slice. Focused, full-native, feature-library, strict Clippy,
 warning-denied rustdoc, current documentation audits, and task-specific
 cleanup pass locally; issue-level final gates and remote CI remain pending
 until issue #40 reaches its final validation boundary.
+
+The completed dependency-ordered `native-engine-188` slice is recorded in
+`docs/plan/tasks/native-engine-188.md` and implemented at `ca0b47bd`. It extends
+the bounded author-origin `!important` partition to local `display`,
+`visibility`, and `opacity` through a private doubled local partition,
+preserving important-over-normal ordering, reversed named-layer priority,
+inline important precedence, invalid-later preservation, and `revert-layer`
+rollback through the existing hidden-subtree, semantic, layout, display-list,
+raster, capture, and point-hit owners. Flex/gap, dimensions/box model,
+overflow, other properties, dependencies, defaults, and the two-crate boundary
+remain unchanged. Scoped check, focused units/integration, full native
+integration (226/226), strict Clippy, warning-denied rustdoc, and formatting
+gates pass locally; final issue-level gates and remote CI remain pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

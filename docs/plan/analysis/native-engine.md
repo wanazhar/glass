@@ -1557,18 +1557,18 @@ workspace all-target/all-feature, security/fuzz, and formatting gates pass
 locally; exact evidence and bounded cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
 The completed dependency-ordered `native-engine-177` through
-`native-engine-187` slices are recorded in their task files. This run's latest
-slice, `native-engine-187`, extends the bounded author-origin `!important`
-partition from the radius, paint-color, and border families to the supported
-text-flow and text-decoration declarations through one private doubled text
+`native-engine-188` slices are recorded in their task files. This run's latest
+slice, `native-engine-188`, extends the bounded author-origin `!important`
+partition from the radius, paint-color, border, and text families to local
+`display`, `visibility`, and `opacity` through one private doubled local
 partition. Important-over-normal ordering, reversed named-layer priority,
-inline important precedence, invalid-later preservation, inherited/local
-fallbacks, and `revert-layer` rollback are covered without changing public
-schemas, artifact owners, dependencies, defaults, or the two-crate boundary.
-Display/visibility/opacity, flex/gap, dimensions/box model, overflow, multiple
-origins, transitions, animations, vertical writing modes, and browser-wide CSS
-conformance remain outside the bounded contract. Local certification for the
-latest slice is recorded below; the checkout remains local-only.
+inline important precedence, invalid-later preservation, and `revert-layer`
+rollback are covered without changing public schemas, artifact owners,
+dependencies, defaults, or the two-crate boundary. Flex/gap, dimensions/box
+model, overflow, multiple origins, transitions, animations, vertical writing
+modes, and browser-wide CSS conformance remain outside the bounded contract.
+Local certification for the latest slice is recorded below; the checkout
+remains local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2352,10 +2352,13 @@ visual stacking.
 | `native-engine-186` | completed bounded author-origin `!important` priority for the six supported horizontal-tb logical complete/side border shorthands by carrying one private importance bit per logical side into the existing doubled width/style/color component streams before resolved `ltr`/`rtl` projection; preserved independent component composition, CSS-wide/omitted `none`/`hidden`/`revert-layer` behavior, public schemas, and the two-crate boundary; implementation `274441e1`, strict-lint helper correction `758b891a`; focused/full-native/library, strict Clippy, warning-denied rustdoc, current documentation, and cleanup evidence recorded locally | `native-engine-185` | vertical writing modes, logical radius, table conflict resolution, border-image, gradients, multiple origins, transitions, animations, percentages, elliptical radii, arbitrary logical-border values, and browser-wide conformance |
 | `native-engine-187` | completed bounded author-origin `!important` priority for the supported text-flow and text-decoration declarations through one private doubled text cascade partition, preserving important-over-normal ordering, reversed named-layer priority, inline important precedence, invalid-later preservation, inherited/local fallbacks, and `revert-layer` rollback with existing layout, decoration, raster, capture, hit, diagnostics, schemas, and two-crate boundaries unchanged; implementation `65883117`; focused/full-native/library, strict Clippy, warning-denied rustdoc, current documentation, and cleanup evidence recorded locally | `native-engine-186` | display/visibility/opacity, flex/gap, dimensions/box model, overflow, dependencies, multiple origins, transitions, animations, vertical writing modes, and browser-wide CSS conformance |
 
+| `native-engine-188` | completed bounded author-origin `!important` priority for local `display`, `visibility`, and `opacity` through one private doubled local cascade partition, preserving important-over-normal ordering, reversed named-layer priority, inline important precedence, invalid-later preservation, and `revert-layer` rollback through existing hidden-subtree, semantic, layout, display-list, raster, capture, and point-hit owners; implementation `ca0b47bd`; scoped check, focused/full-native integration, strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-187` | flex/gap, dimensions/box model, overflow, other properties, dependencies, multiple origins, transitions, animations, vertical writing modes, and browser-wide CSS conformance |
+
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-187.md` is the latest completed task;
+`docs/plan/tasks/native-engine-188.md` is the latest completed task;
+`docs/plan/tasks/native-engine-187.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-186.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-185.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-183.md` is the preceding completed task;
@@ -2479,26 +2482,21 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
-`docs/plan/tasks/native-engine-187.md`: implementation is `65883117`. It
-extends bounded author-origin `!important` priority to the supported text-flow
-and text-decoration declarations through a private doubled text partition,
+`docs/plan/tasks/native-engine-188.md`: implementation is `ca0b47bd`. It
+extends bounded author-origin `!important` priority to local `display`,
+`visibility`, and `opacity` through a private doubled local partition,
 preserving important-over-normal ordering, reversed named-layer priority,
-inline important precedence, invalid-later preservation, inherited/local
-fallbacks, `revert-layer` rollback, and the existing layout, decoration,
-raster, capture, hit, diagnostics, schema, and two-crate owners. The focused
+inline important precedence, invalid-later preservation, `revert-layer`
+rollback, and the existing hidden-subtree, semantic, layout, display-list,
+raster, capture, hit, diagnostics, schema, and two-crate owners. The scoped
 native check, 2 parser/cascade unit tests, 1 integration regression, full
-native integration (225/225), feature-enabled library (1,004 passed, 1
-ignored), strict Clippy, warning-denied rustdoc, and formatting gates passed.
-Static release truth passed over 601 Markdown documents with 83 current
-documents, 57 previous-version hits, 697 semantic-audit hits, and 0 current-
-claim failures; documentation coverage passed with 601 Markdown files, 345
-full-product MCP tools (100 browser-only), 17 examples, and 22 public modules;
-documentation depth passed with 93 guides and 19 substantive contracts;
-feature parity, TUI shortcut, and version-sync gates passed. Task-specific
-cleanup and issue-level workspace, release, security/fuzz, paired-crate,
-package, and remote-CI gates remain deferred to the final issue #40
-certification boundary. No remote CI, push, release, tag, registry
-publication, browser-parity, security-boundary, or promotion claim is made.
+native integration (226/226), strict Clippy, warning-denied rustdoc, and
+formatting gates passed. Static release truth, documentation coverage/depth,
+feature parity, TUI shortcut, version-sync, paired-crate, package,
+workspace, security/fuzz, final cleanup, and remote-CI gates remain deferred to
+the final issue #40 certification boundary. No remote CI, push, release, tag,
+registry publication, browser-parity, security-boundary, or promotion claim is
+made.
 The historical checkpoint remains recorded for
 `docs/plan/tasks/native-engine-173.md`: the implementation is `f5f53cec`. It
 adds the bounded complete physical `border` and four side-border shorthand

@@ -61,6 +61,12 @@ pub enum NativeBorderStyle {
     Dotted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBorderStyleValue {
+    Paint(NativeBorderStyle),
+    None,
+}
+
 /// Bounded text-decoration patterns owned separately from border styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeTextDecorationStyle {
@@ -1262,8 +1268,9 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut border_width: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
-        let mut border_style: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderStyle>>>;
-            MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
+        let mut border_style: [[Option<
+            CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>,
+        >; MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut border_color: [[Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut border_radius: [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderRadius>>>;
@@ -2320,9 +2327,10 @@ impl NativeStylesheet {
         let resolved_border_width: [Option<u32>; 4] = std::array::from_fn(|index| {
             resolve_local_optional_cascade_declaration(border_width[index])
         });
-        let resolved_border_style: [Option<NativeBorderStyle>; 4] = std::array::from_fn(|index| {
-            resolve_local_optional_cascade_declaration(border_style[index])
-        });
+        let resolved_border_style: [Option<NativeBorderStyleValue>; 4] =
+            std::array::from_fn(|index| {
+                resolve_local_optional_cascade_declaration(border_style[index])
+            });
         let resolved_border_color = border_color.map(resolve_local_optional_cascade_declaration);
         let resolved_border = std::array::from_fn(|index| {
             match (
@@ -2330,16 +2338,20 @@ impl NativeStylesheet {
                 resolved_border_width[index],
                 resolved_border_style[index],
             ) {
-                (Some(_), width, Some(style)) => Some(NativeBorderSide {
-                    width: width.unwrap_or(0),
-                    style,
-                    color: resolved_border_color[index].unwrap_or(NativeColor::BLACK),
-                }),
-                (None, Some(width), Some(style)) => Some(NativeBorderSide {
-                    width,
-                    style,
-                    color: resolved_border_color[index].unwrap_or(NativeColor::BLACK),
-                }),
+                (Some(_), width, Some(NativeBorderStyleValue::Paint(style))) => {
+                    Some(NativeBorderSide {
+                        width: width.unwrap_or(0),
+                        style,
+                        color: resolved_border_color[index].unwrap_or(NativeColor::BLACK),
+                    })
+                }
+                (None, Some(width), Some(NativeBorderStyleValue::Paint(style))) => {
+                    Some(NativeBorderSide {
+                        width,
+                        style,
+                        color: resolved_border_color[index].unwrap_or(NativeColor::BLACK),
+                    })
+                }
                 _ => None,
             }
         });
@@ -3199,13 +3211,13 @@ fn apply_border_style_cascade(
     specificity: u16,
     rule_order: usize,
     inline: bool,
-    candidates: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderStyle>>>;
+    candidates: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>>;
              MAX_NATIVE_CASCADE_LAYERS]; 4],
 ) {
     for (index, candidate) in candidates.iter_mut().enumerate() {
         let border_style = declarations.border[index].map(|declaration| match declaration {
             LocalCascadeDeclaration::Value(border) => {
-                LocalCascadeDeclaration::Value(border.style())
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(border.style()))
             }
             LocalCascadeDeclaration::RevertLayer => LocalCascadeDeclaration::RevertLayer,
         });
@@ -3327,7 +3339,7 @@ struct NativeDeclarations {
     border_order: [usize; 4],
     border_width: [Option<LocalCascadeDeclaration<u32>>; 4],
     border_width_order: [usize; 4],
-    border_style: [Option<LocalCascadeDeclaration<NativeBorderStyle>>; 4],
+    border_style: [Option<LocalCascadeDeclaration<NativeBorderStyleValue>>; 4],
     border_style_order: [usize; 4],
     border_color: [Option<LocalCascadeDeclaration<NativeColor>>; 4],
     border_color_order: [usize; 4],
@@ -4513,21 +4525,21 @@ fn parse_border_width_side_declaration(value: &str) -> Option<LocalCascadeDeclar
 
 fn parse_border_style_declaration(
     value: &str,
-) -> Option<[LocalCascadeDeclaration<NativeBorderStyle>; 4]> {
+) -> Option<[LocalCascadeDeclaration<NativeBorderStyleValue>; 4]> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
     let values = split_css_value_tokens(value)?
         .into_iter()
-        .map(parse_border_style)
+        .map(parse_border_style_value)
         .collect::<Option<Vec<_>>>()?;
     expand_box_edges(&values).map(|values| values.map(LocalCascadeDeclaration::Value))
 }
 
 fn parse_border_style_side_declaration(
     value: &str,
-) -> Option<LocalCascadeDeclaration<NativeBorderStyle>> {
-    parse_local_cascade_declaration(value, parse_border_style)
+) -> Option<LocalCascadeDeclaration<NativeBorderStyleValue>> {
+    parse_local_cascade_declaration(value, parse_border_style_value)
 }
 
 fn parse_border_color(value: &str) -> Option<[NativeColor; 4]> {
@@ -4694,6 +4706,14 @@ fn parse_border_style(value: &str) -> Option<NativeBorderStyle> {
         "dashed" => Some(NativeBorderStyle::Dashed),
         "dotted" => Some(NativeBorderStyle::Dotted),
         _ => None,
+    }
+}
+
+fn parse_border_style_value(value: &str) -> Option<NativeBorderStyleValue> {
+    if value.eq_ignore_ascii_case("none") {
+        Some(NativeBorderStyleValue::None)
+    } else {
+        parse_border_style(value).map(NativeBorderStyleValue::Paint)
     }
 }
 
@@ -4867,7 +4887,7 @@ fn set_border_width_side(
 }
 
 fn set_border_style_side(
-    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderStyle>>; 4],
+    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderStyleValue>>; 4],
     orders: &mut [usize; 4],
     index: usize,
     value: &str,
@@ -7011,10 +7031,16 @@ mod tests {
         assert_eq!(
             declarations.border_style,
             [
-                Some(LocalCascadeDeclaration::Value(NativeBorderStyle::Dotted)),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderStyleValue::Paint(NativeBorderStyle::Dotted,)
+                )),
                 Some(LocalCascadeDeclaration::RevertLayer),
-                Some(LocalCascadeDeclaration::Value(NativeBorderStyle::Dotted)),
-                Some(LocalCascadeDeclaration::Value(NativeBorderStyle::Dashed)),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderStyleValue::Paint(NativeBorderStyle::Dotted,)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderStyleValue::Paint(NativeBorderStyle::Dashed,)
+                )),
             ]
         );
         assert_eq!(declarations.border_style_order, [1, 2, 0, 4]);
@@ -7025,10 +7051,18 @@ mod tests {
         assert_eq!(
             parse_border_style_declaration("solid dashed dotted solid"),
             Some([
-                LocalCascadeDeclaration::Value(NativeBorderStyle::Solid),
-                LocalCascadeDeclaration::Value(NativeBorderStyle::Dashed),
-                LocalCascadeDeclaration::Value(NativeBorderStyle::Dotted),
-                LocalCascadeDeclaration::Value(NativeBorderStyle::Solid),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Solid,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Dashed,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Dotted,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Solid,
+                )),
             ])
         );
         assert_eq!(
@@ -7039,7 +7073,6 @@ mod tests {
             "revert-layer solid",
             "solid revert-layer",
             "solid dashed dotted solid double",
-            "none",
             "double",
             "solid 1px",
         ] {
@@ -7049,7 +7082,24 @@ mod tests {
             parse_border_style_side_declaration("ReVeRt-LaYeR"),
             Some(LocalCascadeDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_border_style_declaration("none solid dashed none"),
+            Some([
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::None),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Solid,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Dashed,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::None),
+            ])
+        );
         assert_eq!(parse_border_style_side_declaration("solid dashed"), None);
+        assert_eq!(
+            parse_border_style_side_declaration("none"),
+            Some(LocalCascadeDeclaration::Value(NativeBorderStyleValue::None))
+        );
     }
 
     #[test]
@@ -7151,6 +7201,56 @@ mod tests {
         assert_eq!(
             stylesheet.computed_for(&inline).border.unwrap().top().style,
             NativeBorderStyle::Dotted
+        );
+    }
+
+    #[test]
+    fn border_style_none_blocks_or_reveals_lower_components_without_public_leakage() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #blocked { border: 2px solid red; } #exposed { border: 2px solid red; } #repeated { border: 2px solid red; } #invalid { border: 2px solid red; } #physical { border: 2px solid red; } #style-only { border-style: none; } #inline { border: 2px solid red; } #inline-paint { border: 2px solid red; border-style: none; } } @layer theme { #blocked { border-style: none; } #exposed { border-style: none; border-style: revert-layer; } #repeated { border-style: none; border-style: revert-layer; border-style: revert-layer; } #invalid { border-style: none; border-style: invalid; } #physical { border-style: none dashed dotted solid; } } #blocked { border-style: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let blocked = node("<div id='blocked'>Blocked</div>");
+        let exposed = node("<div id='exposed'>Exposed</div>");
+        let repeated = node("<div id='repeated'>Repeated</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let physical = node("<div id='physical'>Physical</div>");
+        let style_only = node("<div id='style-only'>Style only</div>");
+        let inline = node("<div id='inline' style='border-style:none'>Inline</div>");
+        let inline_paint =
+            node("<div id='inline-paint' style='border-style:solid'>Inline paint</div>");
+
+        assert_eq!(stylesheet.computed_for(&blocked).border, None);
+        assert_eq!(
+            stylesheet.computed_for(&exposed).border.unwrap(),
+            uniform_border(2, NativeColor::RED)
+        );
+        assert_eq!(
+            stylesheet.computed_for(&repeated).border.unwrap(),
+            uniform_border(2, NativeColor::RED)
+        );
+        assert_eq!(stylesheet.computed_for(&invalid).border, None);
+        assert_eq!(stylesheet.computed_for(&style_only).border, None);
+        assert_eq!(stylesheet.computed_for(&inline).border, None);
+        assert_eq!(
+            stylesheet.computed_for(&inline_paint).border.unwrap(),
+            uniform_border(2, NativeColor::RED)
+        );
+
+        let physical_border = stylesheet.computed_for(&physical).border.unwrap();
+        assert_eq!(physical_border.top().width(), 0);
+        assert_eq!(
+            physical_border.right(),
+            styled_border_side(2, NativeBorderStyle::Dashed, NativeColor::RED)
+        );
+        assert_eq!(
+            physical_border.bottom(),
+            styled_border_side(2, NativeBorderStyle::Dotted, NativeColor::RED)
+        );
+        assert_eq!(
+            physical_border.left(),
+            styled_border_side(2, NativeBorderStyle::Solid, NativeColor::RED)
         );
     }
 

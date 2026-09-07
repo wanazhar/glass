@@ -1096,6 +1096,141 @@ fn native_border_style_revert_layer_composes_components_and_artifacts() {
 }
 
 #[test]
+fn native_border_style_none_blocks_or_reveals_components_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #mixed { display:block;width:8px;height:6px;border:2px solid red; } #blocked { display:block;width:8px;height:6px;border:2px solid red; } #exposed { display:block;width:8px;height:6px;border:2px solid red; } #repeated { display:block;width:8px;height:6px;border:2px solid red; } #invalid { display:block;width:8px;height:6px;border:2px solid red; } #physical { display:block;width:8px;height:6px;border:2px solid red; } #style-only { display:block;width:8px;height:6px;border-style:none; } #inline { display:block;width:8px;height:6px;border:2px solid red; } #inline-paint { display:block;width:8px;height:6px;border:2px solid red;border-style:none; } } @layer theme { #mixed { border-style:none dashed dotted none; } #blocked { border-style:none; } #exposed { border-style:none;border-style:revert-layer; } #repeated { border-style:none;border-style:revert-layer;border-style:revert-layer; } #invalid { border-style:none;border-style:invalid; } #physical { border-top-style:none;border-right-style:dashed;border-bottom-style:dotted;border-left-style:solid; } #inline-paint { border-style:none; } } #blocked { border-style:revert-layer; }</style><button id='mixed'>Mixed</button><button id='blocked'>Blocked</button><button id='exposed'>Exposed</button><button id='repeated'>Repeated</button><button id='invalid'>Invalid</button><button id='physical'>Physical</button><button id='style-only'>Style only</button><button id='inline' style='border-style:none'>Inline</button><button id='inline-paint' style='border-style:solid'>Inline paint</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let blocked = document.resolve_target("id=blocked").unwrap();
+    let exposed = document.resolve_target("id=exposed").unwrap();
+    let repeated = document.resolve_target("id=repeated").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let physical = document.resolve_target("id=physical").unwrap();
+    let style_only = document.resolve_target("id=style-only").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let inline_paint = document.resolve_target("id=inline-paint").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(mixed).unwrap().width, 10);
+    assert_eq!(layout.box_for(mixed).unwrap().height, 8);
+    assert_eq!(layout.box_for(blocked).unwrap().width, 8);
+    assert_eq!(layout.box_for(blocked).unwrap().height, 6);
+    assert_eq!(layout.box_for(exposed).unwrap().width, 12);
+    assert_eq!(layout.box_for(exposed).unwrap().height, 10);
+    assert_eq!(layout.box_for(repeated).unwrap().width, 12);
+    assert_eq!(layout.box_for(repeated).unwrap().height, 10);
+    assert_eq!(layout.box_for(invalid).unwrap().width, 8);
+    assert_eq!(layout.box_for(invalid).unwrap().height, 6);
+    assert_eq!(layout.box_for(physical).unwrap().width, 12);
+    assert_eq!(layout.box_for(physical).unwrap().height, 8);
+    assert_eq!(layout.box_for(style_only).unwrap().width, 8);
+    assert_eq!(layout.box_for(style_only).unwrap().height, 6);
+    assert_eq!(layout.box_for(inline).unwrap().width, 8);
+    assert_eq!(layout.box_for(inline).unwrap().height, 6);
+    assert_eq!(layout.box_for(inline_paint).unwrap().width, 12);
+    assert_eq!(layout.box_for(inline_paint).unwrap().height, 10);
+    for node_id in [
+        mixed,
+        blocked,
+        exposed,
+        repeated,
+        invalid,
+        physical,
+        style_only,
+        inline,
+        inline_paint,
+    ] {
+        let rectangle = layout
+            .box_for(node_id)
+            .expect("border-style:none layout box");
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in [
+        mixed,
+        blocked,
+        exposed,
+        repeated,
+        invalid,
+        physical,
+        style_only,
+        inline,
+        inline_paint,
+    ] {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected border-style:none fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let mixed_border = border_for(mixed).expect("mixed border command");
+    assert_eq!(mixed_border.top.width, 0);
+    assert_eq!(mixed_border.right.width, 2);
+    assert_eq!(mixed_border.right.style, NativeBorderStyle::Dashed);
+    assert_eq!(mixed_border.bottom.width, 2);
+    assert_eq!(mixed_border.bottom.style, NativeBorderStyle::Dotted);
+    assert_eq!(mixed_border.left.width, 0);
+    assert!(border_for(blocked).is_none());
+    assert!(border_for(invalid).is_none());
+    assert!(border_for(style_only).is_none());
+    assert!(border_for(inline).is_none());
+    assert!(border_for(exposed).is_some());
+    assert!(border_for(repeated).is_some());
+    let physical_border = border_for(physical).expect("physical border command");
+    assert_eq!(physical_border.top.width, 0);
+    assert_eq!(physical_border.right.style, NativeBorderStyle::Dashed);
+    assert_eq!(physical_border.bottom.style, NativeBorderStyle::Dotted);
+    assert_eq!(physical_border.left.style, NativeBorderStyle::Solid);
+    let inline_paint_border = border_for(inline_paint).expect("inline border command");
+    assert_eq!(inline_paint_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(inline_paint_border.top.width, 2);
+
+    let style_diagnostic_count = document
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "border-style"
+        })
+        .count();
+    assert_eq!(style_diagnostic_count, 1);
+
+    let surface = list.rasterize().unwrap();
+    let physical_rect = layout.box_for(physical).unwrap();
+    assert_eq!(
+        surface.pixel(physical_rect.x, physical_rect.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

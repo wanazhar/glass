@@ -1,7 +1,7 @@
 ---
 id: native-engine-179
 scope: glass-browser/native-engine/cascade-physical-border-color-important-priority
-status: in-progress
+status: complete
 depends-on: [native-engine-178]
 ---
 
@@ -139,4 +139,15 @@ checks, post-delete absence, and filesystem free-space delta.
 
 ## Evidence
 
-Pending implementation and local certification.
+Implementation and slice-local certification are complete at `ed1cda27`.
+
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- The locked native-feature check passed with `CARGO_TARGET_DIR=/tmp/glass-179-focused cargo check -q -p glass-browser --features native-engine --tests --locked`.
+- Focused `physical_border_color_important` coverage passed: 2 library unit tests and 1 integration test.
+- The full `native_engine` integration target passed 217/217 tests.
+- The feature-enabled `glass-browser` library target passed 988 tests with 1 intentionally ignored.
+- Strict all-target Clippy with `-D warnings` and warning-denied rustdoc passed for `glass-browser` with `native-engine`.
+- The final documentation truth audit passed over 593 Markdown documents with 83 current documents, 57 previous-version hits, 688 semantic-audit hits, and 0 current-claim failures.
+- Issue-level workspace, release, security/fuzz, paired-crate, cleanup, and remote-CI gates remain deferred to the final issue #40 certification boundary.
+
+Task-specific cleanup is pending the final documentation audit report removal.

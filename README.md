@@ -359,8 +359,10 @@ normal candidates and named-layer priority is reversed within the important
 partition of the existing author-origin cascade. The bounded
 `background-color`, inherited `color`, and `text-decoration-color` owners
 also honor terminal case-insensitive `!important` with the same important-
-over-normal and reversed named-layer ordering; border color and other
-properties retain their existing bounded behavior. The same
+over-normal and reversed named-layer ordering. The standalone physical
+`border-color` shorthand and physical color longhands also honor the same
+terminal priority; complete/side border shorthands, logical `border-color`,
+and other properties retain their existing bounded behavior. The same
 bounded radius owner also accepts exact case-insensitive CSS-wide `inherit`,
 `unset`, `initial`, and one-author-origin `revert`: explicit `inherit` copies
 the parent's effective four-corner radius, including from unpainted or

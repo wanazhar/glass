@@ -144,8 +144,11 @@ above normal candidates and reversed named-layer order; generic `!important`
 semantics for other properties remain outside the boundary. The bounded
 `background-color`, inherited `color`, and `text-decoration-color` owners
 also honor terminal case-insensitive `!important` with the same
-important-over-normal and reversed named-layer ordering; border color remains
-outside this bounded paint-color priority,
+important-over-normal and reversed named-layer ordering. The standalone
+physical `border-color` shorthand and physical color longhands also honor the
+same terminal priority; complete/side border shorthands, logical
+`border-color`, and other properties remain outside this bounded paint-color
+priority,
 plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
 one-author-origin `revert` for the radius owner: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width

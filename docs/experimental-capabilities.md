@@ -160,8 +160,10 @@ case-insensitive `!important` marker; important candidates outrank normal
 candidates and named-layer priority reverses within the important partition.
 This remains radius-only for the radius owner; the bounded
 `background-color`, inherited `color`, and `text-decoration-color` owners
-also honor the same terminal priority, while border color and other
-properties do not claim generic `!important` semantics.
+also honor the same terminal priority. The standalone physical
+`border-color` shorthand and physical color longhands also honor the same
+terminal priority; complete/side border shorthands, logical `border-color`,
+and other properties do not claim generic `!important` semantics.
 CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert`: explicit
 `inherit` copies the parent's effective four-corner radius, including from
 unpainted or zero-width parents; reset forms resolve to zero corners and

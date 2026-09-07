@@ -25,6 +25,7 @@ const MAX_NATIVE_PAINT_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
 const IMPORTANT_PAINT_CASCADE_OFFSET: usize = MAX_NATIVE_CASCADE_LAYERS;
 const MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
 const MAX_NATIVE_BORDER_WIDTH_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
+const MAX_NATIVE_BORDER_STYLE_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
 const CASCADE_DECLARATION_ORDER_STRIDE: usize = 256 * 1024 + 1;
 const LOGICAL_BORDER_BLOCK_START: usize = 0;
 const LOGICAL_BORDER_BLOCK_END: usize = 1;
@@ -1493,7 +1494,8 @@ impl NativeStylesheet {
             [[None; MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
         let mut border_style: [[Option<
             CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>,
-        >; MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
+        >; MAX_NATIVE_BORDER_STYLE_CASCADE_LAYERS]; 4] =
+            [[None; MAX_NATIVE_BORDER_STYLE_CASCADE_LAYERS]; 4];
         let mut logical_border_style: [[Option<
             CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>,
         >; MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES] =
@@ -3102,7 +3104,7 @@ fn resolve_local_border_width_declaration(
 
 fn resolve_local_border_style_declaration(
     candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+        MAX_NATIVE_BORDER_STYLE_CASCADE_LAYERS],
     inherited_style: NativeBorderStyleValue,
 ) -> Option<NativeBorderStyleValue> {
     resolve_alignment_candidates(candidates, None, |declaration| match declaration {
@@ -3813,23 +3815,24 @@ fn apply_border_style_cascade(
     specificity: u16,
     rule_order: usize,
     inline: bool,
-    candidates: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>>;
-             MAX_NATIVE_CASCADE_LAYERS]; 4],
+    candidates: &mut NativePhysicalBorderStyleCandidates,
 ) {
     for (index, candidate) in candidates.iter_mut().enumerate() {
         let border_style = declarations.border[index].and_then(project_border_style_declaration);
-        apply_local_cascade_declaration(
+        apply_paint_cascade_declaration(
             border_style,
             specificity,
             border_cascade_order(rule_order, declarations.border_order[index], inline),
             inline,
+            false,
             candidate,
         );
-        apply_local_cascade_declaration(
+        apply_paint_cascade_declaration(
             declarations.border_style[index],
             specificity,
             border_cascade_order(rule_order, declarations.border_style_order[index], inline),
             inline,
+            declarations.border_style_important[index],
             candidate,
         );
     }
@@ -3973,6 +3976,9 @@ type NativePhysicalBorderColorCandidates = [[Option<
 type NativePhysicalBorderWidthCandidates = [[Option<
     CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>,
 >; MAX_NATIVE_BORDER_WIDTH_CASCADE_LAYERS]; 4];
+type NativePhysicalBorderStyleCandidates = [[Option<
+    CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>,
+>; MAX_NATIVE_BORDER_STYLE_CASCADE_LAYERS]; 4];
 type NativePhysicalBorderRadiusCandidates = [[Option<
     CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>,
 >; MAX_NATIVE_RADIUS_CASCADE_LAYERS]; 4];
@@ -3994,7 +4000,7 @@ struct NativeLogicalBorderCandidateTargets<'a> {
 struct NativePhysicalBorderCandidateTargets<'a> {
     border: &'a mut NativePhysicalBorderCandidates<NativeBorderDeclaration>,
     width: &'a mut NativePhysicalBorderWidthCandidates,
-    style: &'a mut NativePhysicalBorderCandidates<NativeBorderStyleValue>,
+    style: &'a mut NativePhysicalBorderStyleCandidates,
     color: &'a mut NativePhysicalBorderColorCandidates,
 }
 
@@ -4318,6 +4324,7 @@ struct NativeDeclarations {
     border_width_important: [bool; 4],
     border_style: [Option<LocalCascadeDeclaration<NativeBorderStyleValue>>; 4],
     border_style_order: [usize; 4],
+    border_style_important: [bool; 4],
     border_color: [Option<LocalCascadeDeclaration<NativeBorderColorValue>>; 4],
     border_color_order: [usize; 4],
     border_color_important: [bool; 4],
@@ -5529,42 +5536,51 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(values) = parse_border_style_declaration(value) {
                     declarations.border_style = values.map(Some);
                     declarations.border_style_order = [declaration_order; 4];
+                    declarations.border_style_important = [important; 4];
                 }
             }
             "border-top-style" => {
                 set_border_style_side(
                     &mut declarations.border_style,
                     &mut declarations.border_style_order,
+                    &mut declarations.border_style_important,
                     0,
                     value,
                     declaration_order,
+                    important,
                 );
             }
             "border-right-style" => {
                 set_border_style_side(
                     &mut declarations.border_style,
                     &mut declarations.border_style_order,
+                    &mut declarations.border_style_important,
                     1,
                     value,
                     declaration_order,
+                    important,
                 );
             }
             "border-bottom-style" => {
                 set_border_style_side(
                     &mut declarations.border_style,
                     &mut declarations.border_style_order,
+                    &mut declarations.border_style_important,
                     2,
                     value,
                     declaration_order,
+                    important,
                 );
             }
             "border-left-style" => {
                 set_border_style_side(
                     &mut declarations.border_style,
                     &mut declarations.border_style_order,
+                    &mut declarations.border_style_important,
                     3,
                     value,
                     declaration_order,
+                    important,
                 );
             }
             "border-block-style" => {
@@ -6695,13 +6711,16 @@ fn set_border_width_side(
 fn set_border_style_side(
     sides: &mut [Option<LocalCascadeDeclaration<NativeBorderStyleValue>>; 4],
     orders: &mut [usize; 4],
+    important_flags: &mut [bool; 4],
     index: usize,
     value: &str,
     declaration_order: usize,
+    important: bool,
 ) {
     if let Some(style) = parse_border_style_side_declaration(value) {
         sides[index] = Some(style);
         orders[index] = declaration_order;
+        important_flags[index] = important;
     }
 }
 
@@ -13263,6 +13282,103 @@ mod tests {
 
         let inline = node("<div id='inline' style='border-width:4px !important'>Inline</div>");
         assert_eq!(stylesheet.computed_for(&inline).border_widths(), [4; 4]);
+    }
+
+    #[test]
+    fn physical_border_style_important_parser_tracks_valid_terminal_markers() {
+        let declarations = parse_declarations(
+            "border-style: solid !IMPORTANT; border-top-style: dashed !important; border-right-style: invalid !important; border-right-style: dotted;",
+        );
+        assert_eq!(
+            declarations.border_style,
+            [
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderStyleValue::Paint(NativeBorderStyle::Dashed)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderStyleValue::Paint(NativeBorderStyle::Dotted)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderStyleValue::Paint(NativeBorderStyle::Solid)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderStyleValue::Paint(NativeBorderStyle::Solid)
+                )),
+            ]
+        );
+        assert_eq!(
+            declarations.border_style_important,
+            [true, false, true, true]
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_physical_border_style_important_priority_and_rollback() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #early { border-style: solid !important; } #rollback { border-style: dashed !important; } #rollback { border-style: revert-layer !important; } #normal { border-style: dotted; } #mixed { border-top-style: hidden !important; } #sides { border-style: solid !important; border-top-style: none !important; border-right-style: hidden !important; } #invalid { border-style: double !important; border-style: invalid !important; } } @layer theme { #early { border-style: dashed !important; } #rollback { border-style: groove !important; } #normal { border-style: double; } #sides { border-style: ridge !important; } } #early { border-style: dotted !important; } #normal { border-style: outset; } #mixed { border-style: double; } #sides { border-style: inset !important; } #invalid { border-style: dashed; } #wide { border-style: inherit !important; }".into(),
+        ])
+        .unwrap();
+        let computed = |id: &str| {
+            stylesheet
+                .computed_for(&node(&format!("<div id='{id}'>Text</div>")))
+                .border_styles()
+        };
+
+        assert_eq!(
+            computed("early"),
+            [NativeBorderStyleValue::Paint(NativeBorderStyle::Solid); 4]
+        );
+        assert_eq!(
+            computed("rollback"),
+            [NativeBorderStyleValue::Paint(NativeBorderStyle::Groove); 4]
+        );
+        assert_eq!(
+            computed("normal"),
+            [NativeBorderStyleValue::Paint(NativeBorderStyle::Outset); 4]
+        );
+        assert_eq!(
+            computed("mixed"),
+            [
+                NativeBorderStyleValue::Hidden,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Double),
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Double),
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Double),
+            ]
+        );
+        assert_eq!(
+            computed("sides"),
+            [
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Hidden,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+            ]
+        );
+        assert_eq!(
+            computed("invalid"),
+            [NativeBorderStyleValue::Paint(NativeBorderStyle::Double); 4]
+        );
+
+        let inline = node("<div id='inline' style='border-style:hidden !important'>Inline</div>");
+        assert_eq!(
+            stylesheet.computed_for(&inline).border_styles(),
+            [NativeBorderStyleValue::Hidden; 4]
+        );
+        let inherited_style = [NativeBorderStyleValue::Paint(NativeBorderStyle::Dotted); 4];
+        let wide = node("<div id='wide'>Wide</div>");
+        assert_eq!(
+            stylesheet
+                .computed_for_with_matcher(
+                    &wide,
+                    NativeInheritedStyle {
+                        border_style: inherited_style,
+                        ..NativeInheritedStyle::default()
+                    },
+                    |selector| selector.matches(&wide),
+                )
+                .border_styles(),
+            inherited_style
+        );
     }
 
     #[test]

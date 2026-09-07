@@ -1627,12 +1627,21 @@ static, workspace, and bounded cleanup gates passed locally; exact evidence is
 recorded in the task. Remote CI remains pending because the checkout is
 local-only.
 
-The next dependency-ordered [native-engine-171](tasks/native-engine-171.md)
+The completed dependency-ordered [native-engine-171](tasks/native-engine-171.md)
+slice is implemented at `67e04c0d`. It adds the same bounded case-insensitive
+CSS-wide family to physical `border-style` and its four style longhands, with
+only explicit `inherit` copying effective parent styles, including private
+`none`/`hidden` and styles from unpainted or zero-width parents, and reset/
+omission preserving the private no-style fallback. Focused/full-native/library,
+strict, package, static, workspace, and cleanup gates passed locally; exact
+evidence is recorded in the task. Remote CI remains pending because the
+checkout is local-only.
+
+The next dependency-ordered [native-engine-172](tasks/native-engine-172.md)
 slice is designed but not implemented. It will add the same bounded
-case-insensitive CSS-wide family to physical `border-style` and its four style
-longhands, copying only explicit effective parent styles and retaining the
-existing private `none`/zero-width fallback; no implementation or completion
-claim is made yet.
+case-insensitive CSS-wide family to the physical `border-radius` shorthand,
+copying only explicit effective parent radii and retaining the default
+zero-corner fallback; no implementation or completion claim is made yet.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

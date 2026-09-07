@@ -147,11 +147,18 @@ strict-lint follow-up is `100d1888`.
   intentionally ignored.
 - Strict all-target Clippy with `-D warnings` and warning-denied rustdoc passed
   for `glass-browser` with `native-engine`.
-- The final documentation truth audit and task-specific exact-target cleanup
-  are recorded after the synchronized documentation changes below.
+- The final documentation truth audit passed over 594 Markdown documents with
+  83 current documents, 57 previous-version hits, 688 semantic-audit hits, and
+  0 current-claim failures.
 - Issue-level workspace, release, security/fuzz, paired-crate, cleanup, and
   remote-CI gates remain deferred to the final issue #40 certification
   boundary.
 
-Task-specific cleanup is pending completion of the final documentation audit;
-only `/tmp/glass-180-focused` and the nine named task reports may be reclaimed.
+Task-specific cleanup was completed after all local Cargo/Rust processes and
+open handles exited: `/tmp/glass-180-focused` measured 4,245,769,887 bytes
+across 7,337 files and 846 directories, and the nine named reports measured
+191,794 bytes. Bounded exact-path deletion removed only those paths;
+post-delete absence checks passed. Available filesystem bytes moved from
+78,195,785,728 to 82,462,998,528, an observed increase of 4,267,212,800
+bytes. Source, repository targets, durable data, unrelated workloads, and
+issue snapshots were preserved.

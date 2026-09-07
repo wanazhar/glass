@@ -65,6 +65,7 @@ pub enum NativeBorderStyle {
 enum NativeBorderStyleValue {
     Paint(NativeBorderStyle),
     None,
+    Hidden,
 }
 
 /// Bounded text-decoration patterns owned separately from border styling.
@@ -4712,6 +4713,8 @@ fn parse_border_style(value: &str) -> Option<NativeBorderStyle> {
 fn parse_border_style_value(value: &str) -> Option<NativeBorderStyleValue> {
     if value.eq_ignore_ascii_case("none") {
         Some(NativeBorderStyleValue::None)
+    } else if value.eq_ignore_ascii_case("hidden") {
+        Some(NativeBorderStyleValue::Hidden)
     } else {
         parse_border_style(value).map(NativeBorderStyleValue::Paint)
     }
@@ -7095,10 +7098,29 @@ mod tests {
                 LocalCascadeDeclaration::Value(NativeBorderStyleValue::None),
             ])
         );
+        assert_eq!(
+            parse_border_style_declaration("hidden solid dashed hidden"),
+            Some([
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Hidden),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Solid,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Dashed,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Hidden),
+            ])
+        );
         assert_eq!(parse_border_style_side_declaration("solid dashed"), None);
         assert_eq!(
             parse_border_style_side_declaration("none"),
             Some(LocalCascadeDeclaration::Value(NativeBorderStyleValue::None))
+        );
+        assert_eq!(
+            parse_border_style_side_declaration("HiDdEn"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderStyleValue::Hidden
+            ))
         );
     }
 

@@ -8642,6 +8642,260 @@ fn native_complete_border_css_wide_keywords_preserve_physical_consumers() {
 }
 
 #[test]
+fn native_logical_borders_map_direction_and_share_physical_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            .box { display:block;width:20px;height:10px;margin:1px; }
+            #ltr { direction:ltr;border-block:1px solid red;border-inline:2px solid green; }
+            #rtl { direction:rtl;border-inline-width:3px 4px;border-inline-style:solid;border-inline-color:blue; }
+            #side { border-block-start:5px dashed black;border-inline-end:6px dotted red; }
+            #components { border:1px solid black;border-inline-color:red blue;border-block-style:double; }
+            #precedence-a { border-inline:2px solid blue;border-left:7px solid red; }
+            #precedence-b { border-left:7px solid red;border-inline:2px solid blue; }
+            @layer base { #rollback { border-inline:2px solid green; } }
+            @layer theme { #rollback { border-inline-start:revert-layer;border-inline-end:4px solid blue; } }
+            #invalid { border:1px solid black;border-inline-width:inherit 1px;border-inline:1px solid red blue; }
+            #parent { direction:rtl;border-inline-width:2px 3px;border-inline-style:solid;border-inline-color:red; }
+            #child { border-inline:inherit; }
+        </style>
+        <div id='ltr' class='box' role='button'>LTR</div>
+        <div id='rtl' class='box' role='button'>RTL</div>
+        <div id='side' class='box' role='button'>Side</div>
+        <div id='components' class='box' role='button'>Components</div>
+        <div id='precedence-a' class='box' role='button'>Physical later</div>
+        <div id='precedence-b' class='box' role='button'>Logical later</div>
+        <div id='rollback' class='box' role='button'>Rollback</div>
+        <div id='invalid' class='box' role='button'>Invalid keeps physical</div>
+        <div id='parent' class='box' role='button'><div id='child' class='box' role='button'>Inherited RTL</div></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 96,
+        height: 420,
+        device_scale_factor_milli: 1000,
+    };
+    let id = |value: &str| document.resolve_target(&format!("id={value}")).unwrap();
+    let ltr = id("ltr");
+    let rtl = id("rtl");
+    let side = id("side");
+    let components = id("components");
+    let precedence_a = id("precedence-a");
+    let precedence_b = id("precedence-b");
+    let rollback = id("rollback");
+    let invalid = id("invalid");
+    let parent = id("parent");
+    let child = id("child");
+    let targets = [
+        ltr,
+        rtl,
+        side,
+        components,
+        precedence_a,
+        precedence_b,
+        rollback,
+        invalid,
+        parent,
+        child,
+    ];
+
+    let layout = document.layout(viewport).unwrap();
+    for node_id in targets {
+        let rectangle = layout.box_for(node_id).expect("logical-border layout box");
+        assert!(
+            rectangle.width > 0,
+            "logical-border width for {node_id:?}: {rectangle:?}"
+        );
+        assert!(
+            rectangle.height >= 10,
+            "logical-border height for {node_id:?}: {rectangle:?}"
+        );
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id),
+            "logical-border hit target {node_id:?}"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let ltr_border = border_for(ltr).expect("ltr logical border command");
+    assert_eq!(ltr_border.top.width, 1);
+    assert_eq!(ltr_border.bottom.width, 1);
+    assert_eq!(ltr_border.left.width, 2);
+    assert_eq!(ltr_border.right.width, 2);
+    assert_eq!(ltr_border.top.color, NativeColor::RED);
+    assert_eq!(
+        ltr_border.left.color,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255,
+        }
+    );
+
+    let rtl_border = border_for(rtl).expect("rtl logical border command");
+    assert_eq!(rtl_border.top.width, 0);
+    assert_eq!(rtl_border.bottom.width, 0);
+    assert_eq!(rtl_border.right.width, 3);
+    assert_eq!(rtl_border.left.width, 4);
+    assert_eq!(
+        rtl_border.right.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255,
+        }
+    );
+
+    let side_border = border_for(side).expect("logical side border command");
+    assert_eq!(side_border.top.width, 5);
+    assert_eq!(side_border.top.style, NativeBorderStyle::Dashed);
+    assert_eq!(side_border.right.width, 6);
+    assert_eq!(side_border.right.style, NativeBorderStyle::Dotted);
+    assert_eq!(side_border.bottom.width, 0);
+    assert_eq!(side_border.left.width, 0);
+
+    let component_border = border_for(components).expect("logical component border command");
+    assert_eq!(component_border.top.style, NativeBorderStyle::Double);
+    assert_eq!(component_border.bottom.style, NativeBorderStyle::Double);
+    assert_eq!(component_border.left.color, NativeColor::RED);
+    assert_eq!(
+        component_border.right.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255,
+        }
+    );
+
+    let precedence_a_border = border_for(precedence_a).expect("physical-later border command");
+    assert_eq!(precedence_a_border.left.width, 7);
+    assert_eq!(precedence_a_border.left.color, NativeColor::RED);
+    assert_eq!(precedence_a_border.right.width, 2);
+    let precedence_b_border = border_for(precedence_b).expect("logical-later border command");
+    assert_eq!(precedence_b_border.left.width, 2);
+    assert_eq!(
+        precedence_b_border.left.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255,
+        }
+    );
+
+    let rollback_border = border_for(rollback).expect("logical rollback border command");
+    assert_eq!(rollback_border.left.width, 2);
+    assert_eq!(
+        rollback_border.left.color,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255,
+        }
+    );
+    assert_eq!(rollback_border.right.width, 4);
+    assert_eq!(
+        rollback_border.right.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255,
+        }
+    );
+
+    let invalid_border = border_for(invalid).expect("invalid logical declarations preserve border");
+    assert_eq!(
+        [
+            invalid_border.top.width,
+            invalid_border.right.width,
+            invalid_border.bottom.width,
+            invalid_border.left.width,
+        ],
+        [1, 1, 1, 1]
+    );
+    let parent_border = border_for(parent).expect("parent logical border command");
+    let child_border = border_for(child).expect("inherited logical border command");
+    assert_eq!(parent_border.right.width, 2);
+    assert_eq!(parent_border.left.width, 3);
+    assert_eq!(child_border.right.width, 2);
+    assert_eq!(child_border.left.width, 3);
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in targets {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "logical-border semantic target {node_id:?} should remain visible"
+        );
+    }
+    let surface = list.rasterize().unwrap();
+    let ltr_box = layout.box_for(ltr).unwrap();
+    assert_eq!(
+        surface.pixel(ltr_box.x + ltr_box.width / 2, ltr_box.y),
+        Some([255, 0, 0, 255])
+    );
+    let rtl_box = layout.box_for(rtl).unwrap();
+    assert_eq!(
+        surface.pixel(
+            rtl_box.x + rtl_box.width - 1,
+            rtl_box.y + rtl_box.height / 2
+        ),
+        Some([0, 0, 255, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-inline-width"
+    }));
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-inline"
+    }));
+    for property in [
+        "border-block",
+        "border-block-start",
+        "border-block-end",
+        "border-inline",
+        "border-inline-start",
+        "border-inline-end",
+        "border-block-width",
+        "border-inline-width",
+        "border-block-style",
+        "border-inline-style",
+        "border-block-color",
+        "border-inline-color",
+    ] {
+        assert!(
+            !document.diagnostics().iter().any(|diagnostic| {
+                diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+                    && diagnostic.detail == property
+            }),
+            "valid logical property {property} must be recognized"
+        );
+    }
+}
+
+#[test]
 fn native_inline_boxes_wrap_before_layout_materializes_geometry() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:16px'><span id='first' style='display:inline;width:6px;height:4px;padding:1px;margin:1px;background-color:red'>A</span><span id='second' style='display:inline;width:6px;height:4px;padding:1px;margin:1px;background-color:blue'>B</span></div>",

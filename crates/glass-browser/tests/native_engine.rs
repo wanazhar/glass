@@ -8015,6 +8015,143 @@ fn native_border_radius_corner_longhands_reach_all_rounded_consumers() {
 }
 
 #[test]
+fn native_logical_border_radius_corner_longhands_map_all_rounded_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            @layer base {
+                #ltr { display:block;width:24px;height:20px;border:2px solid blue;background-color:red;direction:ltr;border-start-start-radius:7px;border-start-end-radius:8px;border-end-start-radius:10px;border-end-end-radius:9px; }
+                #rtl { display:block;width:24px;height:20px;border:2px solid blue;background-color:green;direction:rtl;border-start-start-radius:7px;border-start-end-radius:8px;border-end-start-radius:10px;border-end-end-radius:9px; }
+                #parent { display:block;width:28px;height:20px;border:1px solid blue;background-color:blue;direction:rtl;border-radius:3px 4px 5px 6px; }
+                #inherited { display:block;width:8px;height:6px;border:1px solid blue;background-color:blue;border-start-start-radius:inherit;border-end-end-radius:inherit; }
+                #invalid { display:block;width:8px;height:6px;border:1px solid blue;background-color:red;direction:ltr;border-radius:5px;border-start-end-radius:50%; }
+            }
+        </style>
+        <div id='ltr' role='button'>LTR</div>
+        <div id='rtl' role='button'>RTL</div>
+        <div id='parent' role='button'><div id='inherited' role='button'>Inherited</div></div>
+        <div id='invalid' role='button'>Invalid</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let ltr = document.resolve_target("id=ltr").unwrap();
+    let rtl = document.resolve_target("id=rtl").unwrap();
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let layout_box_for = |node_id| {
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == node_id)
+            .unwrap()
+    };
+    let ltr_box = layout_box_for(ltr);
+    assert_eq!(
+        ltr_box.border_radius,
+        NativeBorderRadius {
+            top_left: 7,
+            top_right: 8,
+            bottom_right: 9,
+            bottom_left: 10,
+        }
+    );
+    assert_eq!(
+        layout_box_for(rtl).border_radius,
+        NativeBorderRadius {
+            top_left: 8,
+            top_right: 7,
+            bottom_right: 10,
+            bottom_left: 9,
+        }
+    );
+    assert_eq!(
+        layout_box_for(inherited).border_radius,
+        NativeBorderRadius {
+            top_left: 0,
+            top_right: 4,
+            bottom_right: 0,
+            bottom_left: 6,
+        }
+    );
+    assert_eq!(
+        layout_box_for(invalid).border_radius,
+        NativeBorderRadius {
+            top_left: 5,
+            top_right: 5,
+            bottom_right: 5,
+            bottom_left: 5,
+        }
+    );
+    assert_eq!(
+        layout
+            .hit_test(
+                (ltr_box.rect.x + ltr_box.rect.width / 2).into(),
+                (ltr_box.rect.y + ltr_box.rect.height / 2).into(),
+            )
+            .unwrap(),
+        Some(ltr)
+    );
+    assert_ne!(
+        layout
+            .hit_test(ltr_box.rect.x.into(), ltr_box.rect.y.into())
+            .unwrap(),
+        Some(ltr)
+    );
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in [ltr, rtl, parent, inherited, invalid] {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected logical corner-radius fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    for (node_id, expected_radius) in [
+        (ltr, ltr_box.border_radius),
+        (rtl, layout_box_for(rtl).border_radius),
+        (inherited, layout_box_for(inherited).border_radius),
+        (invalid, layout_box_for(invalid).border_radius),
+    ] {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id: command_node_id, radius, .. }
+                    if *command_node_id == node_id && *radius == expected_radius
+            )
+        }));
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::BorderRect { node_id: command_node_id, radius, .. }
+                    if *command_node_id == node_id && *radius == expected_radius
+            )
+        }));
+    }
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(
+            ltr_box.rect.x + ltr_box.rect.width / 2,
+            ltr_box.rect.y + ltr_box.rect.height / 2,
+        ),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-start-end-radius"
+    }));
+}
+
+#[test]
 fn native_border_radius_revert_layer_preserves_rounded_consumers() {
     let document = NativeDocument::parse(
         "<style>@layer base { #card { width:12px;height:10px;border:2px solid blue;background-color:red;border-radius:4px; } } @layer theme { #card { border-radius:6px; } #card { border-radius: revert-layer; } } @layer top { #card { border-radius: revert-layer; } } #card { border-radius: revert-layer; } #fallback { width:12px;height:10px;border:2px solid blue;background-color:red;border-radius: revert-layer; }</style><div id='card'>Card</div><div id='fallback'>Fallback</div>",

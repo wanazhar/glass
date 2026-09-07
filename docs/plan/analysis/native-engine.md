@@ -1441,14 +1441,30 @@ inversion, gradients, images, system colors, color spaces, percentages,
 custom-property graphs, animation, and browser-wide background conformance
 remain outside the completed boundary. Remote CI remains pending because the
 checkout is local-only.
-The next dependency-ordered `native-engine-168` slice is designed and recorded
-in `docs/plan/tasks/native-engine-168.md`. It will add bounded case-insensitive
-`inherit`, `unset`, `initial`, and one-author-origin `revert` to local
-`text-decoration-color`, copying a parent's effective concrete decoration
-color only for explicit `inherit` and resolving the other reset forms to the
-current element color. It preserves omitted `None`, `currentColor`,
-`revert-layer`, separate glyph/line paint, and all text artifact owners; no
-implementation or completion claim is made yet.
+The completed dependency-ordered `native-engine-168` slice is recorded in
+`docs/plan/tasks/native-engine-168.md`; design is `0bb67e8b`, implementation is
+`4521f151`, and synchronized current product documentation is `2184d98`. It
+adds exact case-insensitive `inherit`, `unset`, `initial`, and one-author-origin
+`revert` handling to local `text-decoration-color`, with only explicit
+`inherit` copying the parent's effective concrete decoration color and reset
+forms resolving to the current element color. Omission remains the public
+`None`/glyph-color fallback; `currentColor`, `revert-layer`, separate glyph/
+line paint, and all text artifact owners remain unchanged. Focused/full-native/
+library, strict Clippy, rustdoc, two-crate, package, formatting, static
+documentation, workspace all-target/all-feature, and bounded cleanup gates
+passed locally; exact evidence is recorded in the task. Multiple origins,
+`!important` inversion, gradients, images, system colors, color spaces,
+percentages, custom-property graphs, animation, and browser-wide
+text-decoration conformance remain outside the completed boundary. Remote CI
+remains pending because the checkout is local-only.
+The next dependency-ordered `native-engine-169` slice is designed and recorded
+in `docs/plan/tasks/native-engine-169.md`. It will add bounded case-insensitive
+`inherit`, `unset`, `initial`, and one-author-origin `revert` to local physical
+`border-color` and its four physical color longhands, copying a parent's
+effective per-side color only for explicit `inherit` and resolving reset forms
+to the current element color. It preserves omitted black fallback,
+`currentColor`, `revert-layer`, width/style composition, border geometry, and
+all artifact owners; no implementation or completion claim is made yet.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2205,12 +2221,14 @@ visual stacking.
 | `native-engine-165` | completed bounded local `color: currentColor` substitution through private deferred-color declaration state, resolved from the already-computed inherited color or bounded initial black fallback while preserving concrete public/artifact schemas; focused/full-native/library, strict Clippy, rustdoc, two-crate, package, formatting, static documentation, workspace all-target/all-feature, and bounded cleanup gates passed locally | `native-engine-164` | gradients, images, system colors, color spaces, percentages, custom-property graphs, CSS-wide reset machinery beyond existing `revert-layer`, multiple origins, animation, and browser-wide color conformance |
 | `native-engine-166` | completed bounded inherited `color` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state while preserving concrete public/artifact schemas; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-165` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, and browser-wide color conformance |
 | `native-engine-167` | completed bounded non-inherited `background-color` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only `inherit` copying the parent optional fill and reset forms preserving the existing no-fill `None` fallback; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-166` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, and browser-wide background conformance |
-| `native-engine-168` | planned bounded local `text-decoration-color` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective decoration color and reset forms resolving to the current element color | `native-engine-167` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, and browser-wide text-decoration conformance |
+| `native-engine-168` | completed bounded local `text-decoration-color` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective decoration color and reset forms resolving to the current element color; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-167` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, and browser-wide text-decoration conformance |
+| `native-engine-169` | planned bounded local physical `border-color` and four physical color-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective per-side color and reset forms resolving to the current element color | `native-engine-168` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, logical sides, table conflict resolution, and browser-wide border conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-167.md` is the latest completed task;
+`docs/plan/tasks/native-engine-168.md` is the latest completed task;
+`docs/plan/tasks/native-engine-167.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-166.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-165.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-164.md` is the preceding completed task;
@@ -2324,10 +2342,14 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
-`docs/plan/tasks/native-engine-167.md`: the design is `9e143200`, the
-implementation is `1ae1f103`, synchronized product documentation is
-`debd6ab4`, and static truth plus exact isolated-target cleanup evidence are
+`docs/plan/tasks/native-engine-168.md`: the design is `0bb67e8b`, the
+implementation is `4521f151`, synchronized product documentation is
+`2184d98`, and static truth plus exact isolated-target cleanup evidence are
 recorded in the task file and this local documentation checkpoint. The
+preceding 167 checkpoint remains recorded in
+`docs/plan/tasks/native-engine-167.md` with design `9e143200`, implementation
+`1ae1f103`, synchronized product documentation `debd6ab4`, and documentation/
+cleanup closeout `0bb67e8b`. The
 preceding 166 checkpoint remains recorded in
 `docs/plan/tasks/native-engine-166.md` with design `d148f766`, implementation
 `b57ba2b8`, synchronized product documentation `d26a9059`, and documentation/

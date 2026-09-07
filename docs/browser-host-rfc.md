@@ -191,7 +191,10 @@ remains private for future table conflict resolution and arbitrary
 omitted-component forms remain outside this bounded surface. Complete and
 physical border shorthands also accept bounded complete `Npx hidden color`
 values with private width/color retention for future table conflict resolution;
-current non-table composition suppresses hidden paint. Bounded local opacity subtree groups through
+current non-table composition suppresses hidden paint. Complete and physical
+border shorthands also accept bounded complete `Npx none color` values with
+private width/color retention for future table conflict resolution; current
+non-table composition suppresses none paint. Bounded local opacity subtree groups through
 transparent software layers,
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and

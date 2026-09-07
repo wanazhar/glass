@@ -1483,14 +1483,15 @@ Focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, and
 static documentation gates passed locally; exact target cleanup is recorded in
 the task. Remote CI remains pending because the branch is local-only.
 
-The next docs-first slice is [native-engine-160](tasks/native-engine-160.md).
-It depends on `native-engine-159` and is planned to accept the bounded complete
-`Npx none color` form for `border` and the four physical border shorthands.
-Declared width/color will remain private component candidates while the
-existing private `None` style sentinel suppresses current non-table paint;
-public computed and artifact schemas remain unchanged. The docs-first design
-checkpoint is `bf1a7236`; implementation and certification are not yet claimed,
-and issue #40 must be updated with this checkpoint before code changes begin.
+The completed dependency-ordered [native-engine-160](tasks/native-engine-160.md)
+slice is implemented at `a880c570` from design `bf1a7236`. It accepts bounded
+complete `Npx none color` values for `border` and the four physical border
+shorthands, carries declared width/color through private component candidates,
+and projects only the existing private `None` style sentinel. Current
+non-table composition remains no-paint/no-side and public computed/artifact
+schemas remain unchanged. Focused/full-native/library, strict Clippy, rustdoc,
+two-crate, formatting, static documentation, and bounded cleanup gates passed
+locally; remote CI remains pending because the branch is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

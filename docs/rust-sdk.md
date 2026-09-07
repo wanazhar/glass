@@ -196,7 +196,10 @@ private for future table conflict resolution and arbitrary omitted-component
 forms remain outside this bounded surface. The native engine provides bounded side-specific
 complete `Npx hidden color` border values with private width/color retention
 for future table conflict resolution; current non-table composition suppresses
-hidden paint. The native engine provides bounded side-specific
+hidden paint. The native engine also provides bounded side-specific
+complete `Npx none color` border values with private width/color retention
+for future table conflict resolution; current non-table composition suppresses
+none paint. The native engine provides bounded side-specific
 solid/dashed/dotted/double/groove/ridge/inset/outset-border paint, bounded
 physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height

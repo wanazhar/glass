@@ -1,7 +1,7 @@
 ---
 id: native-engine-160
 scope: glass-browser/native-engine/cascade-border-none-complete
-status: planned
+status: complete
 depends-on: [native-engine-159]
 ---
 
@@ -130,14 +130,57 @@ The completed slice must cover:
 
 ## Implementation
 
-Not implemented. This task is the docs-first design and acceptance contract;
-implementation must remain a separate coherent batch after this record is
-committed as design checkpoint `bf1a7236` and issue #40 is updated with that
-checkpoint.
+Implemented in `a880c570` (`feat(native-engine): support complete none
+borders`), from the docs-first design checkpoint `bf1a7236`. The private
+`NativeBorderDeclaration` wrapper now carries complete none values with their
+declared width and color. Complete none projects width and color into the
+independent private component candidates while projecting none style to
+`NativeBorderStyleValue::None`; current non-table composition suppresses paint
+without changing public computed or artifact schemas. Exact omitted-component
+none/hidden, complete hidden, and complete painted values remain unchanged.
 
 ## Evidence
 
-To be filled after implementation. The evidence must record exact commands,
-affected-package results, test counts, static documentation truth, and exact
-regenerable-target cleanup. It must not imply remote CI, release, publication,
-browser parity, or security-boundary certification.
+Local certification passed on 2026-09-07 UTC:
+
+- `cargo fmt --all` and `git diff --check` passed.
+- Feature-enabled locked `glass-browser` check passed with
+  `RUST_MIN_STACK=16777216` and `CARGO_TARGET_DIR=/tmp/glass-160-focused`.
+- Focused border library selection passed: 17 passed, 951 filtered.
+- Focused complete-none artifact integration test passed: 1 passed, 197
+  filtered.
+- Full `native_engine` integration suite passed: 198 passed, 0 failed.
+- Feature-enabled library suite passed: 967 passed, 0 failed, 1 ignored.
+- Strict affected-package Clippy (`--all-targets --all-features -- -D
+  warnings`) passed.
+- Feature rustdoc with `RUSTDOCFLAGS=-Dwarnings` passed.
+- Locked `glass-dev` check/build passed in the isolated target; both debug
+  binaries were present: `glass` and `glass-browser`.
+- The direct repository workspace validator first reproduced the pre-existing
+  default-stack overflow in `cli::args::tests::agent_readiness_commands_are_explicit`;
+  the identical `bash scripts/check-rust-workspace.sh` validator then passed
+  with `RUST_MIN_STACK=33554432` and output redirected to a bounded temporary
+  log. This is a test-environment stack requirement, not a native-engine
+  failure.
+- Static truth passed: version sync at 0.3.14; feature parity 14 capabilities
+  across 4 targets; TUI 15 implementation keys/63 documentation markers;
+  documentation depth 93 current guides/19 substantive contracts; reliability
+  6 scenarios across 4 targets; public read-only adapters 5; Web IR 8
+  fixtures/8 scenarios/11 categories; release documentation passed at 574
+  Markdown documents, 83 current documents, 57 previous-version hits, 665
+  semantic audit hits, and 0 current-claim failures; documentation coverage
+  passed at 574 Markdown files, 345 full-product MCP tools (100 browser-only),
+  17 examples, and 22 public modules.
+- No remote CI, push, release, registry publication, browser parity, or
+  security-boundary claim is made.
+
+Pre-cleanup inventory after all validation: `/tmp/glass-160-focused` was an
+exact real directory of 5,429,440,512 bytes across 9,070 files and 1,185
+directories; repository `target/` was an exact real directory of 5,039,251,456
+bytes across 6,215 files and 694 directories. No active Cargo/compiler process
+or open handle targeted either directory. Both are regenerable build output;
+only these exact paths may be removed. Both directories were removed with
+bounded `find -P <exact-path> -xdev -depth -delete`; the paths are absent and
+free space increased from 72,378,933,248 to 82,847,617,024 bytes
+(10,468,683,776 bytes reclaimed). The temporary workspace log and process
+inventory created for this certification were also removed by exact filename.

@@ -294,6 +294,10 @@ The complete and physical border shorthands also accept bounded complete
 `Npx hidden color` values; declared width and color remain private for future
 table conflict resolution, while current non-table composition suppresses
 hidden paint.
+The complete and physical border shorthands also accept bounded complete
+`Npx none color` values; declared width and color remain private for future
+table conflict resolution, while current non-table composition suppresses
+none paint.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and

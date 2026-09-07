@@ -1434,8 +1434,8 @@ inherited `color`, and `text-decoration-color` through private reversed
 named-layer partitions. Existing value grammar, inheritance/defaulting,
 fill/glyph/decoration artifacts, public schemas, and the two-crate boundary
 remain unchanged. Border color and other properties do not receive priority
-semantics in this slice. Slice-local certification passed; issue-level final
-gates, cleanup, and remote CI remain pending.
+semantics in this slice. Slice-local certification and task-specific cleanup
+passed; issue-level final gates, final cleanup, and remote CI remain pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

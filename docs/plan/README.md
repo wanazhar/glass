@@ -1726,9 +1726,9 @@ slice is implemented at `1292538c`. It extends bounded author-origin
 partition, while preserving existing color grammar, fallback, inheritance,
 paint artifacts, public schemas, and the two-crate boundary. Focused,
 full-native, feature-library, strict Clippy, and warning-denied rustdoc gates
-pass locally; exact slice evidence is recorded in the task. Issue-level final
-gates, cleanup, and remote CI remain pending until issue #40 reaches its final
-validation boundary.
+pass locally; exact slice evidence and task-specific cleanup are recorded in
+the task. Issue-level final gates, final cleanup, and remote CI remain pending
+until issue #40 reaches its final validation boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

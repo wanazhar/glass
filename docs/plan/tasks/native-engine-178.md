@@ -143,3 +143,15 @@ Implementation and slice-local certification are complete at `1292538c`.
 - The feature-enabled `glass-browser` library target passed 986 tests with 1 intentionally ignored.
 - Strict all-target Clippy with `-D warnings` and warning-denied rustdoc passed for `glass-browser` with `native-engine`.
 - Issue-level workspace, release, security/fuzz, paired-crate, cleanup, and remote-CI gates remain deferred to the final issue #40 certification boundary.
+
+Task cleanup was completed after all local processes and handles exited:
+`/tmp/glass-178-focused` measured 3,755,128,195 bytes across 7,510 files and
+878 directories, and the nine named reports measured 193,058 bytes. Bounded
+exact-path deletion removed them; post-delete absence checks passed. Filesystem
+available space moved from 78,474,493,952 to 82,252,763,136 bytes, an
+observed increase of 3,778,269,184 bytes. The issue snapshots and source tree
+were preserved.
+
+The final documentation re-audit temporarily recreated its two named reports
+(189,702 bytes); exact-path deletion was repeated and final absence checks
+passed. Final available space was 82,252,746,752 bytes.

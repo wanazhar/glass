@@ -85,7 +85,8 @@ viewport scrolling, inherited text color, bounded `overflow:hidden` clips
 shared by paint, viewport projection, and point hit-testing, bounded
 axis-specific `overflow-x`/`overflow-y` `hidden`/`clip` clips through the same
 owner, bounded
-  side-specific solid/dashed/dotted-border paint, bounded physical circular
+  side-specific solid/dashed/dotted/double/groove/ridge/inset/outset-border paint,
+  bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow with bounded inherited line-height, bounded direct-text
   flow fragments and source-order text
@@ -251,7 +252,8 @@ unlayered local `revert-layer` for the physical `border`, `border-top`,
 each side through lower concrete candidates or the existing zero-width/no-paint
 fallback, preserving shorthand/longhand precedence and the existing box-model
 inset, border display-list, capture, raster, point-hit, and semantic/source-order
-owners. Logical sides, border-image, gradients, other border styles, animation,
+owners. Logical sides, border-image, gradients, `wavy` and other unsupported
+border styles, animation,
 multiple origins, and browser-wide CSS border conformance remain outside the
 boundary. The same native border owner also accepts bounded case-insensitive
 15-layer/unlayered `border-color`, `border-top-color`, `border-right-color`,
@@ -269,7 +271,8 @@ or paint a border; existing border style/color and all box-model and artifact
 consumers remain the owners. The native border style surface also accepts
 bounded case-insensitive 15-layer/unlayered local `border-style` and physical
 `border-top-style`, `border-right-style`, `border-bottom-style`, and
-`border-left-style` values from the finite `none|hidden|solid|dashed|dotted` grammar,
+`border-left-style` values from the finite
+`none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset` grammar,
 with one-to-four-value physical shorthand expansion and independent per-side
 `revert-layer` rollback to lower styles. A winning `none` or `hidden` blocks
 lower styles and resolves to the existing no-side/zero-width behavior before
@@ -277,7 +280,8 @@ layout and paint; `hidden` remains a private distinction for future table
 conflict resolution. Width, style, and color components compose only after
 independent resolution; width-only or style-only declarations do not invent
 missing paint components. Collapsed-table border conflict resolution, logical
-sides, fractional/percentage widths, unsupported styles, and browser-wide
+sides, fractional/percentage widths, `wavy` and other unsupported styles, and
+browser-wide
 border conformance remain outside the boundary.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward

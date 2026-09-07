@@ -1,7 +1,7 @@
 ---
 id: native-engine-156
 scope: glass-browser/native-engine/cascade-border-style-painted-variants
-status: planned
+status: done
 depends-on: [native-engine-155]
 ---
 
@@ -124,8 +124,43 @@ The completed slice must cover:
 
 ## Implementation
 
-To be filled after the implementation checkpoint.
+Implemented in `5270d013` (`feat(native-engine): add painted border styles`).
+The bounded parser now accepts case-insensitive `double`, `groove`, `ridge`,
+`inset`, and `outset` for the complete `border` shorthand and physical style
+shorthands/longhands. `NativeBorderStyle` exposes the five painted variants
+without exposing the private `none`/`hidden` sentinels. Software replay keeps
+the existing border display command: `double` uses deterministic outer and
+inner one-third bands for widths at least three pixels and a solid fallback
+below that width; `groove`/`ridge` use deterministic two-tone half-width
+shading; and `inset`/`outset` use edge-directed shading. Alpha is preserved.
+The integration fixture covers cascade precedence, rollback, invalid-later
+preservation, display commands, geometry, hit testing, semantics, clipping,
+decoded raster, and PNG dimensions.
 
 ## Evidence
 
-To be filled after local certification and bounded target cleanup.
+- `cargo check -q -p glass-browser --features native-engine --tests --locked`
+  passed in isolated target `/tmp/glass-156-focused`.
+- Focused border-style units passed: 3 passed, 965 filtered; the focused
+  painted-variant integration test passed: 1 passed, 193 filtered.
+- Full native integration passed: 194 passed, 0 failed. The affected library
+  suite passed: 967 passed, 1 ignored, 0 failed.
+- Strict affected-package Clippy (`--all-targets --all-features -- -D
+  warnings`) and feature rustdoc (`RUSTDOCFLAGS=-Dwarnings`) passed.
+- Paired package checks/builds passed for `glass-dev`; both debug binaries were
+  present and executable in the isolated target.
+- Formatting and diff checks passed. Static validators passed with 570 Markdown
+  files, 83 current-version documents, 57 previous-version references, 658
+  semantic audit hits, 0 current-claim failures, 14 feature-parity
+  capabilities across 4 targets, 15 TUI implementation keys/63 documentation
+  markers, 93 documentation routes/19 substantive contracts, 6 reliability
+  scenarios across 4 targets, 5 public read-only adapters, 8 Web IR
+  fixtures/scenarios across 11 categories, and 345 full-product MCP tools,
+  17 examples, and 22 public modules.
+- The validated regenerable target was a real non-symlink directory with
+  5,844,066,304 bytes, 9,330 files, and 1,186 directories. No Cargo/Rust
+  compiler process or open handle referenced it. It was removed with bounded
+  `find -P /tmp/glass-156-focused -xdev -depth -delete`; the target is absent
+  and free space increased from 77,929,656,320 to 83,773,710,336 bytes.
+- Remote CI remains unclaimed because this checkout is local-only; no push,
+  tag, release, or registry publication was performed.

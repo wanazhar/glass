@@ -103,7 +103,8 @@ in-process context, local `about:blank`, `data:text/html`, and registered
 bounded CSS presentation, integer normal-flow rectangles, point hit testing,
 semantic click/type actions for local controls, a bounded effects signal,
 bounded inherited text color, `overflow:hidden` clips shared by paint, viewport
-projection, and point hit-testing, side-specific solid/dashed/dotted-border paint,
+projection, and point hit-testing, bounded side-specific
+solid/dashed/dotted/double/groove/ridge/inset/outset-border paint,
 bounded physical circular border radii, bounded inline-box line placement,
 bounded fixed pixel line-height flow, bounded direct-text flow fragments and
 source-order text paint, bounded word-aware wrapping,
@@ -154,8 +155,9 @@ unlayered local `revert-layer` for the physical `border`, `border-top`,
 each side through lower concrete candidates or the existing zero-width/no-paint
 fallback, preserving shorthand/longhand precedence and the existing box-model
 inset, border display-list, capture, raster, point-hit, and semantic/source-order
-owners. Logical sides, border-image, gradients, other border styles, animation,
-multiple origins, and browser-wide CSS border conformance remain outside the
+owners. Logical sides, border-image, gradients, `wavy` and other unsupported
+border styles, animation, multiple origins, and browser-wide CSS border
+conformance remain outside the
 boundary. The same native border owner also accepts bounded case-insensitive
 15-layer/unlayered `border-color`, `border-top-color`, `border-right-color`,
 `border-bottom-color`, and `border-left-color` values with one-to-four-value
@@ -171,16 +173,18 @@ to lower widths or bounded zero. Width-only declarations do not invent a style
 or paint a border. The same owner also accepts bounded case-insensitive
 15-layer/unlayered local `border-style` and physical `border-top-style`,
 `border-right-style`, `border-bottom-style`, and `border-left-style` values
-from the finite `none|hidden|solid|dashed|dotted` grammar with one-to-four-value
-physical shorthand expansion and independent per-side `revert-layer` rollback
+from the finite
+`none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset` grammar with
+one-to-four-value physical shorthand expansion and independent per-side
+`revert-layer` rollback
 to lower styles. A winning `none` or `hidden` blocks lower styles and resolves
 to no side/zero width before layout and paint; `hidden` remains a private
 distinction for future table conflict resolution. Width, style, and color
 components compose only after independent resolution, and width-only or
 style-only declarations do not invent missing paint components;
 collapsed-table border conflict resolution, logical sides, fractional/percentage
-widths, unsupported styles, and browser-wide border conformance remain outside
-the boundary.
+widths, `wavy` and other unsupported styles, and browser-wide border conformance
+remain outside the boundary.
 bounded local opacity subtree groups through transparent software layers,
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and

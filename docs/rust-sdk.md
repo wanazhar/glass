@@ -160,7 +160,8 @@ for physical `border`, `border-top`, `border-right`, `border-bottom`, and
 the existing zero-width/no-paint fallback while preserving shorthand/longhand
 precedence and the existing box-model inset, border display-list, capture,
 raster, point-hit, and semantic/source-order owners; logical sides,
-border-image, gradients, other border styles, animation, multiple origins, and
+border-image, gradients, `wavy` and other unsupported border styles, animation,
+multiple origins, and
 browser-wide CSS border conformance remain outside the boundary,
 plus bounded case-insensitive 15-layer/unlayered local `border-color`,
 `border-top-color`, `border-right-color`, `border-bottom-color`, and
@@ -178,16 +179,19 @@ zero. Width-only declarations do not invent a style or paint a border. The
 same owner also accepts bounded case-insensitive 15-layer/unlayered local
 `border-style` and physical `border-top-style`, `border-right-style`,
 `border-bottom-style`, and `border-left-style` values from the finite
-`none|hidden|solid|dashed|dotted` grammar with one-to-four-value physical
-shorthand expansion and independent per-side `revert-layer` rollback to lower
+`none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset` grammar with
+one-to-four-value physical shorthand expansion and independent per-side
+`revert-layer` rollback to lower
 styles. A winning `none` or `hidden` blocks lower styles and resolves to no
 side/zero width before layout and paint; `hidden` remains a private distinction
 for future table conflict resolution. Width, style, and color components
 compose only after independent resolution, and width-only or style-only
 declarations do not invent missing paint components; collapsed-table border
-conflict resolution, logical sides, fractional/percentage widths, unsupported
-styles, and browser-wide border conformance remain outside the boundary,
-side-specific solid/dashed/dotted-border paint, bounded physical circular
+conflict resolution, logical sides, fractional/percentage widths, `wavy` and
+other unsupported styles, and browser-wide border conformance remain outside
+the boundary, bounded side-specific
+solid/dashed/dotted/double/groove/ridge/inset/outset-border paint, bounded
+physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and
 source-order text paint, bounded

@@ -353,6 +353,11 @@ preserving the zero-corner fallback and rounded layout, fill, border, point-hit,
 capture, raster, overflow, and semantic/source-order owners. Elliptical,
 percentage, logical-corner, nested-clip, anti-aliasing, multiple-origin, and
 browser-wide border-radius conformance remain outside the boundary. The same
+physical and horizontal-tb logical radius declarations also honor a terminal
+case-insensitive `!important` marker: important radius candidates outrank
+normal candidates and named-layer priority is reversed within the important
+partition of the existing author-origin cascade. Other properties do not gain
+generic `!important` semantics from this bounded radius behavior. The same
 bounded radius owner also accepts exact case-insensitive CSS-wide `inherit`,
 `unset`, `initial`, and one-author-origin `revert`: explicit `inherit` copies
 the parent's effective four-corner radius, including from unpainted or

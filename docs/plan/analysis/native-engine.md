@@ -1556,6 +1556,17 @@ Clippy, warning-denied rustdoc, paired-crate, packaging, static documentation,
 workspace all-target/all-feature, security/fuzz, and formatting gates pass
 locally; exact evidence and bounded cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
+The dependency-ordered `native-engine-177` slice is in progress under
+`docs/plan/tasks/native-engine-177.md`. It extends the complete physical and
+horizontal-tb logical radius family with bounded author-origin `!important`
+priority using a private doubled layer partition: important candidates outrank
+normal candidates, named-layer priority reverses within the important
+partition, and inline important values use the unlayered important bucket.
+The existing radius grammar and rounded consumers remain unchanged; generic
+importance for other properties, multiple origins, transitions, animations,
+vertical writing modes, elliptical/percentage geometry, and browser parity
+remain outside the slice. Certification is pending and the checkout remains
+local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2321,6 +2332,7 @@ visual stacking.
 | `native-engine-174` | completed bounded logical `border-block`, `border-inline`, logical start/end shorthands, and their width/style/color component longhands projected into the existing physical streams through resolved horizontal-tb ltr/rtl direction; no public schema or crate change; implementation `f6953813`, strict-cascade cleanup `23b09864` | `native-engine-173` | vertical writing modes, logical radius, border-image, gradients, table conflict resolution, multiple origins, `!important` inversion, arbitrary values, and browser-wide logical-border conformance |
 | `native-engine-175` | completed bounded physical `border-radius` corner longhands with private per-corner candidate streams, CSS-wide forms, shorthand/longhand source-order composition, and unchanged rounded consumers; implementation `2b082ddf`, resolver/test-shape correction `e6f3259d` | `native-engine-174` | logical corner longhands, writing-mode mapping, text orientation, percentages, elliptical radii, multiple origins, `!important` inversion, animation, and browser-wide logical-radius conformance |
 | `native-engine-176` | completed bounded logical `border-start-start-radius`, `border-start-end-radius`, `border-end-start-radius`, and `border-end-end-radius` longhands projected through resolved horizontal-tb ltr/rtl direction into the physical per-corner streams; implementation `6543b2b6`; focused/full-native/library, strict, package, static, workspace, security/fuzz, and cleanup gates passed locally | `native-engine-175` | vertical writing modes, text orientation, percentages, elliptical radii, multiple origins, `!important` inversion, animation, and browser-wide logical-radius conformance |
+| `native-engine-177` | in progress: bounded author-origin `!important` priority for the complete physical and horizontal-tb logical radius family, with important-over-normal ordering and reversed named-layer priority in a private doubled radius cascade partition; no public schema or consumer change | `native-engine-176` | generic `!important` for other properties, multiple origins, transitions, animations, vertical writing modes, text orientation, percentages, elliptical radii, and browser-wide logical-radius conformance |
 
 ## Delivery evidence
 

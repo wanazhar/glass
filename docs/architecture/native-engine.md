@@ -1414,6 +1414,17 @@ gates pass locally; exact evidence and bounded cleanup are recorded in the
 task. Vertical writing modes, text orientation, percentages, elliptical radii,
 and browser logical-radius fidelity remain outside the completed boundary.
 Remote CI remains pending because the checkout is local-only.
+The in-progress dependency-ordered `native-engine-177` slice is recorded in
+`docs/plan/tasks/native-engine-177.md`. It gives the physical and horizontal-
+tb logical radius family bounded author-origin `!important` priority through
+a private reversed named-layer partition: important radius declarations beat
+normal radius declarations, earliest named important layers win, and
+unlayered important declarations remain the lowest important bucket. The
+radius value grammar and all rounded layout, display, capture, raster,
+point-hit, and semantic owners remain unchanged. General `!important`
+semantics for other properties, multiple origins, transitions, animations,
+vertical writing modes, elliptical/percentage radii, and browser conformance
+remain outside this slice; local certification and remote CI are pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

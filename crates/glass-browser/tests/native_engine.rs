@@ -1637,6 +1637,316 @@ fn native_border_width_css_wide_keywords_preserve_physical_geometry_and_consumer
 }
 
 #[test]
+fn native_border_style_css_wide_keywords_preserve_physical_geometry_and_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            @layer base {
+                #parent { display:block;width:32px;height:180px;border-width:2px 3px 4px 5px;border-style:solid dashed dotted double;border-color:red; }
+                .box { display:block;width:8px;height:6px;border-width:1px;border-color:blue; }
+                #inherit { border-style:inherit; }
+                #physical { border-top-style:inherit;border-right-style:unset;border-bottom-style:initial;border-left-style:revert; }
+                #reset { border-style:unset;opacity:0.5; }
+                #initial { border-style:initial; }
+                #revert { border-style:revert; }
+                #omitted { }
+                #invalid { border-style:inherit;border-style:invalid; }
+                #mixed { border-style:inherit solid; }
+                #layered { border-style:solid; }
+                #unpainted { display:block;width:32px;height:10px;border-style:dashed; }
+                #unpainted-child { border-style:inherit; }
+                #zero-parent { display:block;width:32px;height:10px;border-width:0;border-style:solid;border-color:red; }
+                #zero-child { border-style:inherit; }
+                #hidden-parent { display:block;width:32px;height:10px;border-width:3px;border-style:hidden;border-color:red; }
+                #hidden-child { border-style:inherit; }
+            }
+            @layer theme {
+                #layered { border-style:inherit; }
+            }
+            #layered { border-style:revert-layer; }
+        </style>
+        <div id='parent' role='button'>
+            <div id='inherit' class='box' role='button'>Inherit</div>
+            <div id='physical' class='box' role='button'>Physical</div>
+            <div id='reset' class='box' role='button'>Reset</div>
+            <div id='initial' class='box' role='button'>Initial</div>
+            <div id='revert' class='box' role='button'>Revert</div>
+            <div id='omitted' class='box' role='button'>Omitted</div>
+            <div id='invalid' class='box' role='button'>Invalid</div>
+            <div id='mixed' class='box' role='button'>Mixed</div>
+            <div id='layered' class='box' role='button'>Layered</div>
+            <div id='inline' class='box' role='button' style='border-style:inherit'>Inline</div>
+        </div>
+        <div id='unpainted' role='button'>
+            <div id='unpainted-child' class='box' role='button'>Unpainted child</div>
+        </div>
+        <div id='zero-parent' role='button'>
+            <div id='zero-child' class='box' role='button'>Zero child</div>
+        </div>
+        <div id='hidden-parent' role='button'>
+            <div id='hidden-child' class='box' role='button'>Hidden child</div>
+        </div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 600,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let physical = document.resolve_target("id=physical").unwrap();
+    let reset = document.resolve_target("id=reset").unwrap();
+    let initial = document.resolve_target("id=initial").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let layered = document.resolve_target("id=layered").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let unpainted = document.resolve_target("id=unpainted").unwrap();
+    let unpainted_child = document.resolve_target("id=unpainted-child").unwrap();
+    let zero_parent = document.resolve_target("id=zero-parent").unwrap();
+    let zero_child = document.resolve_target("id=zero-child").unwrap();
+    let hidden_parent = document.resolve_target("id=hidden-parent").unwrap();
+    let hidden_child = document.resolve_target("id=hidden-child").unwrap();
+    let targets = [
+        parent,
+        inherit,
+        physical,
+        reset,
+        initial,
+        revert,
+        omitted,
+        invalid,
+        mixed,
+        layered,
+        inline,
+        unpainted,
+        unpainted_child,
+        zero_parent,
+        zero_child,
+        hidden_parent,
+        hidden_child,
+    ];
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(parent).unwrap().width, 40);
+    assert_eq!(layout.box_for(parent).unwrap().height, 186);
+    assert_eq!(layout.box_for(inherit).unwrap().width, 10);
+    assert_eq!(layout.box_for(inherit).unwrap().height, 8);
+    assert_eq!(layout.box_for(physical).unwrap().width, 8);
+    assert_eq!(layout.box_for(physical).unwrap().height, 7);
+    for node_id in [reset, initial, revert, omitted, mixed, hidden_child] {
+        assert_eq!(layout.box_for(node_id).unwrap().width, 8, "id={node_id:?}");
+        assert_eq!(layout.box_for(node_id).unwrap().height, 6, "id={node_id:?}");
+    }
+    for node_id in [invalid, layered, inline] {
+        assert_eq!(layout.box_for(node_id).unwrap().width, 10, "id={node_id:?}");
+        assert_eq!(
+            layout.box_for(node_id).unwrap().height,
+            8,
+            "id={node_id:?}"
+        );
+    }
+    assert_eq!(layout.box_for(unpainted).unwrap().width, 32);
+    assert_eq!(layout.box_for(unpainted).unwrap().height, 10);
+    assert_eq!(layout.box_for(unpainted_child).unwrap().width, 10);
+    assert_eq!(layout.box_for(unpainted_child).unwrap().height, 8);
+    assert_eq!(layout.box_for(zero_parent).unwrap().width, 32);
+    assert_eq!(layout.box_for(zero_parent).unwrap().height, 10);
+    assert_eq!(layout.box_for(zero_child).unwrap().width, 10);
+    assert_eq!(layout.box_for(zero_child).unwrap().height, 8);
+    assert_eq!(layout.box_for(hidden_parent).unwrap().width, 32);
+    assert_eq!(layout.box_for(hidden_parent).unwrap().height, 10);
+
+    for node_id in [
+        parent,
+        inherit,
+        physical,
+        reset,
+        initial,
+        revert,
+        omitted,
+        invalid,
+        mixed,
+        layered,
+        inline,
+        unpainted_child,
+        zero_child,
+        hidden_child,
+    ] {
+        let rectangle = layout.box_for(node_id).expect("border-style layout box");
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+    for node_id in [unpainted, zero_parent, hidden_parent] {
+        let rectangle = layout.box_for(node_id).unwrap();
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 30).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in targets {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected border-style fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let parent_border = border_for(parent).expect("parent border command");
+    assert_eq!(
+        [
+            parent_border.top.width,
+            parent_border.right.width,
+            parent_border.bottom.width,
+            parent_border.left.width,
+        ],
+        [2, 3, 4, 5]
+    );
+    assert_eq!(
+        [
+            parent_border.top.style,
+            parent_border.right.style,
+            parent_border.bottom.style,
+            parent_border.left.style,
+        ],
+        [
+            NativeBorderStyle::Solid,
+            NativeBorderStyle::Dashed,
+            NativeBorderStyle::Dotted,
+            NativeBorderStyle::Double,
+        ]
+    );
+    assert_eq!(parent_border.top.color, NativeColor::RED);
+
+    let inherited_border = border_for(inherit).expect("inherited border command");
+    assert_eq!(
+        [
+            inherited_border.top.style,
+            inherited_border.right.style,
+            inherited_border.bottom.style,
+            inherited_border.left.style,
+        ],
+        [
+            NativeBorderStyle::Solid,
+            NativeBorderStyle::Dashed,
+            NativeBorderStyle::Dotted,
+            NativeBorderStyle::Double,
+        ]
+    );
+    assert_eq!(
+        [
+            inherited_border.top.width,
+            inherited_border.right.width,
+            inherited_border.bottom.width,
+            inherited_border.left.width,
+        ],
+        [1, 1, 1, 1]
+    );
+    assert_eq!(inherited_border.top.color, blue);
+
+    let physical_border = border_for(physical).expect("physical style longhand command");
+    assert_eq!(physical_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(physical_border.top.width, 1);
+    assert_eq!(physical_border.right.width, 0);
+    assert_eq!(physical_border.bottom.width, 0);
+    assert_eq!(physical_border.left.width, 0);
+    assert_eq!(physical_border.top.color, blue);
+    for node_id in [reset, initial, revert, omitted, mixed, hidden_child] {
+        assert!(
+            border_for(node_id).is_none(),
+            "expected no border paint for {node_id:?}"
+        );
+    }
+    for node_id in [invalid, layered, inline] {
+        let borders = border_for(node_id).expect("inherited style border command");
+        assert_eq!(borders.top.style, NativeBorderStyle::Solid);
+        assert_eq!(borders.right.style, NativeBorderStyle::Dashed);
+        assert_eq!(borders.bottom.style, NativeBorderStyle::Dotted);
+        assert_eq!(borders.left.style, NativeBorderStyle::Double);
+        assert_eq!(borders.top.color, blue);
+    }
+    assert_eq!(
+        border_for(unpainted_child)
+            .expect("unpainted-parent inherit command")
+            .top
+            .style,
+        NativeBorderStyle::Dashed
+    );
+    assert_eq!(
+        border_for(zero_child)
+            .expect("zero-parent inherit command")
+            .top
+            .style,
+        NativeBorderStyle::Solid
+    );
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::BeginOpacityGroup {
+                node_id,
+                opacity: 128
+            } if *node_id == reset
+        )
+    }));
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-style"
+    }));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "border-top-style"
+                    | "border-right-style"
+                    | "border-bottom-style"
+                    | "border-left-style"
+            )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    let parent_box = layout.box_for(parent).unwrap();
+    assert_eq!(
+        surface.pixel(parent_box.x, parent_box.y),
+        Some([255, 0, 0, 255])
+    );
+    let inherit_box = layout.box_for(inherit).unwrap();
+    assert_eq!(
+        surface.pixel(inherit_box.x, inherit_box.y),
+        Some([0, 0, 255, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_border_style_revert_layer_composes_components_and_artifacts() {
     let document = NativeDocument::parse(
         "<style>@layer base { #shorthand { display:block;width:8px;height:6px;border:1px solid red; } #sides { display:block;width:8px;height:6px;border:2px dashed red; } #repeat { display:block;width:8px;height:6px;border:1px solid red; } #fallback { display:block;width:8px;height:6px;border:1px solid red; } #same { display:block;width:8px;height:6px;border:1px solid red;border-style:revert-layer; } #order-a { display:block;width:8px;height:6px;border-style:dotted;border:1px solid red; } #order-b { display:block;width:8px;height:6px;border:1px solid red;border-style:dashed; } #combined { display:block;width:8px;height:6px;border-width:4px;border-color:green; } #style-only { display:block;width:8px;height:6px;border-style:dashed; } #inline { display:block;width:8px;height:6px;border:1px solid red; } } @layer theme { #shorthand { border-style:dashed dotted solid dashed; } #shorthand { border-top-style:revert-layer; } #sides { border-top-style:solid;border-right-style:revert-layer;border-bottom-style:dotted;border-left-style:solid; } #repeat { border-style:dotted; } #repeat { border-style:revert-layer; } #fallback { border-style:dashed; } #fallback { border-style:revert-layer; } #combined { border-style:dashed; } } @layer top { #repeat { border-style:revert-layer; } #fallback { border-style:revert-layer; } } #shorthand { border-style:revert-layer; } #repeat { border-style:revert-layer; } #fallback { border-style:revert-layer; }</style><button id='shorthand'>Shorthand</button><button id='sides'>Sides</button><button id='repeat'>Repeat</button><button id='fallback'>Fallback</button><button id='same'>Same</button><button id='order-a'>Order A</button><button id='order-b'>Order B</button><button id='combined'>Combined</button><button id='style-only'>Style only</button><button id='inline' style='border-style:dotted'>Inline</button>",

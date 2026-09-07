@@ -115,13 +115,23 @@ impl NativeBorderColorValue {
 enum NativeBackgroundColorValue {
     Color(NativeColor),
     CurrentColor,
+    Inherit,
+    Unset,
+    Initial,
+    Revert,
 }
 
 impl NativeBackgroundColorValue {
-    const fn resolve(self, current_color: NativeColor) -> NativeColor {
+    const fn resolve(
+        self,
+        inherited_background: Option<NativeColor>,
+        current_color: NativeColor,
+    ) -> Option<NativeColor> {
         match self {
-            Self::Color(color) => color,
-            Self::CurrentColor => current_color,
+            Self::Color(color) => Some(color),
+            Self::CurrentColor => Some(current_color),
+            Self::Inherit => inherited_background,
+            Self::Unset | Self::Initial | Self::Revert => None,
         }
     }
 }
@@ -758,6 +768,7 @@ impl NativeMarginValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
+    pub(crate) background_color: Option<NativeColor>,
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
@@ -783,6 +794,7 @@ impl Default for NativeInheritedStyle {
     fn default() -> Self {
         Self {
             color: None,
+            background_color: None,
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
@@ -2420,9 +2432,11 @@ impl NativeStylesheet {
             });
         let resolved_color = resolve_local_color_declaration(color, inherited.color);
         let current_color = resolved_color.unwrap_or(NativeColor::BLACK);
-        let resolved_background_color =
-            resolve_local_optional_cascade_declaration(background_color)
-                .map(|value| value.resolve(current_color));
+        let resolved_background_color = resolve_local_background_color_declaration(
+            background_color,
+            inherited.background_color,
+            current_color,
+        );
         let resolved_border_color: [Option<NativeColor>; 4] = std::array::from_fn(|index| {
             resolve_local_optional_cascade_declaration(border_color[index])
                 .map(|value| value.resolve(current_color))
@@ -2824,6 +2838,20 @@ fn resolve_local_color_declaration(
 ) -> Option<NativeColor> {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         LocalCascadeDeclaration::Value(value) => Some(Some(value.resolve(inherited))),
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_background_color_declaration(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundColorValue>>>;
+        MAX_NATIVE_CASCADE_LAYERS],
+    inherited_background: Option<NativeColor>,
+    current_color: NativeColor,
+) -> Option<NativeColor> {
+    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            Some(value.resolve(inherited_background, current_color))
+        }
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -4807,10 +4835,20 @@ fn parse_border_color_value(value: &str) -> Option<NativeBorderColorValue> {
 }
 
 fn parse_background_color_value(value: &str) -> Option<NativeBackgroundColorValue> {
-    if value.trim().eq_ignore_ascii_case("currentColor") {
-        return Some(NativeBackgroundColorValue::CurrentColor);
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("currentColor") {
+        Some(NativeBackgroundColorValue::CurrentColor)
+    } else if value.eq_ignore_ascii_case("inherit") {
+        Some(NativeBackgroundColorValue::Inherit)
+    } else if value.eq_ignore_ascii_case("unset") {
+        Some(NativeBackgroundColorValue::Unset)
+    } else if value.eq_ignore_ascii_case("initial") {
+        Some(NativeBackgroundColorValue::Initial)
+    } else if value.eq_ignore_ascii_case("revert") {
+        Some(NativeBackgroundColorValue::Revert)
+    } else {
+        parse_color(value).map(NativeBackgroundColorValue::Color)
     }
-    parse_color(value).map(NativeBackgroundColorValue::Color)
 }
 
 fn parse_background_color_declaration(
@@ -7956,6 +7994,93 @@ mod tests {
         );
         assert_eq!(inherited.color(), Some(green));
         assert_eq!(inherited.background_color(), None);
+    }
+
+    #[test]
+    fn background_color_css_wide_keywords_preserve_optional_fallback() {
+        let green = NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: u8::MAX,
+        };
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #inherit { background-color: inherit; } #unset { background-color: unset; } #initial { background-color: initial; } #revert { background-color: revert; } #invalid { background-color: red; background-color: inherit; background-color: invalid; } #precedence { background-color: red; } } @layer theme { #precedence { background-color: blue; } } #precedence { background-color: inherit; }"
+                .into(),
+        ])
+        .unwrap();
+        let computed = |html: &str, inherited_background| {
+            let element = node(html);
+            stylesheet
+                .computed_for_with_matcher(
+                    &element,
+                    NativeInheritedStyle {
+                        background_color: inherited_background,
+                        ..NativeInheritedStyle::default()
+                    },
+                    |selector| selector.matches(&element),
+                )
+                .background_color()
+        };
+        assert_eq!(
+            parse_background_color_declaration("InHeRiT"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundColorValue::Inherit
+            ))
+        );
+        assert_eq!(
+            parse_background_color_declaration("UnSeT"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundColorValue::Unset
+            ))
+        );
+        assert_eq!(
+            parse_background_color_declaration("InItIaL"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundColorValue::Initial
+            ))
+        );
+        assert_eq!(
+            parse_background_color_declaration("ReVeRt"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundColorValue::Revert
+            ))
+        );
+        assert_eq!(
+            parse_background_color_declaration("CuRrEnTcOlOr"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundColorValue::CurrentColor
+            ))
+        );
+        assert_eq!(
+            parse_background_color_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            computed("<div id='inherit'>Inherit</div>", Some(green)),
+            Some(green)
+        );
+        assert_eq!(computed("<div id='unset'>Unset</div>", Some(green)), None);
+        assert_eq!(
+            computed("<div id='initial'>Initial</div>", Some(green)),
+            None
+        );
+        assert_eq!(computed("<div id='revert'>Revert</div>", Some(green)), None);
+        assert_eq!(
+            computed("<div id='invalid'>Invalid</div>", Some(green)),
+            Some(green)
+        );
+        assert_eq!(
+            computed("<div id='precedence'>Precedence</div>", Some(green)),
+            Some(green)
+        );
+        assert_eq!(computed("<div id='inherit'>Root</div>", None), None);
+        assert_eq!(
+            NativeStylesheet::default()
+                .computed_for(&node("<div id='omitted'>Omitted</div>"))
+                .background_color(),
+            None
+        );
     }
 
     #[test]

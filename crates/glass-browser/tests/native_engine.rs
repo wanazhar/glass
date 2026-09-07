@@ -6453,6 +6453,158 @@ fn native_color_css_wide_keywords_preserve_inheritance_and_artifacts() {
 }
 
 #[test]
+fn native_background_color_css_wide_keywords_preserve_optional_fill_owners() {
+    let document = NativeDocument::parse(
+        "<style>.surface { display:block;width:64px;height:20px; } @layer base { #parent { color:green;background-color:blue; } #inherit { background-color:inherit; } #current { background-color:currentColor; } #unset { background-color:unset; } #initial { background-color:initial; } #revert { background-color:revert; } #invalid { background-color:red;background-color:inherit;background-color:invalid; } #precedence { background-color:red; } #inline { background-color:blue; } #root-inherit { background-color:inherit; } #root-unset { background-color:unset; } #root-revert { background-color:revert; } #root-initial { background-color:initial; } #empty-parent { display:block;width:64px;height:20px; } #inherit-empty { background-color:inherit; } } @layer theme { #precedence { background-color:blue; } #invalid-mixed { background-color:inherit red; } } #precedence { background-color:InHeRiT; }</style><div id='parent' role='button'><button id='inherit' class='surface' role='button'>Inherit</button><button id='current' class='surface' role='button'>Current</button><button id='unset' class='surface' role='button'>Unset</button><button id='initial' class='surface' role='button'>Initial</button><button id='revert' class='surface' role='button'>Revert</button><button id='invalid' class='surface' role='button'>Invalid</button><button id='precedence' class='surface' role='button'>Precedence</button><button id='inline' class='surface' role='button' style='background-color:initial'>Inline</button></div><div id='empty-parent' role='button'><button id='inherit-empty' class='surface' role='button' style='background-color:inherit'>Empty</button></div><button id='root-inherit' class='surface' role='button'>Root inherit</button><button id='root-unset' class='surface' role='button'>Root unset</button><button id='root-revert' class='surface' role='button'>Root revert</button><button id='root-initial' class='surface' role='button'>Root initial</button><button id='invalid-mixed' class='surface' role='button'>Mixed</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 80,
+        height: 300,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let current = document.resolve_target("id=current").unwrap();
+    let unset = document.resolve_target("id=unset").unwrap();
+    let initial = document.resolve_target("id=initial").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let precedence = document.resolve_target("id=precedence").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let empty_parent = document.resolve_target("id=empty-parent").unwrap();
+    let inherit_empty = document.resolve_target("id=inherit-empty").unwrap();
+    let root_inherit = document.resolve_target("id=root-inherit").unwrap();
+    let root_unset = document.resolve_target("id=root-unset").unwrap();
+    let root_revert = document.resolve_target("id=root-revert").unwrap();
+    let root_initial = document.resolve_target("id=root-initial").unwrap();
+    let invalid_mixed = document.resolve_target("id=invalid-mixed").unwrap();
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout
+            .hit_test(
+                (layout.box_for(inherit).unwrap().x + 1).into(),
+                (layout.box_for(inherit).unwrap().y + 1).into(),
+            )
+            .unwrap(),
+        Some(inherit)
+    );
+    for node_id in [
+        parent,
+        inherit,
+        current,
+        unset,
+        initial,
+        revert,
+        invalid,
+        precedence,
+        inline,
+        empty_parent,
+        inherit_empty,
+        root_inherit,
+        root_unset,
+        root_revert,
+        root_initial,
+        invalid_mixed,
+    ] {
+        assert!(
+            layout.box_for(node_id).is_some(),
+            "missing layout for {node_id:?}"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let fill_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                color,
+                ..
+            } if *command_node_id == node_id => Some(*color),
+            _ => None,
+        })
+    };
+    assert_eq!(fill_for(parent), Some(blue));
+    for node_id in [inherit, invalid, precedence] {
+        assert_eq!(fill_for(node_id), Some(blue));
+    }
+    assert_eq!(fill_for(current), Some(green));
+    for node_id in [
+        unset,
+        initial,
+        revert,
+        inline,
+        inherit_empty,
+        root_inherit,
+        root_unset,
+        root_revert,
+        root_initial,
+        invalid_mixed,
+    ] {
+        assert_eq!(fill_for(node_id), None, "unexpected fill for {node_id:?}");
+    }
+
+    let raster = list.rasterize().unwrap();
+    let inherit_box = layout.box_for(inherit).unwrap();
+    assert_eq!(
+        raster.pixel(inherit_box.x + 1, inherit_box.y + 1),
+        Some([0, 0, 255, 255])
+    );
+    assert!(!raster.to_png().unwrap().is_empty());
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [
+        (parent, inherit),
+        (inherit, current),
+        (current, unset),
+        (unset, initial),
+        (initial, revert),
+        (revert, invalid),
+        (invalid, precedence),
+        (precedence, inline),
+        (inline, empty_parent),
+        (empty_parent, inherit_empty),
+        (inherit_empty, root_inherit),
+        (root_initial, invalid_mixed),
+    ] {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair.0)
+                < semantic_ids.iter().position(|id| *id == pair.1),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert_eq!(
+        document
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                    && diagnostic.detail == "background-color"
+            })
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn native_display_list_inherits_text_color_and_preserves_transparent_override() {
     let document = NativeDocument::parse(
         "<style>#parent { color: blue; }</style><div id='parent'><span id='child'>Child</span><span id='transparent' style='color:transparent'>Clear</span></div>",

@@ -849,6 +849,7 @@ impl NativeDocument {
         }
 
         let mut inherited_color = Some(NativeColor::BLACK);
+        let mut inherited_background_color = None;
         let mut inherited_direction = DirectionValue::Ltr;
         let mut inherited_white_space = WhiteSpaceValue::Normal;
         let mut inherited_line_height = None;
@@ -877,6 +878,7 @@ impl NativeDocument {
                 current_id,
                 NativeInheritedStyle {
                     color: inherited_color,
+                    background_color: inherited_background_color,
                     direction: inherited_direction,
                     white_space: inherited_white_space,
                     line_height: inherited_line_height,
@@ -899,6 +901,7 @@ impl NativeDocument {
                 },
             );
             inherited_color = style.color().or(inherited_color);
+            inherited_background_color = style.background_color();
             inherited_direction = style.direction();
             inherited_white_space = style.white_space();
             inherited_line_height = style.line_height().or(inherited_line_height);

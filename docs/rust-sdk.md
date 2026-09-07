@@ -135,8 +135,8 @@ plus bounded case-insensitive 15-layer/unlayered local
 `border-radius:revert-layer` rollback for the one-to-four-value integer
 shorthand, preserving the zero-corner fallback and the existing rounded
 layout, fill, border, point-hit, capture, raster, overflow, and
-semantic/source-order owners; elliptical, percentage, logical corner
-longhands, nested-clip, anti-aliasing, multiple-origin, and browser-wide border-radius
+semantic/source-order owners; elliptical, percentage, nested-clip, anti-aliasing,
+multiple-origin, and browser-wide border-radius
 conformance remain outside the boundary,
 plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
 one-author-origin `revert` for the radius owner: explicit `inherit` copies the
@@ -148,7 +148,12 @@ unsupported. Physical circular corner longhands
 `border-bottom-right-radius`, and `border-bottom-left-radius` accept one
 bounded integer-pixel value or the same standalone CSS-wide keywords and
 compose with the shorthand through per-corner source order and
-`revert-layer`; elliptical and percentage corner values remain unsupported,
+`revert-layer`. Flow-relative corner longhands
+`border-start-start-radius`, `border-start-end-radius`,
+`border-end-start-radius`, and `border-end-end-radius` use the resolved
+horizontal-tb `direction` to map logical block/inline corners to the same
+physical streams for `ltr` and `rtl`; vertical writing modes, text orientation,
+elliptical, and percentage corner values remain unsupported,
 plus bounded case-insensitive 15-layer/unlayered local
 `opacity:revert-layer` rollback for the existing local 8-bit opacity owner,
 preserving the full-opacity (`255`) fallback, reduced-opacity group markers,
@@ -171,7 +176,8 @@ for physical `border`, `border-top`, `border-right`, `border-bottom`, and
 the existing zero-width/no-paint fallback while preserving shorthand/longhand
 precedence and the existing box-model inset, border display-list, capture,
 raster, point-hit, and semantic/source-order owners; vertical writing modes,
-logical radius, border-image, gradients, `wavy` and other unsupported border
+text orientation, elliptical/percentage logical radii, border-image, gradients,
+`wavy` and other unsupported border
 styles, animation,
 multiple origins, and
 browser-wide CSS border conformance remain outside the boundary,
@@ -219,8 +225,9 @@ side/zero width before layout and paint; `hidden` remains a private distinction
 for future table conflict resolution. Width, style, and color components
 compose only after independent resolution, and width-only or style-only
 declarations do not invent missing paint components; collapsed-table border
-conflict resolution, fractional/percentage widths, logical radius, vertical
-writing modes, `wavy` and other unsupported styles, and browser-wide border
+conflict resolution, fractional/percentage widths, vertical writing modes, text
+orientation, elliptical/percentage logical radii, `wavy` and other unsupported
+styles, and browser-wide border
 conformance remain outside
 the boundary. The native border surface also accepts bounded horizontal-tb
 logical `border-block`, `border-block-start`, `border-block-end`,
@@ -233,7 +240,8 @@ logical shorthands, CSS-wide keywords, `currentColor`, bounded named-layer and
 unlayered `revert-layer`, physical/logical precedence, and component composition
 reuse the existing physical border streams and box-model, display-list,
 capture, raster, point-hit, and semantic/source-order owners. Vertical writing
-modes, logical radius, border-image, gradients, table conflict resolution,
+modes, text orientation, elliptical/percentage logical radii, border-image,
+gradients, table conflict resolution,
 multiple origins, and browser-wide logical-border conformance remain outside
 the boundary. The complete and physical border shorthands also accept the
 exact case-insensitive omitted-component `none` and `hidden` forms through

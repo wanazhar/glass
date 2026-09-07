@@ -231,7 +231,7 @@ The native rounded-geometry surface also accepts standalone, case-insensitive
 one-to-four-value integer shorthand. Rollback preserves the zero-corner
 fallback and the existing rounded layout, fill, border, point-hit, capture,
 raster, overflow, and semantic/source-order owners; elliptical, percentage,
-logical corner longhands, nested-clip, anti-aliasing, multiple-origin, and browser-wide
+nested-clip, anti-aliasing, multiple-origin, and browser-wide
 border-radius conformance remain outside the boundary. The same bounded radius
 owner also accepts exact case-insensitive CSS-wide `inherit`, `unset`,
 `initial`, and one-author-origin `revert`: explicit `inherit` copies the
@@ -243,7 +243,12 @@ unsupported. Physical circular corner longhands
 `border-bottom-right-radius`, and `border-bottom-left-radius` accept one
 bounded integer-pixel value or the same standalone CSS-wide keywords and
 compose with the shorthand through per-corner source order and
-`revert-layer`; elliptical and percentage corner values remain unsupported.
+`revert-layer`. Flow-relative corner longhands
+`border-start-start-radius`, `border-start-end-radius`,
+`border-end-start-radius`, and `border-end-end-radius` use the resolved
+horizontal-tb `direction` to map logical block/inline corners to the same
+physical streams for `ltr` and `rtl`; vertical writing modes, text orientation,
+elliptical, and percentage corner values remain unsupported.
 The same bounded local
 cascade path also accepts standalone, case-insensitive 15-layer/unlayered
 `opacity:revert-layer` for the existing local 8-bit opacity owner, preserving
@@ -268,7 +273,8 @@ unlayered local `revert-layer` for the physical `border`, `border-top`,
 each side through lower concrete candidates or the existing zero-width/no-paint
 fallback, preserving shorthand/longhand precedence and the existing box-model
 inset, border display-list, capture, raster, point-hit, and semantic/source-order
-owners. Vertical writing modes, logical radius, border-image, gradients, `wavy`
+owners. Vertical writing modes, text orientation, elliptical/percentage logical
+radii, border-image, gradients, `wavy`
 and other unsupported border styles, animation,
 multiple origins, and browser-wide CSS border conformance remain outside the
 boundary. The same native border owner also accepts bounded case-insensitive
@@ -352,7 +358,8 @@ logical shorthands, CSS-wide keywords, `currentColor`, bounded named-layer and
 unlayered `revert-layer`, physical/logical precedence, and component composition
 reuse the existing physical border streams and box-model, display-list,
 capture, raster, point-hit, and semantic/source-order owners. Vertical writing
-modes, logical radius, border-image, gradients, table conflict resolution,
+modes, text orientation, elliptical/percentage logical radii, border-image,
+gradients, table conflict resolution,
 multiple origins, and browser-wide logical-border conformance remain outside
 the boundary.
 The native decoration surface also supports inherited signed fixed-pixel

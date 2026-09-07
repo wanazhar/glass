@@ -1,7 +1,7 @@
 ---
 id: native-engine-176
 scope: glass-browser/native-engine/cascade-logical-border-radius-corner-longhands
-status: planned
+status: complete
 depends-on: [native-engine-175]
 ---
 
@@ -9,7 +9,7 @@ depends-on: [native-engine-175]
 
 ## Objective
 
-Add the four flow-relative corner longhands to the native CSS surface:
+Adds the four flow-relative corner longhands to the native CSS surface:
 `border-start-start-radius`, `border-start-end-radius`,
 `border-end-start-radius`, and `border-end-end-radius`. Each property accepts
 the same bounded single integer-pixel radius or standalone CSS-wide keyword as
@@ -174,7 +174,49 @@ post-delete absence, and filesystem free-space delta.
 
 ## Evidence
 
-Pending implementation, local certification, documentation synchronization,
-issue update, and bounded regenerable-output cleanup. No remote CI, push,
-release, tag, registry-publication, browser-parity, security-boundary, or
-promotion claim is made while the checkout remains local-only.
+Implementation: `6543b2b6`. The implementation adds private logical corner
+candidates, maps them through the resolved horizontal-tb `direction` to the
+existing physical per-corner streams, and preserves shorthand/physical
+longhand precedence, CSS-wide values, `revert-layer`, inheritance, and all
+existing rounded layout, display, raster, capture, point-hit, and semantic
+owners. No public schema, dependency, feature default, layout algorithm, or
+crate boundary changed.
+
+Documentation/certification: current product documentation, the native-engine
+architecture record, plan history, analysis matrix, and issue #40 now describe
+the completed logical-corner contract and its explicit writing-mode and value
+grammar exclusions. The final documentation validator found 590 Markdown
+files, 83 current documents, 57 previous-version hits, 687 semantic-audit
+hits, and zero current-claim failures.
+
+Passed local gates:
+
+- `cargo fmt --all -- --check` and `git diff --check`.
+- Locked native-feature check, three parser/cascade unit tests, and the focused
+  logical-corner integration test in `/tmp/glass-176-focused`.
+- Full native integration: 214 passed; native-feature browser library: 982
+  passed, 1 ignored.
+- Workspace all-target/all-feature tests: browser library 983 passed, 1
+  ignored; native integration 214 passed; `glass-dev` library 365 passed;
+  browser smoke 18 passed; development-runtime 4 passed; TUI PTY 15 passed;
+  all other workspace targets passed with zero failures.
+- Strict affected-package and workspace Clippy, warning-denied affected and
+  workspace rustdoc, workspace all-target/all-feature check, and paired
+  locked `glass-dev` check/build.
+- Locked package flows for both crates; archives contained 196
+  (`glass-browser`) and 69 (`glass-dev`) entries. The packaged dependency
+  check resolved `glass-browser` exactly at `0.3.14`.
+- `cargo deny check`, `cargo audit`, and offline locked all-target fuzz check.
+  The configured audit policy reported four allowed warnings.
+- Version sync, feature parity, release documentation, documentation
+  coverage/depth, TUI shortcut inventory, reliability matrix, public read-only
+  adapters, and Web IR corpus checks. The observed counts were 0 current-claim
+  failures, 345 full-product MCP tools, 14 capabilities across 4 targets,
+  93 guides/19 contracts, 15/63 TUI markers, 6 scenarios across 4 targets,
+  5 adapters, and 8 Web IR fixtures/8 scenarios/11 categories.
+
+Cleanup and issue-update evidence will be appended after the exact task target
+and reports are reclaimed. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, and promotion claims are not
+made. The checkout remains local-only and issue #40 remains open for later
+dependency-ordered slices.

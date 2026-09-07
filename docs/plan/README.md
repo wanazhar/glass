@@ -1695,14 +1695,18 @@ exact evidence and bounded cleanup are recorded in the task. Logical corner
 names, writing-mode-dependent mapping, percentages, elliptical radii, and
 browser corner fidelity remain outside the completed boundary. Remote CI
 remains pending because the checkout is local-only.
-The next dependency-ordered [native-engine-176](tasks/native-engine-176.md)
-slice is planned for the four logical `border-start-start-radius`,
-`border-start-end-radius`, `border-end-start-radius`, and
-`border-end-end-radius` longhands. It will project through the resolved
-horizontal-tb ltr/rtl direction into the existing physical per-corner streams
-and rounded consumers. Vertical writing modes, text orientation, percentages,
-elliptical radii, and browser logical-radius fidelity remain outside the
-planned boundary. No implementation or remote-CI claim is made yet.
+The completed dependency-ordered [native-engine-176](tasks/native-engine-176.md)
+slice is implemented at `6543b2b6`. It adds the four logical
+`border-start-start-radius`, `border-start-end-radius`,
+`border-end-start-radius`, and `border-end-end-radius` longhands, projecting
+through the resolved horizontal-tb ltr/rtl direction into the existing
+physical per-corner streams and rounded consumers. Focused/full-native/library,
+strict Clippy, warning-denied rustdoc, paired-crate check/build, packaging,
+static documentation, workspace all-target/all-feature, security/fuzz, and
+formatting gates pass locally; exact evidence and bounded cleanup are recorded
+in the task. Vertical writing modes, text orientation, percentages, elliptical
+radii, and browser logical-radius fidelity remain outside the completed
+boundary. Remote CI remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

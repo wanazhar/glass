@@ -1545,13 +1545,17 @@ packaging, static documentation, workspace all-target/all-feature,
 security/fuzz, and formatting gates pass locally; exact evidence and bounded
 cleanup are recorded in the task. Remote CI remains pending because the
 checkout is local-only.
-The next dependency-ordered `native-engine-176` slice is planned in
-`docs/plan/tasks/native-engine-176.md`: four logical border-radius corner
-longhands will project through resolved horizontal-tb ltr/rtl direction into
-the existing physical per-corner candidate streams. The bounded contract is
-integer-pixel, non-elliptical, and local-resource-only; vertical writing modes,
-text orientation, percentages, and browser logical-radius fidelity remain
-outside it. No implementation or remote-CI claim is made yet.
+The completed dependency-ordered `native-engine-176` slice is recorded in
+`docs/plan/tasks/native-engine-176.md`; implementation is `6543b2b6`. Four
+logical border-radius corner longhands project through resolved horizontal-tb
+ltr/rtl direction into the existing physical per-corner candidate streams.
+The completed contract is integer-pixel, non-elliptical, and local-resource-
+only; vertical writing modes, text orientation, percentages, and browser
+logical-radius fidelity remain outside it. Focused, full-native/library, strict
+Clippy, warning-denied rustdoc, paired-crate, packaging, static documentation,
+workspace all-target/all-feature, security/fuzz, and formatting gates pass
+locally; exact evidence and bounded cleanup are recorded in the task. Remote CI
+remains pending because the checkout is local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2316,7 +2320,7 @@ visual stacking.
 | `native-engine-173` | completed bounded complete physical `border` and four side-border shorthand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` projected through the existing private width/style/color component streams, preserving concrete and omitted-component forms, independent composition, geometry, and artifacts; implementation `f5f53cec` | `native-engine-172` | multiple origins, `!important` inversion, logical sides, table conflict resolution, gradients, border-image, animation, arbitrary omitted defaults, and browser-wide border conformance |
 | `native-engine-174` | completed bounded logical `border-block`, `border-inline`, logical start/end shorthands, and their width/style/color component longhands projected into the existing physical streams through resolved horizontal-tb ltr/rtl direction; no public schema or crate change; implementation `f6953813`, strict-cascade cleanup `23b09864` | `native-engine-173` | vertical writing modes, logical radius, border-image, gradients, table conflict resolution, multiple origins, `!important` inversion, arbitrary values, and browser-wide logical-border conformance |
 | `native-engine-175` | completed bounded physical `border-radius` corner longhands with private per-corner candidate streams, CSS-wide forms, shorthand/longhand source-order composition, and unchanged rounded consumers; implementation `2b082ddf`, resolver/test-shape correction `e6f3259d` | `native-engine-174` | logical corner longhands, writing-mode mapping, text orientation, percentages, elliptical radii, multiple origins, `!important` inversion, animation, and browser-wide logical-radius conformance |
-| `native-engine-176` | planned bounded logical `border-start-start-radius`, `border-start-end-radius`, `border-end-start-radius`, and `border-end-end-radius` longhands projected through resolved horizontal-tb ltr/rtl direction into the physical per-corner streams | `native-engine-175` | vertical writing modes, text orientation, percentages, elliptical radii, multiple origins, `!important` inversion, animation, and browser-wide logical-radius conformance |
+| `native-engine-176` | completed bounded logical `border-start-start-radius`, `border-start-end-radius`, `border-end-start-radius`, and `border-end-end-radius` longhands projected through resolved horizontal-tb ltr/rtl direction into the physical per-corner streams; implementation `6543b2b6`; focused/full-native/library, strict, package, static, workspace, security/fuzz, and cleanup gates passed locally | `native-engine-175` | vertical writing modes, text orientation, percentages, elliptical radii, multiple origins, `!important` inversion, animation, and browser-wide logical-radius conformance |
 
 ## Delivery evidence
 

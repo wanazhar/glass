@@ -130,8 +130,11 @@ source-behavior reference.
   not invent missing paint components; collapsed-table border conflict
   resolution, logical sides, fractional/percentage widths, `wavy` and other
   unsupported styles, and browser-wide border conformance remain outside the
-  boundary, bounded side-specific solid/dashed/dotted/double/groove/ridge/
-  inset/outset borders, bounded physical circular
+  boundary. The complete and physical border shorthands also accept the exact
+  case-insensitive omitted-component `none` form through the same private
+  no-paint style sentinel; arbitrary omitted-component forms remain outside
+  this bounded surface. The native engine provides bounded side-specific
+  solid/dashed/dotted/double/groove/ridge/inset/outset borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow with bounded inherited line-height, bounded direct-text
   flow fragments and source-order text

@@ -1440,6 +1440,14 @@ resolution, gradients, border images, and other general CSS border conformance
 remain outside the boundary. Its complete local evidence is recorded in the
 task file; remote CI remains pending because the checkout is local-only.
 
+The next dependency-ordered [native-engine-157](tasks/native-engine-157.md)
+slice is planned. It will accept only exact case-insensitive omitted-component
+`none` in the complete and physical border shorthands, route it through a
+private no-paint declaration into the existing style stream, and preserve the
+current public and artifact schemas. Arbitrary omitted-component defaults,
+`border:hidden`, CSS-wide resets, table conflict resolution, and browser-wide
+border conformance remain outside the planned boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

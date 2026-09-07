@@ -412,6 +412,13 @@ invent missing paint components. Collapsed-table border conflict resolution,
 logical sides, fractional/percentage widths, `wavy` and other unsupported
 styles, and
 browser-wide border conformance remain outside the boundary.
+The complete and physical border shorthands also accept the exact
+case-insensitive omitted-component `none` form. It uses the same private
+no-paint style sentinel, so a winning `border:none` or physical
+`border-top:none`, `border-right:none`, `border-bottom:none`, or
+`border-left:none` shorthand blocks lower paint without adding a public
+`None` style or inventing shorthand defaults; arbitrary omitted-component
+forms remain outside this bounded surface.
 Bounded
 inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including

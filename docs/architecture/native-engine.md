@@ -1168,6 +1168,16 @@ outside the boundary. Focused/full-native/library, strict Clippy, rustdoc,
 two-crate, formatting, and static documentation gates passed locally; exact
 target cleanup is recorded in the task. Remote CI remains pending because the
 branch is local-only.
+The next dependency-ordered slice is `native-engine-160`, recorded in
+`docs/plan/tasks/native-engine-160.md`. It is docs-first planned work for the
+bounded complete `Npx none color` form on the complete and physical border
+shorthands. It will carry declared width/color through private component
+candidates while projecting only the existing private `None` style sentinel,
+so current non-table composition remains no-paint/no-side and public schemas
+remain unchanged. Its design checkpoint is local-only until the task record is
+committed; implementation and certification are not yet claimed. Arbitrary
+omitted defaults, CSS-wide resets, logical sides, table conflict resolution,
+and browser-wide border conformance remain outside the boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

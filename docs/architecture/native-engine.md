@@ -33,6 +33,7 @@ bounded-local-text-geometry-revert-layer,
 bounded-local-dimension-revert-layer,
 bounded-local-box-model-revert-layer,
 bounded-paint-color-revert-layer,
+bounded-paint-color-important/bounded-physical-border-color-important,
 bounded-inherited-color-current-color,
 bounded-inherited-color-css-wide-keywords,
 bounded-overflow-revert-layer,
@@ -1437,15 +1438,17 @@ remain unchanged. Border color and other properties do not receive priority
 semantics in this slice. Slice-local certification and task-specific cleanup
 passed; issue-level final gates, final cleanup, and remote CI remain pending.
 
-The in-progress dependency-ordered `native-engine-179` slice is recorded in
-`docs/plan/tasks/native-engine-179.md`. It extends bounded author-origin
-`!important` priority to the standalone physical `border-color` shorthand and
-four physical color longhands through private reversed named-layer partitions.
-Existing four-side color resolution, currentColor/CSS-wide/revert-layer
-behavior, border width/style composition, artifacts, public schemas, and the
-two-crate boundary remain unchanged. Complete/side border shorthands and
-logical border-color remain outside this slice; implementation, certification,
-issue-level final gates, cleanup, and remote CI are pending.
+The completed dependency-ordered `native-engine-179` slice is recorded in
+`docs/plan/tasks/native-engine-179.md` and implemented in `ed1cda27`. It
+extends bounded author-origin `!important` priority to the standalone physical
+`border-color` shorthand and four physical color longhands through private
+reversed named-layer partitions. Existing four-side color resolution,
+currentColor/CSS-wide/revert-layer behavior, border width/style composition,
+artifacts, public schemas, and the two-crate boundary remain unchanged.
+Complete/side border shorthands and logical border-color remain outside this
+slice. Slice-local certification passed; final documentation audit and
+task-specific cleanup are recorded in the task. Issue-level final gates and
+remote CI remain pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

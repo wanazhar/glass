@@ -194,8 +194,18 @@ Passed local gates:
   93 guides/19 contracts, 15/63 TUI markers, 6 scenarios across 4 targets,
   5 adapters, and 8 fixtures/8 scenarios/11 categories.
 
-Cleanup and issue-update evidence will be appended after the exact task target
-and reports are reclaimed. Remote CI, push, release, tag, registry
-publication, browser-parity, security-boundary, and promotion claims are not
-made. The checkout remains local-only and issue #40 remains open for later
+Cleanup evidence: after the workspace and security gates completed, the exact
+task target `/tmp/glass-175-focused` measured 10,062,261,962 bytes across
+14,645 files and 1,902 directories. Twenty-one exact reports/diagnostics
+measured 489,397 bytes. The process/open-handle check found no Cargo, Rust, or
+task-target consumer; bounded deletion removed only those exact paths. Available
+filesystem bytes rose from 72,166,572,032 to 82,273,845,248, an observed delta
+of 10,107,273,216 bytes. The target and every named report are absent; source,
+repository targets, durable data, issue snapshots, and unrelated workloads
+were preserved.
+
+Issue #40 was updated after local certification with the completed 175 status
+and evidence. Remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary, and promotion claims are not made. The
+checkout remains local-only and issue #40 remains open for later
 dependency-ordered slices.

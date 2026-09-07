@@ -447,8 +447,8 @@ layout and paint; `hidden` remains a private distinction for future table
 conflict resolution. Width, style, and color components compose only after
 their independent resolution; width-only or style-only declarations do not
 invent missing paint components. Collapsed-table border conflict resolution,
-logical sides, fractional/percentage widths, `wavy` and other unsupported
-styles, and
+fractional/percentage widths, logical radius, vertical writing modes, `wavy`
+and other unsupported styles, and
 browser-wide border conformance remain outside the boundary.
 The complete and physical border shorthands also accept the exact
 case-insensitive omitted-component `none` and `hidden` forms. They use private
@@ -472,6 +472,20 @@ color side values, including private `none`/`hidden`, zero-width, and unpainted
 states; reset forms project zero width, private `none`, and `currentColor` so
 later component declarations can compose, while ordinary omission remains
 omission. Mixed CSS-wide/concrete forms remain unsupported.
+The native border surface also accepts bounded horizontal-tb logical
+`border-block`, `border-block-start`, `border-block-end`, `border-inline`,
+`border-inline-start`, and `border-inline-end` shorthands plus their
+`-width`, `-style`, and `-color` component families. One- or two-value block
+and inline component pairs map to logical start/end; block sides map to
+physical top/bottom, while inline sides map to physical left/right for `ltr`
+and right/left for `rtl` through the resolved inherited `direction`. Complete
+logical shorthands, CSS-wide keywords, `currentColor`, bounded named-layer and
+unlayered `revert-layer`, physical/logical precedence, and component composition
+reuse the existing physical border streams and box-model, display-list,
+capture, raster, point-hit, and semantic/source-order owners. Vertical writing
+modes, logical radius, border-image, gradients, table conflict resolution,
+multiple origins, and browser-wide logical-border conformance remain outside
+the boundary.
 Bounded
 inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including
@@ -885,7 +899,7 @@ workflows.
 | Chrome / Chromium | Supported browser families on environments with native evidence |
 | Firefox automation | Experimental portable semantic session over Firefox WebDriver BiDi |
 | Safari automation | Experimental portable semantic session over SafariDriver W3C WebDriver |
-| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`; inherited text presentation also has bounded case-insensitive 15-layer/unlayered rollback for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks, alongside the previously listed layout, text, decoration, navigation, and artifact surfaces; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
+| Native engine | Experimental default-off local-content Rust backend with bounded layout/display-list/software-surface artifacts. Its current Flexbox slice includes stable visual `order`, integer `flex-grow`/`flex-shrink` allocation, `flex-basis:auto|Npx` base-size selection, finite `flex` expansion, and case-insensitive 15-layer/unlayered `revert-layer` rollback for those non-inherited owners including standalone `flex:revert-layer`, `flex-flow:revert-layer`, and `place-content:revert-layer` shorthand rollback with native fallbacks and finite expansion, plus independent finite-pixel gap-family rollback for `gap`, `row-gap`, and `column-gap`; inherited text presentation also has bounded case-insensitive 15-layer/unlayered rollback for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite parent/root fallbacks; the bounded horizontal-tb logical border family maps block start/end to top/bottom and direction-aware inline start/end for `ltr`/`rtl` through the existing physical border consumers; explicit Rust or feature-gated local CLI path. See the [native-engine architecture](docs/architecture/native-engine.md) for the bounded contract and exclusions. |
 The native engine also accepts bounded case-insensitive 15-layer/unlayered
 `revert-layer` for local `display` and `visibility`. Rollback resolves through
 lower concrete candidates or the established normal-flow `display:auto` and
@@ -901,8 +915,8 @@ unlayered local `revert-layer` for the physical `border`, `border-top`,
 each side through lower concrete candidates or the existing zero-width/no-paint
 fallback, preserving shorthand/longhand precedence and the existing box-model
 inset, border display-list, capture, raster, point-hit, and semantic/source-order
-owners. Logical sides, border-image, gradients, `wavy` and other unsupported
-border styles, animation,
+owners. Vertical writing modes, logical radius, border-image, gradients, `wavy`
+and other unsupported border styles, animation,
 multiple origins, and browser-wide CSS border conformance remain outside the
 boundary.
 The native engine also supports bounded 15-layer/unlayered `revert-layer`

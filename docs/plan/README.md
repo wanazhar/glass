@@ -1667,14 +1667,20 @@ resolution, multiple origins, `!important` inversion, and browser-wide border
 conformance remain outside the completed boundary. Remote CI remains pending
 because the checkout is local-only.
 
-The next dependency-ordered [native-engine-174](tasks/native-engine-174.md)
-slice is designed before implementation. It adds bounded logical border
-shorthands and width/style/color component longhands, mapping block sides to
-top/bottom and inline sides through the existing inherited ltr/rtl direction
-owner. Logical and physical declarations will compete in the existing private
-physical component streams; writing modes, logical radius, border images,
-tables, multiple origins, and browser-wide logical-border conformance remain
-outside the boundary.
+The completed dependency-ordered [native-engine-174](tasks/native-engine-174.md)
+slice is implemented at `f6953813`, with the strict-cascade cleanup at
+`23b09864`. It adds bounded horizontal-tb logical border shorthands and their
+width/style/color component families, mapping block start/end to physical
+top/bottom and inline start/end through the resolved inherited ltr/rtl
+`direction` owner. Logical and physical declarations compete in the existing
+private physical component streams, preserving layer/source-order precedence,
+`currentColor`, CSS-wide values, `revert-layer`, and all existing box-model,
+display, capture, raster, point-hit, and semantic owners. Vertical writing
+modes, logical radius, border images, tables, multiple origins, and
+browser-wide logical-border conformance remain outside the boundary. Focused,
+full-native/library, strict Clippy, warning-denied rustdoc, paired-crate,
+formatting, and remaining local certification evidence is recorded in the task;
+remote CI remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

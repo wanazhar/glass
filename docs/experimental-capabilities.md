@@ -181,8 +181,9 @@ the boundary. The native border surface also accepts bounded case-insensitive
 Rollback resolves each side through lower concrete candidates or the existing
 zero-width/no-paint fallback, preserving shorthand/longhand precedence and
 the existing box-model inset, border display-list, capture, raster, point-hit,
-and semantic/source-order owners. Logical sides, border-image, gradients,
-`wavy` and other unsupported border styles, animation, multiple origins, and
+and semantic/source-order owners. Vertical writing modes, logical radius,
+border-image, gradients, `wavy` and other unsupported border styles, animation,
+multiple origins, and
 browser-wide CSS border conformance remain outside the boundary. The same owner also accepts bounded
 case-insensitive 15-layer/unlayered `border-color`, `border-top-color`,
 `border-right-color`, `border-bottom-color`, and `border-left-color` values,
@@ -228,8 +229,9 @@ to no side/zero width before layout and paint; `hidden` remains a private
 distinction for future table conflict resolution. Width, style, and color
 components compose only after independent resolution, and width-only or
 style-only declarations do not invent missing paint components;
-collapsed-table border conflict resolution, logical sides, fractional/percentage
-widths, `wavy` and other unsupported styles, and browser-wide border conformance
+collapsed-table border conflict resolution, fractional/percentage widths,
+logical radius, vertical writing modes, `wavy` and other unsupported styles,
+and browser-wide border conformance
 remain outside the boundary. The complete and physical border shorthands also
 accept the exact case-insensitive omitted-component `none` and `hidden` forms
 through private no-paint style sentinels; winning omitted-component `hidden`
@@ -246,7 +248,21 @@ shorthands also accept exact case-insensitive CSS-wide `inherit`, `unset`,
 effective parent width/style/color sides, including private `none`/`hidden`,
 zero-width, and unpainted states; reset forms project zero width, private
 `none`, and `currentColor` for later component composition; ordinary omission
-remains omission and mixed CSS-wide/concrete forms remain unsupported. It also provides bounded side-specific
+remains omission and mixed CSS-wide/concrete forms remain unsupported. The
+native border surface also accepts bounded horizontal-tb logical
+`border-block`, `border-block-start`, `border-block-end`, `border-inline`,
+`border-inline-start`, and `border-inline-end` shorthands plus their
+`-width`, `-style`, and `-color` component families. One- or two-value block
+and inline component pairs map to logical start/end; block sides map to
+physical top/bottom, while inline sides map to physical left/right for `ltr`
+and right/left for `rtl` through the resolved inherited `direction`. Complete
+logical shorthands, CSS-wide keywords, `currentColor`, bounded named-layer and
+unlayered `revert-layer`, physical/logical precedence, and component composition
+reuse the existing physical border streams and box-model, display-list,
+capture, raster, point-hit, and semantic/source-order owners. Vertical writing
+modes, logical radius, border-image, gradients, table conflict resolution,
+multiple origins, and browser-wide logical-border conformance remain outside
+the boundary. It also provides bounded side-specific
 solid/dashed/dotted/double/groove/ridge/inset/outset-border paint,
 bounded physical circular border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

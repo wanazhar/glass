@@ -2339,6 +2339,8 @@ visual stacking.
 
 | `native-engine-181` | completed bounded author-origin `!important` priority for the standalone physical `border-width` shorthand and four physical width longhands, preserving per-side expansion/resolution and existing width/style/color consumers through a private reversed named-layer partition; implementation `436dd02a`; focused/full-native/library, strict Clippy, and warning-denied rustdoc gates passed locally | `native-engine-180` | complete/side border shorthands, logical border width, border style/color, vertical writing modes, multiple origins, transitions, animations, percentages, elliptical radii, and browser-wide conformance |
 
+| `native-engine-182` | in progress: bounded author-origin `!important` priority for the standalone physical `border-style` shorthand and four physical style longhands, preserving per-side expansion/resolution, private `none`/`hidden` distinctions, and existing width/style/color consumers through a private reversed named-layer partition | `native-engine-181` | complete/side border shorthands, logical border style, border width/color, vertical writing modes, multiple origins, transitions, animations, percentages, elliptical radii, and browser-wide conformance |
+
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;

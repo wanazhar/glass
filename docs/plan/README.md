@@ -1767,6 +1767,15 @@ current documentation audits, and task-specific cleanup pass locally;
 issue-level final gates and remote CI remain pending until issue #40 reaches
 its final validation boundary.
 
+The in-progress dependency-ordered [native-engine-182](tasks/native-engine-182.md)
+slice extends bounded author-origin `!important` priority to the standalone
+physical `border-style` shorthand and four physical style longhands. It
+preserves one-to-four-value expansion, independent per-side no-paint/paint
+resolution, and the existing width/style/color consumers while retaining
+normal-only behavior for complete/side border shorthands and logical border
+style. Implementation, certification, issue-level final gates, cleanup, and
+remote CI are pending.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

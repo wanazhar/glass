@@ -220,8 +220,13 @@ physical border-width owner also accepts case-insensitive CSS-wide `inherit`,
 `unset`, `initial`, and `revert`: explicit `inherit` copies the parent's
 effective per-side widths, reset forms resolve to zero, ordinary omission
 retains the zero fallback, a single CSS-wide shorthand token expands to all
-four sides, and mixed CSS-wide/numeric shorthand forms remain unsupported. The
-same owner also accepts bounded case-insensitive 15-layer/unlayered local
+  four sides, and mixed CSS-wide/numeric shorthand forms remain unsupported.
+  Standalone physical border-width declarations also accept a terminal
+  case-insensitive `!important` marker: important widths outrank normal widths,
+  use earliest-named-layer priority inside the bounded author-important
+  partition, and preserve per-side `revert-layer` and inline behavior; complete
+  and side-border shorthands remain normal-only in this slice. The same owner
+  also accepts bounded case-insensitive 15-layer/unlayered local
 `border-style` and physical `border-top-style`, `border-right-style`,
 `border-bottom-style`, and `border-left-style` values from the finite
 `none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset` grammar with

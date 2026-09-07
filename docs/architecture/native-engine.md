@@ -1053,6 +1053,18 @@ cascade and integration tests, full-native integration/library tests, strict
 Clippy, feature rustdoc, two-crate check/build, formatting, and static
 documentation gates are recorded in the task; remote CI remains pending
 because the checkout is local-only.
+The next dependency-ordered 152 slice is design-ready in
+`docs/plan/tasks/native-engine-152.md`. It will add standalone,
+case-insensitive `border-width` and physical `border-top-width`,
+`border-right-width`, `border-bottom-width`, and `border-left-width` through
+one-to-four-value expansion, an independent private width stream, and
+`revert-layer` rollback, while preserving the existing border style/color,
+zero-width, box-model, display-list, capture, raster, point-hit, and
+semantic/source-order owners. It remains planned until implementation and
+local gates complete; standalone border-style, logical sides, `currentColor`,
+gradients, border-image, fractional/percentage widths, animation, multiple
+origins, `!important` inversion, and browser-wide border conformance remain
+outside the boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

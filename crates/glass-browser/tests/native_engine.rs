@@ -4804,6 +4804,75 @@ fn native_text_alignment_shifts_complete_fixed_cell_line_items() {
 }
 
 #[test]
+fn native_text_presentation_important_priority_reaches_shared_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #winner { display:block; width:32px; white-space:pre !important; text-align:center !important; text-transform:uppercase !important; text-decoration:underline !important; text-decoration-style:dashed !important; font-weight:bold !important; line-height:24px !important; } #rollback { display:block; width:32px; text-transform:uppercase !important; text-decoration-style:dashed !important; } } @layer theme { #winner { white-space:normal !important; text-align:right !important; text-transform:lowercase !important; text-decoration:overline !important; text-decoration-style:dotted !important; font-weight:normal !important; line-height:12px !important; } #rollback { text-transform:revert-layer !important; text-decoration-style:revert-layer !important; } } #winner { white-space:nowrap; text-align:left; text-transform:none; text-decoration:none; text-decoration-style:solid; font-weight:normal; line-height:8px; }</style><div id='winner'>ab</div><div id='rollback'>a</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !matches!(
+            diagnostic.code,
+            NativeDiagnosticCode::UnsupportedCssProperty
+                | NativeDiagnosticCode::UnsupportedCssValue
+        )
+    }));
+
+    let viewport = Viewport {
+        width: 40,
+        height: 60,
+        device_scale_factor_milli: 1000,
+    };
+    let winner = document.resolve_target("id=winner").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(winner).unwrap().height, 24);
+    assert_eq!(layout.box_for(rollback).unwrap().y, 24);
+    let winner_run = layout
+        .text_runs
+        .iter()
+        .find(|run| run.node_id == winner)
+        .unwrap();
+    assert_eq!(winner_run.text, "AB");
+    assert!(winner_run.origin.x > 0);
+
+    let list = document.display_list(viewport).unwrap();
+    let run_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                text,
+                decoration_style,
+                underline,
+                overline,
+                bold,
+                ..
+            } if *command_node == node_id => Some((
+                text.as_str(),
+                *decoration_style,
+                *underline,
+                *overline,
+                *bold,
+            )),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        run_for(winner),
+        Some(("AB", NativeTextDecorationStyle::Dashed, true, false, true))
+    );
+    assert_eq!(
+        run_for(rollback),
+        Some(("A", NativeTextDecorationStyle::Dashed, false, false, false))
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(winner_run.origin.x + 1, winner_run.origin.y + 1),
+        Some([0, 0, 0, 255])
+    );
+}
+
+#[test]
 fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:45px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",

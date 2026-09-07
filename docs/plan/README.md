@@ -1601,14 +1601,26 @@ graphs, animation, and browser-wide text-decoration conformance remain outside
 the completed boundary. Remote CI remains pending because the branch is
 local-only.
 
-The next dependency-ordered [native-engine-169](tasks/native-engine-169.md)
-slice is designed but not implemented. It will add bounded case-insensitive
-`inherit`, `unset`, `initial`, and one-author-origin `revert` to local physical
-`border-color` and its four physical color longhands, copying a parent's
-effective per-side color only for explicit `inherit` and resolving reset forms
-to the current element color. It preserves omitted black fallback,
-`currentColor`, `revert-layer`, width/style composition, border geometry, and
-all artifact owners; no implementation or completion claim is made yet.
+The completed dependency-ordered [native-engine-169](tasks/native-engine-169.md)
+slice is implemented at `4d9e6979` from design `b88177dc`; test-fixture
+corrections are `a0e77c84` and `801f7b19`, and synchronized product
+documentation is `07ba3dc4`. It adds exact case-insensitive `inherit`, `unset`,
+`initial`, and one-author-origin `revert` handling to physical `border-color`
+and its four color longhands. Explicit `inherit` copies the parent's effective
+per-side colors, reset forms resolve to the current element color, and
+omission retains the black side fallback; `currentColor`, `revert-layer`,
+border geometry, and all artifact consumers remain intact. Focused/full-native/
+library, strict, package, static, workspace, and cleanup gates passed locally;
+the plain `glass-dev` package path remains a known registry API mismatch while
+the patched local-release archive is exact. Remote CI remains pending because
+the checkout is local-only.
+
+The next dependency-ordered [native-engine-170](tasks/native-engine-170.md)
+slice is designed but not implemented. It will add the same bounded
+case-insensitive CSS-wide family to physical `border-width` and its four width
+longhands, copying only explicit inherited effective side widths and retaining
+zero-width omission/reset fallbacks; no implementation or completion claim is
+made yet.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

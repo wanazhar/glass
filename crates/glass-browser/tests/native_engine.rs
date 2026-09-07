@@ -1578,6 +1578,220 @@ fn native_physical_border_style_important_priority_reaches_border_artifacts() {
 }
 
 #[test]
+fn native_physical_border_shorthand_important_priority_reaches_border_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            .box { display:block;width:16px;height:8px;border:2px solid black; }
+            @layer base {
+                #early { border:1px solid red !important; }
+                #rollback { border:1px solid blue !important; }
+                #rollback { border:revert-layer !important; }
+                #normal { border:1px solid red; }
+                #mixed { border-top:1px dashed blue !important; }
+                #sides { border:1px solid red !important;border-top:2px dashed green !important;border-right:3px dotted blue !important; }
+                #invalid { border:1px solid red !important;border:invalid !important; }
+                #none { border:2px solid red !important;border-top:none !important; }
+                #hidden { border:2px solid red !important;border-right:hidden !important; }
+            }
+            @layer theme {
+                #early { border:2px dashed blue !important; }
+                #rollback { border:3px groove green !important; }
+                #normal { border:2px dashed blue; }
+                #sides { border:4px groove green !important; }
+            }
+            #early { border:3px dotted green !important; }
+            #normal { border:3px double green; }
+            #mixed { border:4px double black; }
+            #sides { border:5px ridge red !important; }
+            #invalid { border:5px outset green; }
+            #none { border-top:4px solid blue; }
+            #hidden { border-right:4px solid blue; }
+        </style>
+        <div id='early' class='box' role='button'>Early</div>
+        <div id='rollback' class='box' role='button'>Rollback</div>
+        <div id='normal' class='box' role='button'>Normal</div>
+        <div id='mixed' class='box' role='button'>Mixed</div>
+        <div id='sides' class='box' role='button'>Sides</div>
+        <div id='invalid' class='box' role='button'>Invalid</div>
+        <div id='none' class='box' role='button'>None</div>
+        <div id='hidden' class='box' role='button'>Hidden</div>
+        <div id='inline' class='box' role='button' style='border:6px groove blue !important'>Inline</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 200,
+        device_scale_factor_milli: 1000,
+    };
+    let early = document.resolve_target("id=early").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let sides = document.resolve_target("id=sides").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let none = document.resolve_target("id=none").unwrap();
+    let hidden = document.resolve_target("id=hidden").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let targets = [
+        early, rollback, normal, mixed, sides, invalid, none, hidden, inline,
+    ];
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let layout = document.layout(viewport).unwrap();
+    for (node_id, (expected_width, expected_height)) in [
+        (early, (18, 10)),
+        (rollback, (22, 14)),
+        (normal, (22, 14)),
+        (mixed, (24, 13)),
+        (sides, (20, 11)),
+        (invalid, (18, 10)),
+        (none, (20, 10)),
+        (hidden, (18, 12)),
+        (inline, (28, 20)),
+    ] {
+        let rectangle = layout
+            .box_for(node_id)
+            .expect("border-shorthand layout box");
+        assert_eq!(rectangle.width, expected_width);
+        assert_eq!(rectangle.height, expected_height);
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 3).into(), (rectangle.y + 3).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let early_border = border_for(early).expect("early border-shorthand command");
+    assert_eq!(
+        [
+            early_border.top.width,
+            early_border.right.width,
+            early_border.bottom.width,
+            early_border.left.width,
+        ],
+        [1; 4]
+    );
+    assert_eq!(
+        [
+            early_border.top.style,
+            early_border.right.style,
+            early_border.bottom.style,
+            early_border.left.style,
+        ],
+        [NativeBorderStyle::Solid; 4]
+    );
+    assert_eq!(
+        [
+            early_border.top.color,
+            early_border.right.color,
+            early_border.bottom.color,
+            early_border.left.color,
+        ],
+        [NativeColor::RED; 4]
+    );
+
+    let rollback_border = border_for(rollback).expect("rollback border-shorthand command");
+    assert_eq!(rollback_border.top.width, 3);
+    assert_eq!(rollback_border.top.style, NativeBorderStyle::Groove);
+    assert_eq!(rollback_border.top.color, green);
+
+    let mixed_border = border_for(mixed).expect("mixed border-shorthand command");
+    assert_eq!(mixed_border.top.width, 1);
+    assert_eq!(mixed_border.top.style, NativeBorderStyle::Dashed);
+    assert_eq!(mixed_border.top.color, blue);
+    assert_eq!(mixed_border.right.width, 4);
+    assert_eq!(mixed_border.right.style, NativeBorderStyle::Double);
+    assert_eq!(mixed_border.right.color, NativeColor::BLACK);
+
+    let sides_border = border_for(sides).expect("side border-shorthand command");
+    assert_eq!(
+        [
+            sides_border.top.width,
+            sides_border.right.width,
+            sides_border.bottom.width,
+            sides_border.left.width,
+        ],
+        [2, 3, 1, 1]
+    );
+    assert_eq!(sides_border.top.style, NativeBorderStyle::Dashed);
+    assert_eq!(sides_border.right.style, NativeBorderStyle::Dotted);
+    assert_eq!(sides_border.bottom.style, NativeBorderStyle::Solid);
+    assert_eq!(sides_border.left.style, NativeBorderStyle::Solid);
+    assert_eq!(sides_border.top.color, green);
+    assert_eq!(sides_border.right.color, blue);
+    assert_eq!(sides_border.bottom.color, NativeColor::RED);
+    assert_eq!(sides_border.left.color, NativeColor::RED);
+
+    let invalid_border = border_for(invalid).expect("invalid border-shorthand command");
+    assert_eq!(invalid_border.top.width, 1);
+    assert_eq!(invalid_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(invalid_border.top.color, NativeColor::RED);
+
+    let none_border = border_for(none).expect("none border-shorthand command");
+    assert_eq!(none_border.top.width, 0);
+    assert_eq!(none_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(none_border.bottom.width, 2);
+    assert_eq!(none_border.bottom.style, NativeBorderStyle::Solid);
+    let hidden_border = border_for(hidden).expect("hidden border-shorthand command");
+    assert_eq!(hidden_border.right.width, 0);
+    assert_eq!(hidden_border.right.style, NativeBorderStyle::Solid);
+    assert_eq!(hidden_border.left.width, 2);
+    assert_eq!(hidden_border.left.style, NativeBorderStyle::Solid);
+
+    let inline_border = border_for(inline).expect("inline border-shorthand command");
+    assert_eq!(inline_border.top.width, 6);
+    assert_eq!(inline_border.top.style, NativeBorderStyle::Groove);
+    assert_eq!(inline_border.top.color, blue);
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in targets.windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border"
+    }));
+    let early_box = layout.box_for(early).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(early_box.x + 8, early_box.y),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_logical_border_width_important_priority_reaches_projected_border_artifacts() {
     let document = NativeDocument::parse(
         r#"<style>

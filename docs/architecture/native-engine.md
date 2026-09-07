@@ -1508,7 +1508,8 @@ Focused, full-native, feature-library, strict Clippy, warning-denied rustdoc,
 and current documentation audits pass locally; issue-level final gates and
 remote CI remain pending until issue #40 reaches its final validation boundary.
 
-The dependency-ordered `native-engine-185` slice is in progress. It will extend
+The completed dependency-ordered `native-engine-185` slice is recorded in
+`docs/plan/tasks/native-engine-185.md` and implemented at `bfcb6dc9`. It extends
 the bounded author-origin `!important` partition to the complete physical
 `border` shorthand and the four physical side-border shorthands by carrying
 one private importance bit per side into the existing doubled width/style/color
@@ -1516,7 +1517,9 @@ component streams. This preserves independent component composition,
 CSS-wide/omitted `none`/`hidden`/`revert-layer` behavior, physical layout and
 paint consumers, public schemas, and the two-crate boundary. Logical complete
 shorthands, vertical writing modes, and browser-wide border conformance remain
-outside this slice; issue-level final gates and remote CI remain pending until
+outside this slice. Focused, full-native, feature-library, strict Clippy,
+warning-denied rustdoc, current documentation audits, and task-specific
+cleanup pass locally; issue-level final gates and remote CI remain pending until
 issue #40 reaches its final validation boundary.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha

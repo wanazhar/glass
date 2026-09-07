@@ -1801,16 +1801,19 @@ strict Clippy, warning-denied rustdoc, current documentation audits, and
 task-specific cleanup pass locally; issue-level final gates and remote CI
 remain pending until issue #40 reaches its final validation boundary.
 
-The dependency-ordered [native-engine-185](tasks/native-engine-185.md) slice is
-in progress. It extends bounded author-origin `!important` priority to the
-complete physical `border` shorthand and four physical side-border shorthands
-by carrying their importance through the existing private width/style/color
-component streams. Independent side/component composition, CSS-wide and
-omitted `none`/`hidden`/`revert-layer` behavior, physical layout/paint
-consumers, public schemas, and the two-crate boundary remain unchanged.
-Logical complete shorthands, vertical writing modes, and browser-wide border
-conformance remain outside this slice; issue-level final gates and remote CI
-remain pending until issue #40 reaches its final validation boundary.
+The completed dependency-ordered [native-engine-185](tasks/native-engine-185.md)
+slice is implemented at `bfcb6dc9`. It extends bounded author-origin
+`!important` priority to the complete physical `border` shorthand and four
+physical side-border shorthands by carrying their importance through the
+existing private width/style/color component streams. Independent
+side/component composition, CSS-wide and omitted `none`/`hidden`/`revert-layer`
+behavior, physical layout/paint consumers, public schemas, and the two-crate
+boundary remain unchanged. Logical complete shorthands, vertical writing
+modes, and browser-wide border conformance remain outside this slice. Focused,
+full-native, feature-library, strict Clippy, warning-denied rustdoc, current
+documentation audits, and task-specific cleanup pass locally; issue-level
+final gates and remote CI remain pending until issue #40 reaches its final
+validation boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

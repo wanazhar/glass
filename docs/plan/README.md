@@ -1755,6 +1755,14 @@ warning-denied rustdoc gates pass locally; final documentation audit and
 task-specific cleanup are recorded in the task. Issue-level final gates and
 remote CI remain pending until issue #40 reaches its final validation boundary.
 
+The in-progress dependency-ordered [native-engine-181](tasks/native-engine-181.md)
+slice extends bounded author-origin `!important` priority to the standalone
+physical `border-width` shorthand and four physical width longhands. It
+preserves one-to-four-value expansion, independent per-side resolution, and
+the existing width/style/color consumers while retaining normal-only behavior
+for complete/side border shorthands and logical border width. Implementation
+and certification are pending.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

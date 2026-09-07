@@ -2070,12 +2070,12 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
-`docs/plan/tasks/native-engine-151.md`: the design is `4f23d85a` and the
-implementation is `c26482b7`; documentation closeout and exact isolated-target
-cleanup evidence are recorded in the task file. Focused/full-native,
-affected-library, strict-Clippy, rustdoc, two-crate binary, formatting,
-documentation/release, and bounded cleanup gates remain local evidence.
-Remote CI remains pending because the branch is local-only.
+`docs/plan/tasks/native-engine-151.md`: the design is `4f23d85a`, the
+implementation is `c26482b7`, and the documentation closeout is `3abd9814`;
+exact isolated-target cleanup evidence is recorded in the task file.
+Focused/full-native, affected-library, strict-Clippy, rustdoc, two-crate
+binary, formatting, documentation/release, and bounded cleanup gates remain
+local evidence. Remote CI remains pending because the branch is local-only.
 The completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-100.md`: the design is `2dae80fc` and the
 implementation is `3380978c`. Focused/full native, feature-library,

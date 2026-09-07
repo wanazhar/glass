@@ -1534,6 +1534,137 @@ fn native_painted_border_style_variants_replay_and_cascade() {
 }
 
 #[test]
+fn native_border_none_shorthand_blocks_or_reveals_components_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #shorthand { display:block;width:8px;height:6px;border:2px solid red; } #physical { display:block;width:8px;height:6px;border:2px solid red; } #components { display:block;width:8px;height:6px;border:2px solid red; } #exposed { display:block;width:8px;height:6px;border:2px solid red; } #repeated { display:block;width:8px;height:6px;border:2px solid red; } #invalid { display:block;width:8px;height:6px;border:2px solid red; } #order-a { display:block;width:8px;height:6px;border:2px solid red; } #order-b { display:block;width:8px;height:6px;border:2px solid red; } #inline { display:block;width:8px;height:6px;border:2px solid red; } } @layer theme { #shorthand { border: NoNe; } #physical { border-top: none; border-right: NONE; } #components { border: none; border-width: 4px; border-color: blue; } #exposed { border: none; } #exposed { border: revert-layer; } #repeated { border: none; } #repeated { border: revert-layer; } #repeated { border: revert-layer; } #invalid { border: none; } #invalid { border: unsupported; } #order-a { border: none; border-style: solid; } #order-b { border-style: solid; border: none; } } @layer top { #repeated { border: revert-layer; } } #inline { border: NONE; }</style><button id='shorthand'>Shorthand</button><button id='physical'></button><button id='components'>Components</button><button id='exposed'>Exposed</button><button id='repeated'>Repeated</button><button id='invalid'>Invalid</button><button id='order-a'>Order A</button><button id='order-b'>Order B</button><button id='inline'>Inline</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let ids = [
+        "shorthand",
+        "physical",
+        "components",
+        "exposed",
+        "repeated",
+        "invalid",
+        "order-a",
+        "order-b",
+        "inline",
+    ];
+    let nodes = ids.map(|id| document.resolve_target(&format!("id={id}")).unwrap());
+    let layout = document.layout(viewport).unwrap();
+    let expected_sizes = [
+        (8, 6),
+        (10, 8),
+        (8, 6),
+        (12, 10),
+        (12, 10),
+        (8, 6),
+        (12, 10),
+        (8, 6),
+        (8, 6),
+    ];
+    for (node_id, (width, height)) in nodes.iter().zip(expected_sizes) {
+        let rectangle = layout.box_for(*node_id).expect("border:none layout box");
+        assert_eq!((rectangle.width, rectangle.height), (width, height));
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(*node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    let positions: Vec<_> = nodes
+        .iter()
+        .map(|node_id| {
+            semantic_nodes
+                .iter()
+                .position(|node| node.node_id == *node_id && !node.hidden)
+                .expect("visible border:none semantic node")
+        })
+        .collect();
+    assert!(positions.windows(2).all(|window| window[0] < window[1]));
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    for index in [0, 2, 5, 7, 8] {
+        assert!(
+            border_for(nodes[index]).is_none(),
+            "unexpected border command {index}"
+        );
+    }
+    for index in [3, 4, 6] {
+        assert!(
+            border_for(nodes[index]).is_some(),
+            "missing border command {index}"
+        );
+    }
+    let physical = border_for(nodes[1]).expect("physical border command");
+    assert_eq!(physical.top.width, 0);
+    assert_eq!(physical.right.width, 0);
+    assert_eq!(physical.bottom.width, 2);
+    assert_eq!(physical.left.width, 2);
+    assert_eq!(
+        border_for(nodes[3]).unwrap().top.style,
+        NativeBorderStyle::Solid
+    );
+    assert_eq!(
+        border_for(nodes[6]).unwrap().top.style,
+        NativeBorderStyle::Solid
+    );
+
+    let border_diagnostics = document
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "border"
+        })
+        .count();
+    assert_eq!(border_diagnostics, 1);
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail.contains("none")
+    }));
+
+    let surface = list.rasterize().unwrap();
+    let physical_rect = layout.box_for(nodes[1]).unwrap();
+    assert_eq!(
+        surface.pixel(physical_rect.x + physical_rect.width / 2, physical_rect.y),
+        Some([255, 255, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(
+            physical_rect.x + physical_rect.width / 2,
+            physical_rect.y + physical_rect.height - 1,
+        ),
+        Some([255, 0, 0, 255])
+    );
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (48, 180));
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

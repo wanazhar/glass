@@ -19,6 +19,8 @@ const CASCADE_SPECIFICITY_BITS: u32 = 12;
 const CASCADE_SPECIFICITY_STRIDE: u16 = 1 << CASCADE_SPECIFICITY_BITS;
 const MAX_NATIVE_SELECTOR_SPECIFICITY: u16 = CASCADE_SPECIFICITY_STRIDE - 1;
 const MAX_NATIVE_CASCADE_LAYERS: usize = MAX_NATIVE_NAMED_CASCADE_LAYERS + 1;
+const MAX_NATIVE_LOCAL_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
+const IMPORTANT_LOCAL_CASCADE_OFFSET: usize = MAX_NATIVE_CASCADE_LAYERS;
 const MAX_NATIVE_TEXT_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
 const IMPORTANT_TEXT_CASCADE_OFFSET: usize = MAX_NATIVE_CASCADE_LAYERS;
 const MAX_NATIVE_RADIUS_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
@@ -1392,11 +1394,11 @@ impl NativeStylesheet {
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
         let mut display: [Option<CascadeValue<LocalCascadeDeclaration<DisplayValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut visibility: [Option<CascadeValue<LocalCascadeDeclaration<VisibilityValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut opacity: [Option<CascadeValue<LocalCascadeDeclaration<u8>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut white_space: [Option<CascadeValue<WhiteSpaceDeclaration>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_align: [Option<CascadeValue<TextAlignDeclaration>>;
@@ -1537,25 +1539,28 @@ impl NativeStylesheet {
             if !matches(&rule.selector) {
                 continue;
             }
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.display,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.local_importance.display,
                 &mut display,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.visibility,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.local_importance.visibility,
                 &mut visibility,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.opacity,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.local_importance.opacity,
                 &mut opacity,
             );
             apply_text_cascade_declaration(
@@ -2045,25 +2050,28 @@ impl NativeStylesheet {
 
         if let Some(inline_style) = node.attribute("style") {
             let declarations = parse_declarations(inline_style);
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.display,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.local_importance.display,
                 &mut display,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.visibility,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.local_importance.visibility,
                 &mut visibility,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.opacity,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.local_importance.opacity,
                 &mut opacity,
             );
             apply_text_cascade_declaration(
@@ -2936,8 +2944,8 @@ fn resolve_local_cascade_declaration<T: Copy, const N: usize>(
     })
 }
 
-fn resolve_local_optional_cascade_declaration<T: Copy>(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+fn resolve_local_optional_cascade_declaration<T: Copy, const N: usize>(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
 ) -> Option<T> {
     resolve_alignment_candidates(candidates, None, |declaration| match declaration {
         LocalCascadeDeclaration::Value(value) => Some(Some(value)),
@@ -3501,6 +3509,39 @@ fn apply_local_cascade_declaration<T: Copy>(
         return;
     };
     let layer = cascade_layer_index(specificity);
+    if wins(specificity, order, inline, candidates[layer]) {
+        candidates[layer] = Some(CascadeValue {
+            value,
+            specificity,
+            order,
+            inline,
+        });
+    }
+}
+
+fn local_cascade_layer(specificity: u16, important: bool) -> usize {
+    let layer = cascade_layer_index(specificity);
+    if important {
+        IMPORTANT_LOCAL_CASCADE_OFFSET
+            .saturating_add(usize::from(UNLAYERED_CASCADE_LAYER).saturating_sub(layer))
+    } else {
+        layer
+    }
+}
+
+fn apply_local_important_cascade_declaration<T: Copy>(
+    declaration: Option<LocalCascadeDeclaration<T>>,
+    specificity: u16,
+    order: usize,
+    inline: bool,
+    important: bool,
+    candidates: &mut [Option<CascadeValue<LocalCascadeDeclaration<T>>>;
+             MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+) {
+    let Some(value) = declaration else {
+        return;
+    };
+    let layer = local_cascade_layer(specificity, important);
     if wins(specificity, order, inline, candidates[layer]) {
         candidates[layer] = Some(CascadeValue {
             value,
@@ -4320,6 +4361,13 @@ fn apply_logical_border_cascade(
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeLocalDeclarationImportance {
+    display: bool,
+    visibility: bool,
+    opacity: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeTextDeclarationImportance {
     white_space: bool,
     text_align: bool,
@@ -4349,6 +4397,7 @@ struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayValue>>,
     visibility: Option<LocalCascadeDeclaration<VisibilityValue>>,
     opacity: Option<LocalCascadeDeclaration<u8>>,
+    local_importance: NativeLocalDeclarationImportance,
     text_importance: NativeTextDeclarationImportance,
     white_space: Option<WhiteSpaceDeclaration>,
     text_align: Option<TextAlignDeclaration>,
@@ -5191,16 +5240,19 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "display" => {
                 if let Some(parsed) = parse_display_declaration(value) {
                     declarations.display = Some(parsed);
+                    declarations.local_importance.display = important;
                 }
             }
             "visibility" => {
                 if let Some(parsed) = parse_visibility_declaration(value) {
                     declarations.visibility = Some(parsed);
+                    declarations.local_importance.visibility = important;
                 }
             }
             "opacity" => {
                 if let Some(parsed) = parse_opacity_declaration(value) {
                     declarations.opacity = Some(parsed);
+                    declarations.local_importance.opacity = important;
                 }
             }
             "white-space" => {
@@ -9208,6 +9260,111 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn local_presentation_important_parser_tracks_markers_and_invalid_preservation() {
+        let declarations = parse_declarations(
+            "display: none !IMPORTANT; visibility: hidden !important; opacity: 50% !important",
+        );
+        assert_eq!(
+            declarations.display,
+            Some(LocalCascadeDeclaration::Value(DisplayValue::None))
+        );
+        assert_eq!(
+            declarations.visibility,
+            Some(LocalCascadeDeclaration::Value(VisibilityValue::Hidden))
+        );
+        assert_eq!(
+            declarations.opacity,
+            Some(LocalCascadeDeclaration::Value(128))
+        );
+        assert!(declarations.local_importance.display);
+        assert!(declarations.local_importance.visibility);
+        assert!(declarations.local_importance.opacity);
+
+        let preserved = parse_declarations(
+            "display: none !important; display: invalid !important; visibility: hidden !important; visibility: invalid !important; opacity: 50% !important; opacity: 2 !important",
+        );
+        assert_eq!(
+            preserved.display,
+            Some(LocalCascadeDeclaration::Value(DisplayValue::None))
+        );
+        assert_eq!(
+            preserved.visibility,
+            Some(LocalCascadeDeclaration::Value(VisibilityValue::Hidden))
+        );
+        assert_eq!(preserved.opacity, Some(LocalCascadeDeclaration::Value(128)));
+        assert!(preserved.local_importance.display);
+        assert!(preserved.local_importance.visibility);
+        assert!(preserved.local_importance.opacity);
+
+        let normal = parse_declarations(
+            "display: none !important; display: block; visibility: hidden !important; visibility: visible; opacity: 50% !important; opacity: 100%",
+        );
+        assert_eq!(
+            normal.display,
+            Some(LocalCascadeDeclaration::Value(DisplayValue::Block))
+        );
+        assert_eq!(
+            normal.visibility,
+            Some(LocalCascadeDeclaration::Value(VisibilityValue::Other))
+        );
+        assert_eq!(
+            normal.opacity,
+            Some(LocalCascadeDeclaration::Value(u8::MAX))
+        );
+        assert!(!normal.local_importance.display);
+        assert!(!normal.local_importance.visibility);
+        assert!(!normal.local_importance.opacity);
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_local_presentation_important_priority_and_rollback() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #important { display:none !important; visibility:hidden !important; opacity:25% !important; } #rollback { display:revert-layer !important; visibility:revert-layer !important; opacity:revert-layer !important; } #invalid { display:none !important; visibility:hidden !important; opacity:25% !important; } #normal { display:none; visibility:hidden; opacity:25%; } } @layer theme { #important { display:block !important; visibility:visible !important; opacity:75% !important; } #rollback { display:block !important; visibility:visible !important; opacity:75% !important; } #invalid { display:unsupported !important; visibility:unsupported !important; opacity:2 !important; } #normal { display:block; visibility:visible; opacity:75%; } } @layer top { #rollback { display:none !important; visibility:hidden !important; opacity:25% !important; } } #important { display:block; visibility:visible; opacity:100%; } #rollback { display:block; visibility:visible; opacity:100%; } #invalid { display:block; visibility:visible; opacity:100%; } #normal { display:block; visibility:visible; opacity:100%; } #unlayered { display:none !important; visibility:hidden !important; opacity:25% !important; } #unlayered { display:block !important; visibility:visible !important; opacity:75% !important; } #inline-rollback { display:none !important; visibility:hidden !important; opacity:25% !important; } #inline-rollback { display:block; visibility:visible; opacity:100%; }"
+                .into(),
+        ])
+        .unwrap();
+        let important = node("<div id='important'>Important</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let normal = node("<div id='normal'>Normal</div>");
+        let unlayered = node("<div id='unlayered'>Unlayered</div>");
+        let inline_rollback = node(
+            "<div id='inline-rollback' style='display:ReVeRt-LaYeR !important;visibility:revert-layer !important;opacity:revert-layer !important'>Inline rollback</div>",
+        );
+
+        let style_for = |target: &NativeNode| stylesheet.computed_for(target);
+        let important_style = style_for(&important);
+        assert_eq!(important_style.display(), DisplayValue::None);
+        assert!(important_style.hidden());
+        assert_eq!(important_style.opacity(), 64);
+
+        let rollback_style = style_for(&rollback);
+        assert_eq!(rollback_style.display(), DisplayValue::Block);
+        assert!(!rollback_style.hidden());
+        assert_eq!(rollback_style.opacity(), 191);
+
+        let invalid_style = style_for(&invalid);
+        assert_eq!(invalid_style.display(), DisplayValue::None);
+        assert!(invalid_style.hidden());
+        assert_eq!(invalid_style.opacity(), 64);
+
+        let normal_style = style_for(&normal);
+        assert_eq!(normal_style.display(), DisplayValue::Block);
+        assert!(!normal_style.hidden());
+        assert_eq!(normal_style.opacity(), u8::MAX);
+
+        let unlayered_style = style_for(&unlayered);
+        assert_eq!(unlayered_style.display(), DisplayValue::Block);
+        assert!(!unlayered_style.hidden());
+        assert_eq!(unlayered_style.opacity(), 191);
+
+        let inline_rollback_style = style_for(&inline_rollback);
+        assert_eq!(inline_rollback_style.display(), DisplayValue::Block);
+        assert!(!inline_rollback_style.hidden());
+        assert_eq!(inline_rollback_style.opacity(), u8::MAX);
     }
 
     #[test]

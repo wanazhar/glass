@@ -4873,6 +4873,181 @@ fn native_text_presentation_important_priority_reaches_shared_artifacts() {
 }
 
 #[test]
+fn native_local_presentation_important_priority_reaches_hidden_and_opacity_owners() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        .box { display:block; width:24px; height:8px; background-color:red; }
+        @layer base {
+          #display-important { display:none !important; visibility:visible !important; opacity:100% !important; }
+          #visibility-important { display:block !important; visibility:hidden !important; opacity:100% !important; }
+          #opacity-important { display:block !important; visibility:visible !important; opacity:25% !important; }
+          #rollback { display:revert-layer !important; visibility:revert-layer !important; opacity:revert-layer !important; }
+          #invalid { display:none !important; visibility:hidden !important; opacity:25% !important; }
+          #normal { display:none; visibility:hidden; opacity:25%; }
+        }
+        @layer theme {
+          #display-important { display:block !important; visibility:visible !important; opacity:75% !important; }
+          #visibility-important { display:block !important; visibility:visible !important; opacity:75% !important; }
+          #opacity-important { display:block !important; visibility:visible !important; opacity:75% !important; }
+          #rollback { display:block !important; visibility:visible !important; opacity:75% !important; }
+          #invalid { display:unsupported !important; visibility:unsupported !important; opacity:2 !important; }
+          #normal { display:block; visibility:visible; opacity:75%; }
+        }
+        @layer top {
+          #rollback { display:none !important; visibility:hidden !important; opacity:25% !important; }
+        }
+        #display-important { display:block; visibility:visible; opacity:100%; }
+        #visibility-important { display:block; visibility:visible; opacity:100%; }
+        #opacity-important { display:block; visibility:visible; opacity:100%; }
+        #rollback { display:block; visibility:visible; opacity:100%; }
+        #invalid { display:block; visibility:visible; opacity:100%; }
+        #normal { display:block; visibility:visible; opacity:100%; }
+        #inline { display:block !important; visibility:visible !important; opacity:75% !important; }
+        #inline-rollback { display:none !important; visibility:hidden !important; opacity:25% !important; }
+        #inline-rollback { display:block; visibility:visible; opacity:100%; }
+        </style>
+        <button id='display-important' class='box'>Display</button>
+        <button id='visibility-important' class='box'>Visibility</button>
+        <button id='opacity-important' class='box'>Opacity</button>
+        <button id='rollback' class='box'>Rollback</button>
+        <button id='invalid' class='box'>Invalid</button>
+        <button id='normal' class='box'>Normal</button>
+        <button id='inline' class='box' style='display:none !important;visibility:hidden !important;opacity:50% !important'>Inline</button>
+        <button id='inline-rollback' class='box' style='display:revert-layer !important;visibility:revert-layer !important;opacity:revert-layer !important'>Inline rollback</button>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 96,
+        device_scale_factor_milli: 1000,
+    };
+    let display_important = document.resolve_target("id=display-important").unwrap();
+    let visibility_important = document.resolve_target("id=visibility-important").unwrap();
+    let opacity_important = document.resolve_target("id=opacity-important").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let inline_rollback = document.resolve_target("id=inline-rollback").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    for node_id in [display_important, visibility_important, invalid, inline] {
+        assert_eq!(layout.box_for(node_id), None);
+    }
+    for node_id in [opacity_important, rollback, normal, inline_rollback] {
+        assert!(layout.box_for(node_id).is_some());
+    }
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(opacity_important));
+    assert_eq!(
+        layout.hit_test(1, 9).unwrap(),
+        Some(rollback),
+        "important rollback should preserve the theme value"
+    );
+    assert_eq!(layout.hit_test(1, 17).unwrap(), Some(normal));
+    assert_eq!(layout.hit_test(1, 25).unwrap(), Some(inline_rollback));
+
+    let semantic = document.semantic_nodes();
+    for node_id in [display_important, visibility_important, invalid, inline] {
+        assert!(
+            semantic
+                .iter()
+                .any(|node| node.node_id == node_id && node.hidden)
+        );
+    }
+    for node_id in [opacity_important, rollback, normal, inline_rollback] {
+        assert!(
+            semantic
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden)
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let groups = list
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::BeginOpacityGroup { node_id, opacity } => {
+                Some((*node_id, *opacity))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        groups,
+        vec![(opacity_important, 64), (rollback, 191)],
+        "only the resolved opacity values should create groups"
+    );
+    for node_id in [display_important, visibility_important, invalid, inline] {
+        assert!(!list.commands.iter().any(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::BorderRect {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::BeginOpacityGroup {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::EndOpacityGroup {
+                node_id: command_node,
+            } => {
+                *command_node == node_id
+            }
+            NativeDisplayCommand::Clear { .. } => false,
+        }));
+    }
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, .. } if *node_id == opacity_important
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, .. } if *node_id == normal
+        )
+    }));
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "display" | "visibility" | "opacity"
+            )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    let background_pixel = |node_id, color| {
+        let rectangle = layout.box_for(node_id).unwrap();
+        assert_eq!(
+            surface.pixel(
+                rectangle.right().saturating_sub(1),
+                rectangle.y.saturating_add(rectangle.height / 2),
+            ),
+            Some(color)
+        );
+    };
+    background_pixel(opacity_important, [255, 191, 191, 255]);
+    background_pixel(rollback, [255, 64, 64, 255]);
+    background_pixel(normal, [255, 0, 0, 255]);
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (32, 96));
+}
+
+#[test]
 fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:45px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",

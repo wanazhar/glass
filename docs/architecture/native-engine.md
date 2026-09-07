@@ -48,6 +48,7 @@ bounded-border-radius-css-wide-keywords,
 bounded-complete-border-css-wide-keywords,
 bounded-logical-border-family,
 bounded-physical-border-radius-corner-longhands,
+bounded-logical-border-radius-corner-longhands,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -1401,14 +1402,18 @@ gates pass locally; exact evidence and bounded cleanup are recorded in the
 task. Logical corner names, writing-mode-dependent mapping, percentages,
 elliptical radii, and browser corner fidelity remain outside the completed
 boundary. Remote CI remains pending because the checkout is local-only.
-The dependency-ordered `native-engine-176` slice is planned in
-`docs/plan/tasks/native-engine-176.md`. It will add the four bounded logical
-corner longhands through horizontal-tb ltr/rtl direction-aware projection into
-the completed physical per-corner candidate streams, preserving source order,
-CSS-wide values, `revert-layer`, and all existing rounded consumers. Vertical
-writing modes, text orientation, percentages, elliptical radii, and browser
-logical-radius fidelity remain outside the planned boundary. No implementation
-or remote-CI claim is made yet.
+The completed dependency-ordered `native-engine-176` slice is recorded in
+`docs/plan/tasks/native-engine-176.md`; implementation is `6543b2b6`. It adds
+the four bounded logical corner longhands through horizontal-tb ltr/rtl
+direction-aware projection into the completed physical per-corner candidate
+streams, preserving source order, CSS-wide values, `revert-layer`, and all
+existing rounded consumers. Focused/full-native/library, strict Clippy,
+warning-denied rustdoc, paired-crate check/build, packaging, static
+documentation, workspace all-target/all-feature, security/fuzz, and formatting
+gates pass locally; exact evidence and bounded cleanup are recorded in the
+task. Vertical writing modes, text orientation, percentages, elliptical radii,
+and browser logical-radius fidelity remain outside the completed boundary.
+Remote CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

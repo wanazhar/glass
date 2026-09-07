@@ -536,6 +536,158 @@ fn native_display_visibility_revert_layer_preserves_hidden_subtree_owners() {
 }
 
 #[test]
+fn native_border_revert_layer_preserves_side_geometry_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #card { display:block;width:8px;height:6px;border:1px solid red; } #sides { display:block;width:8px;height:6px;border-top:1px solid red;border-right:2px solid green;border-bottom:3px solid blue;border-left:4px solid black; } #fallback { display:block;width:8px;height:6px;border:revert-layer;background-color:yellow; } #inline { display:block;width:8px;height:6px;border:1px solid red; } } @layer theme { #card { border:3px dashed blue; } #card { border:revert-layer; } #sides { border-top:5px dotted green;border-right:6px solid blue;border-bottom:7px dashed black;border-left:8px solid red; } #sides { border-top:revert-layer;border-bottom:revert-layer; } #inline { border:3px solid green; } } #card { border:revert-layer; } #sides { border-top:revert-layer;border-right:revert-layer;border-left:revert-layer; }</style><button id='card'>Card</button><button id='sides'>Sides</button><button id='fallback'>Fallback</button><button id='inline' style='border:ReVeRt-LaYeR'>Inline</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let card = document.resolve_target("id=card").unwrap();
+    let sides = document.resolve_target("id=sides").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(card),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 8,
+        })
+    );
+    assert_eq!(
+        layout.box_for(sides),
+        Some(NativeRect {
+            x: 0,
+            y: 8,
+            width: 22,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.box_for(fallback),
+        Some(NativeRect {
+            x: 0,
+            y: 18,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(
+        layout.box_for(inline),
+        Some(NativeRect {
+            x: 0,
+            y: 24,
+            width: 14,
+            height: 12,
+        })
+    );
+    assert_eq!(layout.hit_test(2, 2).unwrap(), Some(card));
+    assert_eq!(layout.hit_test(10, 12).unwrap(), Some(sides));
+    assert_eq!(layout.hit_test(1, 19).unwrap(), Some(fallback));
+    assert_eq!(layout.hit_test(5, 28).unwrap(), Some(inline));
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in [card, sides, fallback, inline] {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected border fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let card_border = border_for(card).expect("card border command");
+    assert_eq!(card_border.top.width, 1);
+    assert_eq!(card_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(card_border.top.color, NativeColor::RED);
+    assert_eq!(card_border.right, card_border.top);
+    assert_eq!(card_border.bottom, card_border.top);
+    assert_eq!(card_border.left, card_border.top);
+
+    let sides_border = border_for(sides).expect("side border command");
+    assert_eq!(sides_border.top.width, 1);
+    assert_eq!(sides_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(sides_border.top.color, NativeColor::RED);
+    assert_eq!(sides_border.right.width, 6);
+    assert_eq!(sides_border.right.style, NativeBorderStyle::Solid);
+    assert_eq!(
+        sides_border.right.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255,
+        }
+    );
+    assert_eq!(sides_border.bottom.width, 3);
+    assert_eq!(sides_border.bottom.style, NativeBorderStyle::Solid);
+    assert_eq!(
+        sides_border.bottom.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255,
+        }
+    );
+    assert_eq!(sides_border.left.width, 8);
+    assert_eq!(sides_border.left.style, NativeBorderStyle::Solid);
+    assert_eq!(sides_border.left.color, NativeColor::RED);
+    assert!(border_for(fallback).is_none());
+
+    let inline_border = border_for(inline).expect("inline border command");
+    assert_eq!(inline_border.top.width, 3);
+    assert_eq!(inline_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(
+        inline_border.top.color,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255,
+        }
+    );
+    assert_eq!(inline_border.right, inline_border.top);
+    assert_eq!(inline_border.bottom, inline_border.top);
+    assert_eq!(inline_border.left, inline_border.top);
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "border" | "border-top" | "border-right" | "border-bottom" | "border-left"
+            )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(0, 0), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(10, 8), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(21, 12), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(10, 17), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(0, 12), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 24), Some([0, 128, 0, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

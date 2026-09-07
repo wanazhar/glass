@@ -7896,6 +7896,118 @@ fn native_border_radius_feeds_layout_hit_testing_and_rounded_replay() {
 }
 
 #[test]
+fn native_border_radius_corner_longhands_reach_all_rounded_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            @layer base {
+                #card { display:block;width:24px;height:20px;border:2px solid blue;background-color:red;border-radius:1px; border-top-left-radius:7px; border-top-right-radius:8px; border-bottom-right-radius:9px; border-bottom-left-radius:10px; }
+                #inherited { display:block;width:8px;height:6px;border:1px solid blue;background-color:blue;border-top-left-radius:inherit; border-bottom-right-radius:inherit; }
+                #invalid { display:block;width:8px;height:6px;border:1px solid blue;background-color:green;border-radius:5px; border-top-right-radius:50%; }
+            }
+        </style>
+        <div id='card' role='button'>Card<div id='inherited' role='button'>Inherited</div></div>
+        <div id='invalid' role='button'>Invalid</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 40,
+        device_scale_factor_milli: 1000,
+    };
+    let card = document.resolve_target("id=card").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let card_box = layout.box_for(card).unwrap();
+    assert_eq!(
+        card_box.border_radius,
+        NativeBorderRadius {
+            top_left: 7,
+            top_right: 8,
+            bottom_right: 9,
+            bottom_left: 10,
+        }
+    );
+    assert_eq!(
+        layout.box_for(inherited).unwrap().border_radius,
+        NativeBorderRadius {
+            top_left: 7,
+            top_right: 0,
+            bottom_right: 9,
+            bottom_left: 0,
+        }
+    );
+    assert_eq!(
+        layout.box_for(invalid).unwrap().border_radius,
+        NativeBorderRadius {
+            top_left: 5,
+            top_right: 5,
+            bottom_right: 5,
+            bottom_left: 5,
+        }
+    );
+    assert_eq!(
+        layout
+            .hit_test(
+                (card_box.x + card_box.width / 2).into(),
+                (card_box.y + card_box.height / 2).into(),
+            )
+            .unwrap(),
+        Some(card)
+    );
+    assert_ne!(
+        layout
+            .hit_test(card_box.x.into(), card_box.y.into())
+            .unwrap(),
+        Some(card)
+    );
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in [card, inherited, invalid] {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected corner-radius fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    for node_id in [card, inherited, invalid] {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id: command_node_id, radius, .. }
+                    if *command_node_id == node_id
+                        && *radius == layout.box_for(node_id).unwrap().border_radius
+            )
+        }));
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::BorderRect { node_id: command_node_id, radius, .. }
+                    if *command_node_id == node_id
+                        && *radius == layout.box_for(node_id).unwrap().border_radius
+            )
+        }));
+    }
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(
+            card_box.x + card_box.width / 2,
+            card_box.y + card_box.height / 2
+        ),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-top-right-radius"
+    }));
+}
+
+#[test]
 fn native_border_radius_revert_layer_preserves_rounded_consumers() {
     let document = NativeDocument::parse(
         "<style>@layer base { #card { width:12px;height:10px;border:2px solid blue;background-color:red;border-radius:4px; } } @layer theme { #card { border-radius:6px; } #card { border-radius: revert-layer; } } @layer top { #card { border-radius: revert-layer; } } #card { border-radius: revert-layer; } #fallback { width:12px;height:10px;border:2px solid blue;background-color:red;border-radius: revert-layer; }</style><div id='card'>Card</div><div id='fallback'>Fallback</div>",

@@ -166,8 +166,13 @@ terminal priority, as do the six supported horizontal-tb logical
 `border-block-color`, `border-block-start-color`, `border-block-end-color`,
 `border-inline-color`, `border-inline-start-color`, and
 `border-inline-end-color` declarations through their existing `ltr`/`rtl`
-physical-side projection; other properties do not claim generic `!important`
-semantics.
+physical-side projection. The supported text-presentation set (`white-space`,
+`text-align`, `text-align-last`, `text-justify`, `direction`, text-decoration
+line/style/skip-ink/skip-spaces/thickness/underline-offset, `text-transform`,
+`font-weight`, `font-style`, `word-break`, `text-overflow`, `vertical-align`,
+`text-indent`, `word-spacing`, `letter-spacing`, and `line-height`) also honors
+the same terminal priority; remaining properties do not claim generic
+`!important` semantics.
 CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert`: explicit
 `inherit` copies the parent's effective four-corner radius, including from
 unpainted or zero-width parents; reset forms resolve to zero corners and

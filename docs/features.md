@@ -89,8 +89,13 @@ source-behavior reference.
   supported horizontal-tb logical `border-block-color`,
   `border-block-start-color`, `border-block-end-color`, `border-inline-color`,
   `border-inline-start-color`, and `border-inline-end-color` declarations
-  through their existing `ltr`/`rtl` physical-side projection; other properties
-  remain outside generic `!important` semantics,
+  through their existing `ltr`/`rtl` physical-side projection; the supported
+  text-presentation set (`white-space`, `text-align`, `text-align-last`,
+  `text-justify`, `direction`, text-decoration line/style/skip-ink/skip-spaces/
+  thickness/underline-offset, `text-transform`, `font-weight`, `font-style`,
+  `word-break`, `text-overflow`, `vertical-align`, `text-indent`, `word-spacing`,
+  `letter-spacing`, and `line-height`) also honors the same terminal priority;
+  remaining properties remain outside generic `!important` semantics,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or

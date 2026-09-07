@@ -1830,6 +1830,18 @@ documentation audits, and task-specific cleanup pass locally; issue-level
 final gates and remote CI remain pending until issue #40 reaches its final
 validation boundary.
 
+The completed dependency-ordered [native-engine-187](tasks/native-engine-187.md)
+slice is implemented at `65883117`. It extends the bounded author-origin
+`!important` partition to the supported text-flow and text-decoration
+declarations, preserving important-over-normal ordering, reversed named-layer
+priority, inline important precedence, invalid-later preservation, inherited
+and local fallbacks, and `revert-layer` rollback through the existing layout,
+decoration, raster, capture, hit, diagnostics, and schema owners. Focused,
+full-native, feature-library, strict Clippy, warning-denied rustdoc, current
+documentation audits, and task-specific cleanup pass locally; issue-level
+final gates and remote CI remain pending until issue #40 reaches its final
+validation boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

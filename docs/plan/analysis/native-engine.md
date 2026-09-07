@@ -2345,6 +2345,8 @@ visual stacking.
 
 | `native-engine-184` | completed bounded author-origin `!important` priority for the six supported horizontal-tb logical border-style declarations, preserving private `none`/`hidden` behavior and `ltr`/`rtl` projection into physical style streams through a private reversed named-layer partition; implementation `26fd347a`; focused/full-native/library, strict Clippy, warning-denied rustdoc, and current documentation gates passed locally | `native-engine-183` | complete/side border shorthands, logical border width/color, vertical writing modes, multiple origins, transitions, animations, percentages, elliptical radii, and browser-wide conformance |
 
+| `native-engine-185` | in progress: extend bounded author-origin `!important` priority to complete physical `border` and four physical side-border shorthands by carrying one private importance bit per side into the existing doubled width/style/color component streams; preserve independent component composition, CSS-wide/omitted `none`/`hidden`/`revert-layer` behavior, public schemas, and the two-crate boundary | `native-engine-184` | logical complete shorthands, vertical writing modes, table conflict resolution, border-image, gradients, multiple origins, transitions, animations, percentages, elliptical radii, arbitrary CSS border values, and browser-wide conformance |
+
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;

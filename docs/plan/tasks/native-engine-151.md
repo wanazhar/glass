@@ -162,5 +162,21 @@ Local certification completed in the isolated regenerable target
 - `cargo fmt --all`, `git diff --check`, and the focused artifact assertions
   passed; no public rollback keyword or unsupported diagnostic leaked from the
   feature surface.
-- Final static documentation, coverage, and bounded-target cleanup evidence is
-  recorded below after the documentation checkpoint.
+- Final static gates passed: 565 Markdown documents; 83 current-version
+  documents; 57 previous-version hits; 657 semantic audit hits; 0 current-claim
+  failures; feature parity 14 capabilities across 4 targets; TUI 15
+  implementation help keys and 63 documentation markers; documentation depth
+  93 guides and 19 substantive contracts; reliability 6 scenarios across 4
+  targets; public read-only adapters 5; Web IR 8 fixtures, 8 scenarios, and
+  11 categories; and documentation coverage 565 Markdown files, 345 full-
+  product MCP tools (100 browser-only), 17 examples, and 22 public modules.
+
+## Cleanup evidence
+
+- After all implementation, test, documentation, and coverage gates passed,
+  `/tmp/glass-151-focused` was verified as a real directory with no active
+  Cargo/Rust consumer and no open handles, then removed with bounded,
+  same-filesystem `find -P /tmp/glass-151-focused -xdev -depth -delete`.
+- The isolated target contained 6,261,346,304 bytes, 9,633 files, and 1,135
+  directories. Available `/tmp` space increased from 77,534,175,232 bytes to
+  83,795,509,248 bytes, and `/home/ubuntu/work/glass/target` remains absent.

@@ -1372,14 +1372,18 @@ outside the completed boundary. Focused/full-native/library, strict Clippy,
 rustdoc, two-crate, formatting, static documentation, and bounded cleanup gates
 are recorded in the task; remote CI remains pending because the checkout is
 local-only.
-The next dependency-ordered `native-engine-163` slice is designed and recorded
-in `docs/plan/tasks/native-engine-163.md`. It will extend the private deferred
-color path to `background-color: currentColor`, resolving against the element's
-local or inherited `color` only at computed-style construction while projecting
-the existing concrete public fill value. `color: currentColor`, gradients,
-images, system colors, color spaces, percentages, CSS-wide reset machinery,
-and browser-wide color conformance remain outside the planned boundary; no
-implementation or completion claim is made yet.
+The completed dependency-ordered `native-engine-163` slice is recorded in
+`docs/plan/tasks/native-engine-163.md`; design is `764e0c86` and implementation
+is `7a406855`. It extends the private deferred-color path to
+`background-color: currentColor`, resolving against the element's local or
+inherited `color` only at computed-style construction while projecting the
+existing concrete public fill value. `color: currentColor`, gradients, images,
+system colors, color spaces, percentages, CSS-wide reset machinery, and
+browser-wide color conformance remain outside the completed boundary.
+Focused/full-native/library, strict Clippy, rustdoc, two-crate, package,
+formatting, static documentation, workspace all-target/all-feature, and bounded
+cleanup gates passed locally; exact evidence is recorded in the task. Remote CI
+remains pending because the checkout is local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2131,13 +2135,13 @@ visual stacking.
 | `native-engine-160` | completed bounded complete `Npx none color` values for `border` and physical border shorthands, preserving private declared width/color candidates while projecting none style through the existing private sentinel and keeping public/artifact schemas unchanged; focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, static documentation, and bounded cleanup gates passed locally | `native-engine-159` | arbitrary omitted-component defaults, other CSS-wide reset keywords, logical sides, table layout/conflict resolution, `currentColor`, gradients, border-image, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
 | `native-engine-161` | completed standalone physical `border-color` and physical color-longhand `currentColor` substitution through private declaration state, resolved from the existing local/inherited element color while preserving public/artifact schemas; focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, static documentation, and bounded cleanup gates passed locally | `native-engine-160` | complete border-shorthand `currentColor`, arbitrary omitted defaults, CSS-wide reset machinery, logical sides, gradients, system colors, color spaces, percentages, animation, multiple origins, `!important` inversion, table conflict resolution, and browser-wide CSS color/border conformance |
 | `native-engine-162` | completed complete physical `Npx <style> currentColor` values for painted, `none`, and `hidden` border shorthand forms through private deferred-color declaration state, preserving concrete public/artifact schemas; focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, static documentation, and bounded cleanup gates passed locally | `native-engine-161` | omitted width/style defaults, CSS-wide reset machinery, logical sides, gradients, system colors, color spaces, percentages, animation, multiple origins, `!important` inversion, collapsed-table conflict resolution, and browser-wide CSS color/border conformance |
-| `native-engine-163` | planned bounded `background-color: currentColor` substitution through private deferred-color declaration state, resolved from the local or inherited `color` owner at computed-style construction while preserving concrete public/artifact schemas | `native-engine-162` | `color: currentColor`, gradients, images, system colors, color spaces, percentages, CSS-wide reset machinery, multiple origins, animation, and browser-wide CSS color conformance |
+| `native-engine-163` | completed bounded `background-color: currentColor` substitution through private deferred-color declaration state, resolved from the local or inherited `color` owner at computed-style construction while preserving concrete public/artifact schemas; focused/full-native/library, strict Clippy, rustdoc, two-crate, package, formatting, static documentation, workspace all-target/all-feature, and bounded cleanup gates passed locally | `native-engine-162` | `color: currentColor`, gradients, images, system colors, color spaces, percentages, CSS-wide reset machinery, multiple origins, animation, and browser-wide CSS color conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-162.md` is the latest completed task;
-`docs/plan/tasks/native-engine-161.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-163.md` is the latest completed task;
+`docs/plan/tasks/native-engine-162.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-159.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-158.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-157.md` is the preceding completed task;

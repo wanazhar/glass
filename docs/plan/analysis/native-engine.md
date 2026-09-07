@@ -1340,6 +1340,15 @@ outside the bounded boundary. Focused/full-native/library, strict Clippy,
 rustdoc, two-crate, formatting, and static documentation gates passed locally;
 exact target cleanup is recorded in the task. Remote CI remains pending
 because the branch is local-only.
+The next docs-first slice is `native-engine-160`, recorded in
+`docs/plan/tasks/native-engine-160.md` and dependent on `native-engine-159`.
+It is planned to accept bounded complete `Npx none color` values for the
+complete and physical border shorthands, carrying declared width/color through
+private component candidates while projecting only the existing private
+`NativeBorderStyleValue::None` sentinel. Current non-table composition will
+remain no-paint/no-side and public/artifact schemas will remain unchanged.
+Implementation and certification are not yet claimed; the design checkpoint
+will be pinned after this docs-first record is committed.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2088,10 +2097,15 @@ visual stacking.
 | bounded complete border hidden | completed bounded complete `Npx hidden color` support for complete and physical border shorthands through a private complete-hidden declaration that carries declared width/color while projecting hidden style | retaining width/color privately preserves future table-conflict inputs, but current non-table composition suppresses the side and the public paint enum remains unchanged; no arbitrary omitted defaults or full table model | parse exact complete hidden values, project width/color at declaration order and hidden style through independent streams, preserve omitted hidden/none behavior, and verify private/public separation, rollback, invalid preservation, no-side current artifacts, and unchanged schemas; focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, and static documentation gates passed locally |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
+| `native-engine-160` | planned bounded complete `Npx none color` values for `border` and physical border shorthands, preserving private declared width/color candidates while projecting none style through the existing private sentinel and keeping public/artifact schemas unchanged | `native-engine-159` | implementation, arbitrary omitted-component defaults, other CSS-wide reset keywords, logical sides, table layout/conflict resolution, `currentColor`, gradients, border-image, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
+
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-156.md` is the latest completed task;
+`docs/plan/tasks/native-engine-159.md` is the latest completed task;
+`docs/plan/tasks/native-engine-158.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-157.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-156.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-155.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-154.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-153.md` is the preceding completed task;
@@ -2197,10 +2211,18 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
-`docs/plan/tasks/native-engine-156.md`: the design is `13c8e90f` and the
-implementation is `5270d013`; synchronized documentation, static truth, and
+`docs/plan/tasks/native-engine-159.md`: the design is `bdbdb208` and the
+implementation is `329b3cfb`; synchronized documentation, static truth, and
 exact isolated-target cleanup evidence are recorded in the task file and the
-current local documentation checkpoint. The preceding 155 checkpoint remains
+current local documentation checkpoint. The preceding 158 checkpoint remains
+recorded in `docs/plan/tasks/native-engine-158.md` with design `6041a479`,
+implementation `f04623fc`, and documentation/cleanup closeout `e885332c`. The
+preceding 157 checkpoint remains recorded in
+`docs/plan/tasks/native-engine-157.md` with design `ab9d6628`, implementation
+`fb2c56a2`, and documentation/cleanup closeout `30ed10ca`. The preceding 156
+checkpoint remains recorded in `docs/plan/tasks/native-engine-156.md` with
+design `13c8e90f`, implementation `5270d013`, and documentation/cleanup
+closeout `e7e744b9`. The preceding 155 checkpoint remains
 recorded in `docs/plan/tasks/native-engine-155.md` with design `37126fa1`,
 implementation `2b07f109`, and documentation/cleanup closeout `4e766f29`. The
 preceding 154 checkpoint remains

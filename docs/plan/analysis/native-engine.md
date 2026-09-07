@@ -2267,8 +2267,6 @@ visual stacking.
 The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-172.md` is the latest completed task;
 `docs/plan/tasks/native-engine-171.md` is the preceding completed task;
-no subsequent native-engine task is selected in this checkout yet;
-`docs/plan/tasks/native-engine-172.md` is the next planned task;
 `docs/plan/tasks/native-engine-169.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-168.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-167.md` is the preceding completed task;
@@ -2390,11 +2388,23 @@ adds the bounded physical `border-radius` CSS-wide keyword family, carrying
 only effective parent radii for explicit `inherit` and resolving reset/omission
 to the default zero-corner fallback while preserving concrete expansion,
 `revert-layer`, rounded geometry, and all artifact consumers. Focused/full
-native/library tests pass locally; strict Clippy, warning-denied rustdoc,
-paired `glass-dev` check/build, package dependency check, static validators,
-workspace all-target/all-feature replay, and exact cleanup evidence remain to
-be recorded in the task. The plain `glass-dev` package verification remains a
-registry API mismatch; the patched local-release archive is exact.
+native/library tests passed locally: focused parser/cascade 4/4, focused
+consumer 1/1, full native integration 210/210, and feature-enabled
+`glass-browser` library 974 passed with 1 ignored. Strict Clippy,
+warning-denied rustdoc, paired `glass-dev` check/build, package dependency
+check, static validators, workspace all-target/all-feature replay, and exact
+cleanup gates also passed. The workspace replay had 975 library tests passed
+with 1 ignored, 210 native integration tests, 365 `glass-dev` tests, and all
+auxiliary targets. The plain `glass-dev` package verification remains a
+registry API mismatch; the patched local-release archive is exact. Static
+truth is 586 Markdown documents, 83 current documents, 57 previous-version
+hits, 675 semantic audit hits, and 0 current-claim failures; coverage is 586
+Markdown/345 full-product MCP tools/100 browser-only tools/17 examples/22
+public modules; TUI 15/63; depth 93/19; reliability 6/4; adapters 5; Web IR
+8/8/11; and release-documentation unit tests 9/9. Exact cleanup removed
+14,944,329,455 measured bytes and left 82,336,038,912 bytes free. No remote
+CI, push, release, tag, registry publication, browser-parity,
+security-boundary, or promotion claim is made.
 The preceding 169 checkpoint remains recorded in
 `docs/plan/tasks/native-engine-169.md` with design `b88177dc`, implementation
 `4d9e6979`, test-fixture corrections `a0e77c84` and `801f7b19`, synchronized

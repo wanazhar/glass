@@ -1274,6 +1274,149 @@ fn native_physical_border_color_important_priority_reaches_border_artifacts() {
 }
 
 #[test]
+fn native_physical_border_width_important_priority_reaches_border_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            .box { display:block;width:16px;height:8px;border:2px solid black; }
+            @layer base {
+                #early { border-width:1px !important; }
+                #rollback { border-width:1px !important; }
+                #rollback { border-width:revert-layer !important; }
+                #normal { border-width:1px; }
+                #mixed { border-top-width:1px !important; }
+                #sides { border-width:1px !important;border-top-width:2px !important;border-right-width:3px !important; }
+                #invalid { border-width:1px !important;border-width:invalid !important; }
+            }
+            @layer theme {
+                #early { border-width:2px !important; }
+                #rollback { border-width:3px !important; }
+                #normal { border-width:2px; }
+                #sides { border-width:4px !important; }
+            }
+            #early { border-width:3px !important; }
+            #normal { border-width:3px; }
+            #mixed { border-width:4px; }
+            #sides { border-width:5px !important; }
+            #invalid { border-width:5px; }
+        </style>
+        <div id='early' class='box' role='button'>Early</div>
+        <div id='rollback' class='box' role='button'>Rollback</div>
+        <div id='normal' class='box' role='button'>Normal</div>
+        <div id='mixed' class='box' role='button'>Mixed</div>
+        <div id='sides' class='box' role='button'>Sides</div>
+        <div id='invalid' class='box' role='button'>Invalid</div>
+        <div id='inline' class='box' role='button' style='border-width:4px !important'>Inline</div>
+        <div id='width-only' style='display:block;width:8px;height:6px;border-width:3px !important'>Only</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 160,
+        device_scale_factor_milli: 1000,
+    };
+    let early = document.resolve_target("id=early").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let sides = document.resolve_target("id=sides").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let width_only = document.resolve_target("id=width-only").unwrap();
+    let targets = [early, rollback, normal, mixed, sides, invalid, inline];
+    let layout = document.layout(viewport).unwrap();
+    for (node_id, (expected_width, expected_height)) in [
+        (early, (18, 10)),
+        (rollback, (22, 14)),
+        (normal, (22, 14)),
+        (mixed, (24, 13)),
+        (sides, (20, 11)),
+        (invalid, (18, 10)),
+        (inline, (24, 16)),
+    ] {
+        let rectangle = layout.box_for(node_id).expect("border-width layout box");
+        assert_eq!(rectangle.width, expected_width);
+        assert_eq!(rectangle.height, expected_height);
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 3).into(), (rectangle.y + 3).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+    let width_only_box = layout.box_for(width_only).expect("width-only layout box");
+    assert_eq!(width_only_box.width, 8);
+    assert_eq!(width_only_box.height, 6);
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    for (node_id, expected_widths) in [
+        (early, [1, 1, 1, 1]),
+        (rollback, [3, 3, 3, 3]),
+        (normal, [3, 3, 3, 3]),
+        (mixed, [1, 4, 4, 4]),
+        (sides, [2, 3, 1, 1]),
+        (invalid, [1, 1, 1, 1]),
+        (inline, [4, 4, 4, 4]),
+    ] {
+        let borders = border_for(node_id).expect("border-width command");
+        assert_eq!(
+            [
+                borders.top.width,
+                borders.right.width,
+                borders.bottom.width,
+                borders.left.width,
+            ],
+            expected_widths,
+            "border widths for {node_id:?}"
+        );
+        assert_eq!(
+            [
+                borders.top.color,
+                borders.right.color,
+                borders.bottom.color,
+                borders.left.color,
+            ],
+            [NativeColor::BLACK; 4]
+        );
+        assert_eq!(borders.top.style, NativeBorderStyle::Solid);
+    }
+    assert!(border_for(width_only).is_none());
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in targets.windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-width"
+    }));
+    let early_box = layout.box_for(early).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(early_box.x + 10, early_box.y),
+        Some([0, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_logical_border_color_important_priority_reaches_projected_border_artifacts() {
     let document = NativeDocument::parse(
         r#"<style>

@@ -219,8 +219,15 @@ source-behavior reference.
   component families. One- or two-value block and inline component pairs map
   to logical start/end; block sides map to physical top/bottom, while inline
   sides map to physical left/right for `ltr` and right/left for `rtl` through
-  the resolved inherited `direction`. Complete logical shorthands, CSS-wide
-  keywords, `currentColor`, bounded named-layer and unlayered `revert-layer`,
+  the resolved inherited `direction`. The six supported logical border-width
+  declarations also accept a terminal
+  case-insensitive `!important` marker: important logical widths outrank normal
+  widths, use earliest-named-layer priority inside the bounded author-important
+  partition, preserve per-side `revert-layer`, and carry that partition through
+  resolved `ltr`/`rtl` projection; complete/side border shorthands and logical
+  border style remain normal-only for this priority slice. Complete logical
+  shorthands, CSS-wide keywords, `currentColor`, bounded named-layer and
+  unlayered `revert-layer`,
   physical/logical precedence, and component composition reuse the existing
   physical border streams and box-model, display-list, capture, raster,
   point-hit, and semantic/source-order owners. Vertical writing modes, logical

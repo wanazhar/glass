@@ -1584,14 +1584,31 @@ gradients, images, system colors, color spaces, percentages, custom-property
 graphs, animation, and browser-wide background conformance remain outside the
 completed boundary. Remote CI remains pending because the branch is local-only.
 
-The next dependency-ordered [native-engine-168](tasks/native-engine-168.md)
+The completed dependency-ordered [native-engine-168](tasks/native-engine-168.md)
+slice is implemented at `4521f151` from design `0bb67e8b`; synchronized
+product documentation is `2184d98`. It adds exact case-insensitive `inherit`,
+`unset`, `initial`, and one-author-origin `revert` handling to local
+`text-decoration-color`, with only explicit `inherit` copying the parent's
+effective concrete decoration color and reset forms resolving to the current
+element color. Omission remains the public `None`/glyph-color fallback while
+`currentColor`, `revert-layer`, separate glyph/line paint, and all text artifact
+owners remain unchanged. Focused/full-native/library, strict Clippy, rustdoc,
+two-crate, package, formatting, static documentation, workspace
+all-target/all-feature, and bounded cleanup gates passed locally; exact
+evidence is recorded in the task. Multiple origins, `!important` inversion,
+gradients, images, system colors, color spaces, percentages, custom-property
+graphs, animation, and browser-wide text-decoration conformance remain outside
+the completed boundary. Remote CI remains pending because the branch is
+local-only.
+
+The next dependency-ordered [native-engine-169](tasks/native-engine-169.md)
 slice is designed but not implemented. It will add bounded case-insensitive
-`inherit`, `unset`, `initial`, and one-author-origin `revert` to local
-`text-decoration-color`, copying a parent's effective concrete decoration
-color only for explicit `inherit` and resolving the other reset forms to the
-current element color. It preserves omitted `None`, `currentColor`,
-`revert-layer`, separate glyph/line paint, and all text artifact owners; no
-implementation or completion claim is made yet.
+`inherit`, `unset`, `initial`, and one-author-origin `revert` to local physical
+`border-color` and its four physical color longhands, copying a parent's
+effective per-side color only for explicit `inherit` and resolving reset forms
+to the current element color. It preserves omitted black fallback,
+`currentColor`, `revert-layer`, width/style composition, border geometry, and
+all artifact owners; no implementation or completion claim is made yet.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

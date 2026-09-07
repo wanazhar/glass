@@ -1284,14 +1284,30 @@ gradients, images, system colors, color spaces, percentages, custom-property
 graphs, animation, and browser-wide background conformance remain outside the
 completed boundary. Remote CI remains pending because the checkout is
 local-only.
-The next dependency-ordered `native-engine-168` slice is designed and recorded
-in `docs/plan/tasks/native-engine-168.md`. It will add bounded case-insensitive
-`inherit`, `unset`, `initial`, and one-author-origin `revert` to local
-`text-decoration-color`, copying a parent's effective concrete decoration
-color only for explicit `inherit` and resolving the other reset forms to the
-current element color. It preserves omitted `None`, `currentColor`,
-`revert-layer`, separate glyph/line paint, and all text artifact owners; no
-implementation or completion claim is made yet.
+The completed dependency-ordered `native-engine-168` slice is recorded in
+`docs/plan/tasks/native-engine-168.md`; design is `0bb67e8b`, implementation is
+`4521f151`, and synchronized current product documentation is `2184d98`. It
+extends local `text-decoration-color` with exact case-insensitive `inherit`,
+`unset`, `initial`, and one-author-origin `revert`, copying only the parent's
+effective concrete decoration color for explicit `inherit` and resolving reset
+forms to the current element color. Omission remains the public `None` and
+glyph-color fallback; `currentColor`, `revert-layer`, separate glyph/line
+paint, and all text artifact owners remain intact. Focused/full-native/library,
+strict Clippy, rustdoc, two-crate, package, formatting, static documentation,
+workspace all-target/all-feature, and bounded cleanup gates passed locally;
+exact evidence is recorded in the task. Multiple origins, `!important`
+inversion, gradients, images, system colors, color spaces, percentages,
+custom-property graphs, animation, and browser-wide text-decoration
+conformance remain outside the completed boundary. Remote CI remains pending
+because the checkout is local-only.
+The next dependency-ordered `native-engine-169` slice is designed and recorded
+in `docs/plan/tasks/native-engine-169.md`. It will add the same bounded
+case-insensitive CSS-wide family to local physical `border-color` and its
+four physical color longhands, with only explicit `inherit` copying a parent's
+effective per-side color and reset forms resolving to the current element
+color. It preserves omitted black side fallback, `currentColor`,
+`revert-layer`, width/style composition, border geometry, and all artifact
+owners; no implementation or completion claim is made yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

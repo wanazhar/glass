@@ -33,6 +33,7 @@ bounded-local-text-geometry-revert-layer,
 bounded-local-dimension-revert-layer,
 bounded-local-box-model-revert-layer,
 bounded-paint-color-revert-layer,
+bounded-inherited-color-current-color,
 bounded-overflow-revert-layer,
 bounded-border-radius-revert-layer,
 bounded-display-visibility-revert-layer,
@@ -103,7 +104,9 @@ bounded case-insensitive 15-layer/unlayered `white-space: revert-layer`
 rollback with five-mode inherited/root fallback, and
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
-text paint, bounded fixed-cell `text-decoration:none|underline|overline|line-through`
+text paint, bounded inherited `color` literals/alpha with case-insensitive
+`currentColor` resolution from inherited color or the bounded black fallback,
+bounded fixed-cell `text-decoration:none|underline|overline|line-through`
 paint including distinct shorthand combinations, bounded inherited
 `text-decoration-style:solid|dashed|dotted|double|wavy` presentation, where
 `double` paints two thickness-preserving solid bands separated by one pixel and
@@ -1232,14 +1235,27 @@ task. Gradients, images, system colors, color spaces, percentages, animations,
 multiple origins, `color: currentColor`, and browser-wide text-color
 conformance remain outside the completed boundary. Remote CI remains pending
 because the checkout is local-only.
-The next dependency-ordered `native-engine-165` slice is designed and recorded
-in `docs/plan/tasks/native-engine-165.md`. It will extend the private color
-owner to local `color: currentColor`, resolving the self-reference from the
-already-computed inherited color or bounded initial black fallback while
-preserving the optional public color value and all existing paint consumers.
-Gradients, images, system colors, color spaces, percentages, custom-property
-graphs, CSS-wide reset machinery beyond the existing `revert-layer`, multiple
-origins, animation, and browser-wide color conformance remain outside the
+The completed dependency-ordered `native-engine-165` slice is recorded in
+`docs/plan/tasks/native-engine-165.md`; design is `75544c39`, implementation is
+`f7b5fd4e`, and synchronized product documentation is `01438316`. It extends
+the private color owner to local `color: currentColor`, resolving the
+self-reference from the already-computed inherited color or bounded initial
+black fallback while preserving the optional public color value and all
+existing paint consumers. Focused/full-native/library, strict Clippy, rustdoc,
+two-crate, package, formatting, static documentation, workspace
+all-target/all-feature, and bounded cleanup gates passed locally; exact
+evidence and cleanup are recorded in the task. Gradients, images, system
+colors, color spaces, percentages, custom-property graphs, CSS-wide reset
+machinery beyond the existing `revert-layer`, multiple origins, animation,
+and browser-wide color conformance remain outside the completed boundary.
+Remote CI remains pending because the checkout is local-only.
+The next dependency-ordered `native-engine-166` slice is designed and recorded
+in `docs/plan/tasks/native-engine-166.md`. It will add bounded case-insensitive
+`inherit`, `unset`, `initial`, and one-author-origin `revert` handling to the
+inherited `color` owner while preserving the concrete public value and all
+current-color paint consumers. Multiple origins, `!important` inversion,
+gradients, images, system colors, color spaces, percentages, custom-property
+graphs, animation, and browser-wide color conformance remain outside the
 planned boundary; no implementation or completion claim is made yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

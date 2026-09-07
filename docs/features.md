@@ -77,14 +77,20 @@ source-behavior reference.
   rollback for the one-to-four-value integer shorthand, preserving the
   zero-corner fallback and existing rounded layout, fill, border, point-hit,
   capture, raster, overflow, and semantic/source-order owners; elliptical,
-  percentage, corner-longhand, nested-clip, anti-aliasing, multiple-origin,
-  and browser-wide border-radius conformance remain outside the boundary,
+  percentage, logical corner longhands, nested-clip, anti-aliasing,
+  multiple-origin, and browser-wide border-radius conformance remain outside
+  the boundary,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or
   zero-width parents; reset forms resolve to zero corners and ordinary
   omission remains zero. Mixed CSS-wide/concrete and slash-separated radius
-  forms remain unsupported,
+  forms remain unsupported. Physical circular corner longhands
+  `border-top-left-radius`, `border-top-right-radius`,
+  `border-bottom-right-radius`, and `border-bottom-left-radius` accept one
+  bounded integer-pixel value or the same standalone CSS-wide keywords and
+  compose with the shorthand through per-corner source order and
+  `revert-layer`; elliptical and percentage corner values remain unsupported,
   plus bounded case-insensitive 15-layer/unlayered local
   `opacity:revert-layer` rollback for the existing local 8-bit opacity owner,
   preserving the full-opacity (`255`) fallback, reduced-opacity group markers,
@@ -494,14 +500,19 @@ projection, and point hit-testing,
   rollback for the one-to-four-value integer shorthand with a zero-corner
   fallback and shared rounded layout, fill, border, point-hit, capture, raster,
   overflow, and semantic/source-order owners; elliptical, percentage,
-  corner-longhand, nested-clip, anti-aliasing, multiple-origin, and browser-wide
-  border-radius conformance remain outside the boundary,
+  logical corner longhands, nested-clip, anti-aliasing, multiple-origin, and
+  browser-wide border-radius conformance remain outside the boundary,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or
   zero-width parents; reset forms resolve to zero corners and ordinary
   omission remains zero. Mixed CSS-wide/concrete and slash-separated radius
-  forms remain unsupported,
+  forms remain unsupported. Physical circular corner longhands
+  `border-top-left-radius`, `border-top-right-radius`,
+  `border-bottom-right-radius`, and `border-bottom-left-radius` accept one
+  bounded integer-pixel value or the same standalone CSS-wide keywords and
+  compose with the shorthand through per-corner source order and
+  `revert-layer`; elliptical and percentage corner values remain unsupported,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the complete physical `border`, `border-top`,
   `border-right`, `border-bottom`, and `border-left` shorthands: explicit

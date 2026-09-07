@@ -1682,15 +1682,19 @@ full-native/library, strict Clippy, warning-denied rustdoc, paired-crate,
 formatting, and remaining local certification evidence is recorded in the task;
 remote CI remains pending because the checkout is local-only.
 
-The next dependency-ordered [native-engine-175](tasks/native-engine-175.md)
-slice is planned for the four physical `border-radius` corner longhands. It
-will use private per-corner candidate streams so the existing shorthand,
-corner-longhand, CSS-wide, `revert-layer`, source-order, and inherited-fallback
-contracts resolve before the unchanged rounded layout, display, capture,
-raster, point-hit, and semantic owners. Logical corner names,
-writing-mode-dependent mapping, percentages, elliptical radii, and browser
-corner fidelity remain outside the planned boundary. No implementation or
-remote-CI claim is made yet.
+The completed dependency-ordered [native-engine-175](tasks/native-engine-175.md)
+slice is implemented at `2b082ddf`, with the resolver/test-shape correction at
+`e6f3259d`. It adds the four physical `border-radius` corner longhands through
+private per-corner candidate streams so shorthand, corner-longhand, CSS-wide,
+`revert-layer`, source-order, and inherited-fallback contracts resolve before
+the unchanged rounded layout, display, capture, raster, point-hit, and
+semantic owners. Focused/full-native/library, strict Clippy, warning-denied
+rustdoc, paired-crate check/build, packaging, static documentation, workspace
+all-target/all-feature, security/fuzz, and formatting gates pass locally;
+exact evidence and bounded cleanup are recorded in the task. Logical corner
+names, writing-mode-dependent mapping, percentages, elliptical radii, and
+browser corner fidelity remain outside the completed boundary. Remote CI
+remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

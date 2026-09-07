@@ -1388,15 +1388,19 @@ boundary. Focused/full-native/library, strict Clippy, warning-denied rustdoc,
 paired-crate check/build, and formatting gates pass locally; package, static,
 workspace, and cleanup evidence is recorded in the task. Remote CI remains
 pending because the checkout is local-only.
-The dependency-ordered `native-engine-175` slice is planned in
-`docs/plan/tasks/native-engine-175.md`. It will add the four physical
+The completed dependency-ordered `native-engine-175` slice is recorded in
+`docs/plan/tasks/native-engine-175.md`; implementation is `2b082ddf`, with the
+resolver/test-shape correction at `e6f3259d`. It adds the four physical
 `border-radius` corner longhands through private per-corner candidate streams,
 preserving shorthand/longhand source order, bounded CSS-wide values,
 `revert-layer`, and the existing rounded layout/display/capture/raster/
-point-hit/semantic owners. Logical corner names, writing-mode-dependent
-mapping, percentages, elliptical radii, and browser corner fidelity remain
-outside the planned boundary. No implementation, local certification, or
-remote-CI claim is made yet.
+point-hit/semantic owners. Focused/full-native/library, strict Clippy,
+warning-denied rustdoc, paired-crate check/build, packaging, static
+documentation, workspace all-target/all-feature, security/fuzz, and formatting
+gates pass locally; exact evidence and bounded cleanup are recorded in the
+task. Logical corner names, writing-mode-dependent mapping, percentages,
+elliptical radii, and browser corner fidelity remain outside the completed
+boundary. Remote CI remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

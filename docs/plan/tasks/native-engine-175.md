@@ -1,7 +1,7 @@
 ---
 id: native-engine-175
 scope: glass-browser/native-engine/cascade-physical-border-radius-corner-longhands
-status: planned
+status: complete
 depends-on: [native-engine-174]
 ---
 
@@ -9,10 +9,10 @@ depends-on: [native-engine-174]
 
 ## Objective
 
-Add the four physical corner longhands to the native CSS surface:
+Adds the four physical corner longhands to the native CSS surface:
 `border-top-left-radius`, `border-top-right-radius`,
 `border-bottom-right-radius`, and `border-bottom-left-radius`. Each property
-will accept one bounded non-negative integer-pixel radius or one standalone
+accept one bounded non-negative integer-pixel radius or one standalone
 CSS-wide keyword, then feed the existing four-corner radius owner used by
 layout, display-list replay, rasterization, PNG capture, point hit testing,
 and semantics.
@@ -153,7 +153,49 @@ post-delete absence, and filesystem free-space delta.
 
 ## Evidence
 
-Pending implementation, local certification, documentation synchronization,
-issue update, and bounded regenerable-output cleanup. No remote CI, push,
-release, tag, registry-publication, browser-parity, security-boundary, or
-promotion claim is made while the checkout remains local-only.
+Implementation: `2b082ddf`; resolver/test-shape correction: `e6f3259d`.
+The implementation adds private per-corner cascade streams for the four
+physical circular radius longhands, preserves shorthand/longhand source order,
+and reuses the existing resolved `NativeBorderRadius` through layout, display,
+raster, PNG capture, point-hit, and semantic consumers. Public schemas,
+dependencies, feature defaults, layout algorithms, and the two-crate boundary
+are unchanged.
+
+Documentation/certification: current product documentation, the native-engine
+architecture record, plan history, analysis matrix, and issue #40 now describe
+the completed physical corner-longhand contract and its exclusions. The final
+documentation validator found 589 Markdown files, 83 current documents, 57
+previous-version hits, 684 semantic-audit hits, and zero current-claim
+failures.
+
+Passed local gates:
+
+- `cargo fmt --all -- --check` and `git diff --check`.
+- Locked native-feature check, parser/cascade unit coverage, and the focused
+  corner-longhand integration test in `/tmp/glass-175-focused`.
+- Full native integration: 213 passed; native-feature browser library: 979
+  passed, 1 ignored.
+- Workspace all-target/all-feature tests: browser library 980 passed, 1
+  ignored; native integration 213 passed; `glass-dev` library 365 passed;
+  browser smoke 18 passed; development-runtime 4 passed; TUI PTY 15 passed;
+  all other workspace targets passed with zero failures.
+- Strict affected-package and workspace Clippy, warning-denied affected and
+  workspace rustdoc, workspace all-target/all-feature check, and paired
+  locked `glass-dev` check/build.
+- Locked package flows for both crates; archives contained 196
+  (`glass-browser`) and 69 (`glass-dev`) entries. The packaged dependency
+  check resolved `glass-browser` exactly at `0.3.14`.
+- `cargo deny check`, `cargo audit`, and offline locked all-target fuzz check.
+  The configured audit policy reported four allowed warnings.
+- Version sync, feature parity, release documentation, documentation
+  coverage/depth, TUI shortcut inventory, reliability matrix, public read-only
+  adapters, and Web IR corpus checks. The observed counts were 0 current-claim
+  failures, 345 full-product MCP tools, 14 capabilities across 4 targets,
+  93 guides/19 contracts, 15/63 TUI markers, 6 scenarios across 4 targets,
+  5 adapters, and 8 fixtures/8 scenarios/11 categories.
+
+Cleanup and issue-update evidence will be appended after the exact task target
+and reports are reclaimed. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, and promotion claims are not
+made. The checkout remains local-only and issue #40 remains open for later
+dependency-ordered slices.

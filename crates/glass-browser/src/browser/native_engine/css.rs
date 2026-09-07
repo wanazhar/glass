@@ -57,16 +57,21 @@ impl NativeColor {
 enum NativeColorValue {
     Color(NativeColor),
     CurrentColor,
+    Inherit,
+    Unset,
+    Initial,
+    Revert,
 }
 
 impl NativeColorValue {
     const fn resolve(self, inherited: Option<NativeColor>) -> NativeColor {
         match self {
             Self::Color(color) => color,
-            Self::CurrentColor => match inherited {
+            Self::CurrentColor | Self::Inherit | Self::Unset | Self::Revert => match inherited {
                 Some(color) => color,
                 None => NativeColor::BLACK,
             },
+            Self::Initial => NativeColor::BLACK,
         }
     }
 }
@@ -5094,16 +5099,25 @@ fn parse_text_decoration_color(value: &str) -> Option<NativeTextDecorationColorD
 }
 
 fn parse_local_color_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeColorValue>> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("revert-layer") {
         return Some(LocalCascadeDeclaration::RevertLayer);
     }
-    if value.trim().eq_ignore_ascii_case("currentColor") {
-        return Some(LocalCascadeDeclaration::Value(
-            NativeColorValue::CurrentColor,
-        ));
-    }
-    parse_color(value)
-        .map(NativeColorValue::Color)
+    let keyword = if value.eq_ignore_ascii_case("currentColor") {
+        Some(NativeColorValue::CurrentColor)
+    } else if value.eq_ignore_ascii_case("inherit") {
+        Some(NativeColorValue::Inherit)
+    } else if value.eq_ignore_ascii_case("unset") {
+        Some(NativeColorValue::Unset)
+    } else if value.eq_ignore_ascii_case("initial") {
+        Some(NativeColorValue::Initial)
+    } else if value.eq_ignore_ascii_case("revert") {
+        Some(NativeColorValue::Revert)
+    } else {
+        None
+    };
+    keyword
+        .or_else(|| parse_color(value).map(NativeColorValue::Color))
         .map(LocalCascadeDeclaration::Value)
 }
 
@@ -6633,13 +6647,7 @@ mod tests {
     }
 
     #[test]
-    fn local_paint_color_parser_accepts_revert_layer_and_preserves_valid_values() {
-        let blue = NativeColor {
-            red: 0,
-            green: 0,
-            blue: u8::MAX,
-            alpha: u8::MAX,
-        };
+    fn local_paint_color_parser_accepts_css_wide_keywords_and_preserves_valid_values() {
         assert_eq!(
             parse_local_color_declaration("ReVeRt-LaYeR"),
             Some(LocalCascadeDeclaration::RevertLayer)
@@ -6658,9 +6666,6 @@ mod tests {
         for value in [
             "revert-layer red",
             "red revert-layer",
-            "inherit",
-            "unset",
-            "revert",
             "linear-gradient(red, blue)",
             "color(display-p3 1 0 0)",
         ] {
@@ -6672,14 +6677,30 @@ mod tests {
                 NativeColorValue::CurrentColor
             ))
         );
+        for (value, expected) in [
+            ("InHeRiT", NativeColorValue::Inherit),
+            ("UnSeT", NativeColorValue::Unset),
+            ("InItIaL", NativeColorValue::Initial),
+            ("ReVeRt", NativeColorValue::Revert),
+        ] {
+            assert_eq!(
+                parse_local_color_declaration(value),
+                Some(LocalCascadeDeclaration::Value(expected)),
+                "value={value}"
+            );
+        }
 
         let document = NativeDocument::parse(
-            "<style>#parent { color:green; } #current { color:currentColor; } #root { color:currentColor; }</style><div id='parent'><span id='current'>Current</span></div><div id='root'>Root</div>",
+            "<style>#parent { color:green; } #current { color:currentColor; } #inherit { color:inherit; } #unset { color:unset; } #revert { color:revert; } #initial { color:initial; } #root { color:currentColor; }</style><div id='parent'><span id='current'>Current</span><span id='inherit'>Inherit</span><span id='unset'>Unset</span><span id='revert'>Revert</span><span id='initial'>Initial</span></div><div id='root'>Root</div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let current = document.resolve_target("id=current").unwrap();
+        let inherit = document.resolve_target("id=inherit").unwrap();
+        let unset = document.resolve_target("id=unset").unwrap();
+        let revert = document.resolve_target("id=revert").unwrap();
+        let initial = document.resolve_target("id=initial").unwrap();
         let root = document.resolve_target("id=root").unwrap();
         let omitted_document = NativeDocument::parse(
             "<div id='omitted'>Omitted</div>",
@@ -6705,6 +6726,21 @@ mod tests {
                 alpha: u8::MAX,
             })
         );
+        for node_id in [inherit, unset, revert] {
+            assert_eq!(
+                document.computed_style_for_layout(node_id).color(),
+                Some(NativeColor {
+                    red: 0,
+                    green: 128,
+                    blue: 0,
+                    alpha: u8::MAX,
+                })
+            );
+        }
+        assert_eq!(
+            document.computed_style_for_layout(initial).color(),
+            Some(NativeColor::BLACK)
+        );
         assert_eq!(
             document.computed_style_for_layout(root).color(),
             Some(NativeColor::BLACK)
@@ -6727,9 +6763,7 @@ mod tests {
         );
         assert_eq!(
             declarations.color,
-            Some(LocalCascadeDeclaration::Value(NativeColorValue::Color(
-                blue
-            )))
+            Some(LocalCascadeDeclaration::Value(NativeColorValue::Inherit))
         );
         assert_eq!(
             parse_declarations("background-color: revert-layer").background_color,

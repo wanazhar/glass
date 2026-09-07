@@ -163,3 +163,13 @@ security/fuzz, repository-static, remote-CI, and release gates remain
 deferred until the dependency-ordered native-engine work reaches issue #40's
 final validation boundary. This record makes no remote CI, push, release,
 tag, registry-publication, browser-parity, or promotion claim.
+
+Cleanup evidence: after the slice-local gates completed, the exact isolated
+target `/tmp/glass-177-focused` measured 3,794,383,561 bytes across 7,639
+files and 879 directories. Eight exact task reports measured 193,011 bytes in
+total. The process/open-handle check found no Cargo, Rust, or task-target
+consumer; bounded deletion removed only those exact paths. Available
+filesystem bytes rose from 78,435,516,416 to 82,253,033,472, an observed
+delta of 3,817,517,056 bytes. The target and every named report are absent;
+source, repository targets, durable data, issue snapshots, and unrelated
+workloads were preserved.

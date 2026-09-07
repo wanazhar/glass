@@ -253,7 +253,13 @@ fallback, preserving shorthand/longhand precedence and the existing box-model
 inset, border display-list, capture, raster, point-hit, and semantic/source-order
 owners. Logical sides, border-image, gradients, other border styles, animation,
 multiple origins, and browser-wide CSS border conformance remain outside the
-boundary.
+boundary. The same native border owner also accepts bounded case-insensitive
+15-layer/unlayered `border-color`, `border-top-color`, `border-right-color`,
+`border-bottom-color`, and `border-left-color` values, with one-to-four-value
+physical shorthand expansion and independent per-side `revert-layer` rollback
+to lower colors or bounded black, while preserving border width/style and all
+existing box-model and artifact consumers. `currentColor`, gradients,
+border-image, and browser-wide border conformance remain outside the boundary.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and
@@ -282,8 +288,8 @@ The local paint-color surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `background-color` and inherited `color`,
 resolving through the existing `None`/parent-root fallbacks without changing
 fill/text display-list, clipping, opacity, capture, or raster owners.
-`currentColor`, gradients, system colors, border-color, percentages, color
-spaces, and multiple origins remain outside the boundary.
+`currentColor`, gradients, system colors, percentages, color spaces, and
+multiple origins remain outside the boundary.
 The local overflow surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `overflow`, `overflow-x`, and `overflow-y`,
 resolving through independent visible/no-clip fallbacks while preserving the

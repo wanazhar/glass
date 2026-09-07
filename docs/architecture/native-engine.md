@@ -1038,17 +1038,21 @@ integration/library tests, strict affected-package Clippy, feature rustdoc,
 formatting, and diff checks passed locally; final static documentation evidence
 is recorded in the task. Remote CI remains pending because the checkout is
 local-only.
-The next dependency-ordered 151 slice is design-ready in
-`docs/plan/tasks/native-engine-151.md`. It will add standalone,
-case-insensitive `border-color` and physical `border-top|right|bottom|left-color`
-with one-to-four-value expansion, independent private color candidates, and
-`revert-layer` rollback, while preserving the existing border width/style,
-zero-width, box-model, display-list, capture, raster, point-hit, and
-semantic/source-order owners. It remains planned until its implementation and
-local gates are complete; logical sides, standalone border-width/style,
-`currentColor`, gradients, border-image, animation, multiple origins,
-`!important` inversion, and browser-wide border conformance remain outside the
-boundary.
+The dependency-ordered 151 implementation is complete in `c26482b7` (design
+`4f23d85a`) and is recorded in `docs/plan/tasks/native-engine-151.md`. It adds
+standalone, case-insensitive `border-color` and physical
+`border-top-color|border-right-color|border-bottom-color|border-left-color`
+with one-to-four-value expansion, independent private per-side color
+candidates, same-block declaration order, and `revert-layer` rollback, while
+preserving the existing border width/style, zero-width, box-model,
+display-list, capture, raster, point-hit, and semantic/source-order owners.
+Logical sides, standalone border-width/style, `currentColor`, gradients,
+border-image, animation, multiple origins, `!important` inversion, and
+browser-wide border conformance remain outside the boundary. Focused parser/
+cascade and integration tests, full-native integration/library tests, strict
+Clippy, feature rustdoc, two-crate check/build, formatting, and static
+documentation gates are recorded in the task; remote CI remains pending
+because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

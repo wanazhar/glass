@@ -156,7 +156,13 @@ fallback, preserving shorthand/longhand precedence and the existing box-model
 inset, border display-list, capture, raster, point-hit, and semantic/source-order
 owners. Logical sides, border-image, gradients, other border styles, animation,
 multiple origins, and browser-wide CSS border conformance remain outside the
-boundary.
+boundary. The same native border owner also accepts bounded case-insensitive
+15-layer/unlayered `border-color`, `border-top-color`, `border-right-color`,
+`border-bottom-color`, and `border-left-color` values with one-to-four-value
+physical shorthand expansion and independent per-side `revert-layer` rollback
+to lower colors or bounded black, preserving border width/style and the
+existing box-model and artifact consumers; `currentColor`, gradients,
+border-image, and browser-wide border conformance remain outside the boundary.
 bounded local opacity subtree groups through transparent software layers,
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
@@ -164,8 +170,8 @@ text paint, plus bounded case-insensitive 15-layer/unlayered local
 `revert-layer` rollback for `background-color` and inherited `color`, preserving
 the existing `None`/parent-root fallbacks and fill/text display-list, clipping,
 opacity, capture, and raster owners; `currentColor`, gradients, system colors,
-border-color, percentages, color spaces, and multiple origins remain outside
-the boundary, bounded inherited fixed-cell
+percentages, color spaces, and multiple origins remain outside the boundary,
+bounded inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using
 the existing fixed palette and alpha grammar with separate glyph and line

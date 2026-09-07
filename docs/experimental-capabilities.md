@@ -178,7 +178,14 @@ zero-width/no-paint fallback, preserving shorthand/longhand precedence and
 the existing box-model inset, border display-list, capture, raster, point-hit,
 and semantic/source-order owners. Logical sides, border-image, gradients,
 other border styles, animation, multiple origins, and browser-wide CSS border
-conformance remain outside the boundary. It also provides side-specific
+conformance remain outside the boundary. The same owner also accepts bounded
+case-insensitive 15-layer/unlayered `border-color`, `border-top-color`,
+`border-right-color`, `border-bottom-color`, and `border-left-color` values,
+with one-to-four-value physical shorthand expansion and independent per-side
+`revert-layer` rollback to lower colors or bounded black, preserving border
+width/style and existing box-model and artifact consumers; `currentColor`,
+gradients, border-image, and browser-wide border conformance remain outside the
+boundary. It also provides side-specific
 solid/dashed/dotted-border paint,
 bounded physical circular border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and
@@ -193,8 +200,8 @@ bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback for
 `background-color` and inherited `color`, preserving the existing
 `None`/parent-root fallbacks and fill/text display-list, clipping, opacity,
 capture, and raster owners; `currentColor`, gradients, system colors,
-border-color, percentages, color spaces, and multiple origins remain outside
-the boundary, bounded
+percentages, color spaces, and multiple origins remain outside the boundary,
+bounded
 inherited fixed-cell `text-decoration:none|underline|overline|line-through`
 paint including distinct shorthand combinations, bounded local
 `text-decoration-color` using the existing fixed palette and alpha grammar

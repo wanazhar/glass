@@ -1,7 +1,7 @@
 ---
 id: native-engine-151
 scope: glass-browser/native-engine/cascade-border-color
-status: planned
+status: done
 depends-on: [native-engine-150]
 ---
 
@@ -134,8 +134,33 @@ The completed slice must cover:
 
 ## Implementation
 
-To be filled after the implementation checkpoint.
+Implemented in `c26482b7`. The parser now accepts the five bounded physical
+`border-color` names, expands valid one-to-four-value shorthands, preserves
+case-insensitive standalone `revert-layer`, and rejects mixed/CSS-wide/
+malformed forms through the existing typed diagnostic path. `NativeDeclarations`
+retains per-side declaration positions for both existing border values and the
+new color values. Computed style resolves an independent per-side color
+candidate stream, carries selected colors into the existing `NativeBorderSide`,
+and leaves width/style cascade, display-list, raster, capture, hit, and
+semantic/source-order owners unchanged.
 
 ## Evidence
 
-To be filled after local certification and bounded target cleanup.
+Local certification completed in the isolated regenerable target
+`/tmp/glass-151-focused`:
+
+- `CARGO_TARGET_DIR=/tmp/glass-151-focused cargo check -q -p glass-browser --features native-engine --tests --locked` passed.
+- Focused parser/cascade units: 2 passed, 961 filtered.
+- Focused integration: 1 passed, 188 filtered.
+- Full native integration: 189 passed, 0 failed.
+- Affected library with `RUST_MIN_STACK=16777216`: 962 passed, 1 ignored.
+- Strict affected-package Clippy with `-D warnings` passed.
+- Feature rustdoc with `RUSTDOCFLAGS=-Dwarnings` passed.
+- `CARGO_TARGET_DIR=/tmp/glass-151-focused cargo check -q -p glass-dev --locked` and
+  `CARGO_TARGET_DIR=/tmp/glass-151-focused cargo build -q -p glass-dev --locked`
+  passed.
+- `cargo fmt --all`, `git diff --check`, and the focused artifact assertions
+  passed; no public rollback keyword or unsupported diagnostic leaked from the
+  feature surface.
+- Final static documentation, coverage, and bounded-target cleanup evidence is
+  recorded below after the documentation checkpoint.

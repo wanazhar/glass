@@ -1221,16 +1221,19 @@ conformance remain outside the boundary. Focused, full-native,
 affected-library, strict Clippy, feature rustdoc, formatting, and static
 documentation gates passed locally; exact evidence and cleanup are recorded in
 the task. Remote CI remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-151` slice is design-ready in
-`docs/plan/tasks/native-engine-151.md`. It will add one-to-four-value physical
+The dependency-ordered `native-engine-151` implementation is complete in
+`c26482b7` (design `4f23d85a`) and is recorded in
+`docs/plan/tasks/native-engine-151.md`. It adds one-to-four-value physical
 `border-color` and physical color longhands through an independent private
-color stream, including case-insensitive `revert-layer`, while retaining the
-existing width/style, zero-width, box-model, border-artifact, capture, raster,
-point-hit, and semantic/source-order owners. It remains planned until local
-implementation and gates complete; standalone border-width/style, logical
-sides, `currentColor`, gradients, border-image, animation, multiple origins,
-`!important` inversion, and browser-wide border conformance remain outside the
-boundary.
+per-side color stream, including case-insensitive `revert-layer`, same-block
+declaration order, and bounded black fallback, while retaining the existing
+width/style, zero-width, box-model, border-artifact, capture, raster, point-hit,
+and semantic/source-order owners. Standalone border-width/style, logical sides,
+`currentColor`, gradients, border-image, animation, multiple origins,
+`!important` inversion, and browser-wide CSS border conformance remain outside
+the boundary. Local implementation and gates passed; exact evidence is
+recorded in the task and remote CI remains pending because the checkout is
+local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1526,7 +1529,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-148` | completed reuse of bounded named-layer priority and private rollback for local 8-bit `opacity:revert-layer`, preserving full-opacity fallback, reduced-opacity group/compositing consumers, and unchanged geometry/artifact owners | `native-engine-147` | other CSS-wide keywords, inherited opacity, stacking-context/blending parity, filters, animation, multiple origins, and browser-wide CSS opacity conformance |
 | `native-engine-149` | completed reuse of bounded named-layer priority and private rollback for local `display:revert-layer` and `visibility:revert-layer`, preserving normal-flow/visible fallbacks and existing hidden-subtree/artifact consumers | `native-engine-148` | other CSS-wide keywords, inherited visibility, display decomposition, formatting-context parity, table/ruby/flow-root details, animation, multiple origins, and browser-wide CSS display/visibility conformance |
 | `native-engine-150` | completed reuse of bounded named-layer priority and private per-side rollback for physical `border:revert-layer` and `border-top|right|bottom|left:revert-layer`, preserving zero-width/no-paint fallbacks and existing box-model/border-artifact consumers | `native-engine-149` | other CSS-wide keywords, logical sides, border-image, gradients, unsupported border styles, animation, multiple origins, and browser-wide CSS border conformance |
-| `native-engine-151` | planned physical `border-color` one-to-four-value expansion and `border-top|right|bottom|left-color` longhands with private per-side `revert-layer` color candidates, preserving independent width/style and border-artifact consumers | `native-engine-150` | other CSS-wide keywords, standalone border-width/style, logical sides, `currentColor`, gradients, border-image, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
+| `native-engine-151` | completed physical `border-color` one-to-four-value expansion and `border-top|right|bottom|left-color` longhands with private per-side `revert-layer` color candidates, same-block declaration order, and bounded black fallback, preserving independent width/style and border-artifact consumers | `native-engine-150` | other CSS-wide keywords, standalone border-width/style, logical sides, `currentColor`, gradients, border-image, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1960,7 +1963,7 @@ visual stacking.
 | bounded opacity rollback | completed extension of the proven layer rollback to the local quantized 8-bit `opacity` owner without changing layout, semantic, display-list, or raster schemas | one fixed candidate array adds bounded local cascade state; group-marker/compositing assertions broaden the artifact regression while full-opacity remains the explicit fallback; no inherited opacity, stacking-context/blending parity, filters, animation, multiple origins, or browser opacity parity | reuse the optional local resolver with a `255` fallback, preserve the existing quantization and reduced-opacity group owner, and test named/repeated/unlayered/inline rollback, invalid-later preservation, zero/full/reduced alpha, group replay, layout, hit testing, capture, and semantic/source order together; focused and full-native gates passed locally |
 | bounded display/visibility rollback | completed extension of the proven layer rollback to local `display` and `visibility` owners without changing public computed-style or artifact schemas | two fixed candidate arrays add bounded local cascade state; the hidden-subtree gate retains normal-flow/visible fallbacks and existing `display:none`, `visibility:hidden`, and `display:contents` behavior; no inherited visibility, display decomposition, formatting-context parity, table/ruby/flow-root details, animation, multiple origins, or browser display/visibility parity | reuse the generic local resolver with `display:auto`/visible fallbacks, keep display and visibility property-local, and test named/repeated/unlayered/inline rollback, invalid-later preservation, hidden subtree, contents descendants, layout, hit testing, capture, display list, raster, and semantic/source order together; focused and full-native gates passed locally |
 | bounded border rollback | completed extension of the proven layer rollback to the four physical `border` side owners without changing public computed-style or artifact schemas | four fixed side candidate arrays add bounded local cascade state; shorthand expansion and side-longhand precedence remain explicit while zero-width/no-paint fallback and existing box-model/paint owners stay unchanged; no logical sides, border-image, gradients, other border styles, animation, multiple origins, or browser border parity | reuse the generic local resolver with a zero-width/no-paint side fallback, preserve shorthand expansion and independent side ownership, and test named/repeated/unlayered/inline rollback, invalid-later preservation, geometry, border commands, capture, decoded raster, point hit testing, and semantic/source order together; focused and full-native gates passed locally |
-| bounded border-color rollback | planned extension of the physical border owner with one-to-four-value `border-color`, physical color longhands, and private per-side `revert-layer` candidates while keeping width/style and zero-width fallback independent | a second component stream and same-block declaration-position metadata add parser/cascade state; no standalone border-width/style, logical sides, `currentColor`, gradients, border-image, animation, multiple origins, `!important` inversion, or browser border parity | carry existing `border` colors into the private color stream, resolve color after width/style, preserve source order, and verify border geometry/display/raster/hit/semantic consumers together |
+| bounded border-color rollback | completed extension of the physical border owner with one-to-four-value `border-color`, physical color longhands, and private per-side `revert-layer` candidates while keeping width/style and zero-width fallback independent | a second component stream and same-block declaration-position metadata add parser/cascade state; no standalone border-width/style, logical sides, `currentColor`, gradients, border-image, animation, multiple origins, `!important` inversion, or browser border parity | carry existing `border` colors into the private color stream, resolve color after width/style, preserve source order, and verify border geometry/display/raster/hit/semantic consumers together; focused, full-native, library, strict, rustdoc, and two-crate gates passed locally |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
@@ -2067,12 +2070,12 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
-`docs/plan/tasks/native-engine-150.md`: the design is `27cf6c1a`, the
-implementation is `1fdbe75d`, documentation closeout is `25ff6235`, and
-cleanup evidence is `fa4fc85d`. Focused/full-native, affected-library,
-strict-Clippy, rustdoc, binary, formatting, documentation/release, and exact
-isolated-target cleanup evidence is recorded in the task file. Remote CI
-remains pending because the branch is local-only.
+`docs/plan/tasks/native-engine-151.md`: the design is `4f23d85a` and the
+implementation is `c26482b7`; documentation closeout and exact isolated-target
+cleanup evidence are recorded in the task file. Focused/full-native,
+affected-library, strict-Clippy, rustdoc, two-crate binary, formatting,
+documentation/release, and bounded cleanup gates remain local evidence.
+Remote CI remains pending because the branch is local-only.
 The completed preceding checkpoint is recorded for
 `docs/plan/tasks/native-engine-100.md`: the design is `2dae80fc` and the
 implementation is `3380978c`. Focused/full native, feature-library,

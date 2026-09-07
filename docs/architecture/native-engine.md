@@ -1068,16 +1068,23 @@ outside the boundary. Focused parser/cascade and integration tests, full-native
 integration/library tests, strict Clippy, feature rustdoc, two-crate
 check/build, formatting, and static documentation gates are recorded in the
 task; remote CI remains pending because the checkout is local-only.
-The next dependency-ordered 153 slice is design-ready in
-`docs/plan/tasks/native-engine-153.md`. It will add standalone,
-case-insensitive `border-style` and physical style longhands through
-one-to-four-value expansion, an independent private style stream, and
-`revert-layer` rollback, while preserving the existing width/color, zero-width,
-box-model, display-list, capture, raster, point-hit, and semantic/source-order
-owners. It remains planned until implementation and local gates complete;
-`none`, logical sides, `currentColor`, gradients, border-image, unsupported
-styles, animation, multiple origins, `!important` inversion, and browser-wide
-border conformance remain outside the boundary.
+The dependency-ordered 153 implementation is complete in `6169cabc` (design
+`77d81fdc`) and is recorded in `docs/plan/tasks/native-engine-153.md`. It adds
+standalone, case-insensitive `border-style` and physical
+`border-top-style|border-right-style|border-bottom-style|border-left-style`
+with one-to-four-value expansion, an independent private per-side style
+stream, same-block declaration order, and `revert-layer` rollback. Resolved
+width, style, and color components compose only after their independent
+resolution; width-only or style-only declarations cannot invent missing paint
+components. Existing zero-width/no-paint, box-model, display-list, capture,
+raster, point-hit, and semantic/source-order owners remain unchanged. `none`,
+logical sides, `currentColor`, gradients, border-image, unsupported styles,
+animation, multiple origins, `!important` inversion, and browser-wide border
+conformance remain outside the bounded surface. Focused parser/cascade and
+integration tests, full-native integration/library tests, strict Clippy,
+feature rustdoc, two-crate check/build, formatting, and static documentation
+gates are recorded in the task; remote CI remains pending because the checkout
+is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

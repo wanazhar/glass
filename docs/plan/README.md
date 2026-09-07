@@ -1391,14 +1391,18 @@ full-native, affected-library, strict Clippy, rustdoc, two-crate, formatting,
 and static local gates are recorded in the task; remote CI remains pending
 because the checkout is local-only.
 
-The next dependency-ordered [native-engine-153](tasks/native-engine-153.md)
-slice is design-ready. It will add bounded physical `border-style` and
-`border-top|right|bottom|left-style` shorthand/longhands with one-to-four-value
-expansion, an independent private style stream, and case-insensitive
-`revert-layer` rollback. Existing border width/color, zero-width/no-paint,
-box-model, display-list, capture, raster, point-hit, and semantic/source-order
-owners remain unchanged. The task is planned only; no implementation or local
-gate claim is made yet.
+The dependency-ordered [native-engine-153](tasks/native-engine-153.md)
+implementation is complete in `6169cabc` (design `77d81fdc`). It adds bounded
+physical `border-style` and `border-top|right|bottom|left-style`
+shorthand/longhands with one-to-four-value expansion, an independent private
+per-side style stream, same-block declaration order, and case-insensitive
+`revert-layer` rollback. Resolved width, style, and color components compose
+only after independent resolution; width-only or style-only declarations do
+not invent missing paint components. Existing zero-width/no-paint, box-model,
+display-list, capture, raster, point-hit, and semantic/source-order owners
+remain unchanged. The task records focused/full-native/library, strict Clippy,
+rustdoc, two-crate, formatting, static documentation, and bounded cleanup
+evidence; remote CI remains pending because the checkout is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

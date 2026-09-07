@@ -187,5 +187,13 @@ browser-parity, security-boundary, or promotion claim is made.
 
 ## Cleanup
 
-Pending exact-path regenerable-output cleanup after all Cargo processes and
-open-handle checks complete.
+After all Cargo processes and open handles exited, bounded exact-path cleanup
+removed `/tmp/glass-173-focused` (5,876,467,864 bytes),
+`/tmp/glass-173-package` (3,155,535 bytes),
+`/tmp/glass-173-workspace` (4,152,150,781 bytes),
+`/tmp/glass-173-release-documentation.json` (187,012 bytes), and
+`/tmp/glass-173-release-documentation-final.json` (187,012 bytes). The
+measured deletion total was 10,032,148,204 bytes. Final filesystem free
+space was 82,320,142,336 bytes. All five exact paths are absent; no
+Cargo/Rust process or open handle remains; and source, durable data,
+repository history, and unrelated workloads were not touched.

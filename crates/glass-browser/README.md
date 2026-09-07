@@ -332,7 +332,11 @@ fill/text display-list, clipping, opacity, capture, or raster owners.
 `background-color` also resolves case-insensitive `currentColor` from the
 element's local or inherited `color`, and local `color: currentColor` resolves
 from inherited color with a bounded black initial fallback without
-self-recursion. Gradients, system colors, percentages, color spaces, and
+self-recursion. Local `color` also accepts the case-insensitive CSS-wide
+`inherit`, `unset`, `initial`, and `revert` keywords: the inherited forms use
+the bounded parent-color/black-root fallback, while `initial` resets to black;
+omitted direct roots remain `None`. This is the native engine's one-author-
+origin model. Gradients, system colors, percentages, color spaces, and
 multiple origins remain outside the boundary.
 The local overflow surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `overflow`, `overflow-x`, and `overflow-y`,

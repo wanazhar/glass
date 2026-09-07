@@ -154,6 +154,14 @@ semantic/source-order owners; inherited visibility, display decomposition,
 formatting-context parity, table/ruby/flow-root details, animation, multiple
 origins, and browser-wide CSS display/visibility conformance remain outside
 the boundary,
+plus bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback
+for physical `border`, `border-top`, `border-right`, `border-bottom`, and
+`border-left` owners, resolving each side through lower concrete candidates or
+the existing zero-width/no-paint fallback while preserving shorthand/longhand
+precedence and the existing box-model inset, border display-list, capture,
+raster, point-hit, and semantic/source-order owners; logical sides,
+border-image, gradients, other border styles, animation, multiple origins, and
+browser-wide CSS border conformance remain outside the boundary,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

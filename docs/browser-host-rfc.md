@@ -148,6 +148,15 @@ semantic/source-order owners. Inherited visibility, display decomposition,
 formatting-context parity, table/ruby/flow-root details, animation, multiple
 origins, and browser-wide CSS display/visibility conformance remain outside
 the boundary.
+The native border surface also accepts bounded case-insensitive 15-layer/
+unlayered local `revert-layer` for the physical `border`, `border-top`,
+`border-right`, `border-bottom`, and `border-left` owners. Rollback resolves
+each side through lower concrete candidates or the existing zero-width/no-paint
+fallback, preserving shorthand/longhand precedence and the existing box-model
+inset, border display-list, capture, raster, point-hit, and semantic/source-order
+owners. Logical sides, border-image, gradients, other border styles, animation,
+multiple origins, and browser-wide CSS border conformance remain outside the
+boundary.
 bounded local opacity subtree groups through transparent software layers,
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and

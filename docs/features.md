@@ -159,9 +159,10 @@ source-behavior reference.
   15-layer/unlayered local `revert-layer` rollback for `background-color` and
   inherited `color`, preserving the existing `None`/parent-root fallbacks and
   fill/text display-list, clipping, opacity, capture, and raster owners;
-  `currentColor` remains outside the background and text-color surfaces, while
-  gradients, system colors, percentages, color spaces, and multiple origins
-  remain outside the boundary, bounded inherited
+  `background-color` also resolves case-insensitive `currentColor` from the
+  element's local or inherited `color`; `color: currentColor`, gradients, system
+  colors, percentages, color spaces, and multiple origins remain outside the
+  boundary, bounded inherited
   fixed-cell
   `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using

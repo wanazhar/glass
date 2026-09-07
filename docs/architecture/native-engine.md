@@ -54,6 +54,7 @@ bounded-cascade-layers/bounded-text-decoration-skip-spaces-revert-layer/
 bounded-text-decoration-skip-ink-revert-layer/
 bounded-text-decoration-color-revert-layer,
 bounded-text-decoration-color-current-color,
+bounded-text-decoration-color-css-wide-keywords,
 bounded-text-decoration-line-revert-layer,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
@@ -129,6 +130,7 @@ decreasing or increasing y, bounded
 local `text-decoration-color` literal/alpha values and case-insensitive
 `currentColor` resolution through the 15-layer registry with a separate
 glyph/decoration paint color and the existing `Option<NativeColor>` fallback,
+and bounded case-insensitive `inherit|unset|initial|revert` reset handling,
 bounded inherited
 `text-decoration-line` and `text-decoration` rollback through the same
 15-layer registry with their shared three-bit line-state owner and inherited
@@ -1267,14 +1269,29 @@ gradients, images, system colors, color spaces, percentages, custom-property
 graphs, animation, and browser-wide color conformance remain outside the
 completed boundary. Remote CI remains pending because the checkout is
 local-only.
-The next dependency-ordered `native-engine-167` slice is designed and recorded
-in `docs/plan/tasks/native-engine-167.md`. It will add the same bounded
-case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert`
-family to non-inherited `background-color`: only `inherit` may copy the
-parent's optional concrete fill, while the other reset forms resolve to the
-existing no-fill `None` fallback. It preserves `currentColor`,
-`revert-layer`, fill/clip/opacity/capture/raster/hit/semantic owners, and the
-two-crate boundary; no implementation or completion claim is made yet.
+The completed dependency-ordered `native-engine-167` slice is recorded in
+`docs/plan/tasks/native-engine-167.md`; design is
+`9e143200`, implementation is `1ae1f103`, and synchronized current product
+documentation is `debd6ab4`. It extends the private non-inherited background
+owner with exact case-insensitive `inherit`, `unset`, `initial`, and
+one-author-origin `revert`, carrying only the parent's optional concrete fill
+for explicit `inherit` and preserving no-fill `None` for reset forms and
+ordinary omission. Focused/full-native/library, strict Clippy, rustdoc,
+two-crate, package, formatting, static documentation, workspace
+all-target/all-feature, and bounded cleanup gates passed locally; exact
+evidence is recorded in the task. Multiple origins, `!important` inversion,
+gradients, images, system colors, color spaces, percentages, custom-property
+graphs, animation, and browser-wide background conformance remain outside the
+completed boundary. Remote CI remains pending because the checkout is
+local-only.
+The next dependency-ordered `native-engine-168` slice is designed and recorded
+in `docs/plan/tasks/native-engine-168.md`. It will add bounded case-insensitive
+`inherit`, `unset`, `initial`, and one-author-origin `revert` to local
+`text-decoration-color`, copying a parent's effective concrete decoration
+color only for explicit `inherit` and resolving the other reset forms to the
+current element color. It preserves omitted `None`, `currentColor`,
+`revert-layer`, separate glyph/line paint, and all text artifact owners; no
+implementation or completion claim is made yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

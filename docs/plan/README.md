@@ -1570,14 +1570,28 @@ gradients, images, system colors, color spaces, percentages, custom-property
 graphs, animation, and browser-wide color conformance remain outside the
 completed boundary. Remote CI remains pending because the branch is local-only.
 
-The next dependency-ordered [native-engine-167](tasks/native-engine-167.md)
-slice is designed but not implemented. It will add the same bounded
-case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert`
-family to non-inherited `background-color`: only `inherit` may copy the
-parent's optional concrete fill, while the other reset forms resolve to the
-existing no-fill `None` fallback. It preserves `currentColor`,
-`revert-layer`, fill/clip/opacity/capture/raster/hit/semantic owners, and the
-two-crate boundary; no implementation or completion claim is made yet.
+The completed dependency-ordered [native-engine-167](tasks/native-engine-167.md)
+slice is implemented at `1ae1f103` from design `9e143200`; synchronized
+product documentation is `debd6ab4`. It adds exact case-insensitive
+`inherit`, `unset`, `initial`, and one-author-origin `revert` handling to
+non-inherited `background-color`: only `inherit` copies the parent's optional
+concrete fill, while reset forms and omission preserve the existing no-fill
+`None` fallback. Focused/full-native/library, strict Clippy, rustdoc,
+two-crate, package, formatting, static documentation, workspace
+all-target/all-feature, and bounded cleanup gates passed locally; exact
+evidence is recorded in the task. Multiple origins, `!important` inversion,
+gradients, images, system colors, color spaces, percentages, custom-property
+graphs, animation, and browser-wide background conformance remain outside the
+completed boundary. Remote CI remains pending because the branch is local-only.
+
+The next dependency-ordered [native-engine-168](tasks/native-engine-168.md)
+slice is designed but not implemented. It will add bounded case-insensitive
+`inherit`, `unset`, `initial`, and one-author-origin `revert` to local
+`text-decoration-color`, copying a parent's effective concrete decoration
+color only for explicit `inherit` and resolving the other reset forms to the
+current element color. It preserves omitted `None`, `currentColor`,
+`revert-layer`, separate glyph/line paint, and all text artifact owners; no
+implementation or completion claim is made yet.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

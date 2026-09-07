@@ -349,6 +349,10 @@ enum NativeBorderDeclaration {
     },
     None,
     Hidden,
+    Inherit,
+    Unset,
+    Initial,
+    Revert,
 }
 
 impl NativeBorderSide {
@@ -3525,6 +3529,16 @@ fn apply_border_width_cascade(
             LocalCascadeDeclaration::Value(
                 NativeBorderDeclaration::None | NativeBorderDeclaration::Hidden,
             ) => None,
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::Inherit) => Some(
+                LocalCascadeDeclaration::Value(NativeBorderWidthValue::Inherit),
+            ),
+            LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::Unset
+                | NativeBorderDeclaration::Initial
+                | NativeBorderDeclaration::Revert,
+            ) => Some(LocalCascadeDeclaration::Value(
+                NativeBorderWidthValue::Width(0),
+            )),
             LocalCascadeDeclaration::RevertLayer => Some(LocalCascadeDeclaration::RevertLayer),
         });
         apply_local_cascade_declaration(
@@ -3579,6 +3593,14 @@ fn apply_border_style_cascade(
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::Hidden) => {
                 LocalCascadeDeclaration::Value(NativeBorderStyleValue::Hidden)
             }
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::Inherit) => {
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Inherit)
+            }
+            LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::Unset
+                | NativeBorderDeclaration::Initial
+                | NativeBorderDeclaration::Revert,
+            ) => LocalCascadeDeclaration::Value(NativeBorderStyleValue::None),
             LocalCascadeDeclaration::RevertLayer => LocalCascadeDeclaration::RevertLayer,
         });
         apply_local_cascade_declaration(
@@ -3642,6 +3664,16 @@ fn apply_border_color_cascade(
             LocalCascadeDeclaration::Value(
                 NativeBorderDeclaration::None | NativeBorderDeclaration::Hidden,
             ) => None,
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::Inherit) => Some(
+                LocalCascadeDeclaration::Value(NativeBorderColorValue::Inherit),
+            ),
+            LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::Unset
+                | NativeBorderDeclaration::Initial
+                | NativeBorderDeclaration::Revert,
+            ) => Some(LocalCascadeDeclaration::Value(
+                NativeBorderColorValue::CurrentColor,
+            )),
             LocalCascadeDeclaration::RevertLayer => Some(LocalCascadeDeclaration::RevertLayer),
         });
         apply_local_cascade_declaration(border_color, specificity, border_order, inline, candidate);
@@ -4940,18 +4972,29 @@ fn parse_complete_border(value: &str) -> Option<NativeBorderDeclaration> {
 fn parse_border_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeBorderDeclaration>> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("revert-layer") {
         return Some(LocalCascadeDeclaration::RevertLayer);
     }
-    if value.trim().eq_ignore_ascii_case("none") {
+    if value.eq_ignore_ascii_case("none") {
         return Some(LocalCascadeDeclaration::Value(
             NativeBorderDeclaration::None,
         ));
     }
-    if value.trim().eq_ignore_ascii_case("hidden") {
+    if value.eq_ignore_ascii_case("hidden") {
         return Some(LocalCascadeDeclaration::Value(
             NativeBorderDeclaration::Hidden,
         ));
+    }
+    for (keyword, declaration) in [
+        ("inherit", NativeBorderDeclaration::Inherit),
+        ("unset", NativeBorderDeclaration::Unset),
+        ("initial", NativeBorderDeclaration::Initial),
+        ("revert", NativeBorderDeclaration::Revert),
+    ] {
+        if value.eq_ignore_ascii_case(keyword) {
+            return Some(LocalCascadeDeclaration::Value(declaration));
+        }
     }
     parse_complete_border(value).map(LocalCascadeDeclaration::Value)
 }
@@ -7633,7 +7676,37 @@ mod tests {
                 )),
             ]
         );
-        assert_eq!(parse_border_declaration("revert"), None);
+        assert_eq!(
+            parse_border_declaration("ReVeRt"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::Revert
+            ))
+        );
+        for (value, declaration) in [
+            ("InHeRiT", NativeBorderDeclaration::Inherit),
+            ("UNSET", NativeBorderDeclaration::Unset),
+            ("initial", NativeBorderDeclaration::Initial),
+        ] {
+            assert_eq!(
+                parse_border_declaration(value),
+                Some(LocalCascadeDeclaration::Value(declaration)),
+                "value={value}"
+            );
+        }
+        assert_eq!(
+            parse_declarations("border: inherit; border: invalid").border,
+            [Some(LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::Inherit
+            )); 4]
+        );
+        for value in [
+            "inherit solid red",
+            "2px inherit red",
+            "2px solid inherit",
+            "inherit 1px",
+        ] {
+            assert_eq!(parse_border_declaration(value), None, "value={value}");
+        }
         assert_eq!(parse_border_declaration("none solid"), None);
         assert_eq!(parse_border_declaration("hidden solid"), None);
         assert_eq!(parse_border_declaration("none red"), None);
@@ -7725,6 +7798,88 @@ mod tests {
         ] {
             assert_eq!(parse_border_declaration(value), None, "{value}");
         }
+    }
+
+    #[test]
+    fn complete_border_css_wide_values_project_through_component_cascade() {
+        let inherited_width = [2, 3, 4, 5];
+        let inherited_style = [
+            NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+            NativeBorderStyleValue::Paint(NativeBorderStyle::Dashed),
+            NativeBorderStyleValue::Paint(NativeBorderStyle::Dotted),
+            NativeBorderStyleValue::Paint(NativeBorderStyle::Double),
+        ];
+        let inherited_color = [
+            NativeColor::RED,
+            NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: 255,
+            },
+            NativeColor {
+                red: 0,
+                green: 0,
+                blue: 255,
+                alpha: 255,
+            },
+            NativeColor::BLACK,
+        ];
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { border: inherit; } #physical { border-top: inherit; border-right: unset; border-bottom: initial; border-left: revert; } #reset { border: unset; } #initial { border: initial; } #revert { border: revert; } #omitted {} #invalid { border: inherit; border: invalid; } #mixed { border: inherit solid red; } #compose { color: green; border: unset; border-width: 2px; border-style: solid; } #root { border: inherit; }"
+                .into(),
+        ])
+        .unwrap();
+        let computed = |id: &str| {
+            let element = node(&format!("<div id='{id}'>Border</div>"));
+            stylesheet.computed_for_with_matcher(
+                &element,
+                NativeInheritedStyle {
+                    color: Some(NativeColor::RED),
+                    border_color: inherited_color,
+                    border_width: inherited_width,
+                    border_style: inherited_style,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(&element),
+            )
+        };
+
+        let inherited = computed("inherit").border().unwrap();
+        assert_eq!(inherited.top(), border_side(2, NativeColor::RED));
+        assert_eq!(inherited.right().width(), 3);
+        assert_eq!(inherited.right().style(), NativeBorderStyle::Dashed);
+        assert_eq!(inherited.right().color(), inherited_color[1]);
+        assert_eq!(inherited.bottom().width(), 4);
+        assert_eq!(inherited.bottom().style(), NativeBorderStyle::Dotted);
+        assert_eq!(inherited.left().width(), 5);
+        assert_eq!(inherited.left().style(), NativeBorderStyle::Double);
+
+        let physical = computed("physical").border().unwrap();
+        assert_eq!(physical.top(), border_side(2, NativeColor::RED));
+        for side in [physical.right(), physical.bottom(), physical.left()] {
+            assert_eq!(side.width(), 0);
+            assert_eq!(side.style(), NativeBorderStyle::Solid);
+        }
+        for id in ["reset", "initial", "revert", "omitted", "mixed"] {
+            assert!(computed(id).border().is_none(), "id={id}");
+        }
+        let invalid = computed("invalid").border().unwrap();
+        assert_eq!(invalid.top(), border_side(2, NativeColor::RED));
+        let composed = computed("compose").border().unwrap();
+        assert_eq!(
+            composed.top(),
+            border_side(
+                2,
+                NativeColor {
+                    red: 0,
+                    green: 128,
+                    blue: 0,
+                    alpha: 255,
+                }
+            )
+        );
+        assert_eq!(computed("root").border(), Some(inherited));
     }
 
     #[test]

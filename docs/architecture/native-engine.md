@@ -44,6 +44,7 @@ bounded-border-color-current-color,
 bounded-border-color-css-wide-keywords,
 bounded-border-width-css-wide-keywords,
 bounded-border-style-css-wide-keywords,
+bounded-border-radius-css-wide-keywords,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -1335,11 +1336,20 @@ passed locally. Mixed CSS-wide/style shorthand, logical sides, table conflict
 resolution, multiple origins, and browser-wide border conformance remain
 outside the completed boundary. Remote CI remains pending because the checkout
 is local-only.
-The next dependency-ordered `native-engine-172` slice is designed and recorded
-in `docs/plan/tasks/native-engine-172.md`. It will extend the same bounded
-case-insensitive CSS-wide family to the physical `border-radius` shorthand,
-copying only explicit effective parent radii and retaining the default
-zero-corner fallback; no implementation or completion claim is made yet.
+The completed dependency-ordered `native-engine-172` slice is recorded in
+`docs/plan/tasks/native-engine-172.md`; implementation is `b0bbe45a`. It extends
+the physical `border-radius` shorthand with exact case-insensitive `inherit`,
+`unset`, `initial`, and one-author-origin `revert`, copying only explicit
+effective parent radii while reset and ordinary omission retain the default
+zero-corner fallback. Existing bounded one-to-four-value expansion,
+`revert-layer`, rounded geometry, display replay, raster, point-hit, capture,
+and semantic/source-order owners remain unchanged. Focused/full-native/library
+tests pass locally; remaining certification evidence is recorded in the task.
+Mixed CSS-wide/concrete or slash-separated radii, corner longhands, elliptical
+and percentage radii, multiple origins, and browser-wide border conformance
+remain outside the completed boundary. Remote CI remains pending because the
+checkout is local-only.
+No subsequent native-engine task is selected in this checkout yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

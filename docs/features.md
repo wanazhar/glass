@@ -79,6 +79,12 @@ source-behavior reference.
   capture, raster, overflow, and semantic/source-order owners; elliptical,
   percentage, corner-longhand, nested-clip, anti-aliasing, multiple-origin,
   and browser-wide border-radius conformance remain outside the boundary,
+  plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
+  one-author-origin `revert` for the radius owner: explicit `inherit` copies
+  the parent's effective four-corner radius, including from unpainted or
+  zero-width parents; reset forms resolve to zero corners and ordinary
+  omission remains zero. Mixed CSS-wide/concrete and slash-separated radius
+  forms remain unsupported,
   plus bounded case-insensitive 15-layer/unlayered local
   `opacity:revert-layer` rollback for the existing local 8-bit opacity owner,
   preserving the full-opacity (`255`) fallback, reduced-opacity group markers,
@@ -467,6 +473,12 @@ projection, and point hit-testing,
   overflow, and semantic/source-order owners; elliptical, percentage,
   corner-longhand, nested-clip, anti-aliasing, multiple-origin, and browser-wide
   border-radius conformance remain outside the boundary,
+  plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
+  one-author-origin `revert` for the radius owner: explicit `inherit` copies
+  the parent's effective four-corner radius, including from unpainted or
+  zero-width parents; reset forms resolve to zero corners and ordinary
+  omission remains zero. Mixed CSS-wide/concrete and slash-separated radius
+  forms remain unsupported,
   normal-flow outer/content box geometry with physical four-side padding/margin
   shorthands and longhands, bounded physical min/max width/height constraints
   with bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback

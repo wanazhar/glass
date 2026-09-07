@@ -1,7 +1,7 @@
 ---
 id: native-engine-172
 scope: glass-browser/native-engine/cascade-border-radius-css-wide-keywords
-status: planned
+status: complete
 depends-on: [native-engine-171]
 ---
 
@@ -123,6 +123,59 @@ Remote CI remains unclaimed until an explicitly authorized push.
 
 ## Implementation
 
-Pending. This docs-first contract records the bounded physical `border-radius`
-CSS-wide keyword resolution before changing the parser, private inherited
-radius state, or computed-style resolver.
+Completed in `b0bbe45a` (`feat(native-engine): support border radius css-wide
+keywords`). `NativeBorderRadiusValue` now keeps concrete radii and the four
+CSS-wide declaration-only values private until computed-style resolution.
+The existing physical shorthand parser remains the owner of bounded
+one-to-four-value expansion and standalone `revert-layer`; exact
+case-insensitive `inherit`, `unset`, `initial`, and `revert` are accepted as
+single tokens, while mixed and slash-separated forms remain rejected.
+
+The computed-style boundary resolves explicit `inherit` from one private
+effective parent radius, reset forms and ordinary omission to the default
+zero-corner radius, and lower-layer candidates through the existing rollback
+resolver. The DOM walk carries only the effective parent radius. Public
+`NativeBorderRadius`, layout/display/raster/capture values, diagnostics, and
+the two-crate/default-feature boundaries remain unchanged. The integration
+fixture covers painted, unpainted, and zero-border-width parents; concrete and
+CSS-wide children; invalid preservation; named-layer/unlayered/inline
+precedence; geometry; rounded point-hit; semantic/source order; fill/border
+replay; software raster; and PNG capture.
+
+## Certification evidence
+
+The locked focused feature check passed. Border-radius parser/cascade unit
+coverage passed 4/4, the focused consumer fixture passed 1/1, full native
+integration passed 210/210, and feature-enabled `glass-browser` library tests
+passed 974 with 1 ignored. Strict all-target/all-feature Clippy with warnings
+denied, warning-denied feature rustdoc, and paired locked `glass-dev`
+check/build passed. Both package archives were generated; the packaged
+dependency checker confirmed exact `glass-browser = 0.3.14` for `glass-dev`
+with no path or feature dependency. The plain registry package verification
+remains the known registry API mismatch; the patched local-release archive is
+exact.
+
+The locked workspace all-target/all-feature replay passed with 975 library
+tests and 1 ignored, 210 native integration tests, 365 `glass-dev` tests, and
+all auxiliary targets. Formatting and the final static documentation gates
+passed at version 0.3.14: 586 Markdown documents, 83 current documents, 57
+previous-version hits, 675 semantic audit hits, and 0 current-claim failures;
+documentation coverage 586 Markdown/345 full-product MCP tools/100
+browser-only tools/17 examples/22 public modules; TUI 15/63; depth 93/19;
+reliability 6/4; adapters 5; Web IR 8/8/11; and release-documentation unit
+tests 9/9. No remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary, or promotion claim is made.
+
+## Cleanup
+
+After all Cargo processes and open handles exited, bounded exact-path cleanup
+removed `/tmp/glass-172-focused` (5,456,537,779 bytes),
+`/tmp/glass-172-package` (2,370,708,338 bytes),
+`/tmp/glass-172-workspace` (4,954,695,376 bytes),
+`/home/ubuntu/work/glass/target` (2,162,014,874 bytes),
+`/tmp/glass-172-release-documentation.json` (186,544 bytes), and
+`/tmp/glass-172-release-documentation-final.json` (186,544 bytes). The
+measured deletion total was 14,944,329,455 bytes. Final filesystem free space
+was 82,336,038,912 bytes. All six exact paths are absent; no Cargo/Rust
+process or open handle remains; and source, durable data, repository history,
+and unrelated workloads were not touched.

@@ -356,8 +356,11 @@ browser-wide border-radius conformance remain outside the boundary. The same
 physical and horizontal-tb logical radius declarations also honor a terminal
 case-insensitive `!important` marker: important radius candidates outrank
 normal candidates and named-layer priority is reversed within the important
-partition of the existing author-origin cascade. Other properties do not gain
-generic `!important` semantics from this bounded radius behavior. The same
+partition of the existing author-origin cascade. The bounded
+`background-color`, inherited `color`, and `text-decoration-color` owners
+also honor terminal case-insensitive `!important` with the same important-
+over-normal and reversed named-layer ordering; border color and other
+properties retain their existing bounded behavior. The same
 bounded radius owner also accepts exact case-insensitive CSS-wide `inherit`,
 `unset`, `initial`, and one-author-origin `revert`: explicit `inherit` copies
 the parent's effective four-corner radius, including from unpainted or

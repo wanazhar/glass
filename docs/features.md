@@ -82,8 +82,10 @@ source-behavior reference.
   plus bounded terminal case-insensitive `!important` priority for the
   complete physical and horizontal-tb logical radius family: important
   candidates outrank normal candidates and named-layer priority is reversed in
-  the private important partition; generic `!important` semantics for other
-  properties remain outside the boundary,
+  the private important partition; the bounded `background-color`, inherited
+  `color`, and `text-decoration-color` owners also honor the same terminal
+  priority, while border color and other properties remain outside generic
+  `!important` semantics,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or

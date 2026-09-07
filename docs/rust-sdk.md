@@ -141,7 +141,11 @@ conformance remain outside the boundary,
 plus bounded terminal case-insensitive `!important` priority for the complete
 physical and horizontal-tb logical radius family, with important candidates
 above normal candidates and reversed named-layer order; generic `!important`
-semantics for other properties remain outside the boundary,
+semantics for other properties remain outside the boundary. The bounded
+`background-color`, inherited `color`, and `text-decoration-color` owners
+also honor terminal case-insensitive `!important` with the same
+important-over-normal and reversed named-layer ordering; border color remains
+outside this bounded paint-color priority,
 plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
 one-author-origin `revert` for the radius owner: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width

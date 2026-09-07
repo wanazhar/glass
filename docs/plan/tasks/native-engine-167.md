@@ -1,7 +1,7 @@
 ---
 id: native-engine-167
 scope: glass-browser/native-engine/cascade-background-color-css-wide-keywords
-status: planned
+status: complete
 depends-on: [native-engine-166]
 ---
 
@@ -137,6 +137,37 @@ The completed slice must cover:
 
 ## Implementation
 
-Pending. This docs-first contract records the bounded non-inherited
-`background-color` keyword resolution before changing the parser, inherited
-style walk, or computed-style resolver.
+Completed in `1ae1f103` from this design contract (`9e143200`). The private
+`NativeBackgroundColorValue` now distinguishes `Color`, `CurrentColor`,
+`Inherit`, `Unset`, `Initial`, and `Revert`. The computed-style walk carries
+only the parent's optional concrete fill for explicit `inherit`; reset forms
+resolve to the existing no-fill `None` result, while ordinary omission remains
+non-inherited no-fill. The public `Option<NativeColor>` and all fill/artifact
+owners remain unchanged.
+
+The synchronized current product documentation is `debd6ab4`. Focused locked
+feature check, the parser/cascade unit (1/1), the new fill-owner integration
+fixture (1/1), full native integration (205/205), and feature-enabled library
+tests (969 passed, 1 ignored) passed. Strict all-target/all-feature Clippy with
+warnings denied, warning-denied feature rustdoc, paired locked `glass-dev`
+check/build, both locked package archives, and the exact packaged
+`glass-browser = 0.3.14` dependency check passed. Static truth passed at
+version 0.3.14, feature parity 14 capabilities/4 targets, 581 Markdown
+documents with 83 current documents/57 previous-version hits/671 semantic
+audit hits/0 current-claim failures, documentation coverage 581 Markdown/
+345 full-product MCP tools/100 browser-only tools/17 examples/22 public
+modules, TUI 15/63, depth 93/19, reliability 6/4, adapters 5, Web IR
+8/8/11, and release-documentation unit tests 9/9. The locked workspace
+all-target/all-feature gate passed with 970 library tests and 1 ignored,
+native integration 205/205, `glass-dev` 365/365, and all auxiliary targets.
+
+Exact regenerable cleanup removed `/tmp/glass-167-focused` (5,407,022,266
+bytes, 9,070 files, 1,185 directories), `/tmp/glass-167-package`
+(3,136,467 bytes, 5 files, 3 directories), and `/tmp/glass-167-workspace`
+(4,142,477,297 bytes, 5,541 files, 624 directories) after no active Cargo/
+Rust processes and no open handles were found. Measured deletion was
+9,552,636,030 bytes; filesystem free space rose from 72,992,059,392 to
+82,588,356,608 bytes (a 9,596,297,216-byte filesystem delta). All exact
+targets and the run-created experiment directories were absent afterward.
+Remote CI, push, release, tag, registry publication, browser parity, and
+promotion remain unclaimed.

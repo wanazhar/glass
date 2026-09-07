@@ -239,7 +239,9 @@ bounded
 inherited fixed-cell `text-decoration:none|underline|overline|line-through`
 paint including distinct shorthand combinations, bounded local
 `text-decoration-color` using the existing fixed palette and alpha grammar
-with separate glyph and line paint, bounded `text-decoration-line` longhand
+plus case-insensitive `currentColor` resolved from the element's local or
+inherited `color`, with separate glyph and line paint, bounded
+`text-decoration-line` longhand
 combinations sharing the same line-state owner, bounded inherited
 `text-decoration-style:solid|dashed|dotted|double|wavy` presentation, where
 `double` paints two thickness-preserving solid bands separated by one pixel and

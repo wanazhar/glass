@@ -436,9 +436,10 @@ Bounded
 inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using
-the existing fixed palette and alpha grammar with separate glyph and line
-paint, including bounded 15-layer/unlayered `revert-layer` rollback with the
-existing local fallback, bounded `text-decoration-line` longhand combinations
+the existing fixed palette and alpha grammar plus case-insensitive `currentColor`
+resolved from the element's local or inherited `color`, with separate glyph and
+line paint, including bounded 15-layer/unlayered `revert-layer` rollback with
+the existing local fallback, bounded `text-decoration-line` longhand combinations
 sharing the same line-state owner, including case-insensitive 15-layer/unlayered
 `revert-layer` rollback with inherited/root fallback, bounded inherited
 `text-decoration-style:solid|dashed|dotted|double|wavy` presentation, where
@@ -863,10 +864,13 @@ boundary.
 The native engine also supports bounded 15-layer/unlayered `revert-layer`
 rollback for inherited `text-align`, `text-align-last`, and `text-justify`.
 The current native decoration-color surface additionally accepts bounded
-case-insensitive `text-decoration-color:revert-layer` through the existing
-15-layer registry and unlayered/inline bucket; no-candidate resolution remains
-the local omitted-color fallback, and glyph/decoration paint colors remain
-separate.
+case-insensitive `text-decoration-color:currentColor` and
+`text-decoration-color:revert-layer` through the existing 15-layer registry and
+unlayered/inline bucket. `currentColor` resolves from the element's local or
+inherited `color`; no-candidate resolution remains the local omitted-color
+fallback, and glyph/decoration paint colors remain separate. Gradients, image
+functions, system colors, color spaces, percentages, and browser-wide text-color
+conformance remain outside the boundary.
 The native engine also supports bounded inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; the offset moves only the underline toward
 decreasing or increasing y while overline and line-through origins remain

@@ -921,13 +921,14 @@ fn native_border_color_current_color_resolves_after_cascade_and_inheritance() {
     assert_eq!(border_for(repeat).unwrap().top.color, blue);
     assert_eq!(border_for(same).unwrap().top.color, green);
     assert_eq!(border_for(invalid).unwrap().top.color, green);
-    assert_eq!(border_for(complete).unwrap().top.color, NativeColor::RED);
+    assert_eq!(border_for(complete).unwrap().top.width, 2);
+    assert_eq!(
+        border_for(complete).unwrap().top.style,
+        NativeBorderStyle::Solid
+    );
+    assert_eq!(border_for(complete).unwrap().top.color, blue);
     assert_eq!(border_for(black).unwrap().top.color, NativeColor::BLACK);
     assert_eq!(border_for(inline).unwrap().top.color, green);
-    assert!(document.diagnostics().iter().any(|diagnostic| {
-        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
-            && diagnostic.detail == "border"
-    }));
     assert!(document.diagnostics().iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "border-color"
@@ -940,6 +941,118 @@ fn native_border_color_current_color_resolves_after_cascade_and_inheritance() {
     let surface = list.rasterize().unwrap();
     assert_eq!(
         surface.pixel(shorthand_box.x, shorthand_box.y),
+        Some([0, 0, 255, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
+fn native_complete_border_current_color_projects_all_physical_forms() {
+    let document = NativeDocument::parse(
+        r#"<style>@layer base {
+            #painted { display:block;width:8px;height:6px;color:blue;border:1px solid red; }
+            #physical { display:block;width:8px;height:6px;color:blue;border:1px solid red;border-top:2px dashed currentColor;border-right:3px double CURRENTcolor;border-bottom:4px dotted CuRrEnTcOlOr;border-left:5px groove currentCOLOR; }
+            #none { display:block;width:8px;height:6px;color:green;border:3px none currentColor; }
+            #hidden { display:block;width:8px;height:6px;color:green;border:4px hidden CURRENTCOLOR; }
+        } @layer theme {
+            #painted { border:2px solid currentColor; }
+        }</style><button id='painted'>Painted</button><button id='physical'>Physical</button><button id='none'>None</button><button id='hidden'>Hidden</button>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 80,
+        device_scale_factor_milli: 1000,
+    };
+    let painted = document.resolve_target("id=painted").unwrap();
+    let physical = document.resolve_target("id=physical").unwrap();
+    let none = document.resolve_target("id=none").unwrap();
+    let hidden = document.resolve_target("id=hidden").unwrap();
+    let nodes = [painted, physical, none, hidden];
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: 255,
+        alpha: 255,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    for node_id in nodes {
+        let rectangle = layout
+            .box_for(node_id)
+            .expect("complete currentColor layout box");
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+        assert!(
+            document
+                .semantic_nodes()
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden)
+        );
+    }
+    assert_eq!(
+        (
+            layout.box_for(none).unwrap().width,
+            layout.box_for(none).unwrap().height
+        ),
+        (8, 6)
+    );
+    assert_eq!(
+        (
+            layout.box_for(hidden).unwrap().width,
+            layout.box_for(hidden).unwrap().height
+        ),
+        (8, 6)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let painted_border = border_for(painted).expect("painted complete currentColor border");
+    assert_eq!(painted_border.top.width, 2);
+    assert_eq!(painted_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(painted_border.top.color, blue);
+
+    let physical_border = border_for(physical).expect("physical complete currentColor borders");
+    assert_eq!(physical_border.top.width, 2);
+    assert_eq!(physical_border.top.style, NativeBorderStyle::Dashed);
+    assert_eq!(physical_border.top.color, blue);
+    assert_eq!(physical_border.right.width, 3);
+    assert_eq!(physical_border.right.style, NativeBorderStyle::Double);
+    assert_eq!(physical_border.right.color, blue);
+    assert_eq!(physical_border.bottom.width, 4);
+    assert_eq!(physical_border.bottom.style, NativeBorderStyle::Dotted);
+    assert_eq!(physical_border.bottom.color, blue);
+    assert_eq!(physical_border.left.width, 5);
+    assert_eq!(physical_border.left.style, NativeBorderStyle::Groove);
+    assert_eq!(physical_border.left.color, blue);
+    assert!(border_for(none).is_none());
+    assert!(border_for(hidden).is_none());
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "border" | "border-top" | "border-right" | "border-bottom" | "border-left"
+            )
+    }));
+
+    let painted_box = layout.box_for(painted).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(painted_box.x, painted_box.y),
         Some([0, 0, 255, 255])
     );
     assert!(!surface.to_png().unwrap().is_empty());

@@ -156,8 +156,14 @@ Read with:
 Task-specific isolated targets and reports are safe to remove after all
 Cargo/Rust processes and open handles exit. Only the exact paths used by this
 task may be reclaimed; source, durable data, repository history, and unrelated
-workloads must remain untouched. Final byte counts and free-space verification
-are recorded below after cleanup.
+workloads must remain untouched. The exact `/tmp/glass-174-focused` target
+measured 10,094,442,756 bytes across 14,776 files and 1,901 directories. The
+eight exact validator/compiler reports and logs measured 562,264 bytes. After
+the process/open-handle checks found no Cargo, rustc, rustdoc, or Glass
+consumer, bounded deletion removed only those exact paths. Available filesystem
+bytes rose from 72,157,638,656 to 82,297,135,104, an observed delta of
+10,139,496,448 bytes. Every exact target/report path is absent; issue snapshots
+were preserved.
 
 ## Evidence
 

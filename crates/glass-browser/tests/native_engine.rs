@@ -5870,6 +5870,134 @@ fn native_functional_alpha_colors_reach_display_list_and_raster() {
 }
 
 #[test]
+fn native_background_current_color_resolves_through_fill_and_raster_owners() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #local { display:block;width:8px;height:8px;color:blue;background-color:red;background-color:currentColor; } #parent { display:block;width:8px;height:8px;color:green; } #inherited { display:block;width:8px;height:8px;background-color:CURRENTcolor; } #black { display:block;width:8px;height:8px;background-color:CuRrEnTcOlOr; } #rollback { display:block;width:8px;height:8px;color:blue;background-color:red; } #invalid { display:block;width:8px;height:8px;color:blue;background-color:red; } #transparent { display:block;width:8px;height:8px;background-color:transparent; } #empty { display:block;width:8px;height:8px; } } @layer theme { #rollback { background-color:currentColor; } #invalid { background-color:currentColor;background-color:invalid; } } #rollback { background-color:revert-layer; }</style><div id='parent'><button id='inherited'>Inherited</button></div><button id='local'>Local</button><button id='black'>Black</button><button id='rollback'>Rollback</button><button id='invalid'>Invalid</button><button id='inline' style='display:block;width:8px;height:8px;color:green;background-color:currentColor;opacity:50%'>Inline</button><button id='transparent'>Transparent</button><button id='empty'>Empty</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 16,
+        height: 80,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let local = document.resolve_target("id=local").unwrap();
+    let black = document.resolve_target("id=black").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let transparent = document.resolve_target("id=transparent").unwrap();
+    let empty = document.resolve_target("id=empty").unwrap();
+
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+    let transparent_color = NativeColor {
+        red: 0,
+        green: 0,
+        blue: 0,
+        alpha: 0,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    for node_id in [
+        parent,
+        inherited,
+        local,
+        black,
+        rollback,
+        invalid,
+        inline,
+        transparent,
+        empty,
+    ] {
+        assert!(
+            layout.box_for(node_id).is_some(),
+            "missing layout box for {node_id:?}"
+        );
+    }
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(inherited));
+
+    let list = document.display_list(viewport).unwrap();
+    let fill_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                rect,
+                color,
+                clip,
+                ..
+            } if *command_node_id == node_id => Some((*rect, *color, *clip)),
+            _ => None,
+        })
+    };
+    assert_eq!(fill_for(parent), None);
+    assert_eq!(fill_for(inherited).unwrap().1, green);
+    assert_eq!(fill_for(local).unwrap().1, blue);
+    assert_eq!(fill_for(black).unwrap().1, NativeColor::BLACK);
+    assert_eq!(fill_for(rollback).unwrap().1, blue);
+    assert_eq!(fill_for(invalid).unwrap().1, blue);
+    assert_eq!(fill_for(inline).unwrap().1, green);
+    assert_eq!(fill_for(transparent).unwrap().1, transparent_color);
+    assert_eq!(fill_for(empty), None);
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::BeginOpacityGroup { node_id, opacity }
+                if *node_id == inline && *opacity == 128
+        )
+    }));
+
+    let inline_fill = fill_for(inline).unwrap();
+    assert_eq!(inline_fill.2, None);
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(1, inline_fill.0.y),
+        Some([127, 191, 127, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+
+    let semantic_nodes = document.semantic_nodes();
+    let semantic_ids = semantic_nodes
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [
+        (inherited, local),
+        (local, black),
+        (black, rollback),
+        (rollback, invalid),
+        (invalid, inline),
+        (inline, transparent),
+        (transparent, empty),
+    ] {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair.0)
+                < semantic_ids.iter().position(|id| *id == pair.1),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "background-color"
+    }));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "color"
+    }));
+}
+
+#[test]
 fn native_display_list_inherits_text_color_and_preserves_transparent_override() {
     let document = NativeDocument::parse(
         "<style>#parent { color: blue; }</style><div id='parent'><span id='child'>Child</span><span id='transparent' style='color:transparent'>Clear</span></div>",

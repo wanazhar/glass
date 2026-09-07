@@ -88,6 +88,21 @@ impl NativeBorderColorValue {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBackgroundColorValue {
+    Color(NativeColor),
+    CurrentColor,
+}
+
+impl NativeBackgroundColorValue {
+    const fn resolve(self, current_color: NativeColor) -> NativeColor {
+        match self {
+            Self::Color(color) => color,
+            Self::CurrentColor => current_color,
+        }
+    }
+}
+
 /// Bounded text-decoration patterns owned separately from border styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeTextDecorationStyle {
@@ -1308,8 +1323,9 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut line_height: [Option<CascadeValue<LineHeightDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut background_color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        let mut background_color: [Option<
+            CascadeValue<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
+        >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut border_width: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
@@ -2380,6 +2396,9 @@ impl NativeStylesheet {
             });
         let resolved_color = resolve_local_optional_cascade_declaration(color).or(inherited.color);
         let current_color = resolved_color.unwrap_or(NativeColor::BLACK);
+        let resolved_background_color =
+            resolve_local_optional_cascade_declaration(background_color)
+                .map(|value| value.resolve(current_color));
         let resolved_border_color: [Option<NativeColor>; 4] = std::array::from_fn(|index| {
             resolve_local_optional_cascade_declaration(border_color[index])
                 .map(|value| value.resolve(current_color))
@@ -2482,7 +2501,7 @@ impl NativeStylesheet {
             min_height: resolve_local_optional_cascade_declaration(min_height),
             max_height: resolve_local_optional_cascade_declaration(max_height),
             line_height: resolve_line_height(line_height, inherited.line_height),
-            background_color: resolve_local_optional_cascade_declaration(background_color),
+            background_color: resolved_background_color,
             border: NativeBorder::from_sides(resolved_border),
             border_radius: resolve_local_cascade_declaration(
                 border_radius,
@@ -3452,7 +3471,7 @@ struct NativeDeclarations {
     min_height: Option<LocalCascadeDeclaration<u32>>,
     max_height: Option<LocalCascadeDeclaration<u32>>,
     line_height: Option<LineHeightDeclaration>,
-    background_color: Option<LocalCascadeDeclaration<NativeColor>>,
+    background_color: Option<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; 4],
     border_order: [usize; 4],
     border_width: [Option<LocalCascadeDeclaration<u32>>; 4],
@@ -3952,7 +3971,8 @@ fn parse_declarations_with_diagnostics(
                 parse_local_dimension_declaration(value).is_some()
             }
             "line-height" => parse_line_height_declaration(value).is_some(),
-            "background-color" | "color" => parse_local_color_declaration(value).is_some(),
+            "background-color" => parse_background_color_declaration(value).is_some(),
+            "color" => parse_local_color_declaration(value).is_some(),
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
                 parse_border_declaration(value).is_some()
             }
@@ -4357,7 +4377,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.line_height = parse_line_height_declaration(value);
             }
             "background-color" => {
-                if let Some(parsed) = parse_local_color_declaration(value) {
+                if let Some(parsed) = parse_background_color_declaration(value) {
                     declarations.background_color = Some(parsed);
                 }
             }
@@ -4742,6 +4762,19 @@ fn parse_border_color_value(value: &str) -> Option<NativeBorderColorValue> {
         return Some(NativeBorderColorValue::CurrentColor);
     }
     parse_color(value).map(NativeBorderColorValue::Color)
+}
+
+fn parse_background_color_value(value: &str) -> Option<NativeBackgroundColorValue> {
+    if value.trim().eq_ignore_ascii_case("currentColor") {
+        return Some(NativeBackgroundColorValue::CurrentColor);
+    }
+    parse_color(value).map(NativeBackgroundColorValue::Color)
+}
+
+fn parse_background_color_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeBackgroundColorValue>> {
+    parse_local_cascade_declaration(value, parse_background_color_value)
 }
 
 fn split_css_value_tokens(value: &str) -> Option<Vec<&str>> {
@@ -6589,7 +6622,9 @@ mod tests {
         );
         assert_eq!(
             declarations.background_color,
-            Some(LocalCascadeDeclaration::Value(NativeColor::RED))
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundColorValue::CurrentColor
+            ))
         );
         assert_eq!(
             declarations.color,
@@ -6598,6 +6633,12 @@ mod tests {
         assert_eq!(
             parse_declarations("background-color: revert-layer").background_color,
             Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_background_color_declaration("CuRrEnTcOlOr"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundColorValue::CurrentColor
+            ))
         );
         assert_eq!(
             parse_declarations("color: REVERT-LAYER").color,

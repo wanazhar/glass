@@ -1429,6 +1429,16 @@ and bounded cleanup evidence; remote CI remains pending because the checkout is
 local-only. Table conflict resolution and other border styles remain outside
 the boundary.
 
+The next dependency-ordered [native-engine-156](tasks/native-engine-156.md)
+slice is planned. It will batch the remaining painted physical styles
+`double`, `groove`, `ridge`, `inset`, and `outset` through the bounded style
+parser, public computed paint enum, and deterministic software replay. Integer-
+pixel double stripes and two-tone/edge-directed shading are explicit native
+rules; the public display-list shape remains stable and no browser-fidelity
+claim is made. Logical sides, table conflict resolution, gradients, border
+images, and other general CSS border conformance remain outside the planned
+boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

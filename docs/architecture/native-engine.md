@@ -1112,6 +1112,14 @@ library tests, strict Clippy, feature rustdoc, two-crate check/build,
 formatting, and static documentation gates passed locally; exact evidence and
 bounded target cleanup are recorded in the task. Remote CI remains pending
 because the checkout is local-only.
+The next dependency-ordered 156 slice is planned in
+`docs/plan/tasks/native-engine-156.md`. It will batch the remaining painted
+physical styles `double`, `groove`, `ridge`, `inset`, and `outset` through the
+bounded style parser, public computed paint enum, and deterministic software
+replay. Integer-pixel double stripes and two-tone/edge-directed shading are
+explicit native rules, not browser-fidelity claims; logical sides, table
+conflict resolution, gradients, border images, and other general CSS border
+conformance remain outside the planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

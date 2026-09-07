@@ -1231,6 +1231,141 @@ fn native_border_style_none_blocks_or_reveals_components_and_artifacts() {
 }
 
 #[test]
+fn native_border_style_hidden_blocks_or_reveals_components_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #mixed { display:block;width:8px;height:6px;border:2px solid red; } #blocked { display:block;width:8px;height:6px;border:2px solid red; } #exposed { display:block;width:8px;height:6px;border:2px solid red; } #repeated { display:block;width:8px;height:6px;border:2px solid red; } #invalid { display:block;width:8px;height:6px;border:2px solid red; } #physical { display:block;width:8px;height:6px;border:2px solid red; } #style-only { display:block;width:8px;height:6px;border-style:hidden; } #components { display:block;width:8px;height:6px;border:2px solid red; } #order-solid { display:block;width:8px;height:6px;border:2px solid red; border-style:hidden; border-style:solid; } #order-hidden { display:block;width:8px;height:6px;border:2px solid red; border-style:solid; border-style:hidden; } #inline { display:block;width:8px;height:6px;border:2px solid red; } #inline-paint { display:block;width:8px;height:6px;border:2px solid red; } } @layer theme { #mixed { border-style:hidden dashed dotted hidden; } #blocked { border-style:hidden; } #exposed { border-style:hidden;border-style:revert-layer; } #repeated { border-style:hidden;border-style:revert-layer;border-style:revert-layer; } #invalid { border-style:hidden;border-style:invalid; } #physical { border-top-style:hidden;border-right-style:dashed;border-bottom-style:dotted;border-left-style:solid; } #components { border-style:hidden; border-width:4px; border-color:blue; } } #blocked { border-style:revert-layer; }</style><button id='mixed'>Mixed</button><button id='blocked'>Blocked</button><button id='exposed'>Exposed</button><button id='repeated'>Repeated</button><button id='invalid'>Invalid</button><button id='physical'>Physical</button><button id='style-only'>Style only</button><button id='components'>Components</button><button id='order-solid'>Order solid</button><button id='order-hidden'>Order hidden</button><button id='inline' style='border-style:hidden'>Inline</button><button id='inline-paint' style='border-style:solid'>Inline paint</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 220,
+        device_scale_factor_milli: 1000,
+    };
+    let ids = [
+        "mixed",
+        "blocked",
+        "exposed",
+        "repeated",
+        "invalid",
+        "physical",
+        "style-only",
+        "components",
+        "order-solid",
+        "order-hidden",
+        "inline",
+        "inline-paint",
+    ];
+    let nodes = ids.map(|id| document.resolve_target(&format!("id={id}")).unwrap());
+    let layout = document.layout(viewport).unwrap();
+    let expected_sizes = [
+        (10, 8),
+        (8, 6),
+        (12, 10),
+        (12, 10),
+        (8, 6),
+        (12, 8),
+        (8, 6),
+        (8, 6),
+        (12, 10),
+        (8, 6),
+        (8, 6),
+        (12, 10),
+    ];
+    for (node_id, (width, height)) in nodes.iter().zip(expected_sizes) {
+        let rectangle = layout.box_for(*node_id).expect("hidden border layout box");
+        assert_eq!((rectangle.width, rectangle.height), (width, height));
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(*node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    let positions: Vec<_> = nodes
+        .iter()
+        .map(|node_id| {
+            semantic_nodes
+                .iter()
+                .position(|node| node.node_id == *node_id && !node.hidden)
+                .expect("visible hidden-border semantic node")
+        })
+        .collect();
+    assert!(positions.windows(2).all(|window| window[0] < window[1]));
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let mixed_border = border_for(nodes[0]).expect("mixed hidden border command");
+    assert_eq!(mixed_border.top.width, 0);
+    assert_eq!(mixed_border.right.style, NativeBorderStyle::Dashed);
+    assert_eq!(mixed_border.bottom.style, NativeBorderStyle::Dotted);
+    assert_eq!(mixed_border.left.width, 0);
+    for index in [1, 4, 6, 7, 9, 10] {
+        assert!(
+            border_for(nodes[index]).is_none(),
+            "unexpected hidden border command {index}"
+        );
+    }
+    for index in [2, 3, 8, 11] {
+        assert!(
+            border_for(nodes[index]).is_some(),
+            "missing revealed border command {index}"
+        );
+    }
+    let physical_border = border_for(nodes[5]).expect("physical hidden border command");
+    assert_eq!(physical_border.top.width, 0);
+    assert_eq!(physical_border.right.style, NativeBorderStyle::Dashed);
+    assert_eq!(physical_border.bottom.style, NativeBorderStyle::Dotted);
+    assert_eq!(physical_border.left.style, NativeBorderStyle::Solid);
+    assert_eq!(
+        border_for(nodes[11]).unwrap().top.style,
+        NativeBorderStyle::Solid
+    );
+
+    let invalid_diagnostics = document
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "border-style"
+        })
+        .count();
+    assert_eq!(invalid_diagnostics, 1);
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail.contains("hidden")
+    }));
+
+    let surface = list.rasterize().unwrap();
+    let physical_rect = layout.box_for(nodes[5]).unwrap();
+    assert_eq!(
+        surface.pixel(physical_rect.x, physical_rect.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    assert_ne!(
+        surface.pixel(physical_rect.x + 3, physical_rect.y),
+        Some([255, 0, 0, 255])
+    );
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (48, 220));
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

@@ -1790,14 +1790,16 @@ documentation audits, and task-specific cleanup pass locally; issue-level
 final gates and remote CI remain pending until issue #40 reaches its final
 validation boundary.
 
-The dependency-ordered [native-engine-184](tasks/native-engine-184.md) slice is
-in progress. It extends bounded author-origin `!important` priority to the six
-supported horizontal-tb logical border-style declarations, preserving private
-`none`/`hidden` behavior and their resolved `ltr`/`rtl` projection into physical
-style streams. Complete/side border shorthands, logical border width/color,
-vertical writing modes, and other properties remain outside this slice;
-focused and issue-level evidence will be recorded in the task before it is
-marked complete.
+The completed dependency-ordered [native-engine-184](tasks/native-engine-184.md)
+slice is implemented at `26fd347a`. It extends bounded author-origin
+`!important` priority to the six supported horizontal-tb logical border-style
+declarations, preserving private `none`/`hidden` behavior and their resolved
+`ltr`/`rtl` projection into physical style streams. Complete/side border
+shorthands, logical border width/color, vertical writing modes, and other
+properties remain outside this slice. Focused, full-native, feature-library,
+strict Clippy, warning-denied rustdoc, current documentation audits, and
+task-specific cleanup pass locally; issue-level final gates and remote CI
+remain pending until issue #40 reaches its final validation boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

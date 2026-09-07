@@ -1,7 +1,7 @@
 ---
 id: native-engine-184
 scope: glass-browser/native-engine/cascade-logical-border-style-important-priority
-status: in-progress
+status: complete
 depends-on: [native-engine-183]
 ---
 
@@ -141,7 +141,39 @@ task may be removed; source, durable data, issue snapshots, and unrelated
 workloads remain untouched. Record measured bytes/files, process/open-handle
 checks, post-delete absence, and filesystem free-space delta.
 
+Task-specific cleanup completed after all Cargo/Rust processes and open handles
+exited: `/tmp/glass-184-focused` measured 4,733,362,176 bytes across 9,117
+files and 894 directories, and `/tmp/glass-release-documentation-184.json`
+measured 190,665 bytes. The process and open-handle checks were empty.
+Bounded exact-path deletion removed only those regenerable paths;
+post-delete absence checks passed. Available filesystem bytes moved from
+77,713,113,088 to 82,446,565,376, an observed increase of 4,733,452,288
+bytes. Source, repository targets, durable data, unrelated workloads, and
+issue snapshots were preserved.
+
 ## Evidence
 
-Implementation and slice-local certification are pending.
+The design checkpoint is `017fca08`; implementation and slice-local
+certification are complete at `26fd347a`.
 
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- The locked native-feature check passed with
+  `CARGO_TARGET_DIR=/tmp/glass-184-focused cargo check -q -p glass-browser --features native-engine --tests --locked`.
+- Focused `logical_border_style_important` coverage passed: 2 library unit
+  tests and 1 integration test. The first run exposed only a missing `#wide`
+  fixture declaration; the corrected fixture passed on the next run.
+- The full `native_engine` integration target passed 222/222 tests.
+- The feature-enabled `glass-browser` library target passed 998 tests with 1
+  intentionally ignored.
+- Strict all-target Clippy with `-D warnings` passed for `glass-browser` with
+  `native-engine`.
+- Warning-denied rustdoc passed for `glass-browser` with `native-engine`.
+- The release documentation truth audit passed over 598 Markdown documents
+  with 83 current documents, 57 previous-version hits, 692 semantic-audit
+  hits, and 0 current-claim failures.
+- Documentation depth passed with 93 current guides and 19 substantive
+  contracts; the TUI shortcut inventory passed with 15 implementation help
+  keys and 63 documentation markers.
+- Issue-level workspace, release, security/fuzz, paired-crate, static
+  documentation, and remote-CI gates remain deferred to the final issue #40
+  certification boundary.

@@ -160,10 +160,14 @@ Implementation and slice-local certification are complete at `008a5766`.
   contracts; the TUI shortcut inventory passed with 15 implementation help
   keys and 63 documentation markers.
 - Issue-level workspace, release, security/fuzz, paired-crate, static
-  documentation, cleanup, and remote-CI gates remain deferred to the final
+  documentation, and remote-CI gates remain deferred to the final
   issue #40 certification boundary.
 
-Task-specific cleanup remains pending until all task reports are complete. It
-must remove only the exact isolated target and reports created for this task
-after Cargo/Rust processes and open handles have exited, then record measured
-bytes/files, post-delete absence, and filesystem free-space delta.
+Task-specific cleanup completed after all Cargo/Rust processes and open handles
+exited: `/tmp/glass-182-focused` measured 3,758,938,417 bytes across 7,510
+files and 878 directories, and `/tmp/glass-release-documentation-182.json`
+measured 189,932 bytes. Bounded exact-path deletion removed only those
+regenerable paths; post-delete absence checks passed. Available filesystem
+bytes moved from 78,672,470,016 to 82,454,466,560, an observed increase of
+3,781,996,544 bytes. Source, repository targets, durable data, unrelated
+workloads, and issue snapshots were preserved.

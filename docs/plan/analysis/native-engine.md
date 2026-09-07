@@ -1274,15 +1274,20 @@ two-crate, formatting, static documentation, and bounded cleanup gates passed
 locally; remote CI remains pending because the checkout is local-only. `hidden`,
 other border styles, logical sides, `currentColor`, gradients, border-image,
 and browser-wide border conformance remain outside the boundary.
-The next dependency-ordered `native-engine-155` slice is planned in
-`docs/plan/tasks/native-engine-155.md`. It will add explicit physical
+The dependency-ordered `native-engine-155` implementation is complete in
+`2b07f109` (design `37126fa1`) and is recorded in
+`docs/plan/tasks/native-engine-155.md`. It adds explicit physical
 `border-style:hidden` to the bounded one-to-four-value shorthand and four
 physical style longhands through a distinct private no-paint sentinel. In the
-current non-table engine, a winning `hidden` will block lower styles and use
-the same no-side/zero-width result as `none`, while retaining a private
+current non-table engine, a winning `hidden` blocks lower styles and uses the
+same no-side/zero-width result as `none`, while retaining a private
 distinction for future collapsed-table conflict resolution. Public enums and
 display-list schemas remain unchanged; table conflict resolution and other
-border styles remain outside the planned boundary.
+border styles remain outside the boundary. Focused parser/cascade and artifact
+integration tests, full-native integration/library tests, strict Clippy,
+feature rustdoc, two-crate check/build, formatting, and static documentation
+gates passed locally; exact evidence and bounded target cleanup are recorded
+in the task. Remote CI remains pending because the checkout is local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1582,7 +1587,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-152` | completed physical `border-width` one-to-four-value expansion and `border-top|right|bottom|left-width` longhands with a private per-side `revert-layer` width stream, preserving independent style/color and border-artifact consumers | `native-engine-151` | other CSS-wide keywords, standalone border-style, logical sides, `currentColor`, gradients, border-image, fractional/percentage widths, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
 | `native-engine-153` | completed physical `border-style` one-to-four-value expansion and `border-top|right|bottom|left-style` longhands with a private per-side `revert-layer` style stream, same-block declaration order, and final width/style/color composition, preserving no-style fallback and border-artifact consumers | `native-engine-152` | other CSS-wide keywords, `none`, logical sides, `currentColor`, gradients, border-image, unsupported styles, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
 | `native-engine-154` | completed explicit physical `border-style:none` in one-to-four-value shorthand and physical style longhands through a private no-paint sentinel, preserving no-side/zero-width and public paint artifacts; focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, static documentation, and bounded cleanup gates passed locally | `native-engine-153` | `hidden`, other border styles, logical sides, `currentColor`, gradients, border-image, omitted-component `border:none`, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
-| `native-engine-155` | planned explicit physical `border-style:hidden` in one-to-four-value shorthand and physical style longhands through a distinct private no-paint sentinel, preserving current no-side/zero-width and public paint artifacts while retaining future table-conflict meaning | `native-engine-154` | collapsed-table border conflict resolution, other border styles, logical sides, `currentColor`, gradients, border-image, omitted-component `border:none`, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
+| `native-engine-155` | completed explicit physical `border-style:hidden` in one-to-four-value shorthand and physical style longhands through a distinct private no-paint sentinel, preserving current no-side/zero-width and public paint artifacts while retaining future table-conflict meaning; focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, static documentation, and bounded cleanup gates passed locally | `native-engine-154` | collapsed-table border conflict resolution, other border styles, logical sides, `currentColor`, gradients, border-image, omitted-component `border:none`, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -2020,13 +2025,14 @@ visual stacking.
 | bounded border-width rollback | completed extension of the physical border owner with one-to-four-value `border-width`, physical width longhands, and private per-side `revert-layer` candidates while keeping style/color and zero-width fallback independent | a third component stream and declaration-position metadata add bounded parser/cascade state; no standalone border-style, logical sides, `currentColor`, gradients, border-image, fractional/percentage widths, animation, multiple origins, `!important` inversion, or browser border parity | carry existing `border` widths into the private width stream, resolve width after its own layer rollback, combine it with existing style/color only at computed-style composition, preserve source order, and verify border geometry/display/raster/hit/semantic consumers together; focused, full-native, library, strict, rustdoc, and two-crate gates passed locally |
 | bounded border-style rollback | completed extension of the physical border owner with one-to-four-value `border-style`, physical style longhands, and private per-side `revert-layer` candidates while keeping width/color and no-style fallback independent | a third component stream and final component composition add bounded parser/cascade state; no `none`, logical sides, `currentColor`, gradients, border-image, unsupported styles, animation, multiple origins, `!important` inversion, or browser border parity | carry existing `border` styles into the private style stream, allow bounded width/style/color components to combine only after independent rollback, represent no-style as no border side, preserve source order, and verify border geometry/display/raster/hit/semantic consumers together; focused, full-native, library, strict, rustdoc, two-crate, formatting, static documentation, and bounded cleanup gates passed locally |
 | bounded border-style none | completed extension of the physical border owner with explicit `none` in the one-to-four-value style shorthand and physical style longhands through a private no-paint sentinel | the private sentinel blocks lower style candidates while converting to the existing no-side/zero-width result before layout and artifacts; no public paint enum expansion | resolve `none` as a property-local winning style, allow `revert-layer` to expose lower paint, keep width/color unable to resurrect a no-style side, and verify no-side geometry, absent border commands, raster, hit, semantic order, public-surface stability, focused/full-native/library, strict, rustdoc, two-crate, static documentation, and bounded cleanup gates; all passed locally |
-| bounded border-style hidden | planned extension of the physical border owner with explicit `hidden` in the one-to-four-value style shorthand and physical style longhands through a distinct private no-paint sentinel | the private sentinel preserves a future table-conflict distinction while current composition treats hidden like none; no public paint enum expansion and no table layout owner | resolve hidden as a property-local winning style, allow revert-layer to expose lower paint, keep width/color unable to resurrect a no-style side, and verify no-side geometry, absent border commands, raster, hit, semantic order, public-surface stability, and private/public separation |
+| bounded border-style hidden | completed extension of the physical border owner with explicit `hidden` in the one-to-four-value style shorthand and physical style longhands through a distinct private no-paint sentinel | the private sentinel preserves a future table-conflict distinction while current composition treats hidden like none; no public paint enum expansion and no table layout owner | resolve hidden as a property-local winning style, allow revert-layer to expose lower paint, keep width/color unable to resurrect a no-style side, and verify no-side geometry, absent border commands, raster, hit, semantic order, public-surface stability, and private/public separation; focused/full-native/library, strict, rustdoc, two-crate, static documentation, and bounded cleanup gates passed locally |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-154.md` is the latest completed task;
+`docs/plan/tasks/native-engine-155.md` is the latest completed task;
+`docs/plan/tasks/native-engine-154.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-153.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-152.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-151.md` is the preceding completed task;
@@ -2130,10 +2136,13 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
-`docs/plan/tasks/native-engine-154.md`: the design is `e7c9ad40` and the
-implementation is `875cdad8`; synchronized documentation, static truth, and
+`docs/plan/tasks/native-engine-155.md`: the design is `37126fa1` and the
+implementation is `2b07f109`; synchronized documentation, static truth, and
 exact isolated-target cleanup evidence are recorded in the task file and the
-current local documentation checkpoint. The preceding 153 checkpoint remains
+current local documentation checkpoint. The preceding 154 checkpoint remains
+recorded in `docs/plan/tasks/native-engine-154.md` with design `e7c9ad40`,
+implementation `875cdad8`, and documentation/cleanup closeout `01a141ab`.
+The preceding 153 checkpoint remains
 recorded in `docs/plan/tasks/native-engine-153.md` with design `77d81fdc`,
 implementation `6169cabc`, and documentation/cleanup closeout `73261116`.
 The preceding 152 checkpoint remains recorded in

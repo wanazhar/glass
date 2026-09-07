@@ -400,14 +400,16 @@ widths or bounded zero, preserving border style/color and the existing box-model
 and artifact consumers. The native border style surface also accepts bounded
 case-insensitive 15-layer/unlayered local `border-style` and physical
 `border-top-style`, `border-right-style`, `border-bottom-style`, and
-`border-left-style` values from the finite `none|solid|dashed|dotted` grammar,
+`border-left-style` values from the finite `none|hidden|solid|dashed|dotted` grammar,
 with one-to-four-value shorthand expansion and independent per-side
-`revert-layer` rollback to lower styles. A winning `none` blocks lower styles
-and resolves to the existing no-side/zero-width behavior before layout and
-paint. Width, style, and color components compose only after their independent
-resolution; width-only or style-only declarations do not invent missing paint
-components. `hidden`, logical sides, fractional/percentage widths, unsupported
-styles, and browser-wide border conformance remain outside the boundary.
+`revert-layer` rollback to lower styles. A winning `none` or `hidden` blocks
+lower styles and resolves to the existing no-side/zero-width behavior before
+layout and paint; `hidden` remains a private distinction for future table
+conflict resolution. Width, style, and color components compose only after
+their independent resolution; width-only or style-only declarations do not
+invent missing paint components. Collapsed-table border conflict resolution,
+logical sides, fractional/percentage widths, unsupported styles, and
+browser-wide border conformance remain outside the boundary.
 Bounded
 inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including

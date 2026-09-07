@@ -119,14 +119,15 @@ source-behavior reference.
   bounded case-insensitive 15-layer/unlayered local `border-style` and
   physical `border-top-style`, `border-right-style`, `border-bottom-style`,
   and `border-left-style` values from the finite
-  `none|solid|dashed|dotted` grammar with one-to-four-value shorthand
+  `none|hidden|solid|dashed|dotted` grammar with one-to-four-value shorthand
   expansion and independent per-side `revert-layer` rollback to lower styles;
-  a winning `none` blocks lower styles and resolves to no side/zero width
-  before layout and paint, while width, style, and color components compose
+  a winning `none` or `hidden` blocks lower styles and resolves to no side/zero
+  width before layout and paint; `hidden` remains a private distinction for
+  future table conflict resolution; width, style, and color components compose
   only after independent resolution; width-only or style-only declarations do
-  not invent missing paint components; `hidden`, logical sides,
-  fractional/percentage widths, unsupported styles, and browser-wide border
-  conformance remain outside the boundary,
+  not invent missing paint components; collapsed-table border conflict
+  resolution, logical sides, fractional/percentage widths, unsupported styles,
+  and browser-wide border conformance remain outside the boundary,
   side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow with bounded inherited line-height, bounded direct-text

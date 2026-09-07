@@ -947,6 +947,199 @@ fn native_border_color_current_color_resolves_after_cascade_and_inheritance() {
 }
 
 #[test]
+fn native_border_color_css_wide_keywords_preserve_physical_paint_and_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            @layer base {
+                #parent { display:block;width:32px;height:120px;color:green;border:2px solid red;border-color:red green blue black; }
+                .box { display:block;width:8px;height:6px;border-width:1px;border-style:solid; }
+                #inherit { color:blue;border-color:inherit; }
+                #physical { color:blue;border-top-color:inherit;border-right-color:unset;border-bottom-color:initial;border-left-color:revert; }
+                #reset { color:blue;border-color:unset;opacity:0.5; }
+                #initial { color:blue;border-color:initial; }
+                #revert { color:blue;border-color:revert; }
+                #omitted { color:blue; }
+                #invalid { color:blue;border-color:inherit;border-color:invalid; }
+                #mixed { color:blue;border-color:inherit red; }
+                #layered { color:blue;border-color:green; }
+                #inline { color:blue;border-color:blue; }
+            }
+            @layer theme {
+                #layered { border-color:inherit; }
+            }
+            #layered { border-color:revert-layer; }
+        </style>
+        <div id='parent'>
+            <div id='inherit' class='box'>Inherit</div>
+            <div id='physical' class='box'>Physical</div>
+            <div id='reset' class='box'>Reset</div>
+            <div id='initial' class='box'>Initial</div>
+            <div id='revert' class='box'>Revert</div>
+            <div id='omitted' class='box'>Omitted</div>
+            <div id='invalid' class='box'>Invalid</div>
+            <div id='mixed' class='box'>Mixed</div>
+            <div id='layered' class='box'>Layered</div>
+            <div id='inline' class='box' style='border-color:inherit'>Inline</div>
+        </div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 160,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let physical = document.resolve_target("id=physical").unwrap();
+    let reset = document.resolve_target("id=reset").unwrap();
+    let initial = document.resolve_target("id=initial").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let layered = document.resolve_target("id=layered").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let targets = [
+        parent, inherit, physical, reset, initial, revert, omitted, invalid, mixed, layered, inline,
+    ];
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let parent_colors = [NativeColor::RED, green, blue, NativeColor::BLACK];
+
+    let layout = document.layout(viewport).unwrap();
+    for node_id in targets {
+        let rectangle = layout.box_for(node_id).expect("border-color layout box");
+        assert_eq!(rectangle.width, if node_id == parent { 36 } else { 10 });
+        assert_eq!(rectangle.height, if node_id == parent { 124 } else { 8 });
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in targets {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected border-color fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let parent_border = border_for(parent).expect("parent border command");
+    assert_eq!(
+        [
+            parent_border.top.color,
+            parent_border.right.color,
+            parent_border.bottom.color,
+            parent_border.left.color,
+        ],
+        parent_colors
+    );
+    assert_eq!(border_for(inherit).unwrap().top.color, NativeColor::RED);
+    assert_eq!(border_for(inherit).unwrap().right.color, green);
+    assert_eq!(border_for(inherit).unwrap().bottom.color, blue);
+    assert_eq!(border_for(inherit).unwrap().left.color, NativeColor::BLACK);
+    let physical_border = border_for(physical).expect("physical border command");
+    assert_eq!(physical_border.top.color, NativeColor::RED);
+    assert_eq!(physical_border.right.color, blue);
+    assert_eq!(physical_border.bottom.color, blue);
+    assert_eq!(physical_border.left.color, blue);
+    for node_id in [reset, initial, revert] {
+        let borders = border_for(node_id).expect("CSS-wide reset border command");
+        assert_eq!(
+            [
+                borders.top.color,
+                borders.right.color,
+                borders.bottom.color,
+                borders.left.color
+            ],
+            [blue; 4]
+        );
+        assert_eq!(borders.top.width, 1);
+        assert_eq!(borders.top.style, NativeBorderStyle::Solid);
+    }
+    assert_eq!(
+        [
+            border_for(omitted).unwrap().top.color,
+            border_for(omitted).unwrap().right.color,
+            border_for(omitted).unwrap().bottom.color,
+            border_for(omitted).unwrap().left.color,
+        ],
+        [NativeColor::BLACK; 4]
+    );
+    assert_eq!(border_for(invalid).unwrap().top.color, NativeColor::RED);
+    assert_eq!(border_for(mixed).unwrap().top.color, NativeColor::BLACK);
+    assert_eq!(border_for(layered).unwrap().top.color, NativeColor::RED);
+    assert_eq!(border_for(inline).unwrap().top.color, NativeColor::RED);
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::BeginOpacityGroup {
+                node_id,
+                opacity: 128
+            } if *node_id == reset
+        )
+    }));
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-color"
+    }));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "border-top-color"
+                    | "border-right-color"
+                    | "border-bottom-color"
+                    | "border-left-color"
+            )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(
+            layout.box_for(parent).unwrap().x,
+            layout.box_for(parent).unwrap().y
+        ),
+        Some([255, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(
+            layout.box_for(reset).unwrap().x,
+            layout.box_for(reset).unwrap().y
+        ),
+        Some([0, 0, 255, 128])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_complete_border_current_color_projects_all_physical_forms() {
     let document = NativeDocument::parse(
         r#"<style>@layer base {

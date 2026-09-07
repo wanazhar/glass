@@ -100,13 +100,23 @@ enum NativeBorderStyleValue {
 enum NativeBorderColorValue {
     Color(NativeColor),
     CurrentColor,
+    Inherit,
+    Unset,
+    Initial,
+    Revert,
 }
 
 impl NativeBorderColorValue {
-    const fn resolve(self, current_color: NativeColor) -> NativeColor {
+    const fn resolve(
+        self,
+        current_color: NativeColor,
+        inherited_color: NativeColor,
+    ) -> NativeColor {
         match self {
             Self::Color(color) => color,
             Self::CurrentColor => current_color,
+            Self::Inherit => inherited_color,
+            Self::Unset | Self::Initial | Self::Revert => current_color,
         }
     }
 }
@@ -774,6 +784,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
     pub(crate) background_color: Option<NativeColor>,
     pub(crate) text_decoration_color: NativeColor,
+    pub(crate) border_color: [NativeColor; 4],
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
@@ -801,6 +812,7 @@ impl Default for NativeInheritedStyle {
             color: None,
             background_color: None,
             text_decoration_color: NativeColor::BLACK,
+            border_color: [NativeColor::BLACK; 4],
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
@@ -975,6 +987,7 @@ pub(crate) struct NativeComputedStyle {
     line_height: Option<u32>,
     background_color: Option<NativeColor>,
     border: Option<NativeBorder>,
+    border_colors: Option<[NativeColor; 4]>,
     border_radius: NativeBorderRadius,
     padding: NativeBoxEdges,
     margin: NativeBoxEdges,
@@ -1167,6 +1180,13 @@ impl NativeComputedStyle {
 
     pub(crate) const fn border(self) -> Option<NativeBorder> {
         self.border
+    }
+
+    pub(crate) const fn border_colors(self) -> [NativeColor; 4] {
+        match self.border_colors {
+            Some(colors) => colors,
+            None => [NativeColor::BLACK; 4],
+        }
     }
 
     pub(crate) const fn border_radius(self) -> NativeBorderRadius {
@@ -2445,9 +2465,14 @@ impl NativeStylesheet {
             current_color,
         );
         let resolved_border_color: [Option<NativeColor>; 4] = std::array::from_fn(|index| {
-            resolve_local_optional_cascade_declaration(border_color[index])
-                .map(|value| value.resolve(current_color))
+            resolve_local_border_color_declaration(
+                border_color[index],
+                current_color,
+                inherited.border_color[index],
+            )
         });
+        let border_colors =
+            std::array::from_fn(|index| resolved_border_color[index].unwrap_or(NativeColor::BLACK));
         let resolved_border = std::array::from_fn(|index| {
             match (
                 resolved_border[index],
@@ -2552,6 +2577,7 @@ impl NativeStylesheet {
             line_height: resolve_line_height(line_height, inherited.line_height),
             background_color: resolved_background_color,
             border: NativeBorder::from_sides(resolved_border),
+            border_colors: Some(border_colors),
             border_radius: resolve_local_cascade_declaration(
                 border_radius,
                 NativeBorderRadius::default(),
@@ -2859,6 +2885,20 @@ fn resolve_local_background_color_declaration(
     resolve_alignment_candidates(candidates, None, |declaration| match declaration {
         LocalCascadeDeclaration::Value(value) => {
             Some(value.resolve(inherited_background, current_color))
+        }
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_border_color_declaration(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>>;
+        MAX_NATIVE_CASCADE_LAYERS],
+    current_color: NativeColor,
+    inherited_color: NativeColor,
+) -> Option<NativeColor> {
+    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            Some(Some(value.resolve(current_color, inherited_color)))
         }
         LocalCascadeDeclaration::RevertLayer => None,
     })
@@ -4762,6 +4802,7 @@ fn parse_complete_border(value: &str) -> Option<NativeBorderDeclaration> {
         (NativeBorderStyleValue::Hidden, NativeBorderColorValue::CurrentColor) => {
             Some(NativeBorderDeclaration::CompleteHiddenCurrentColor { width })
         }
+        _ => None,
     }
 }
 
@@ -4816,6 +4857,9 @@ fn parse_border_color(value: &str) -> Option<[NativeBorderColorValue; 4]> {
         .into_iter()
         .map(parse_border_color_value)
         .collect::<Option<Vec<_>>>()?;
+    if values.len() != 1 && values.iter().any(|value| value.is_css_wide()) {
+        return None;
+    }
     match values.as_slice() {
         [all] => Some([*all; 4]),
         [top, right] => Some([*top, *right, *top, *right]),
@@ -4841,10 +4885,29 @@ fn parse_border_color_side_declaration(
 }
 
 fn parse_border_color_value(value: &str) -> Option<NativeBorderColorValue> {
-    if value.trim().eq_ignore_ascii_case("currentColor") {
-        return Some(NativeBorderColorValue::CurrentColor);
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("currentColor") {
+        Some(NativeBorderColorValue::CurrentColor)
+    } else if value.eq_ignore_ascii_case("inherit") {
+        Some(NativeBorderColorValue::Inherit)
+    } else if value.eq_ignore_ascii_case("unset") {
+        Some(NativeBorderColorValue::Unset)
+    } else if value.eq_ignore_ascii_case("initial") {
+        Some(NativeBorderColorValue::Initial)
+    } else if value.eq_ignore_ascii_case("revert") {
+        Some(NativeBorderColorValue::Revert)
+    } else {
+        parse_color(value).map(NativeBorderColorValue::Color)
     }
-    parse_color(value).map(NativeBorderColorValue::Color)
+}
+
+impl NativeBorderColorValue {
+    const fn is_css_wide(self) -> bool {
+        matches!(
+            self,
+            Self::Inherit | Self::Unset | Self::Initial | Self::Revert
+        )
+    }
 }
 
 fn parse_background_color_value(value: &str) -> Option<NativeBackgroundColorValue> {
@@ -7490,7 +7553,81 @@ mod tests {
                 NativeBorderColorValue::CurrentColor
             ))
         );
+        for (value, expected) in [
+            ("InHeRiT", NativeBorderColorValue::Inherit),
+            ("UnSeT", NativeBorderColorValue::Unset),
+            ("InItIaL", NativeBorderColorValue::Initial),
+            ("ReVeRt", NativeBorderColorValue::Revert),
+        ] {
+            assert_eq!(
+                parse_border_color(value),
+                Some([expected; 4]),
+                "value={value}"
+            );
+            assert_eq!(
+                parse_border_color_side_declaration(value),
+                Some(LocalCascadeDeclaration::Value(expected)),
+                "value={value}"
+            );
+        }
+        for value in [
+            "inherit red",
+            "red inherit",
+            "unset blue",
+            "initial currentColor",
+            "revert green",
+            "inherit unset",
+        ] {
+            assert_eq!(parse_border_color_declaration(value), None, "{value}");
+        }
         assert_eq!(parse_border_color_side_declaration("red blue"), None);
+    }
+
+    #[test]
+    fn border_color_css_wide_keywords_preserve_local_fallback_and_parent_effective_colors() {
+        let green = NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: u8::MAX,
+        };
+        let inherited_border_colors = [NativeColor::RED, green, NativeColor::BLACK, green];
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { color: blue; border: 2px solid red; border-color: inherit; } #unset { color: blue; border: 2px solid red; border-color: unset; } #initial { color: blue; border: 2px solid red; border-color: initial; } #revert { color: blue; border: 2px solid red; border-color: revert; } #current { color: blue; border: 2px solid red; border-color: currentColor; } #omitted { color: blue; border: 2px solid red; } #invalid { color: blue; border: 2px solid red; border-color: inherit; border-color: invalid; }"
+                .into(),
+        ])
+        .unwrap();
+        let computed = |id: &str| {
+            let element = node(&format!("<div id='{id}'>Border</div>"));
+            stylesheet.computed_for_with_matcher(
+                &element,
+                NativeInheritedStyle {
+                    color: Some(NativeColor::RED),
+                    border_color: inherited_border_colors,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(&element),
+            )
+        };
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        assert_eq!(computed("inherit").border_colors(), inherited_border_colors);
+        assert_eq!(computed("invalid").border_colors(), inherited_border_colors);
+        for id in ["unset", "initial", "revert", "current"] {
+            assert_eq!(computed(id).border_colors(), [blue; 4], "id={id}");
+        }
+        assert_eq!(computed("omitted").border_colors(), [NativeColor::BLACK; 4]);
+        assert_eq!(
+            computed("inherit").border().unwrap().top().color(),
+            NativeColor::RED
+        );
+        assert_eq!(computed("inherit").border().unwrap().right().color(), green);
+        assert_eq!(computed("unset").border().unwrap().top().color(), blue);
+        assert_eq!(computed("invalid").border().unwrap().left().color(), green);
     }
 
     #[test]

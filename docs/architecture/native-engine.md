@@ -37,6 +37,7 @@ bounded-overflow-revert-layer,
 bounded-border-radius-revert-layer,
 bounded-display-visibility-revert-layer,
 bounded-border-revert-layer,
+bounded-border-color-revert-layer,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -1037,6 +1038,17 @@ integration/library tests, strict affected-package Clippy, feature rustdoc,
 formatting, and diff checks passed locally; final static documentation evidence
 is recorded in the task. Remote CI remains pending because the checkout is
 local-only.
+The next dependency-ordered 151 slice is design-ready in
+`docs/plan/tasks/native-engine-151.md`. It will add standalone,
+case-insensitive `border-color` and physical `border-top|right|bottom|left-color`
+with one-to-four-value expansion, independent private color candidates, and
+`revert-layer` rollback, while preserving the existing border width/style,
+zero-width, box-model, display-list, capture, raster, point-hit, and
+semantic/source-order owners. It remains planned until its implementation and
+local gates are complete; logical sides, standalone border-width/style,
+`currentColor`, gradients, border-image, animation, multiple origins,
+`!important` inversion, and browser-wide border conformance remain outside the
+boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

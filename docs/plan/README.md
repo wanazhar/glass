@@ -1488,9 +1488,9 @@ It depends on `native-engine-159` and is planned to accept the bounded complete
 `Npx none color` form for `border` and the four physical border shorthands.
 Declared width/color will remain private component candidates while the
 existing private `None` style sentinel suppresses current non-table paint;
-public computed and artifact schemas remain unchanged. Implementation and
-certification are not yet claimed, and the issue must be updated with this
-design checkpoint before code changes begin.
+public computed and artifact schemas remain unchanged. The docs-first design
+checkpoint is `bf1a7236`; implementation and certification are not yet claimed,
+and issue #40 must be updated with this checkpoint before code changes begin.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

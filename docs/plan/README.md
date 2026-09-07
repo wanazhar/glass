@@ -1708,13 +1708,16 @@ in the task. Vertical writing modes, text orientation, percentages, elliptical
 radii, and browser logical-radius fidelity remain outside the completed
 boundary. Remote CI remains pending because the checkout is local-only.
 
-The in-progress dependency-ordered [native-engine-177](tasks/native-engine-177.md)
-slice extends the complete physical and horizontal-tb logical radius family
-with bounded author-origin `!important` priority. Important candidates use a
-private reversed named-layer partition and outrank normal radius candidates;
-the value grammar, rounded consumers, public schemas, and two-crate boundary
-remain unchanged. Local certification and cleanup are pending; remote CI
-remains pending because the checkout is local-only.
+The completed dependency-ordered [native-engine-177](tasks/native-engine-177.md)
+slice is implemented at `46f6499a`. It extends the complete physical and
+horizontal-tb logical radius family with bounded author-origin `!important`
+priority: important candidates use a private reversed named-layer partition
+and outrank normal radius candidates, while the value grammar, rounded
+consumers, public schemas, and two-crate boundary remain unchanged. Focused,
+full-native, feature-library, strict Clippy, and warning-denied rustdoc gates
+pass locally; exact slice evidence is recorded in the task. The issue-level
+workspace/release/security gates, cleanup, and remote CI remain pending until
+issue #40 reaches its final validation boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

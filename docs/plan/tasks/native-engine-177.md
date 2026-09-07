@@ -1,7 +1,7 @@
 ---
 id: native-engine-177
 scope: glass-browser/native-engine/cascade-radius-important-priority
-status: in-progress
+status: complete
 depends-on: [native-engine-176]
 ---
 
@@ -136,5 +136,30 @@ post-delete absence, and filesystem free-space delta.
 
 ## Evidence
 
-Pending implementation and local certification.
+Implementation: `46f6499a`; design and documentation baseline:
+`8fabb56d`. The implementation adds private doubled radius candidate
+partitions, records terminal case-insensitive `!important` state for the
+physical and horizontal-tb logical radius family, reverses named-layer order
+only inside the important partition, and preserves the existing physical
+projection and rounded consumers. No public schema, dependency, feature
+default, layout algorithm, raster algorithm, or crate boundary changed.
 
+Passed slice-local gates:
+
+- `cargo fmt --all -- --check` and `git diff --check`.
+- Locked native-feature `cargo check --tests` in the isolated target
+  `/tmp/glass-177-focused`.
+- Filtered priority coverage: 2 parser/cascade unit tests and 1 integration
+  test passed; the integration exercised layout, rounded fill/border display
+  commands, decoded raster/PNG capture, point hit testing, semantic/source
+  order, and bounded unsupported diagnostics.
+- Full native integration: 215 passed, 0 failed, 0 ignored.
+- Native-feature `glass-browser` library: 984 passed, 1 ignored, 0 failed.
+- Strict affected-package Clippy with `-D warnings` and warning-denied
+  affected-package rustdoc passed.
+
+The issue-level workspace all-target/all-feature, paired-crate, package,
+security/fuzz, repository-static, remote-CI, and release gates remain
+deferred until the dependency-ordered native-engine work reaches issue #40's
+final validation boundary. This record makes no remote CI, push, release,
+tag, registry-publication, browser-parity, or promotion claim.

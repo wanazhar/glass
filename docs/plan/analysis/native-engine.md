@@ -1554,95 +1554,95 @@ Phase 2 integration chains added by these slices are:
     flags before startup.
 13. Default builds retain the Chromium CLI value set and cannot select native
     through an omitted runtime or a fallback path.
-13. Native layout derives visible element rectangles from the current DOM and
+14. Native layout derives visible element rectangles from the current DOM and
     viewport without creating a second mutable owner.
-14. Native point clicks reject malformed/out-of-viewport points and resolve
+15. Native point clicks reject malformed/out-of-viewport points and resolve
     through the deepest layout hit to an actionable semantic ancestor before
     any mutation.
-15. Native display lists are derived from a matching layout revision and emit
+16. Native display lists are derived from a matching layout revision and emit
     bounded deterministic commands without mutating the document.
-16. Native software surfaces replay a bounded display list into logical RGBA
+17. Native software surfaces replay a bounded display list into logical RGBA
     pixels without mutating page state.
-17. Native style resolution inherits only `color` through bounded DOM parent
+18. Native style resolution inherits only `color` through bounded DOM parent
     links, and display-list text consumes that resolved value.
-18. Native fill/text commands carry bounded logical clips derived from matching
+19. Native fill/text commands carry bounded logical clips derived from matching
     `overflow:hidden` ancestors, and software replay enforces them.
-19. Native uniform border declarations produce matching revisioned `BorderRect`
+20. Native uniform border declarations produce matching revisioned `BorderRect`
     commands, preserve deterministic fill/border/text order, and replay only
     inside the layout box and its ancestor clips.
-20. Native PNG capture encodes the current logical surface through the real
+21. Native PNG capture encodes the current logical surface through the real
     backend dispatcher, enforces the stable capture-byte limit, preserves the
     revision, and denies unsupported JPEG/PDF formats explicitly.
-21. Native box-model derivation exposes outer and content rectangles, applies
+22. Native box-model derivation exposes outer and content rectangles, applies
     bounded border/padding insets to child/text origins, applies uniform
     margins to normal flow, and preserves deterministic hit-test ownership.
-22. Native vertical scroll dispatch derives a bounded root offset, clamps it to
+23. Native vertical scroll dispatch derives a bounded root offset, clamps it to
     content height, maps point hits and display replay through that offset, and
     preserves revision/effect behavior for moved/no-op/unsupported deltas.
-23. Native side-specific border declarations cascade independently, contribute
+24. Native side-specific border declarations cascade independently, contribute
     to outer/content geometry, emit bounded display-list paint data, and replay
     with clipping and root-scroll translation.
-24. Native solid/dashed/dotted border styles survive physical-side cascade,
+25. Native solid/dashed/dotted border styles survive physical-side cascade,
     typed display-list projection, deterministic pattern replay, clipping, and
     root-scroll translation while unsupported styles remain ignored.
-25. Native bounded physical border radii survive shorthand expansion and
+26. Native bounded physical border radii survive shorthand expansion and
     cascade, concrete-box normalization, layout hit testing, display-list
     projection, rounded fill/border replay, rectangular ancestor clipping, and
     root-scroll translation while unsupported radius forms remain ignored.
-26. Native inline element boxes use the same bounded width calculation for
+27. Native inline element boxes use the same bounded width calculation for
     preflight line-fit decisions and final layout, so adjacent inline boxes
     wrap deterministically before display-list, hit-test, and scroll consumers
     observe their document-space geometry.
-27. Native fixed-pixel line-height values are resolved before child flow, so
+28. Native fixed-pixel line-height values are resolved before child flow, so
     direct text and inline boxes share a deterministic minimum line height while
     explicit element heights retain box-model precedence for layout, paint, and
     hit-test consumers.
-28. Native direct text is collapsed and fragmented during the same flow pass
+29. Native direct text is collapsed and fragmented during the same flow pass
     that places inline boxes, so display-list origins and source order match
     layout coordinates while style and ancestor clips remain owned by the
     containing element.
-29. Native collapsed direct text keeps a complete word on the current fixed
+30. Native collapsed direct text keeps a complete word on the current fixed
     line when it fits, drops its separator when it wraps, and splits only a
     word that exceeds the full line width; the resulting fragments remain in
     source order for paint and scroll consumers.
-30. Native physical padding and margin shorthands expand deterministically,
+31. Native physical padding and margin shorthands expand deterministically,
     physical longhands cascade per side, and the resulting top/right/bottom/
     left values feed content origins, normal-flow margins, and all existing
     layout/paint/hit/scroll consumers.
-31. Native direct-text flow retains bounded leading/trailing whitespace
+32. Native direct-text flow retains bounded leading/trailing whitespace
     boundaries, joins only source-separated inline-flow items, paints consumed
     separators through the existing text path, and drops separators that would
     begin a fresh wrapped line.
-32. Native layout derives one bounded rectangular `overflow:hidden` ancestor
+33. Native layout derives one bounded rectangular `overflow:hidden` ancestor
     intersection per layout box, and viewport projection plus point hit-testing
     consume that same document-space clip before root-scroll translation.
-33. Native stylesheet and inline-style parsing records bounded sanitized
+34. Native stylesheet and inline-style parsing records bounded sanitized
     diagnostics for unsupported selectors, properties, values, and malformed
     rules; document preparation carries the list atomically with navigation and
     the explicit Rust API reports its revision and truncation state.
-34. Native direct surface output and decoded bounded PNG bytes match one
+35. Native direct surface output and decoded bounded PNG bytes match one
     complete checked-in logical-pixel golden while capture preserves revision
     state and does not add screenshot evidence.
-35. Native descendant selector chains resolve through the existing DOM parent
+36. Native descendant selector chains resolve through the existing DOM parent
     links before style cascade, visibility, layout, and paint consume the
     computed result; unsupported combinators remain diagnosed and ignored.
-36. Native `overflow: clip` contributes the same bounded rectangular ancestor
+37. Native `overflow: clip` contributes the same bounded rectangular ancestor
     intersection as `overflow: hidden` before paint, viewport projection, and
     point hit-testing consume it; it never creates nested or implicit scroll.
-37. Native visible `<br>` elements advance the containing integer flow cursor by
+38. Native visible `<br>` elements advance the containing integer flow cursor by
     one fixed line-height floor, reset the inline origin, and create no
     semantic/layout/paint node; hidden breaks are ignored.
-38. Native inherited `white-space: pre-line` turns bounded LF/CR/CRLF source
+39. Native inherited `white-space: pre-line` turns bounded LF/CR/CRLF source
     boundaries into the same hard-break cursor transition while retaining
     collapsed spaces and the default `white-space: normal` behavior.
-39. Native inherited `white-space: pre` retains literal fixed-cell source
+40. Native inherited `white-space: pre` retains literal fixed-cell source
     whitespace, turns LF/CR/CRLF into the same hard-break transition, and does
     not soft-wrap preformatted segments without changing semantic ownership.
-40. Native inherited `white-space: pre-wrap` retains literal fixed-cell source
+41. Native inherited `white-space: pre-wrap` retains literal fixed-cell source
     whitespace, turns LF/CR/CRLF into the same hard-break transition, and
     splits source runs only at deterministic fixed-cell soft-wrap capacity
     without synthesizing semantic, layout, or paint nodes.
-41. Native standard padded base64 `data:text/html` payloads pass through the
+42. Native standard padded base64 `data:text/html` payloads pass through the
     existing local resource loader, bounded pre-decode/decoded-body checks,
     navigation revision, and real backend dispatcher while retaining opaque
     origin and rejecting invalid, non-UTF-8, percent-encoded, non-HTML, and

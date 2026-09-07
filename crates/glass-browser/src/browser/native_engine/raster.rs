@@ -39,6 +39,14 @@ struct TextPaint {
     justify_spacing: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum NativeBorderEdge {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
 /// Immutable logical RGBA output from the native display-list seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeSurface {
@@ -438,20 +446,47 @@ impl NativeSurface {
                     continue;
                 }
                 let paint = if signed_y < outer_top.saturating_add(i64::from(borders.top.width)) {
-                    Some((borders.top, i64::from(document_x.saturating_sub(rect.x))))
+                    Some((
+                        borders.top,
+                        i64::from(document_x.saturating_sub(rect.x)),
+                        signed_y.saturating_sub(outer_top),
+                        NativeBorderEdge::Top,
+                    ))
                 } else if signed_x >= outer_right.saturating_sub(i64::from(borders.right.width)) {
-                    Some((borders.right, i64::from(document_y.saturating_sub(rect.y))))
+                    Some((
+                        borders.right,
+                        i64::from(document_y.saturating_sub(rect.y)),
+                        outer_right.saturating_sub(1).saturating_sub(signed_x),
+                        NativeBorderEdge::Right,
+                    ))
                 } else if signed_y >= outer_bottom.saturating_sub(i64::from(borders.bottom.width)) {
-                    Some((borders.bottom, i64::from(document_x.saturating_sub(rect.x))))
+                    Some((
+                        borders.bottom,
+                        i64::from(document_x.saturating_sub(rect.x)),
+                        outer_bottom.saturating_sub(1).saturating_sub(signed_y),
+                        NativeBorderEdge::Bottom,
+                    ))
                 } else if signed_x < outer_left.saturating_add(i64::from(borders.left.width)) {
-                    Some((borders.left, i64::from(document_y.saturating_sub(rect.y))))
+                    Some((
+                        borders.left,
+                        i64::from(document_y.saturating_sub(rect.y)),
+                        signed_x.saturating_sub(outer_left),
+                        NativeBorderEdge::Left,
+                    ))
                 } else {
                     None
                 };
-                if let Some((side, position)) = paint
-                    && Self::border_pattern_paints(side.style, side.width, position)
+                if let Some((side, position, cross_position, edge)) = paint
+                    && let Some(color) = Self::border_pixel(
+                        side.style,
+                        side.width,
+                        position,
+                        cross_position,
+                        edge,
+                        side.color,
+                    )
                 {
-                    self.blend_pixel(x, y, side.color);
+                    self.blend_pixel(x, y, color);
                 }
             }
         }
@@ -467,7 +502,12 @@ impl NativeSurface {
         }
         let position = u32::try_from(position).unwrap_or(u32::MAX);
         match style {
-            super::css::NativeBorderStyle::Solid => true,
+            super::css::NativeBorderStyle::Solid
+            | super::css::NativeBorderStyle::Double
+            | super::css::NativeBorderStyle::Groove
+            | super::css::NativeBorderStyle::Ridge
+            | super::css::NativeBorderStyle::Inset
+            | super::css::NativeBorderStyle::Outset => true,
             super::css::NativeBorderStyle::Dashed => {
                 let dash = width.saturating_mul(3).max(1);
                 let gap = width.saturating_mul(2).max(1);
@@ -479,6 +519,73 @@ impl NativeSurface {
                 let period = dot.saturating_mul(2);
                 position % period < dot
             }
+        }
+    }
+
+    fn border_pixel(
+        style: super::css::NativeBorderStyle,
+        width: u32,
+        position: i64,
+        cross_position: i64,
+        edge: NativeBorderEdge,
+        color: super::css::NativeColor,
+    ) -> Option<super::css::NativeColor> {
+        if width == 0 || position < 0 || cross_position < 0 {
+            return None;
+        }
+        let cross_position = u32::try_from(cross_position).ok()?;
+        if cross_position >= width {
+            return None;
+        }
+        match style {
+            super::css::NativeBorderStyle::Solid => Some(color),
+            super::css::NativeBorderStyle::Dashed | super::css::NativeBorderStyle::Dotted => {
+                Self::border_pattern_paints(style, width, position).then_some(color)
+            }
+            super::css::NativeBorderStyle::Double => {
+                let paints = if width < 3 {
+                    true
+                } else {
+                    let stripe = (width / 3).max(1);
+                    cross_position < stripe || cross_position >= width.saturating_sub(stripe)
+                };
+                paints.then_some(color)
+            }
+            super::css::NativeBorderStyle::Groove | super::css::NativeBorderStyle::Ridge => {
+                let outer_half = (width.saturating_add(1)) / 2;
+                let outer = cross_position < outer_half;
+                let light = match style {
+                    super::css::NativeBorderStyle::Groove => !outer,
+                    super::css::NativeBorderStyle::Ridge => outer,
+                    _ => unreachable!(),
+                };
+                Some(Self::shade_border_color(color, light))
+            }
+            super::css::NativeBorderStyle::Inset | super::css::NativeBorderStyle::Outset => {
+                let top_or_left = matches!(edge, NativeBorderEdge::Top | NativeBorderEdge::Left);
+                let light = match style {
+                    super::css::NativeBorderStyle::Inset => !top_or_left,
+                    super::css::NativeBorderStyle::Outset => top_or_left,
+                    _ => unreachable!(),
+                };
+                Some(Self::shade_border_color(color, light))
+            }
+        }
+    }
+
+    fn shade_border_color(color: super::css::NativeColor, light: bool) -> super::css::NativeColor {
+        let shade = |channel: u8| {
+            if light {
+                channel.saturating_add(u8::MAX.saturating_sub(channel) / 2)
+            } else {
+                channel / 2
+            }
+        };
+        super::css::NativeColor {
+            red: shade(color.red),
+            green: shade(color.green),
+            blue: shade(color.blue),
+            alpha: color.alpha,
         }
     }
 

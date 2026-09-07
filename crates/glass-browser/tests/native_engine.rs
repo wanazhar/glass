@@ -1366,6 +1366,174 @@ fn native_border_style_hidden_blocks_or_reveals_components_and_artifacts() {
 }
 
 #[test]
+fn native_painted_border_style_variants_replay_and_cascade() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #double { display:block;width:8px;height:6px;border:6px solid red; } #groove { display:block;width:8px;height:6px;border:6px solid red; } #ridge { display:block;width:8px;height:6px;border:6px solid red; } #inset { display:block;width:8px;height:6px;border:6px solid red; } #outset { display:block;width:8px;height:6px;border:6px solid red; } #longhands { display:block;width:8px;height:6px;border:6px solid red; } #complete { display:block;width:8px;height:6px; } #rollback { display:block;width:8px;height:6px;border:6px solid red; } #repeated { display:block;width:8px;height:6px;border:6px solid red; } #invalid { display:block;width:8px;height:6px;border:6px solid red; } #inline { display:block;width:8px;height:6px;border:6px solid red; } } @layer theme { #double { border-style:double; } #groove { border-style:groove; } #ridge { border-style:RIDGE; } #inset { border-style:inset; } #outset { border-style:OuTsEt; } #longhands { border-style:double groove ridge inset; } #complete { border:6px double blue; } #rollback { border-style:double;border-style:revert-layer; } #repeated { border-style:groove;border-style:revert-layer;border-style:revert-layer; } #invalid { border-style:double;border-style:invalid; } } #inline { border-style:outset; }</style><button id='double'>Double</button><button id='groove'>Groove</button><button id='ridge'>Ridge</button><button id='inset'>Inset</button><button id='outset'>Outset</button><button id='longhands'>Longhands</button><button id='complete'>Complete</button><button id='rollback'>Rollback</button><button id='repeated'>Repeated</button><button id='invalid'>Invalid</button><button id='inline'>Inline</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 300,
+        device_scale_factor_milli: 1000,
+    };
+    let ids = [
+        "double",
+        "groove",
+        "ridge",
+        "inset",
+        "outset",
+        "longhands",
+        "complete",
+        "rollback",
+        "repeated",
+        "invalid",
+        "inline",
+    ];
+    let nodes = ids.map(|id| document.resolve_target(&format!("id={id}")).unwrap());
+    let layout = document.layout(viewport).unwrap();
+    for node_id in nodes {
+        let rectangle = layout.box_for(node_id).expect("painted border layout box");
+        assert_eq!((rectangle.width, rectangle.height), (20, 18));
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    let positions: Vec<_> = nodes
+        .iter()
+        .map(|node_id| {
+            semantic_nodes
+                .iter()
+                .position(|node| node.node_id == *node_id && !node.hidden)
+                .expect("visible painted-border semantic node")
+        })
+        .collect();
+    assert!(positions.windows(2).all(|window| window[0] < window[1]));
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        border_for(nodes[0]).unwrap().top.style,
+        NativeBorderStyle::Double
+    );
+    assert_eq!(
+        border_for(nodes[1]).unwrap().top.style,
+        NativeBorderStyle::Groove
+    );
+    assert_eq!(
+        border_for(nodes[2]).unwrap().top.style,
+        NativeBorderStyle::Ridge
+    );
+    assert_eq!(
+        border_for(nodes[3]).unwrap().top.style,
+        NativeBorderStyle::Inset
+    );
+    assert_eq!(
+        border_for(nodes[4]).unwrap().top.style,
+        NativeBorderStyle::Outset
+    );
+    let longhands = border_for(nodes[5]).unwrap();
+    assert_eq!(longhands.top.style, NativeBorderStyle::Double);
+    assert_eq!(longhands.right.style, NativeBorderStyle::Groove);
+    assert_eq!(longhands.bottom.style, NativeBorderStyle::Ridge);
+    assert_eq!(longhands.left.style, NativeBorderStyle::Inset);
+    assert_eq!(
+        border_for(nodes[6]).unwrap().top.style,
+        NativeBorderStyle::Double
+    );
+    assert_eq!(
+        border_for(nodes[7]).unwrap().top.style,
+        NativeBorderStyle::Solid
+    );
+    assert_eq!(
+        border_for(nodes[8]).unwrap().top.style,
+        NativeBorderStyle::Solid
+    );
+    assert_eq!(
+        border_for(nodes[9]).unwrap().top.style,
+        NativeBorderStyle::Double
+    );
+    assert_eq!(
+        border_for(nodes[10]).unwrap().top.style,
+        NativeBorderStyle::Outset
+    );
+    assert_eq!(
+        border_for(nodes[6]).unwrap().top.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255,
+        }
+    );
+
+    let invalid_diagnostics = document
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "border-style"
+        })
+        .count();
+    assert_eq!(invalid_diagnostics, 1);
+
+    let surface = list.rasterize().unwrap();
+    let double_rect = layout.box_for(nodes[0]).unwrap();
+    assert_eq!(
+        surface.pixel(double_rect.x + 10, double_rect.y),
+        Some([255, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(double_rect.x + 10, double_rect.y + 2),
+        Some([255, 255, 255, 255])
+    );
+    let groove_rect = layout.box_for(nodes[1]).unwrap();
+    assert_eq!(
+        surface.pixel(groove_rect.x + 10, groove_rect.y),
+        Some([127, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(groove_rect.x + 10, groove_rect.y + 4),
+        Some([255, 127, 127, 255])
+    );
+    let ridge_rect = layout.box_for(nodes[2]).unwrap();
+    assert_eq!(
+        surface.pixel(ridge_rect.x + 10, ridge_rect.y),
+        Some([255, 127, 127, 255])
+    );
+    let inset_rect = layout.box_for(nodes[3]).unwrap();
+    assert_eq!(
+        surface.pixel(inset_rect.x + 10, inset_rect.y),
+        Some([127, 0, 0, 255])
+    );
+    let outset_rect = layout.box_for(nodes[4]).unwrap();
+    assert_eq!(
+        surface.pixel(outset_rect.x + 10, outset_rect.y),
+        Some([255, 127, 127, 255])
+    );
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (64, 300));
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

@@ -183,9 +183,11 @@ case-insensitive 15-layer/unlayered `border-color`, `border-top-color`,
 `border-right-color`, `border-bottom-color`, and `border-left-color` values,
 with one-to-four-value physical shorthand expansion and independent per-side
 `revert-layer` rollback to lower colors or bounded black, preserving border
-width/style and existing box-model and artifact consumers; `currentColor`,
-gradients, border-image, and browser-wide border conformance remain outside the
-boundary. The same owner also accepts bounded case-insensitive
+width/style and existing box-model and artifact consumers. Standalone physical
+`border-color` and physical color longhands also resolve `currentColor` from
+the element's local or inherited color; complete border shorthands with
+`currentColor`, gradients, border-image, and browser-wide border conformance
+remain outside the boundary. The same owner also accepts bounded case-insensitive
 15-layer/unlayered `border-width`, `border-top-width`, `border-right-width`,
 `border-bottom-width`, and `border-left-width` values with one-to-four-value
 physical shorthand expansion and independent per-side `revert-layer` rollback
@@ -228,8 +230,9 @@ inside-out transparent-layer compositing, bounded inherited physical
 bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback for
 `background-color` and inherited `color`, preserving the existing
 `None`/parent-root fallbacks and fill/text display-list, clipping, opacity,
-capture, and raster owners; `currentColor`, gradients, system colors,
-percentages, color spaces, and multiple origins remain outside the boundary,
+capture, and raster owners; `currentColor` remains outside the background and
+text-color surfaces, while gradients, system colors, percentages, color spaces,
+and multiple origins remain outside the boundary,
 bounded
 inherited fixed-cell `text-decoration:none|underline|overline|line-through`
 paint including distinct shorthand combinations, bounded local

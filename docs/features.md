@@ -109,9 +109,11 @@ source-behavior reference.
   and `border-left-color` values with one-to-four-value shorthand expansion
   and independent per-side `revert-layer` rollback to lower colors or bounded
   black, preserving border width/style and existing box-model, display-list,
-  capture, raster, point-hit, and semantic/source-order owners; `currentColor`,
-  gradients, border-image, and browser-wide border conformance remain outside
-  the boundary,
+  capture, raster, point-hit, and semantic/source-order owners. Standalone
+  physical `border-color` and physical color longhands also resolve
+  `currentColor` from the element's local or inherited color; complete border
+  shorthands with `currentColor`, gradients, border-image, and browser-wide
+  border conformance remain outside the boundary,
   plus bounded case-insensitive 15-layer/unlayered local `border-width` and
   physical `border-top-width`, `border-right-width`, `border-bottom-width`,
   and `border-left-width` values with one-to-four-value shorthand expansion
@@ -156,8 +158,9 @@ source-behavior reference.
   15-layer/unlayered local `revert-layer` rollback for `background-color` and
   inherited `color`, preserving the existing `None`/parent-root fallbacks and
   fill/text display-list, clipping, opacity, capture, and raster owners;
-  `currentColor`, gradients, system colors, percentages, color spaces, and
-  multiple origins remain outside the boundary, bounded inherited
+  `currentColor` remains outside the background and text-color surfaces, while
+  gradients, system colors, percentages, color spaces, and multiple origins
+  remain outside the boundary, bounded inherited
   fixed-cell
   `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using

@@ -1,7 +1,7 @@
 ---
 id: native-engine-161
 scope: glass-browser/native-engine/cascade-border-current-color
-status: planned
+status: complete
 depends-on: [native-engine-160]
 ---
 
@@ -132,6 +132,72 @@ The completed slice must cover:
 
 ## Implementation
 
-Pending. The design is recorded before implementation so the bounded
-`currentColor` surface and its exclusions remain auditable.
+Implemented in `299de40d` (`feat(native-engine): resolve currentColor borders`)
+with the test-lint follow-up `2042fb3e` and design checkpoint `c5a58f29`. The
+private `NativeBorderColorValue` enum now carries either a concrete
+`NativeColor` or deferred `CurrentColor` through the existing per-side cascade
+stream. Computed-style construction resolves the element's local color or
+inherited color first, substitutes the bounded black initial color when direct
+computation has no inherited color, and projects only concrete `NativeColor`
+values into `NativeBorder`. Complete border shorthands remain concrete-color
+only; public computed/artifact schemas and all existing border consumers are
+unchanged.
 
+## Evidence
+
+Local certification passed on 2026-09-07 UTC:
+
+- `cargo fmt --all` and `git diff --check` passed.
+- Feature-enabled locked `glass-browser` check passed in the isolated
+  regenerable target `/tmp/glass-161-focused` with
+  `RUST_MIN_STACK=16777216`.
+- Focused border parser/cascade units passed 2/2. An initial substring filter
+  was mistakenly combined with `--exact` and ran zero tests; it is not counted
+  as evidence. The corrected non-exact filter passed the two intended tests.
+- The targeted `currentColor` integration test passed 1/1 with 198 filtered;
+  the full native integration suite passed 199/199.
+- The feature-enabled library suite passed 967 tests with 1 ignored. Strict
+  affected-package Clippy (`--all-targets --all-features --locked -D warnings`)
+  and feature rustdoc with `RUSTDOCFLAGS=-Dwarnings` passed.
+- Locked `glass-dev` check and build passed in the same isolated target.
+  Both configured debug binaries were present there: `glass` and
+  `glass-browser`.
+- The final workspace validator passed with
+  `RUST_MIN_STACK=33554432`; its TUI suite passed 15/15 and its development
+  runtime suite passed 4/4. This stack setting is required for the known
+  default-stack overflow in the pre-existing
+  `cli::args::tests::agent_readiness_commands_are_explicit` test.
+- Final static truth passed: version sync at 0.3.14; feature parity 14
+  capabilities across 4 targets; TUI 15 implementation keys/63 documentation
+  markers; documentation depth 93 guides/19 contracts; reliability 6
+  scenarios across 4 targets; public read-only adapters 5; Web IR 8
+  fixtures/8 scenarios/11 categories; release documentation 575 Markdown
+  documents, 83 current-version documents, 57 previous-version hits, 665
+  semantic-audit hits, and 0 current-claim failures; documentation coverage
+  passed at 575 Markdown files, 345 full-product MCP tools (100
+  browser-only), 17 examples, and 22 public modules.
+
+The focused and full integration coverage exercises case-insensitive
+`currentColor` shorthand expansion, all physical color longhands, local and
+inherited substitution, black fallback, layer rollback, same-block order,
+valid-before-invalid preservation, complete-shorthand rejection, concrete
+public/artifact projection, border geometry, display-list/raster/capture,
+point-hit, semantic visibility, and diagnostic behavior. No public keyword or
+unsupported raw CSS text is exposed.
+
+## Cleanup evidence
+
+- After all implementation, test, documentation, coverage, and workspace gates
+  passed, `/tmp/glass-161-focused` was verified as a real regenerable
+  directory with no active Cargo/Rust consumer or open handle. It contained
+  5,431,152,640 bytes, 9,070 files, and 1,185 directories.
+- The exact target was removed with bounded same-filesystem
+  `find -P /tmp/glass-161-focused -xdev -depth -delete`, and its absence was
+  verified. No repository `target/` existed before the final workspace gate;
+  the workspace validator's repository target remains to be reclaimed after
+  this documentation commit once it is independently inventoried.
+- Free space on `/tmp` rose from 77,410,668,544 to 82,841,812,992 bytes,
+  reclaiming 5,431,144,448 bytes. The directory's `du` usage was
+  5,431,152,640 bytes; the 8,192-byte difference is filesystem accounting.
+- Remote CI, push, release, tag, registry publication, and browser-parity
+  claims remain unmade because the checkout is local-only.

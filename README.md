@@ -382,16 +382,19 @@ bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
 text paint, plus bounded case-insensitive 15-layer/unlayered local
 `revert-layer` rollback for `background-color` and inherited `color`, preserving
 the existing `None`/parent-root fallbacks and fill/text display-list, clipping,
-opacity, capture, and raster owners; `currentColor`, gradients, system colors,
-percentages, color spaces, and multiple origins remain outside the boundary.
+opacity, capture, and raster owners; `currentColor` remains outside the
+background and text-color surfaces, while gradients, system colors, percentages,
+color spaces, and multiple origins remain outside the boundary.
 The native border surface also accepts bounded case-insensitive 15-layer/
 unlayered local `border-color` and physical `border-top-color`,
 `border-right-color`, `border-bottom-color`, and `border-left-color` values,
 including one-to-four-value shorthand expansion and independent per-side
 `revert-layer` rollback with a bounded black fallback, while preserving the
 existing border width/style, box-model, display-list, capture, raster, point-
-hit, and semantic/source-order owners. `currentColor`, gradients, border-image,
-and browser-wide border conformance remain outside the boundary. The native
+hit, and semantic/source-order owners. Standalone physical `border-color` and
+physical color longhands also resolve `currentColor` from the element's local
+or inherited color; complete border shorthands with `currentColor`, gradients,
+border-image, and browser-wide border conformance remain outside the boundary. The native
 border width surface also accepts bounded case-insensitive 15-layer/unlayered
 local `border-width` and physical `border-top-width`, `border-right-width`,
 `border-bottom-width`, and `border-left-width` values with one-to-four-value

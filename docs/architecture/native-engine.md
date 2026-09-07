@@ -1436,6 +1436,16 @@ fill/glyph/decoration artifacts, public schemas, and the two-crate boundary
 remain unchanged. Border color and other properties do not receive priority
 semantics in this slice. Slice-local certification and task-specific cleanup
 passed; issue-level final gates, final cleanup, and remote CI remain pending.
+
+The in-progress dependency-ordered `native-engine-179` slice is recorded in
+`docs/plan/tasks/native-engine-179.md`. It extends bounded author-origin
+`!important` priority to the standalone physical `border-color` shorthand and
+four physical color longhands through private reversed named-layer partitions.
+Existing four-side color resolution, currentColor/CSS-wide/revert-layer
+behavior, border width/style composition, artifacts, public schemas, and the
+two-crate boundary remain unchanged. Complete/side border shorthands and
+logical border-color remain outside this slice; implementation, certification,
+issue-level final gates, cleanup, and remote CI are pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

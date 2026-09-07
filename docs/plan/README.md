@@ -1730,6 +1730,15 @@ pass locally; exact slice evidence and task-specific cleanup are recorded in
 the task. Issue-level final gates, final cleanup, and remote CI remain pending
 until issue #40 reaches its final validation boundary.
 
+The in-progress dependency-ordered [native-engine-179](tasks/native-engine-179.md)
+slice extends bounded author-origin `!important` priority to the standalone
+physical `border-color` shorthand and four physical color longhands. It reuses
+the private reversed named-layer partition while preserving four-side
+composition, currentColor/CSS-wide/revert-layer behavior, border
+width/style/layout/artifacts, public schemas, and the two-crate boundary.
+Complete/side border shorthands and logical border-color remain outside this
+small priority slice; implementation and certification are pending.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

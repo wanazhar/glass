@@ -1404,14 +1404,17 @@ remain unchanged. The task records focused/full-native/library, strict Clippy,
 rustdoc, two-crate, formatting, static documentation, and bounded cleanup
 evidence; remote CI remains pending because the checkout is local-only.
 
-The next dependency-ordered [native-engine-154](tasks/native-engine-154.md)
-slice is design-ready. It will add explicit physical `border-style:none` to
-the one-to-four-value shorthand and four physical style longhands through a
-private no-paint sentinel. A winning `none` will block lower styles and convert
-to the existing no-side/zero-width behavior before layout and artifacts; the
-public paint enum and display-list schema remain unchanged. `hidden`, other
-border styles, logical sides, `currentColor`, gradients, border-image, and
-browser-wide border conformance remain outside the planned boundary.
+The dependency-ordered [native-engine-154](tasks/native-engine-154.md)
+implementation is complete in `875cdad8` (design `e7c9ad40`). It adds
+explicit physical `border-style:none` to the one-to-four-value shorthand and
+four physical style longhands through a private no-paint sentinel. A winning
+`none` blocks lower styles and converts to the existing no-side/zero-width
+behavior before layout and artifacts; the public paint enum and display-list
+schema remain unchanged. The task records focused/full-native/library, strict
+Clippy, rustdoc, two-crate, formatting, static documentation, and bounded
+cleanup evidence; remote CI remains pending because the checkout is local-only.
+`hidden`, other border styles, logical sides, `currentColor`, gradients,
+border-image, and browser-wide border conformance remain outside the boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

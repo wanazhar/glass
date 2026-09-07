@@ -178,14 +178,15 @@ zero. Width-only declarations do not invent a style or paint a border. The
 same owner also accepts bounded case-insensitive 15-layer/unlayered local
 `border-style` and physical `border-top-style`, `border-right-style`,
 `border-bottom-style`, and `border-left-style` values from the finite
-`none|solid|dashed|dotted` grammar with one-to-four-value physical shorthand
-expansion and independent per-side `revert-layer` rollback to lower styles. A
-winning `none` blocks lower styles and resolves to no side/zero width before
-layout and paint. Width, style, and color components compose only after
-independent resolution, and width-only or style-only declarations do not
-invent missing paint components; `hidden`, logical sides,
-fractional/percentage widths, unsupported styles, and browser-wide border
-conformance remain outside the boundary,
+`none|hidden|solid|dashed|dotted` grammar with one-to-four-value physical
+shorthand expansion and independent per-side `revert-layer` rollback to lower
+styles. A winning `none` or `hidden` blocks lower styles and resolves to no
+side/zero width before layout and paint; `hidden` remains a private distinction
+for future table conflict resolution. Width, style, and color components
+compose only after independent resolution, and width-only or style-only
+declarations do not invent missing paint components; collapsed-table border
+conflict resolution, logical sides, fractional/percentage widths, unsupported
+styles, and browser-wide border conformance remain outside the boundary,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

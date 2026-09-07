@@ -1,7 +1,7 @@
 ---
 id: native-engine-155
 scope: glass-browser/native-engine/cascade-border-style-hidden
-status: planned
+status: done
 depends-on: [native-engine-154]
 ---
 
@@ -121,8 +121,55 @@ The completed slice must cover:
 
 ## Implementation
 
-To be filled after the implementation checkpoint.
+Implemented in `2b07f109` after the design checkpoint `37126fa1`.
+
+- Added a distinct private `NativeBorderStyleValue::Hidden` cascade value;
+  it cannot leak into the public `NativeBorderStyle` enum or display-list
+  schema.
+- Extended bounded case-insensitive `border-style` shorthand and all four
+  physical style longhands to accept `hidden`, while retaining standalone
+  case-insensitive `revert-layer` and the existing `none|solid|dashed|dotted`
+  behavior.
+- Preserved named-layer priority, specificity, source order, unlayered/inline
+  precedence, same-block declaration order, valid-before-invalid preservation,
+  and independent width/style/color resolution.
+- Treats a winning `hidden` as no-side/zero-width before box-model and artifact
+  projection in the current non-table engine, while retaining the private
+  distinction for future collapsed-table conflict resolution.
+- Added parser and artifact integration coverage for shorthand expansion,
+  physical longhands, rollback, precedence, invalid-later preservation,
+  mixed-component blocking, geometry, display commands, raster, hit testing,
+  semantic order, and PNG capture.
 
 ## Evidence
 
-To be filled after local certification and bounded target cleanup.
+Local certification passed with the isolated regenerable target
+`/tmp/glass-155-focused`:
+
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- Affected `glass-browser` feature check passed.
+- Focused border-style unit tests: `3 passed; 965 filtered out`.
+- Focused hidden-border integration test: `1 passed; 192 filtered out`.
+- Full native integration: `193 passed; 0 failed`.
+- Full native feature library: `967 passed; 1 ignored`.
+- Strict affected-package Clippy and feature rustdoc with warnings denied
+  passed.
+- `glass-dev` check and build passed; both `glass` and `glass-browser` debug
+  binaries were produced.
+- Final static validators passed: version sync `0.3.14`; feature parity `14`
+  capabilities across `4` targets; release documentation `569` Markdown
+  documents with `83` current-version documents, `57` previous-version hits,
+  `657` semantic-audit hits, and `0` current-claim failures; TUI `15` help
+  keys/`63` documentation markers; documentation depth `93` routed guides/
+  `19` substantive contracts; reliability `6` scenarios/`4` targets; public
+  read-only adapters `5`; Web IR `8` fixtures/`8` scenarios/`11` categories;
+  documentation coverage `569` Markdown files/`345` full-product MCP tools
+  (`100` browser-only)/`17` examples/`22` public modules.
+- The validated target was a real non-symlink directory with no active
+  Cargo/Rust consumers or open handles: `5,459,587,072` bytes, `9,199` files,
+  and `1,186` directories. It was removed with
+  `find -P /tmp/glass-155-focused -xdev -depth -delete`; the target and repo
+  `target/` are absent. Available space rose from `78,319,292,416` to
+  `83,778,842,624` bytes (`+5,459,550,208` bytes).
+- Remote CI is intentionally unclaimed because this checkout remains local
+  and no push was authorized.

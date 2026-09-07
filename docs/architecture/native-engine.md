@@ -1098,15 +1098,20 @@ integration tests, full-native integration/library tests, strict Clippy,
 feature rustdoc, two-crate check/build, formatting, and static documentation
 gates passed locally; exact evidence and bounded target cleanup are recorded
 in the task. Remote CI remains pending because the checkout is local-only.
-The next dependency-ordered 155 slice is planned in
-`docs/plan/tasks/native-engine-155.md`. It will add explicit physical
-`border-style:hidden` to the bounded one-to-four-value shorthand and four
-physical style longhands through a distinct private no-paint sentinel. In the
-current non-table engine, a winning `hidden` will block lower styles and use
-the same no-side/zero-width result as `none`, while retaining a private
-distinction for future collapsed-table conflict resolution. Public enums and
-display-list schemas remain unchanged; table conflict resolution and other
-border styles remain outside the planned boundary.
+The dependency-ordered 155 implementation is complete in `2b07f109` (design
+`37126fa1`) and is recorded in `docs/plan/tasks/native-engine-155.md`. It adds
+explicit physical `border-style:hidden` to the bounded one-to-four-value
+shorthand and four physical style longhands through a distinct private
+no-paint sentinel. In the current non-table engine, a winning `hidden` blocks
+lower styles and uses the same no-side/zero-width result as `none`, while
+retaining a private distinction for future collapsed-table conflict
+resolution. Public enums and display-list schemas remain unchanged; table
+conflict resolution and other border styles remain outside the boundary.
+Focused parser/cascade and artifact integration tests, full-native integration/
+library tests, strict Clippy, feature rustdoc, two-crate check/build,
+formatting, and static documentation gates passed locally; exact evidence and
+bounded target cleanup are recorded in the task. Remote CI remains pending
+because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

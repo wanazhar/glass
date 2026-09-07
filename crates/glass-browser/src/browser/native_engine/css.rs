@@ -25,6 +25,10 @@ const LOGICAL_BORDER_BLOCK_END: usize = 1;
 const LOGICAL_BORDER_INLINE_START: usize = 2;
 const LOGICAL_BORDER_INLINE_END: usize = 3;
 const LOGICAL_BORDER_SIDES: usize = 4;
+const LOGICAL_BORDER_RADIUS_START_START: usize = 0;
+const LOGICAL_BORDER_RADIUS_START_END: usize = 1;
+const LOGICAL_BORDER_RADIUS_END_START: usize = 2;
+const LOGICAL_BORDER_RADIUS_END_END: usize = 3;
 
 /// A bounded RGBA color used by the native display-list seed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1497,6 +1501,10 @@ impl NativeStylesheet {
         let mut border_radius: [[Option<
             CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>,
         >; MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
+        let mut logical_border_radius: [[Option<
+            CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>,
+        >; MAX_NATIVE_CASCADE_LAYERS];
+            LOGICAL_BORDER_SIDES] = [[None; MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
         let mut padding: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut margin: [[Option<CascadeValue<LocalCascadeDeclaration<NativeMarginValue>>>;
@@ -2053,6 +2061,13 @@ impl NativeStylesheet {
                 false,
                 &mut border_radius,
             );
+            apply_logical_border_radius_cascade(
+                &rule.declarations.logical_border_radius,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut logical_border_radius,
+            );
             apply_local_cascade_edges(
                 &rule.declarations.padding,
                 rule.selector.specificity,
@@ -2523,6 +2538,13 @@ impl NativeStylesheet {
                 true,
                 &mut border_radius,
             );
+            apply_logical_border_radius_cascade(
+                &declarations.logical_border_radius,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut logical_border_radius,
+            );
             apply_local_cascade_edges(
                 &declarations.padding,
                 u16::MAX,
@@ -2582,6 +2604,11 @@ impl NativeStylesheet {
                 style: &mut border_style,
                 color: &mut border_color,
             },
+        );
+        project_logical_border_radius_candidates(
+            &logical_border_radius,
+            resolved_direction,
+            &mut border_radius,
         );
 
         let resolved_padding = padding.map(resolve_local_optional_cascade_declaration);
@@ -3797,6 +3824,23 @@ fn apply_border_radius_cascade(
     }
 }
 
+fn apply_logical_border_radius_cascade(
+    declarations: &NativeLogicalBorderRadiusDeclarations,
+    specificity: u16,
+    rule_order: usize,
+    inline: bool,
+    candidates: &mut NativeLogicalBorderCandidates<NativeBorderRadiusValue>,
+) {
+    apply_logical_cascade_edges(
+        &declarations.corners,
+        &declarations.corner_orders,
+        specificity,
+        rule_order,
+        inline,
+        candidates,
+    );
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeLogicalBorderDeclarations {
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; LOGICAL_BORDER_SIDES],
@@ -3815,6 +3859,18 @@ impl NativeLogicalBorderDeclarations {
             || self.width.iter().any(Option::is_some)
             || self.style.iter().any(Option::is_some)
             || self.color.iter().any(Option::is_some)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeLogicalBorderRadiusDeclarations {
+    corners: [Option<LocalCascadeDeclaration<NativeBorderRadiusValue>>; LOGICAL_BORDER_SIDES],
+    corner_orders: [usize; LOGICAL_BORDER_SIDES],
+}
+
+impl NativeLogicalBorderRadiusDeclarations {
+    fn has_any(self) -> bool {
+        self.corners.iter().any(Option::is_some)
     }
 }
 
@@ -3867,6 +3923,23 @@ fn logical_border_physical_side(logical_side: usize, direction: DirectionValue) 
         LOGICAL_BORDER_INLINE_START => 1,
         LOGICAL_BORDER_INLINE_END if direction == DirectionValue::Ltr => 1,
         LOGICAL_BORDER_INLINE_END => 3,
+        _ => 0,
+    }
+}
+
+fn logical_border_radius_physical_corner(
+    logical_corner: usize,
+    direction: DirectionValue,
+) -> usize {
+    match logical_corner {
+        LOGICAL_BORDER_RADIUS_START_START if direction == DirectionValue::Ltr => 0,
+        LOGICAL_BORDER_RADIUS_START_START => 1,
+        LOGICAL_BORDER_RADIUS_START_END if direction == DirectionValue::Ltr => 1,
+        LOGICAL_BORDER_RADIUS_START_END => 0,
+        LOGICAL_BORDER_RADIUS_END_START if direction == DirectionValue::Ltr => 3,
+        LOGICAL_BORDER_RADIUS_END_START => 2,
+        LOGICAL_BORDER_RADIUS_END_END if direction == DirectionValue::Ltr => 2,
+        LOGICAL_BORDER_RADIUS_END_END => 3,
         _ => 0,
     }
 }
@@ -3924,6 +3997,19 @@ fn project_logical_border_candidates(
             if let Some(candidate) = sources.color[logical_side][layer] {
                 merge_cascade_candidate(candidate, &mut targets.color[physical_side]);
             }
+        }
+    }
+}
+
+fn project_logical_border_radius_candidates(
+    sources: &NativeLogicalBorderCandidates<NativeBorderRadiusValue>,
+    direction: DirectionValue,
+    targets: &mut NativePhysicalBorderCandidates<NativeBorderRadiusValue>,
+) {
+    for (logical_corner, logical_candidates) in sources.iter().enumerate() {
+        let physical_corner = logical_border_radius_physical_corner(logical_corner, direction);
+        for candidate in logical_candidates.iter().flatten().copied() {
+            merge_cascade_candidate(candidate, &mut targets[physical_corner]);
         }
     }
 }
@@ -4071,6 +4157,7 @@ struct NativeDeclarations {
     border_radius_order: usize,
     border_radius_corners: [Option<LocalCascadeDeclaration<NativeBorderRadiusValue>>; 4],
     border_radius_corner_orders: [usize; 4],
+    logical_border_radius: NativeLogicalBorderRadiusDeclarations,
     padding: [Option<LocalCascadeDeclaration<u32>>; 4],
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
     box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
@@ -4380,6 +4467,7 @@ fn parse_style_rule(
             .border_radius_corners
             .iter()
             .any(Option::is_some)
+        || declarations.logical_border_radius.has_any()
         || declarations.padding.iter().any(Option::is_some)
         || declarations.margin.iter().any(Option::is_some)
         || declarations.box_sizing.is_some()
@@ -4620,6 +4708,10 @@ fn parse_declarations_with_diagnostics(
             | "border-bottom-left-radius" => {
                 parse_border_radius_corner_declaration(value).is_some()
             }
+            "border-start-start-radius"
+            | "border-start-end-radius"
+            | "border-end-start-radius"
+            | "border-end-end-radius" => parse_border_radius_corner_declaration(value).is_some(),
             "padding" => parse_local_box_edges(value).is_some(),
             "margin" => parse_local_margin_edges(value).is_some(),
             "padding-top" | "padding-right" | "padding-bottom" | "padding-left" => {
@@ -4771,6 +4863,10 @@ fn is_known_css_property(property: &str) -> bool {
             | "border-top-right-radius"
             | "border-bottom-right-radius"
             | "border-bottom-left-radius"
+            | "border-start-start-radius"
+            | "border-start-end-radius"
+            | "border-end-start-radius"
+            | "border-end-end-radius"
             | "padding"
             | "margin"
             | "padding-top"
@@ -5470,6 +5566,42 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     &mut declarations.border_radius_corner_orders,
                     3,
                     value,
+                    declaration_order,
+                );
+            }
+            "border-start-start-radius" => {
+                set_logical_border_side(
+                    &mut declarations.logical_border_radius.corners,
+                    &mut declarations.logical_border_radius.corner_orders,
+                    LOGICAL_BORDER_RADIUS_START_START,
+                    parse_border_radius_corner_declaration(value),
+                    declaration_order,
+                );
+            }
+            "border-start-end-radius" => {
+                set_logical_border_side(
+                    &mut declarations.logical_border_radius.corners,
+                    &mut declarations.logical_border_radius.corner_orders,
+                    LOGICAL_BORDER_RADIUS_START_END,
+                    parse_border_radius_corner_declaration(value),
+                    declaration_order,
+                );
+            }
+            "border-end-start-radius" => {
+                set_logical_border_side(
+                    &mut declarations.logical_border_radius.corners,
+                    &mut declarations.logical_border_radius.corner_orders,
+                    LOGICAL_BORDER_RADIUS_END_START,
+                    parse_border_radius_corner_declaration(value),
+                    declaration_order,
+                );
+            }
+            "border-end-end-radius" => {
+                set_logical_border_side(
+                    &mut declarations.logical_border_radius.corners,
+                    &mut declarations.logical_border_radius.corner_orders,
+                    LOGICAL_BORDER_RADIUS_END_END,
+                    parse_border_radius_corner_declaration(value),
                     declaration_order,
                 );
             }
@@ -8126,6 +8258,96 @@ mod tests {
                 top_right: 9,
                 bottom_right: 7,
                 bottom_left: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn logical_border_radius_parser_preserves_corner_values_and_order() {
+        let declarations = parse_declarations(
+            "border-start-start-radius: 9px; border-start-end-radius: inherit; border-end-start-radius: revert-layer; border-end-end-radius: 10px;",
+        );
+        assert_eq!(
+            declarations.logical_border_radius.corners,
+            [
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderRadiusValue::Corner(9)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderRadiusValue::Inherit
+                )),
+                Some(LocalCascadeDeclaration::RevertLayer),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderRadiusValue::Corner(10)
+                )),
+            ]
+        );
+        assert_eq!(
+            declarations.logical_border_radius.corner_orders,
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_maps_logical_border_radius_for_ltr_and_rtl() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#ltr { direction: ltr; border-start-start-radius: 1px; border-start-end-radius: 2px; border-end-start-radius: 4px; border-end-end-radius: 3px; } #rtl { direction: rtl; border-start-start-radius: 1px; border-start-end-radius: 2px; border-end-start-radius: 4px; border-end-end-radius: 3px; } #precedence { border-top-left-radius: 9px; border-start-start-radius: 7px; } #reverse { border-start-start-radius: 7px; border-top-left-radius: 9px; } #invalid { border-radius: 5px; border-start-start-radius: 50%; }".into(),
+        ])
+        .unwrap();
+        let computed = |id: &str| {
+            let element = node(&format!("<div id='{id}'>Radius</div>"));
+            stylesheet
+                .computed_for_with_matcher(&element, NativeInheritedStyle::default(), |selector| {
+                    selector.matches(&element)
+                })
+                .border_radius()
+        };
+        assert_eq!(
+            computed("ltr"),
+            NativeBorderRadius {
+                top_left: 1,
+                top_right: 2,
+                bottom_right: 3,
+                bottom_left: 4,
+            }
+        );
+        assert_eq!(
+            computed("rtl"),
+            NativeBorderRadius {
+                top_left: 2,
+                top_right: 1,
+                bottom_right: 4,
+                bottom_left: 3,
+            }
+        );
+        assert_eq!(computed("precedence").top_left, 7);
+        assert_eq!(computed("reverse").top_left, 9);
+        assert_eq!(
+            computed("invalid"),
+            NativeBorderRadius {
+                top_left: 5,
+                top_right: 5,
+                bottom_right: 5,
+                bottom_left: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn logical_border_radius_revert_layer_rolls_back_only_mapped_corner() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #card { direction: rtl; border-radius: 1px 2px 3px 4px; } } @layer theme { #card { border-start-start-radius: 9px; border-start-start-radius: revert-layer; border-start-end-radius: 8px; } }".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            stylesheet
+                .computed_for(&node("<div id='card'>Radius</div>"))
+                .border_radius(),
+            NativeBorderRadius {
+                top_left: 8,
+                top_right: 2,
+                bottom_right: 3,
+                bottom_left: 4,
             }
         );
     }

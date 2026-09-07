@@ -3094,7 +3094,7 @@ fn resolve_local_border_radius_declaration(
         MAX_NATIVE_CASCADE_LAYERS]; 4],
     inherited_radius: NativeBorderRadius,
 ) -> NativeBorderRadius {
-    std::array::from_fn(|index| {
+    let [top_left, top_right, bottom_right, bottom_left] = std::array::from_fn(|index| {
         resolve_alignment_candidates(candidates[index], None, |declaration| match declaration {
             LocalCascadeDeclaration::Value(value) => Some(Some(match value {
                 NativeBorderRadiusValue::Radius(radius) => radius.corner(index),
@@ -3107,7 +3107,13 @@ fn resolve_local_border_radius_declaration(
             LocalCascadeDeclaration::RevertLayer => None,
         })
         .unwrap_or_default()
-    })
+    });
+    NativeBorderRadius {
+        top_left,
+        top_right,
+        bottom_right,
+        bottom_left,
+    }
 }
 
 fn resolve_alignment_candidates<T: Copy, U: Copy>(

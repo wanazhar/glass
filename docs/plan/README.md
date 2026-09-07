@@ -1516,6 +1516,15 @@ static documentation, and bounded cleanup gates passed locally; exact evidence
 is recorded in the task. Remote CI remains pending because the branch is
 local-only.
 
+The next dependency-ordered [native-engine-163](tasks/native-engine-163.md)
+slice is designed but not implemented. It will extend private deferred-color
+state to `background-color: currentColor`, resolving from the element's local or
+inherited `color` at computed-style construction while preserving the public
+`Option<NativeColor>` fill surface and existing layout/display-list/capture/
+raster/hit/semantic consumers. `color: currentColor`, gradients, images,
+system colors, color spaces, percentages, CSS-wide reset machinery, and
+browser-wide color conformance remain outside the planned boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

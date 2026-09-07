@@ -1181,6 +1181,14 @@ and browser-wide border conformance remain outside the boundary. Focused,
 full-native/library, strict Clippy, rustdoc, two-crate, formatting, static
 documentation, and bounded cleanup gates are recorded in the task; remote CI
 remains pending because the checkout is local-only.
+The next dependency-ordered `native-engine-161` slice is designed and recorded
+in `docs/plan/tasks/native-engine-161.md`. It will add only standalone physical
+`border-color` and `border-top|right|bottom|left-color` `currentColor`
+substitution through private declaration state, resolving against the existing
+element/inherited color owner while keeping complete border shorthands,
+public/artifact schemas, and broader CSS color semantics unchanged. It remains
+planned until its implementation and local gates are complete; current
+`currentColor` exclusions elsewhere in this document remain authoritative.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

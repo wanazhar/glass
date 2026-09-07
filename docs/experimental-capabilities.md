@@ -239,8 +239,12 @@ without self-recursion. Local `color` also accepts the case-insensitive CSS-wide
 the bounded parent-color/black-root fallback, while `initial` resets to black;
 omitted direct roots remain `None`. This is the native engine's one-author-
 origin model. Gradients, system colors, percentages, color spaces,
-and multiple origins remain outside the boundary,
-bounded
+and multiple origins remain outside the boundary, and the non-inherited
+`background-color` owner also accepts those four
+case-insensitive CSS-wide keywords: only `inherit` copies the parent's
+optional concrete fill, while `unset`, `initial`, and `revert` preserve the
+existing no-fill `None` fallback; ordinary omission remains no-fill, plus
+ bounded
 inherited fixed-cell `text-decoration:none|underline|overline|line-through`
 paint including distinct shorthand combinations, bounded local
 `text-decoration-color` using the existing fixed palette and alpha grammar

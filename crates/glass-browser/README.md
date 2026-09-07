@@ -338,6 +338,10 @@ the bounded parent-color/black-root fallback, while `initial` resets to black;
 omitted direct roots remain `None`. This is the native engine's one-author-
 origin model. Gradients, system colors, percentages, color spaces, and
 multiple origins remain outside the boundary.
+The non-inherited `background-color` owner also accepts those four
+case-insensitive CSS-wide keywords: only `inherit` copies the parent's
+optional concrete fill, while `unset`, `initial`, and `revert` preserve the
+existing no-fill `None` fallback; ordinary omission remains no-fill.
 The local overflow surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `overflow`, `overflow-x`, and `overflow-y`,
 resolving through independent visible/no-clip fallbacks while preserving the

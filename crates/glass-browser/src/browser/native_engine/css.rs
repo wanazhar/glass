@@ -7593,7 +7593,7 @@ mod tests {
         };
         let inherited_border_colors = [NativeColor::RED, green, NativeColor::BLACK, green];
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "#inherit { color: blue; border: 2px solid red; border-color: inherit; } #unset { color: blue; border: 2px solid red; border-color: unset; } #initial { color: blue; border: 2px solid red; border-color: initial; } #revert { color: blue; border: 2px solid red; border-color: revert; } #current { color: blue; border: 2px solid red; border-color: currentColor; } #omitted { color: blue; border: 2px solid red; } #invalid { color: blue; border: 2px solid red; border-color: inherit; border-color: invalid; }"
+            "#inherit { color: blue; border: 2px solid red; border-color: inherit; } #unset { color: blue; border: 2px solid red; border-color: unset; } #initial { color: blue; border: 2px solid red; border-color: initial; } #revert { color: blue; border: 2px solid red; border-color: revert; } #current { color: blue; border: 2px solid red; border-color: currentColor; } #omitted { color: blue; border-width: 2px; border-style: solid; } #invalid { color: blue; border: 2px solid red; border-color: inherit; border-color: invalid; }"
                 .into(),
         ])
         .unwrap();

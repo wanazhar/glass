@@ -38,6 +38,7 @@ bounded-border-radius-revert-layer,
 bounded-display-visibility-revert-layer,
 bounded-border-revert-layer,
 bounded-border-color-revert-layer,
+bounded-border-color-current-color,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -1181,14 +1182,18 @@ and browser-wide border conformance remain outside the boundary. Focused,
 full-native/library, strict Clippy, rustdoc, two-crate, formatting, static
 documentation, and bounded cleanup gates are recorded in the task; remote CI
 remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-161` slice is designed and recorded
-in `docs/plan/tasks/native-engine-161.md`. It will add only standalone physical
-`border-color` and `border-top|right|bottom|left-color` `currentColor`
+The completed dependency-ordered `native-engine-161` slice is recorded in
+`docs/plan/tasks/native-engine-161.md`; design is `c5a58f29` and implementation
+is `299de40d` with the test-lint follow-up `2042fb3e`. It adds only standalone
+physical `border-color` and `border-top|right|bottom|left-color` `currentColor`
 substitution through private declaration state, resolving against the existing
 element/inherited color owner while keeping complete border shorthands,
-public/artifact schemas, and broader CSS color semantics unchanged. It remains
-planned until its implementation and local gates are complete; current
-`currentColor` exclusions elsewhere in this document remain authoritative.
+public/artifact schemas, and broader CSS color semantics unchanged. Focused,
+full-native/library, strict Clippy, rustdoc, two-crate, formatting, static
+documentation, and bounded cleanup gates passed locally; exact evidence is
+recorded in the task. Remote CI remains pending because the checkout is
+local-only. Complete border shorthands with `currentColor` and broader
+`currentColor` semantics remain outside the boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

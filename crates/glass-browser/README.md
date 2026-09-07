@@ -260,8 +260,11 @@ boundary. The same native border owner also accepts bounded case-insensitive
 `border-bottom-color`, and `border-left-color` values, with one-to-four-value
 physical shorthand expansion and independent per-side `revert-layer` rollback
 to lower colors or bounded black, while preserving border width/style and all
-existing box-model and artifact consumers. `currentColor`, gradients,
-border-image, and browser-wide border conformance remain outside the boundary.
+existing box-model and artifact consumers. Standalone physical `border-color`
+and physical color longhands also resolve `currentColor` from the element's
+local or inherited color; complete border shorthands with `currentColor`,
+gradients, border-image, and browser-wide border conformance remain outside the
+boundary.
 The native border width surface also accepts bounded case-insensitive
 15-layer/unlayered `border-width`, `border-top-width`, `border-right-width`,
 `border-bottom-width`, and `border-left-width` values, with one-to-four-value
@@ -326,8 +329,9 @@ The local paint-color surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `background-color` and inherited `color`,
 resolving through the existing `None`/parent-root fallbacks without changing
 fill/text display-list, clipping, opacity, capture, or raster owners.
-`currentColor`, gradients, system colors, percentages, color spaces, and
-multiple origins remain outside the boundary.
+`currentColor` remains outside the background and text-color surfaces, while
+gradients, system colors, percentages, color spaces, and multiple origins
+remain outside the boundary.
 The local overflow surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `overflow`, `overflow-x`, and `overflow-y`,
 resolving through independent visible/no-clip fallbacks while preserving the

@@ -159,8 +159,11 @@ Implementation and slice-local certification are complete at `436dd02a`.
   documentation, cleanup, and remote-CI gates remain deferred to the final
   issue #40 certification boundary.
 
-Task-specific cleanup remains pending until the documentation audit and all
-task reports are complete. It must remove only the exact isolated target and
-reports created for this task after Cargo/Rust processes and open handles have
-exited, then record measured bytes/files, post-delete absence, and filesystem
-free-space delta.
+Task-specific cleanup completed after all Cargo/Rust processes and open handles
+exited: `/tmp/glass-181-focused` measured 3,757,779,796 bytes across 7,510
+files and 878 directories, and `/tmp/glass-release-documentation-181.json`
+measured 189,673 bytes. Bounded exact-path deletion removed only those
+regenerable paths; post-delete absence checks passed. Available filesystem
+bytes moved from 78,677,561,344 to 82,458,431,488, an observed increase of
+3,780,870,144 bytes. Source, repository targets, durable data, unrelated
+workloads, and issue snapshots were preserved.

@@ -1469,8 +1469,8 @@ one-to-four-value expansion, independent per-side resolution, and the existing
 width/style/color consumers. Complete/side border shorthands, logical border
 width, border style/color, vertical writing modes, and other properties remain
 outside this slice. Focused, full-native, feature-library, strict Clippy,
-warning-denied rustdoc, and current documentation audits pass locally;
-issue-level final gates, task-specific cleanup, and remote CI remain pending
+warning-denied rustdoc, current documentation audits, and task-specific
+cleanup pass locally; issue-level final gates and remote CI remain pending
 until issue #40 reaches its final validation boundary.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha

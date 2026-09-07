@@ -8284,6 +8284,364 @@ fn native_border_radius_css_wide_keywords_preserve_rounded_consumers() {
 }
 
 #[test]
+fn native_complete_border_css_wide_keywords_preserve_physical_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            @layer base {
+                #parent { display:block;width:32px;height:180px;border-width:2px 3px 4px 5px;border-style:solid dashed dotted double;border-color:red green blue black;background-color:red; }
+                .box { display:block;width:8px;height:6px; }
+                .fallback { border:1px solid blue; }
+                #inherit { border:inherit; }
+                #physical { border-top:inherit;border-right:unset;border-bottom:initial;border-left:revert; }
+                #reset { border:unset;opacity:0.5; }
+                #initial { border:initial; }
+                #revert { border:revert; }
+                #omitted { }
+                #invalid { border:inherit;border:invalid; }
+                #mixed { border:inherit solid red; }
+                #layered { border:1px solid green; }
+                #compose { color:green;border:unset;border-width:2px;border-style:solid; }
+                #unpainted { display:block;width:32px;height:10px; }
+                #unpainted-child { border:inherit; }
+                #zero-parent { display:block;width:32px;height:10px;border-width:0;border-style:solid;border-color:red; }
+                #zero-child { border:inherit; }
+                #hidden-parent { display:block;width:32px;height:10px;border-width:3px;border-style:hidden;border-color:red; }
+                #hidden-child { border:inherit; }
+            }
+            @layer theme {
+                #layered { border:inherit; }
+            }
+            #layered { border:revert-layer; }
+        </style>
+        <div id='parent' role='button'>
+            <div id='inherit' class='box fallback' role='button'>Inherit</div>
+            <div id='physical' class='box fallback' role='button'>Physical</div>
+            <div id='reset' class='box fallback' role='button'>Reset</div>
+            <div id='initial' class='box fallback' role='button'>Initial</div>
+            <div id='revert' class='box fallback' role='button'>Revert</div>
+            <div id='omitted' class='box' role='button'>Omitted</div>
+            <div id='invalid' class='box fallback' role='button'>Invalid</div>
+            <div id='mixed' class='box fallback' role='button'>Mixed</div>
+            <div id='layered' class='box fallback' role='button'>Layered</div>
+            <div id='compose' class='box' role='button'>Compose</div>
+            <div id='inline' class='box fallback' role='button' style='border:inherit'>Inline</div>
+        </div>
+        <div id='unpainted' role='button'>
+            <div id='unpainted-child' class='box fallback' role='button'>Unpainted child</div>
+        </div>
+        <div id='zero-parent' role='button'>
+            <div id='zero-child' class='box fallback' role='button'>Zero child</div>
+        </div>
+        <div id='hidden-parent' role='button'>
+            <div id='hidden-child' class='box fallback' role='button'>Hidden child</div>
+        </div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 500,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let physical = document.resolve_target("id=physical").unwrap();
+    let reset = document.resolve_target("id=reset").unwrap();
+    let initial = document.resolve_target("id=initial").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let layered = document.resolve_target("id=layered").unwrap();
+    let compose = document.resolve_target("id=compose").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let unpainted = document.resolve_target("id=unpainted").unwrap();
+    let unpainted_child = document.resolve_target("id=unpainted-child").unwrap();
+    let zero_parent = document.resolve_target("id=zero-parent").unwrap();
+    let zero_child = document.resolve_target("id=zero-child").unwrap();
+    let hidden_parent = document.resolve_target("id=hidden-parent").unwrap();
+    let hidden_child = document.resolve_target("id=hidden-child").unwrap();
+    let targets = [
+        parent,
+        inherit,
+        physical,
+        reset,
+        initial,
+        revert,
+        omitted,
+        invalid,
+        mixed,
+        layered,
+        compose,
+        inline,
+        unpainted,
+        unpainted_child,
+        zero_parent,
+        zero_child,
+        hidden_parent,
+        hidden_child,
+    ];
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(parent).unwrap().width, 40);
+    assert_eq!(layout.box_for(parent).unwrap().height, 186);
+    for node_id in [inherit, invalid, layered, inline] {
+        assert_eq!(layout.box_for(node_id).unwrap().width, 16, "id={node_id:?}");
+        assert_eq!(
+            layout.box_for(node_id).unwrap().height,
+            12,
+            "id={node_id:?}"
+        );
+    }
+    assert_eq!(layout.box_for(physical).unwrap().width, 8);
+    assert_eq!(layout.box_for(physical).unwrap().height, 8);
+    assert_eq!(layout.box_for(compose).unwrap().width, 12);
+    assert_eq!(layout.box_for(compose).unwrap().height, 10);
+    assert_eq!(layout.box_for(mixed).unwrap().width, 10);
+    assert_eq!(layout.box_for(mixed).unwrap().height, 8);
+    for node_id in [
+        reset,
+        initial,
+        revert,
+        omitted,
+        unpainted_child,
+        zero_child,
+        hidden_child,
+    ] {
+        assert_eq!(layout.box_for(node_id).unwrap().width, 8, "id={node_id:?}");
+        assert_eq!(layout.box_for(node_id).unwrap().height, 6, "id={node_id:?}");
+    }
+    for node_id in [unpainted, zero_parent, hidden_parent] {
+        assert_eq!(layout.box_for(node_id).unwrap().width, 32, "id={node_id:?}");
+        assert_eq!(
+            layout.box_for(node_id).unwrap().height,
+            10,
+            "id={node_id:?}"
+        );
+    }
+
+    for (name, node_id) in [
+        ("parent", parent),
+        ("inherit", inherit),
+        ("physical", physical),
+        ("reset", reset),
+        ("initial", initial),
+        ("revert", revert),
+        ("omitted", omitted),
+        ("invalid", invalid),
+        ("mixed", mixed),
+        ("layered", layered),
+        ("compose", compose),
+        ("inline", inline),
+        ("unpainted", unpainted),
+        ("unpainted-child", unpainted_child),
+        ("zero-parent", zero_parent),
+        ("zero-child", zero_child),
+        ("hidden-parent", hidden_parent),
+        ("hidden-child", hidden_child),
+    ] {
+        let rectangle = layout.box_for(node_id).expect("complete-border layout box");
+        let x_offset = if matches!(name, "unpainted" | "zero-parent" | "hidden-parent") {
+            30
+        } else {
+            1
+        };
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + x_offset).into(), (rectangle.y + 1).into(),)
+                .unwrap(),
+            Some(node_id),
+            "id={name} node={node_id:?}"
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in targets {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected complete-border fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let parent_border = border_for(parent).expect("parent complete-border command");
+    assert_eq!(
+        [
+            parent_border.top.width,
+            parent_border.right.width,
+            parent_border.bottom.width,
+            parent_border.left.width,
+        ],
+        [2, 3, 4, 5]
+    );
+    assert_eq!(
+        [
+            parent_border.top.style,
+            parent_border.right.style,
+            parent_border.bottom.style,
+            parent_border.left.style,
+        ],
+        [
+            NativeBorderStyle::Solid,
+            NativeBorderStyle::Dashed,
+            NativeBorderStyle::Dotted,
+            NativeBorderStyle::Double,
+        ]
+    );
+    assert_eq!(
+        [
+            parent_border.top.color,
+            parent_border.right.color,
+            parent_border.bottom.color,
+            parent_border.left.color,
+        ],
+        [
+            NativeColor::RED,
+            NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: 255,
+            },
+            NativeColor {
+                red: 0,
+                green: 0,
+                blue: 255,
+                alpha: 255,
+            },
+            NativeColor::BLACK,
+        ]
+    );
+
+    let inherited_border = border_for(inherit).expect("inherited complete-border command");
+    assert_eq!(
+        [
+            inherited_border.top.width,
+            inherited_border.right.width,
+            inherited_border.bottom.width,
+            inherited_border.left.width,
+        ],
+        [2, 3, 4, 5]
+    );
+    assert_eq!(
+        [
+            inherited_border.top.style,
+            inherited_border.right.style,
+            inherited_border.bottom.style,
+            inherited_border.left.style,
+        ],
+        [
+            NativeBorderStyle::Solid,
+            NativeBorderStyle::Dashed,
+            NativeBorderStyle::Dotted,
+            NativeBorderStyle::Double,
+        ]
+    );
+    assert_eq!(inherited_border.top.color, NativeColor::RED);
+
+    let physical_border = border_for(physical).expect("physical complete-border command");
+    assert_eq!(physical_border.top.width, 2);
+    assert_eq!(physical_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(physical_border.top.color, NativeColor::RED);
+    assert_eq!(physical_border.right.width, 0);
+    assert_eq!(physical_border.bottom.width, 0);
+    assert_eq!(physical_border.left.width, 0);
+
+    for node_id in [
+        reset,
+        initial,
+        revert,
+        omitted,
+        unpainted_child,
+        zero_child,
+        hidden_child,
+    ] {
+        assert!(
+            border_for(node_id).is_none(),
+            "expected no painted complete border for {node_id:?}"
+        );
+    }
+    let mixed_border = border_for(mixed).expect("invalid mixed value keeps lower fallback");
+    assert_eq!(mixed_border.top.width, 1);
+    assert_eq!(mixed_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(
+        mixed_border.top.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255,
+        }
+    );
+    let composed_border = border_for(compose).expect("component declarations compose");
+    assert_eq!(composed_border.top.width, 2);
+    assert_eq!(composed_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(
+        composed_border.top.color,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255,
+        }
+    );
+    for node_id in [invalid, layered, inline] {
+        let borders = border_for(node_id).expect("inherited complete-border command");
+        assert_eq!(
+            [
+                borders.top.width,
+                borders.right.width,
+                borders.bottom.width,
+                borders.left.width,
+            ],
+            [2, 3, 4, 5]
+        );
+    }
+
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border"
+    }));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "border-top" | "border-right" | "border-bottom" | "border-left"
+            )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    let parent_box = layout.box_for(parent).unwrap();
+    assert_eq!(
+        surface.pixel(parent_box.x + parent_box.width / 2, parent_box.y),
+        Some([255, 0, 0, 255])
+    );
+    let inherit_box = layout.box_for(inherit).unwrap();
+    assert_eq!(
+        surface.pixel(inherit_box.x + inherit_box.width / 2, inherit_box.y),
+        Some([255, 0, 0, 255])
+    );
+    let compose_box = layout.box_for(compose).unwrap();
+    assert_eq!(
+        surface.pixel(compose_box.x + compose_box.width / 2, compose_box.y),
+        Some([0, 128, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_inline_boxes_wrap_before_layout_materializes_geometry() {
     let document = NativeDocument::parse(
         "<div id='container' style='width:16px'><span id='first' style='display:inline;width:6px;height:4px;padding:1px;margin:1px;background-color:red'>A</span><span id='second' style='display:inline;width:6px;height:4px;padding:1px;margin:1px;background-color:blue'>B</span></div>",

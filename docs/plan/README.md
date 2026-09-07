@@ -1719,14 +1719,16 @@ pass locally; exact slice evidence is recorded in the task. The issue-level
 workspace/release/security gates, cleanup, and remote CI remain pending until
 issue #40 reaches its final validation boundary.
 
-The in-progress dependency-ordered [native-engine-178](tasks/native-engine-178.md)
-slice extends bounded author-origin `!important` priority to the local
-`background-color`, inherited `color`, and `text-decoration-color` owners.
-It reuses the private reversed named-layer partition proven by the radius
-slice while preserving existing color grammar, fallback, inheritance, paint
-artifacts, public schemas, and the two-crate boundary. Implementation and
-local certification are pending; issue-level final gates and remote CI remain
-pending because the checkout is local-only.
+The completed dependency-ordered [native-engine-178](tasks/native-engine-178.md)
+slice is implemented at `1292538c`. It extends bounded author-origin
+`!important` priority to the local `background-color`, inherited `color`, and
+`text-decoration-color` owners through the private reversed named-layer
+partition, while preserving existing color grammar, fallback, inheritance,
+paint artifacts, public schemas, and the two-crate boundary. Focused,
+full-native, feature-library, strict Clippy, and warning-denied rustdoc gates
+pass locally; exact slice evidence is recorded in the task. Issue-level final
+gates, cleanup, and remote CI remain pending until issue #40 reaches its final
+validation boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

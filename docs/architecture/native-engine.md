@@ -1427,15 +1427,15 @@ animations, vertical writing modes, elliptical/percentage radii, and browser
 conformance remain outside this slice. Slice-local certification passed;
 issue-level final gates, cleanup, and remote CI remain pending.
 
-The in-progress dependency-ordered `native-engine-178` slice is recorded in
-`docs/plan/tasks/native-engine-178.md`. It extends bounded author-origin
-`!important` priority to `background-color`, inherited `color`, and
-`text-decoration-color` through private reversed named-layer partitions.
-Existing value grammar, inheritance/defaulting, fill/glyph/decoration
-artifacts, public schemas, and the two-crate boundary remain unchanged.
-Border color and other properties do not receive priority semantics in this
-slice; implementation, local certification, issue-level final gates, cleanup,
-and remote CI are pending.
+The completed dependency-ordered `native-engine-178` slice is recorded in
+`docs/plan/tasks/native-engine-178.md` and implemented in `1292538c`. It
+extends bounded author-origin `!important` priority to `background-color`,
+inherited `color`, and `text-decoration-color` through private reversed
+named-layer partitions. Existing value grammar, inheritance/defaulting,
+fill/glyph/decoration artifacts, public schemas, and the two-crate boundary
+remain unchanged. Border color and other properties do not receive priority
+semantics in this slice. Slice-local certification passed; issue-level final
+gates, cleanup, and remote CI remain pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

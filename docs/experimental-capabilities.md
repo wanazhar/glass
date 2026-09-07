@@ -185,9 +185,10 @@ with one-to-four-value physical shorthand expansion and independent per-side
 `revert-layer` rollback to lower colors or bounded black, preserving border
 width/style and existing box-model and artifact consumers. Standalone physical
 `border-color` and physical color longhands also resolve `currentColor` from
-the element's local or inherited color; complete border shorthands with
-`currentColor`, gradients, border-image, and browser-wide border conformance
-remain outside the boundary. The same owner also accepts bounded case-insensitive
+the element's local or inherited color; complete physical border shorthands
+also resolve `currentColor` from that same local or inherited color. Gradients,
+border-image, and browser-wide border conformance remain outside the boundary.
+The same owner also accepts bounded case-insensitive
 15-layer/unlayered `border-width`, `border-top-width`, `border-right-width`,
 `border-bottom-width`, and `border-left-width` values with one-to-four-value
 physical shorthand expansion and independent per-side `revert-layer` rollback

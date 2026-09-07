@@ -170,9 +170,9 @@ and independent per-side `revert-layer` rollback to lower colors or bounded
 black, preserving border width/style and the existing box-model, display-list,
 capture, raster, point-hit, and semantic/source-order owners. Standalone
 physical `border-color` and physical color longhands also resolve `currentColor`
-from the element's local or inherited color; complete border shorthands with
-`currentColor`, gradients, border-image, and browser-wide border conformance
-remain outside the boundary,
+from the element's local or inherited color; complete physical border shorthands
+also resolve `currentColor` from that same local or inherited color. Gradients,
+border-image, and browser-wide border conformance remain outside the boundary,
 plus bounded case-insensitive 15-layer/unlayered local `border-width`,
 `border-top-width`, `border-right-width`, `border-bottom-width`, and
 `border-left-width` values with one-to-four-value physical shorthand expansion

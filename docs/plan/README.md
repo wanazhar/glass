@@ -1505,12 +1505,16 @@ two-crate, formatting, static documentation, and bounded cleanup gates passed
 locally; exact evidence and cleanup are recorded in the task. Remote CI
 remains pending because the branch is local-only.
 
-The next dependency-ordered [native-engine-162](tasks/native-engine-162.md)
-slice is designed but not implemented. It will extend private deferred color
-state to complete physical `Npx <style> currentColor` values for painted,
-`none`, and `hidden` border forms, resolving to concrete public border colors.
-Omitted defaults, broader CSS color syntax, and browser-wide conformance remain
-outside the planned boundary.
+The completed dependency-ordered [native-engine-162](tasks/native-engine-162.md)
+slice is implemented at `44b887c4` from design `4272f0fa`. It extends private
+deferred color state to complete physical `Npx <style> currentColor` values for
+painted, `none`, and `hidden` border forms, resolving to concrete public border
+colors while preserving current no-paint behavior. Omitted defaults, broader
+CSS color syntax, and browser-wide conformance remain outside the boundary.
+Focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting,
+static documentation, and bounded cleanup gates passed locally; exact evidence
+is recorded in the task. Remote CI remains pending because the branch is
+local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

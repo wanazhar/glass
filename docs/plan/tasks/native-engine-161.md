@@ -193,11 +193,19 @@ unsupported raw CSS text is exposed.
   5,431,152,640 bytes, 9,070 files, and 1,185 directories.
 - The exact target was removed with bounded same-filesystem
   `find -P /tmp/glass-161-focused -xdev -depth -delete`, and its absence was
-  verified. No repository `target/` existed before the final workspace gate;
-  the workspace validator's repository target remains to be reclaimed after
-  this documentation commit once it is independently inventoried.
+  verified.
 - Free space on `/tmp` rose from 77,410,668,544 to 82,841,812,992 bytes,
   reclaiming 5,431,144,448 bytes. The directory's `du` usage was
   5,431,152,640 bytes; the 8,192-byte difference is filesystem accounting.
+- The final workspace validator target was separately verified as a real
+  regenerable directory with no active Cargo/Rust consumer or open handle. It
+  contained 5,040,037,888 bytes, 6,215 files, and 694 directories. The named
+  `/tmp/glass-161-workspace.log` report contained 162,831 bytes. Both exact
+  paths were removed with bounded same-filesystem `find -P` deletion and their
+  absence was verified. Free space rose from 77,795,774,464 to
+  82,835,935,232 bytes, reclaiming 5,040,160,768 bytes; the difference from
+  the inventoried path sizes is filesystem accounting and the named report's
+  removal.
+- No repository `target/`, focused target, or named workspace report remains.
 - Remote CI, push, release, tag, registry publication, and browser-parity
   claims remain unmade because the checkout is local-only.

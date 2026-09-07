@@ -361,8 +361,12 @@ partition of the existing author-origin cascade. The bounded
 also honor terminal case-insensitive `!important` with the same important-
 over-normal and reversed named-layer ordering. The standalone physical
 `border-color` shorthand and physical color longhands also honor the same
-terminal priority; complete/side border shorthands, logical `border-color`,
-and other properties retain their existing bounded behavior. The same
+terminal priority, as do the six supported horizontal-tb logical
+`border-block-color`, `border-block-start-color`, `border-block-end-color`,
+`border-inline-color`, `border-inline-start-color`, and
+`border-inline-end-color` declarations through their existing `ltr`/`rtl`
+physical-side projection; complete/side border shorthands and other
+properties retain their existing bounded behavior. The same
 bounded radius owner also accepts exact case-insensitive CSS-wide `inherit`,
 `unset`, `initial`, and one-author-origin `revert`: explicit `inherit` copies
 the parent's effective four-corner radius, including from unpainted or

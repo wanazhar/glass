@@ -34,6 +34,7 @@ bounded-local-dimension-revert-layer,
 bounded-local-box-model-revert-layer,
 bounded-paint-color-revert-layer,
 bounded-paint-color-important/bounded-physical-border-color-important,
+bounded-logical-border-color-important,
 bounded-inherited-color-current-color,
 bounded-inherited-color-css-wide-keywords,
 bounded-overflow-revert-layer,
@@ -1450,14 +1451,15 @@ slice. Slice-local certification passed; final documentation audit and
 task-specific cleanup are recorded in the task. Issue-level final gates and
 remote CI remain pending.
 
-The in-progress dependency-ordered `native-engine-180` slice is recorded in
-`docs/plan/tasks/native-engine-180.md`. It extends bounded author-origin
+The completed dependency-ordered `native-engine-180` slice is recorded in
+`docs/plan/tasks/native-engine-180.md` and implemented in `491f65fe`, with the
+strict-lint follow-up at `100d1888`. It extends bounded author-origin
 `!important` priority to the six supported horizontal-tb logical border-color
 declarations while preserving their existing `ltr`/`rtl` projection into
-physical sides. Complete border shorthands, physical border-color, border
-width/style, vertical writing modes, and other properties remain outside this
-slice; implementation, certification, issue-level final gates, cleanup, and
-remote CI are pending.
+physical sides. Complete border shorthands, border width/style, vertical
+writing modes, and other properties remain outside this slice. Slice-local
+certification passed; final documentation audit and task-specific cleanup are
+recorded in the task. Issue-level final gates and remote CI remain pending.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

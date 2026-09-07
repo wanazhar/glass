@@ -162,8 +162,12 @@ This remains radius-only for the radius owner; the bounded
 `background-color`, inherited `color`, and `text-decoration-color` owners
 also honor the same terminal priority. The standalone physical
 `border-color` shorthand and physical color longhands also honor the same
-terminal priority; complete/side border shorthands, logical `border-color`,
-and other properties do not claim generic `!important` semantics.
+terminal priority, as do the six supported horizontal-tb logical
+`border-block-color`, `border-block-start-color`, `border-block-end-color`,
+`border-inline-color`, `border-inline-start-color`, and
+`border-inline-end-color` declarations through their existing `ltr`/`rtl`
+physical-side projection; complete/side border shorthands and other
+properties do not claim generic `!important` semantics.
 CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert`: explicit
 `inherit` copies the parent's effective four-corner radius, including from
 unpainted or zero-width parents; reset forms resolve to zero corners and

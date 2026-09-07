@@ -1,7 +1,7 @@
 ---
 id: native-engine-180
 scope: glass-browser/native-engine/cascade-logical-border-color-important-priority
-status: in-progress
+status: complete
 depends-on: [native-engine-179]
 ---
 
@@ -134,4 +134,24 @@ checks, post-delete absence, and filesystem free-space delta.
 
 ## Evidence
 
-Pending implementation and local certification.
+Implementation and slice-local certification are complete at `491f65fe`; the
+strict-lint follow-up is `100d1888`.
+
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- The locked native-feature check passed with
+  `CARGO_TARGET_DIR=/tmp/glass-180-focused cargo check -q -p glass-browser --features native-engine --tests --locked`.
+- Focused `logical_border_color_important` coverage passed: 2 library unit
+  tests and 1 integration test.
+- The full `native_engine` integration target passed 218/218 tests.
+- The feature-enabled `glass-browser` library target passed 990 tests with 1
+  intentionally ignored.
+- Strict all-target Clippy with `-D warnings` and warning-denied rustdoc passed
+  for `glass-browser` with `native-engine`.
+- The final documentation truth audit and task-specific exact-target cleanup
+  are recorded after the synchronized documentation changes below.
+- Issue-level workspace, release, security/fuzz, paired-crate, cleanup, and
+  remote-CI gates remain deferred to the final issue #40 certification
+  boundary.
+
+Task-specific cleanup is pending completion of the final documentation audit;
+only `/tmp/glass-180-focused` and the nine named task reports may be reclaimed.

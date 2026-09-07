@@ -138,9 +138,12 @@ and named-layer priority reverses within the important partition. This is not
 generic `!important` support for other properties. The bounded
 `background-color`, inherited `color`, and `text-decoration-color` owners
 also honor the same terminal priority. The standalone physical `border-color`
-shorthand and physical color longhands also honor it; complete/side border
-shorthands, logical `border-color`, and other properties retain their existing
-bounded behavior.
+shorthand and physical color longhands also honor it, as do the six supported
+horizontal-tb logical `border-block-color`, `border-block-start-color`,
+`border-block-end-color`, `border-inline-color`, `border-inline-start-color`,
+and `border-inline-end-color` declarations through their existing `ltr`/`rtl`
+physical-side projection; complete/side border shorthands and other
+properties retain their existing bounded behavior.
 owner also accepts exact case-insensitive CSS-wide `inherit`, `unset`,
 `initial`, and one-author-origin `revert`: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width

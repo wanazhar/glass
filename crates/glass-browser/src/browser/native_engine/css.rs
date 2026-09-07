@@ -122,6 +122,24 @@ impl NativeBorderColorValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBorderWidthValue {
+    Width(u32),
+    Inherit,
+    Unset,
+    Initial,
+    Revert,
+}
+
+impl NativeBorderWidthValue {
+    const fn is_css_wide(self) -> bool {
+        matches!(
+            self,
+            Self::Inherit | Self::Unset | Self::Initial | Self::Revert
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeBackgroundColorValue {
     Color(NativeColor),
     CurrentColor,
@@ -785,6 +803,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) background_color: Option<NativeColor>,
     pub(crate) text_decoration_color: NativeColor,
     pub(crate) border_color: [NativeColor; 4],
+    pub(crate) border_width: [u32; 4],
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
@@ -813,6 +832,7 @@ impl Default for NativeInheritedStyle {
             background_color: None,
             text_decoration_color: NativeColor::BLACK,
             border_color: [NativeColor::BLACK; 4],
+            border_width: [0; 4],
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
@@ -988,6 +1008,7 @@ pub(crate) struct NativeComputedStyle {
     background_color: Option<NativeColor>,
     border: Option<NativeBorder>,
     border_colors: Option<[NativeColor; 4]>,
+    border_widths: [u32; 4],
     border_radius: NativeBorderRadius,
     padding: NativeBoxEdges,
     margin: NativeBoxEdges,
@@ -1187,6 +1208,10 @@ impl NativeComputedStyle {
             Some(colors) => colors,
             None => [NativeColor::BLACK; 4],
         }
+    }
+
+    pub(crate) const fn border_widths(self) -> [u32; 4] {
+        self.border_widths
     }
 
     pub(crate) const fn border_radius(self) -> NativeBorderRadius {
@@ -1391,8 +1416,9 @@ impl NativeStylesheet {
         >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
-        let mut border_width: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
+        let mut border_width: [[Option<
+            CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>,
+        >; MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut border_style: [[Option<
             CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>,
         >; MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
@@ -2451,8 +2477,12 @@ impl NativeStylesheet {
         let resolved_margin = margin.map(resolve_local_optional_cascade_declaration);
         let resolved_border = border.map(resolve_local_optional_cascade_declaration);
         let resolved_border_width: [Option<u32>; 4] = std::array::from_fn(|index| {
-            resolve_local_optional_cascade_declaration(border_width[index])
+            resolve_local_border_width_declaration(
+                border_width[index],
+                inherited.border_width[index],
+            )
         });
+        let border_widths = std::array::from_fn(|index| resolved_border_width[index].unwrap_or(0));
         let resolved_border_style: [Option<NativeBorderStyleValue>; 4] =
             std::array::from_fn(|index| {
                 resolve_local_optional_cascade_declaration(border_style[index])
@@ -2578,6 +2608,7 @@ impl NativeStylesheet {
             background_color: resolved_background_color,
             border: NativeBorder::from_sides(resolved_border),
             border_colors: Some(border_colors),
+            border_widths,
             border_radius: resolve_local_cascade_declaration(
                 border_radius,
                 NativeBorderRadius::default(),
@@ -2900,6 +2931,23 @@ fn resolve_local_border_color_declaration(
         LocalCascadeDeclaration::Value(value) => {
             Some(Some(value.resolve(current_color, inherited_color)))
         }
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_border_width_declaration(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>>;
+        MAX_NATIVE_CASCADE_LAYERS],
+    inherited_width: u32,
+) -> Option<u32> {
+    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => Some(Some(match value {
+            NativeBorderWidthValue::Width(width) => width,
+            NativeBorderWidthValue::Inherit => inherited_width,
+            NativeBorderWidthValue::Unset
+            | NativeBorderWidthValue::Initial
+            | NativeBorderWidthValue::Revert => 0,
+        })),
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -3371,26 +3419,32 @@ fn apply_border_width_cascade(
     specificity: u16,
     rule_order: usize,
     inline: bool,
-    candidates: &mut [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>; MAX_NATIVE_CASCADE_LAYERS];
-             4],
+    candidates: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>>;
+             MAX_NATIVE_CASCADE_LAYERS]; 4],
 ) {
     for (index, candidate) in candidates.iter_mut().enumerate() {
         let border_width = declarations.border[index].and_then(|declaration| match declaration {
-            LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => {
-                Some(LocalCascadeDeclaration::Value(border.width()))
-            }
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => Some(
+                LocalCascadeDeclaration::Value(NativeBorderWidthValue::Width(border.width())),
+            ),
             LocalCascadeDeclaration::Value(
                 NativeBorderDeclaration::CompleteCurrentColor { width, .. }
                 | NativeBorderDeclaration::CompleteNoneCurrentColor { width }
                 | NativeBorderDeclaration::CompleteHiddenCurrentColor { width },
-            ) => Some(LocalCascadeDeclaration::Value(width)),
+            ) => Some(LocalCascadeDeclaration::Value(
+                NativeBorderWidthValue::Width(width),
+            )),
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteHidden {
                 width,
                 ..
-            }) => Some(LocalCascadeDeclaration::Value(width)),
+            }) => Some(LocalCascadeDeclaration::Value(
+                NativeBorderWidthValue::Width(width),
+            )),
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteNone {
                 width, ..
-            }) => Some(LocalCascadeDeclaration::Value(width)),
+            }) => Some(LocalCascadeDeclaration::Value(
+                NativeBorderWidthValue::Width(width),
+            )),
             LocalCascadeDeclaration::Value(
                 NativeBorderDeclaration::None | NativeBorderDeclaration::Hidden,
             ) => None,
@@ -3595,7 +3649,7 @@ struct NativeDeclarations {
     background_color: Option<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; 4],
     border_order: [usize; 4],
-    border_width: [Option<LocalCascadeDeclaration<u32>>; 4],
+    border_width: [Option<LocalCascadeDeclaration<NativeBorderWidthValue>>; 4],
     border_width_order: [usize; 4],
     border_style: [Option<LocalCascadeDeclaration<NativeBorderStyleValue>>; 4],
     border_style_order: [usize; 4],
@@ -4825,12 +4879,41 @@ fn parse_border_declaration(
     parse_complete_border(value).map(LocalCascadeDeclaration::Value)
 }
 
-fn parse_border_width_declaration(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 4]> {
-    parse_local_box_edges(value)
+fn parse_border_width_declaration(
+    value: &str,
+) -> Option<[LocalCascadeDeclaration<NativeBorderWidthValue>; 4]> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some([LocalCascadeDeclaration::RevertLayer; 4]);
+    }
+    let values = split_css_value_tokens(value)?
+        .into_iter()
+        .map(parse_border_width_value)
+        .collect::<Option<Vec<_>>>()?;
+    if values.len() != 1 && values.iter().any(|value| value.is_css_wide()) {
+        return None;
+    }
+    expand_box_edges(&values).map(|values| values.map(LocalCascadeDeclaration::Value))
 }
 
-fn parse_border_width_side_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
-    parse_local_dimension_declaration(value)
+fn parse_border_width_side_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeBorderWidthValue>> {
+    parse_local_cascade_declaration(value, parse_border_width_value)
+}
+
+fn parse_border_width_value(value: &str) -> Option<NativeBorderWidthValue> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("inherit") {
+        Some(NativeBorderWidthValue::Inherit)
+    } else if value.eq_ignore_ascii_case("unset") {
+        Some(NativeBorderWidthValue::Unset)
+    } else if value.eq_ignore_ascii_case("initial") {
+        Some(NativeBorderWidthValue::Initial)
+    } else if value.eq_ignore_ascii_case("revert") {
+        Some(NativeBorderWidthValue::Revert)
+    } else {
+        parse_dimension(value).map(NativeBorderWidthValue::Width)
+    }
 }
 
 fn parse_border_style_declaration(
@@ -5273,7 +5356,7 @@ fn set_border_color_side(
 }
 
 fn set_border_width_side(
-    sides: &mut [Option<LocalCascadeDeclaration<u32>>; 4],
+    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderWidthValue>>; 4],
     orders: &mut [usize; 4],
     index: usize,
     value: &str,
@@ -7706,20 +7789,26 @@ mod tests {
         assert_eq!(
             declarations.border_width,
             [
-                Some(LocalCascadeDeclaration::Value(5)),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderWidthValue::Width(5)
+                )),
                 Some(LocalCascadeDeclaration::RevertLayer),
-                Some(LocalCascadeDeclaration::Value(6)),
-                Some(LocalCascadeDeclaration::Value(7)),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderWidthValue::Width(6)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderWidthValue::Width(7)
+                )),
             ]
         );
         assert_eq!(declarations.border_width_order, [1, 2, 3, 4]);
         assert_eq!(
             parse_border_width_declaration("1px 2px 3px 4px"),
             Some([
-                LocalCascadeDeclaration::Value(1),
-                LocalCascadeDeclaration::Value(2),
-                LocalCascadeDeclaration::Value(3),
-                LocalCascadeDeclaration::Value(4),
+                LocalCascadeDeclaration::Value(NativeBorderWidthValue::Width(1)),
+                LocalCascadeDeclaration::Value(NativeBorderWidthValue::Width(2)),
+                LocalCascadeDeclaration::Value(NativeBorderWidthValue::Width(3)),
+                LocalCascadeDeclaration::Value(NativeBorderWidthValue::Width(4)),
             ])
         );
         assert_eq!(
@@ -7738,11 +7827,79 @@ mod tests {
         ] {
             assert_eq!(parse_border_width_declaration(value), None, "{value}");
         }
+        for (value, expected) in [
+            ("InHeRiT", NativeBorderWidthValue::Inherit),
+            ("UnSeT", NativeBorderWidthValue::Unset),
+            ("InItIaL", NativeBorderWidthValue::Initial),
+            ("ReVeRt", NativeBorderWidthValue::Revert),
+        ] {
+            assert_eq!(
+                parse_border_width_value(value),
+                Some(expected),
+                "value={value}"
+            );
+            assert_eq!(
+                parse_border_width_declaration(value),
+                Some([LocalCascadeDeclaration::Value(expected); 4]),
+                "shorthand={value}"
+            );
+            assert_eq!(
+                parse_border_width_side_declaration(value),
+                Some(LocalCascadeDeclaration::Value(expected)),
+                "longhand={value}"
+            );
+        }
+        for value in ["inherit 1px", "1px unset", "initial 2px 3px", "4px revert"] {
+            assert_eq!(parse_border_width_declaration(value), None, "mixed={value}");
+        }
         assert_eq!(
             parse_border_width_side_declaration("ReVeRt-LaYeR"),
             Some(LocalCascadeDeclaration::RevertLayer)
         );
         assert_eq!(parse_border_width_side_declaration("1px 2px"), None);
+    }
+
+    #[test]
+    fn border_width_css_wide_keywords_resolve_effective_inherited_widths() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { border-width: inherit; border-style: solid; border-color: red; } #physical { border-top-width: inherit; border-right-width: unset; border-bottom-width: initial; border-left-width: revert; border-style: solid; border-color: red; } #unset { border-width: unset; border-style: solid; border-color: red; } #initial { border-width: initial; border-style: solid; border-color: red; } #revert { border-width: revert; border-style: solid; border-color: red; } #omitted { border-style: solid; border-color: red; } #invalid { border-width: inherit; border-width: invalid; border-style: solid; border-color: red; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited_width = [2, 3, 4, 5];
+        let computed = |id: &str| {
+            let element = node(&format!("<div id='{id}'>Border</div>"));
+            stylesheet.computed_for_with_matcher(
+                &element,
+                NativeInheritedStyle {
+                    border_width: inherited_width,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(&element),
+            )
+        };
+
+        assert_eq!(computed("inherit").border_widths(), inherited_width);
+        assert_eq!(computed("physical").border_widths(), [2, 0, 0, 0]);
+        for id in ["unset", "initial", "revert", "omitted"] {
+            assert_eq!(computed(id).border_widths(), [0; 4], "id={id}");
+        }
+        assert_eq!(computed("invalid").border_widths(), inherited_width);
+
+        let inherited_border = computed("inherit").border().unwrap();
+        assert_eq!(inherited_border.top().width(), 2);
+        assert_eq!(inherited_border.right().width(), 3);
+        assert_eq!(inherited_border.bottom().width(), 4);
+        assert_eq!(inherited_border.left().width(), 5);
+        let physical_border = computed("physical").border().unwrap();
+        assert_eq!(physical_border.top().width(), 2);
+        assert_eq!(physical_border.right().width(), 0);
+        assert_eq!(physical_border.bottom().width(), 0);
+        assert_eq!(physical_border.left().width(), 0);
+        for id in ["unset", "initial", "revert"] {
+            assert_eq!(computed(id).border().unwrap().top().width(), 0, "id={id}");
+        }
+        assert!(computed("omitted").border().is_none());
     }
 
     #[test]

@@ -1379,6 +1379,15 @@ full-native, affected-library, strict Clippy, rustdoc, two-crate, formatting,
 and static local gates are recorded in the task; remote CI remains pending
 because the checkout is local-only.
 
+The next dependency-ordered [native-engine-152](tasks/native-engine-152.md)
+slice is design-ready. It will add bounded physical `border-width` and
+`border-top|right|bottom|left-width` shorthand/longhands with one-to-four-value
+expansion, an independent private width stream, and case-insensitive
+`revert-layer` rollback. Existing border style/color, zero-width/no-paint,
+box-model, display-list, capture, raster, point-hit, and semantic/source-order
+owners remain unchanged. The task is planned only; no implementation or local
+gate claim is made yet.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

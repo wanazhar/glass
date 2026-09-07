@@ -1667,6 +1667,15 @@ resolution, multiple origins, `!important` inversion, and browser-wide border
 conformance remain outside the completed boundary. Remote CI remains pending
 because the checkout is local-only.
 
+The next dependency-ordered [native-engine-174](tasks/native-engine-174.md)
+slice is designed before implementation. It adds bounded logical border
+shorthands and width/style/color component longhands, mapping block sides to
+top/bottom and inline sides through the existing inherited ltr/rtl direction
+owner. Logical and physical declarations will compete in the existing private
+physical component streams; writing modes, logical radius, border images,
+tables, multiple origins, and browser-wide logical-border conformance remain
+outside the boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

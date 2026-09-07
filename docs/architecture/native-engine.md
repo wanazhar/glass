@@ -1368,6 +1368,15 @@ evidence is recorded in the task. Logical sides, table conflict resolution,
 multiple origins, `!important` inversion, and browser-wide border conformance
 remain outside the completed boundary. Remote CI remains pending because the
 checkout is local-only.
+The next dependency-ordered `native-engine-174` slice is designed in
+`docs/plan/tasks/native-engine-174.md` before implementation. It will add the
+bounded logical border shorthand and width/style/color component family by
+projecting logical block sides to physical top/bottom and logical inline sides
+through the current resolved ltr/rtl `direction` owner. It will reuse the
+physical cascade, layout, display, raster, capture, point-hit, and semantic
+owners. Vertical writing modes, logical radius, border images, table conflict
+resolution, multiple origins, and browser-wide logical-border conformance are
+not part of the planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

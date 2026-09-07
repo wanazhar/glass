@@ -6291,6 +6291,168 @@ fn native_color_current_color_resolves_from_inherited_owner_without_recursion() 
 }
 
 #[test]
+fn native_color_css_wide_keywords_preserve_inheritance_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>.surface { display:block;width:64px;height:20px;line-height:20px;background-color:currentColor;border:1px solid currentColor;text-decoration:underline;text-decoration-color:currentColor; } @layer base { #parent { color:green; } #inherit { color:inherit; } #unset { color:unset; } #revert { color:revert; } #initial { color:initial; } #invalid { color:red;color:inherit;color:invalid; } #precedence { color:red; } #root-inherit { color:inherit; } #root-unset { color:unset; } #root-revert { color:revert; } #root-initial { color:initial; } } @layer theme { #precedence { color:blue; } #invalid-mixed { color:inherit red; } } #precedence { color:InHeRiT; } #inline { color:initial; }</style><div id='parent' role='button'><button id='inherit' class='surface'>Inherit</button><button id='unset' class='surface'>Unset</button><button id='revert' class='surface'>Revert</button><button id='initial' class='surface'>Initial</button><button id='invalid' class='surface'>Invalid</button><button id='precedence' class='surface'>Precedence</button><button id='inline' class='surface' style='color:unset'>Inline</button></div><button id='root-inherit' class='surface'>Root inherit</button><button id='root-unset' class='surface'>Root unset</button><button id='root-revert' class='surface'>Root revert</button><button id='root-initial' class='surface'>Root initial</button><button id='invalid-mixed' class='surface'>Mixed</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 80,
+        height: 260,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let unset = document.resolve_target("id=unset").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let initial = document.resolve_target("id=initial").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let precedence = document.resolve_target("id=precedence").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let root_inherit = document.resolve_target("id=root-inherit").unwrap();
+    let root_unset = document.resolve_target("id=root-unset").unwrap();
+    let root_revert = document.resolve_target("id=root-revert").unwrap();
+    let root_initial = document.resolve_target("id=root-initial").unwrap();
+    let invalid_mixed = document.resolve_target("id=invalid-mixed").unwrap();
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout
+            .hit_test(
+                (layout.box_for(inherit).unwrap().x + 1).into(),
+                (layout.box_for(inherit).unwrap().y + 1).into(),
+            )
+            .unwrap(),
+        Some(inherit)
+    );
+    for node_id in [
+        parent,
+        inherit,
+        unset,
+        revert,
+        initial,
+        invalid,
+        precedence,
+        inline,
+        root_inherit,
+        root_unset,
+        root_revert,
+        root_initial,
+        invalid_mixed,
+    ] {
+        assert!(
+            layout.box_for(node_id).is_some(),
+            "missing layout for {node_id:?}"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let text_for = |node_id| {
+        list.commands
+            .iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::TextRun {
+                    node_id: command_node_id,
+                    origin,
+                    color,
+                    decoration_color,
+                    ..
+                } if *command_node_id == node_id => Some((*origin, *color, *decoration_color)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text command for {node_id:?}"))
+    };
+    let fill_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                color,
+                ..
+            } if *command_node_id == node_id => Some(*color),
+            _ => None,
+        })
+    };
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    for node_id in [inherit, unset, revert, invalid, precedence] {
+        let text = text_for(node_id);
+        assert_eq!(text.1, green);
+        assert_eq!(text.2, green);
+        assert_eq!(fill_for(node_id), Some(green));
+        assert_eq!(border_for(node_id).unwrap().top.color, green);
+    }
+    assert_eq!(text_for(inline).1, green);
+    assert_eq!(text_for(inline).2, green);
+    assert_eq!(fill_for(inline), Some(green));
+    assert_eq!(border_for(inline).unwrap().top.color, green);
+    for node_id in [initial, root_inherit, root_unset, root_revert, root_initial] {
+        let text = text_for(node_id);
+        assert_eq!(text.1, NativeColor::BLACK);
+        assert_eq!(text.2, NativeColor::BLACK);
+        assert_eq!(fill_for(node_id), Some(NativeColor::BLACK));
+        assert_eq!(border_for(node_id).unwrap().top.color, NativeColor::BLACK);
+    }
+
+    let inherited_text = text_for(inherit);
+    let raster = list.rasterize().unwrap();
+    assert_eq!(
+        raster.pixel(inherited_text.0.x + 1, inherited_text.0.y),
+        Some([0, 128, 0, 255])
+    );
+    assert!(!raster.to_png().unwrap().is_empty());
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [
+        (parent, inherit),
+        (inherit, unset),
+        (unset, revert),
+        (revert, initial),
+        (initial, invalid),
+        (invalid, precedence),
+        (precedence, inline),
+    ] {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair.0)
+                < semantic_ids.iter().position(|id| *id == pair.1),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "color"
+    }));
+    assert_eq!(
+        document
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                    && diagnostic.detail == "color"
+            })
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn native_display_list_inherits_text_color_and_preserves_transparent_override() {
     let document = NativeDocument::parse(
         "<style>#parent { color: blue; }</style><div id='parent'><span id='child'>Child</span><span id='transparent' style='color:transparent'>Clear</span></div>",

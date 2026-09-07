@@ -3370,6 +3370,163 @@ fn native_text_decoration_color_separates_glyph_and_line_paint() {
 }
 
 #[test]
+fn native_text_decoration_current_color_reaches_separate_text_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block;width:64px;height:20px;line-height:20px;text-decoration:underline overline line-through; } @layer base { #local { color:red;text-decoration-color:currentColor; } #parent { display:block;width:64px;height:20px;color:green;text-decoration:underline overline line-through;text-decoration-color:red; } #black { text-decoration-color:CuRrEnTcOlOr; } #named { color:green;text-decoration-color:red; } #rollback { color:blue;text-decoration-color:red; } #invalid { color:blue;text-decoration-color:red; } #transparent { color:green;text-decoration-color:transparent; } #omitted { color:green; } } @layer theme { #named { text-decoration-color:blue; } #rollback { text-decoration-color:currentColor; } #invalid { text-decoration-color:currentColor;text-decoration-color:invalid; } } #named { text-decoration-color:revert-layer; } #rollback { text-decoration-color:revert-layer; }</style><button id='local' class='line'>Local</button><div id='parent'><button id='inherited' class='line'>Inherited</button></div><button id='black' class='line'>Black</button><button id='named' class='line'>Named</button><button id='rollback' class='line'>Rollback</button><button id='invalid' class='line'>Invalid</button><button id='inline' class='line' style='color:red;text-decoration-color:currentColor;opacity:50%'>Inline</button><button id='transparent' class='line'>Transparent</button><button id='omitted' class='line'>Omitted</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 80,
+        height: 220,
+        device_scale_factor_milli: 1000,
+    };
+    let local = document.resolve_target("id=local").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let black = document.resolve_target("id=black").unwrap();
+    let named = document.resolve_target("id=named").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let transparent = document.resolve_target("id=transparent").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+    let transparent_color = NativeColor {
+        red: 0,
+        green: 0,
+        blue: 0,
+        alpha: 0,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(local));
+    assert_eq!(layout.hit_test(1, 21).unwrap(), Some(inherited));
+
+    let list = document.display_list(viewport).unwrap();
+    let command_for = |node_id| {
+        list.commands
+            .iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::TextRun {
+                    node_id: command_node_id,
+                    origin,
+                    color,
+                    decoration_color,
+                    underline,
+                    overline,
+                    line_through,
+                    clip,
+                    ..
+                } if *command_node_id == node_id => Some((
+                    *origin,
+                    *color,
+                    *decoration_color,
+                    *underline,
+                    *overline,
+                    *line_through,
+                    *clip,
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text command for {node_id:?}"))
+    };
+    assert_eq!(command_for(local).2, NativeColor::RED);
+    assert_eq!(command_for(inherited).2, green);
+    assert_eq!(command_for(black).2, NativeColor::BLACK);
+    assert_eq!(command_for(named).2, blue);
+    assert_eq!(command_for(rollback).2, blue);
+    assert_eq!(command_for(invalid).2, blue);
+    assert_eq!(command_for(inline).1, NativeColor::RED);
+    assert_eq!(command_for(inline).2, NativeColor::RED);
+    assert_eq!(command_for(transparent).2, transparent_color);
+    assert_eq!(command_for(omitted).2, green);
+    for node_id in [
+        local,
+        inherited,
+        black,
+        named,
+        rollback,
+        invalid,
+        inline,
+        transparent,
+        omitted,
+    ] {
+        let command = command_for(node_id);
+        assert!(command.3 && command.4 && command.5);
+        assert_eq!(command.6, None);
+    }
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::BeginOpacityGroup { node_id, opacity }
+                if *node_id == inline && *opacity == 128
+        )
+    }));
+
+    let inline_command = command_for(inline);
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(command_for(local).0.x, command_for(local).0.y + 7),
+        Some([255, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(command_for(named).0.x, command_for(named).0.y + 7),
+        Some([0, 0, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(inline_command.0.x, inline_command.0.y + 7),
+        Some([255, 127, 127, 255]),
+        "inline command: {inline_command:?}"
+    );
+    assert_eq!(
+        surface.pixel(
+            command_for(transparent).0.x,
+            command_for(transparent).0.y + 7
+        ),
+        Some([255, 255, 255, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [
+        (local, inherited),
+        (inherited, black),
+        (black, named),
+        (named, rollback),
+        (rollback, invalid),
+        (invalid, inline),
+        (inline, transparent),
+        (transparent, omitted),
+    ] {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair.0)
+                < semantic_ids.iter().position(|id| *id == pair.1),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-color"
+    }));
+}
+
+#[test]
 fn native_text_decoration_color_revert_layer_preserves_local_fallback_and_glyph_paint() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:green; text-decoration:underline overline line-through; } @layer base { #named { text-decoration-color:red; } #rollback { text-decoration-color:red; } #repeated { text-decoration-color:red; } #unlayered { text-decoration-color:red; } #inline { text-decoration-color:red; } #fallback { text-decoration-color:revert-layer; } } @layer theme { .named { text-decoration-color:blue; } #rollback { text-decoration-color:blue; } #repeated { text-decoration-color:revert-layer; } #unlayered { text-decoration-color:blue; } #inline { text-decoration-color:blue; } } @layer top { #repeated { text-decoration-color:revert-layer; } } #named { text-decoration-color:revert-layer; } #unlayered { text-decoration-color:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='repeated' class='line'>A</div><div id='unlayered' class='line'>A</div><div id='inline' class='line' style='text-decoration-color:revert-layer'>A</div><div id='fallback' class='line'>A</div><div id='parent' class='line' style='text-decoration-color:red'><span id='child'>A</span></div>",

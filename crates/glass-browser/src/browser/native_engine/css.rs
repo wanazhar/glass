@@ -162,6 +162,7 @@ impl NativeTextUnderlineOffsetDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationColorDeclaration {
     Value(NativeColor),
+    CurrentColor,
     RevertLayer,
 }
 
@@ -2470,7 +2471,10 @@ impl NativeStylesheet {
                 text_underline_offset,
                 inherited.text_underline_offset,
             ),
-            text_decoration_color: resolve_text_decoration_color(text_decoration_color),
+            text_decoration_color: resolve_text_decoration_color(
+                text_decoration_color,
+                current_color,
+            ),
             text_transform: resolve_inherited_text_declaration(
                 text_transform,
                 inherited.text_transform,
@@ -2987,6 +2991,7 @@ fn resolve_text_decoration(
 fn resolve_text_decoration_color(
     candidates: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
         MAX_NATIVE_CASCADE_LAYERS],
+    current_color: NativeColor,
 ) -> Option<NativeColor> {
     let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
     loop {
@@ -3011,6 +3016,7 @@ fn resolve_text_decoration_color(
         }
         return match candidate.value {
             NativeTextDecorationColorDeclaration::Value(value) => Some(value),
+            NativeTextDecorationColorDeclaration::CurrentColor => Some(current_color),
             NativeTextDecorationColorDeclaration::RevertLayer => unreachable!(),
         };
     }
@@ -4278,7 +4284,9 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.text_underline_offset = parse_text_underline_offset(value);
             }
             "text-decoration-color" => {
-                declarations.text_decoration_color = parse_text_decoration_color(value);
+                if let Some(parsed) = parse_text_decoration_color(value) {
+                    declarations.text_decoration_color = Some(parsed);
+                }
             }
             "text-transform" => {
                 if let Some(parsed) = parse_text_transform_declaration(value) {
@@ -5049,6 +5057,9 @@ fn parse_text_underline_offset(value: &str) -> Option<NativeTextUnderlineOffsetD
 fn parse_text_decoration_color(value: &str) -> Option<NativeTextDecorationColorDeclaration> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some(NativeTextDecorationColorDeclaration::RevertLayer);
+    }
+    if value.trim().eq_ignore_ascii_case("currentColor") {
+        return Some(NativeTextDecorationColorDeclaration::CurrentColor);
     }
     parse_color(value).map(NativeTextDecorationColorDeclaration::Value)
 }
@@ -10353,7 +10364,12 @@ mod tests {
             document
                 .computed_style_for_layout(invalid)
                 .text_decoration_color(),
-            None
+            Some(NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: u8::MAX,
+            })
         );
     }
 
@@ -10381,7 +10397,10 @@ mod tests {
                 alpha: 0,
             }))
         );
-        assert_eq!(parse_text_decoration_color("currentColor"), None);
+        assert_eq!(
+            parse_text_decoration_color("CuRrEnTcOlOr"),
+            Some(NativeTextDecorationColorDeclaration::CurrentColor)
+        );
         assert_eq!(parse_text_decoration_color("inherit"), None);
         assert_eq!(parse_text_decoration_color("unset"), None);
         assert_eq!(parse_text_decoration_color("revert"), None);
@@ -10392,6 +10411,13 @@ mod tests {
         assert_eq!(
             parse_declarations("text-decoration-color: revert-layer").text_decoration_color,
             Some(NativeTextDecorationColorDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_declarations(
+                "text-decoration-color: red; text-decoration-color: currentColor; text-decoration-color: invalid"
+            )
+            .text_decoration_color,
+            Some(NativeTextDecorationColorDeclaration::CurrentColor)
         );
     }
 

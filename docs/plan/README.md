@@ -1379,11 +1379,23 @@ full-native, affected-library, strict Clippy, rustdoc, two-crate, formatting,
 and static local gates are recorded in the task; remote CI remains pending
 because the checkout is local-only.
 
-The next dependency-ordered [native-engine-152](tasks/native-engine-152.md)
-slice is design-ready. It will add bounded physical `border-width` and
-`border-top|right|bottom|left-width` shorthand/longhands with one-to-four-value
-expansion, an independent private width stream, and case-insensitive
-`revert-layer` rollback. Existing border style/color, zero-width/no-paint,
+The dependency-ordered [native-engine-152](tasks/native-engine-152.md)
+implementation is complete in `7dfcc7f5` (design `ff4d7803`). It adds bounded
+physical `border-width` and `border-top|right|bottom|left-width` shorthand/
+longhands with one-to-four-value expansion, an independent private per-side
+width stream, and case-insensitive `revert-layer` rollback to lower widths or
+bounded zero. Width-only declarations do not invent a style or paint a border;
+existing border style/color, box-model, display-list, capture, raster,
+point-hit, and semantic/source-order owners remain unchanged. Focused,
+full-native, affected-library, strict Clippy, rustdoc, two-crate, formatting,
+and static local gates are recorded in the task; remote CI remains pending
+because the checkout is local-only.
+
+The next dependency-ordered [native-engine-153](tasks/native-engine-153.md)
+slice is design-ready. It will add bounded physical `border-style` and
+`border-top|right|bottom|left-style` shorthand/longhands with one-to-four-value
+expansion, an independent private style stream, and case-insensitive
+`revert-layer` rollback. Existing border width/color, zero-width/no-paint,
 box-model, display-list, capture, raster, point-hit, and semantic/source-order
 owners remain unchanged. The task is planned only; no implementation or local
 gate claim is made yet.

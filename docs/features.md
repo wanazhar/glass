@@ -111,6 +111,13 @@ source-behavior reference.
   capture, raster, point-hit, and semantic/source-order owners; `currentColor`,
   gradients, border-image, and browser-wide border conformance remain outside
   the boundary,
+  plus bounded case-insensitive 15-layer/unlayered local `border-width` and
+  physical `border-top-width`, `border-right-width`, `border-bottom-width`,
+  and `border-left-width` values with one-to-four-value shorthand expansion
+  and independent per-side `revert-layer` rollback to lower widths or bounded
+  zero; width-only declarations do not invent a style or paint a border, and
+  standalone border-style, logical sides, fractional/percentage widths, and
+  browser-wide border conformance remain outside the boundary,
   side-specific solid/dashed/dotted borders, bounded physical circular
   border radii, bounded inline-box line placement, bounded fixed pixel
   line-height flow with bounded inherited line-height, bounded direct-text

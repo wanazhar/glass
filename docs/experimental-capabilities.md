@@ -208,7 +208,10 @@ remain outside the boundary. The complete and physical border shorthands also
 accept the exact case-insensitive omitted-component `none` and `hidden` forms
 through private no-paint style sentinels; winning omitted-component `hidden`
 remains private for future table conflict resolution and arbitrary
-omitted-component forms remain outside this bounded surface. It also provides bounded side-specific
+omitted-component forms remain outside this bounded surface. Complete and
+physical border shorthands also accept bounded complete `Npx hidden color`
+values with private width/color retention for future table conflict resolution;
+current non-table composition suppresses hidden paint. It also provides bounded side-specific
 solid/dashed/dotted/double/groove/ridge/inset/outset-border paint,
 bounded physical circular border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

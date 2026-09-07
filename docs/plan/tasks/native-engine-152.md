@@ -169,5 +169,6 @@ Local certification completed in the isolated regenerable target
   `/tmp/glass-152-focused` was verified as a real directory with no active
   Cargo/Rust consumer and no open handles, then removed with bounded,
   same-filesystem `find -P /tmp/glass-152-focused -xdev -depth -delete`.
-- The exact target size, entry counts, and before/after free-space readings
-  are recorded in the cleanup checkpoint after deletion.
+- The target contained 5,373,452,288 bytes, 8,886 files, and 1,131
+  directories. Available `/tmp` space increased from 78,405,451,776 bytes to
+  83,778,924,544 bytes, and `/home/ubuntu/work/glass/target` remains absent.

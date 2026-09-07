@@ -1140,6 +1140,140 @@ fn native_border_color_css_wide_keywords_preserve_physical_paint_and_consumers()
 }
 
 #[test]
+fn native_physical_border_color_important_priority_reaches_border_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            .box { display:block;width:16px;height:8px;border:2px solid black; }
+            @layer base {
+                #early { border-color:red !important; }
+                #rollback { border-color:red !important; }
+                #rollback { border-color:revert-layer !important; }
+                #normal { border-color:red; }
+                #mixed { border-color:red !important; }
+                #sides { border-color:red !important;border-top-color:blue !important;border-right-color:green !important; }
+                #sides { border-bottom-color:blue;border-left-color:green; }
+                #invalid { border-color:red !important;border-color:invalid !important; }
+            }
+            @layer theme {
+                #early { border-color:blue !important; }
+                #rollback { border-color:green !important; }
+                #normal { border-color:blue; }
+                #sides { border-color:green !important; }
+            }
+            #early { border-color:green !important; }
+            #normal { border-color:green; }
+            #mixed { border-color:green; }
+            #sides { border-color:green !important; }
+            #inline { border-color:red !important; }
+        </style>
+        <div id='early' class='box' role='button'>Early</div>
+        <div id='rollback' class='box' role='button'>Rollback</div>
+        <div id='normal' class='box' role='button'>Normal</div>
+        <div id='mixed' class='box' role='button'>Mixed</div>
+        <div id='sides' class='box' role='button'>Sides</div>
+        <div id='invalid' class='box' role='button'>Invalid</div>
+        <div id='inline' class='box' role='button' style='border-color:green !important'>Inline</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 100,
+        device_scale_factor_milli: 1000,
+    };
+    let early = document.resolve_target("id=early").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let sides = document.resolve_target("id=sides").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let targets = [early, rollback, normal, mixed, sides, invalid, inline];
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let layout = document.layout(viewport).unwrap();
+    for node_id in targets {
+        let rectangle = layout.box_for(node_id).expect("border-color layout box");
+        assert_eq!(rectangle.width, 20);
+        assert_eq!(rectangle.height, 12);
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 3).into(), (rectangle.y + 3).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    for (node_id, expected) in [
+        (early, [NativeColor::RED; 4]),
+        (rollback, [green; 4]),
+        (normal, [green; 4]),
+        (mixed, [NativeColor::RED; 4]),
+        (sides, [blue, green, NativeColor::RED, NativeColor::RED]),
+        (invalid, [NativeColor::RED; 4]),
+        (inline, [green; 4]),
+    ] {
+        let borders = border_for(node_id).expect("border-color command");
+        assert_eq!(
+            [
+                borders.top.color,
+                borders.right.color,
+                borders.bottom.color,
+                borders.left.color,
+            ],
+            expected,
+            "border colors for {node_id:?}"
+        );
+        assert_eq!(borders.top.width, 2);
+        assert_eq!(borders.top.style, NativeBorderStyle::Solid);
+    }
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in targets.windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-color"
+    }));
+    let early_box = layout.box_for(early).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(early_box.x + 10, early_box.y),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_complete_border_current_color_projects_all_physical_forms() {
     let document = NativeDocument::parse(
         r#"<style>@layer base {

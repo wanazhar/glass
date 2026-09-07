@@ -225,8 +225,24 @@ pub(crate) struct NativeBorderSide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeBorderDeclaration {
     Complete(NativeBorderSide),
-    CompleteNone { width: u32, color: NativeColor },
-    CompleteHidden { width: u32, color: NativeColor },
+    CompleteCurrentColor {
+        width: u32,
+        style: NativeBorderStyle,
+    },
+    CompleteNone {
+        width: u32,
+        color: NativeColor,
+    },
+    CompleteNoneCurrentColor {
+        width: u32,
+    },
+    CompleteHidden {
+        width: u32,
+        color: NativeColor,
+    },
+    CompleteHiddenCurrentColor {
+        width: u32,
+    },
     None,
     Hidden,
 }
@@ -3223,6 +3239,11 @@ fn apply_border_width_cascade(
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => {
                 Some(LocalCascadeDeclaration::Value(border.width()))
             }
+            LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::CompleteCurrentColor { width, .. }
+                | NativeBorderDeclaration::CompleteNoneCurrentColor { width }
+                | NativeBorderDeclaration::CompleteHiddenCurrentColor { width },
+            ) => Some(LocalCascadeDeclaration::Value(width)),
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteHidden {
                 width,
                 ..
@@ -3265,12 +3286,22 @@ fn apply_border_style_cascade(
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => {
                 LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(border.style()))
             }
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteCurrentColor {
+                style,
+                ..
+            }) => LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(style)),
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteHidden { .. }) => {
                 LocalCascadeDeclaration::Value(NativeBorderStyleValue::Hidden)
             }
+            LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::CompleteHiddenCurrentColor { .. },
+            ) => LocalCascadeDeclaration::Value(NativeBorderStyleValue::Hidden),
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteNone { .. }) => {
                 LocalCascadeDeclaration::Value(NativeBorderStyleValue::None)
             }
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteNoneCurrentColor {
+                ..
+            }) => LocalCascadeDeclaration::Value(NativeBorderStyleValue::None),
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::None) => {
                 LocalCascadeDeclaration::Value(NativeBorderStyleValue::None)
             }
@@ -3311,16 +3342,31 @@ fn apply_border_color_cascade(
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => Some(
                 LocalCascadeDeclaration::Value(NativeBorderColorValue::Color(border.color())),
             ),
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteCurrentColor {
+                ..
+            }) => Some(LocalCascadeDeclaration::Value(
+                NativeBorderColorValue::CurrentColor,
+            )),
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteHidden {
                 color,
                 ..
             }) => Some(LocalCascadeDeclaration::Value(
                 NativeBorderColorValue::Color(color),
             )),
+            LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::CompleteHiddenCurrentColor { .. },
+            ) => Some(LocalCascadeDeclaration::Value(
+                NativeBorderColorValue::CurrentColor,
+            )),
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteNone {
                 color, ..
             }) => Some(LocalCascadeDeclaration::Value(
                 NativeBorderColorValue::Color(color),
+            )),
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteNoneCurrentColor {
+                ..
+            }) => Some(LocalCascadeDeclaration::Value(
+                NativeBorderColorValue::CurrentColor,
             )),
             LocalCascadeDeclaration::Value(
                 NativeBorderDeclaration::None | NativeBorderDeclaration::Hidden,
@@ -4571,6 +4617,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
     declarations
 }
 
+#[cfg(test)]
 fn parse_border(value: &str) -> Option<NativeBorderSide> {
     let mut parts = value.split_ascii_whitespace();
     let width = parse_dimension(parts.next()?)?;
@@ -4587,16 +4634,31 @@ fn parse_complete_border(value: &str) -> Option<NativeBorderDeclaration> {
     let mut parts = value.split_ascii_whitespace();
     let width = parse_dimension(parts.next()?)?;
     let style = parts.next()?;
-    if style.eq_ignore_ascii_case("none") {
-        let color = parts.collect::<Vec<_>>().join(" ");
-        let color = parse_color(&color)?;
-        Some(NativeBorderDeclaration::CompleteNone { width, color })
-    } else if style.eq_ignore_ascii_case("hidden") {
-        let color = parts.collect::<Vec<_>>().join(" ");
-        let color = parse_color(&color)?;
-        Some(NativeBorderDeclaration::CompleteHidden { width, color })
-    } else {
-        parse_border(value).map(NativeBorderDeclaration::Complete)
+    let color = parts.collect::<Vec<_>>().join(" ");
+    let color = parse_border_color_value(&color)?;
+    match (parse_border_style_value(style)?, color) {
+        (NativeBorderStyleValue::Paint(style), NativeBorderColorValue::Color(color)) => {
+            Some(NativeBorderDeclaration::Complete(NativeBorderSide {
+                width,
+                style,
+                color,
+            }))
+        }
+        (NativeBorderStyleValue::Paint(style), NativeBorderColorValue::CurrentColor) => {
+            Some(NativeBorderDeclaration::CompleteCurrentColor { width, style })
+        }
+        (NativeBorderStyleValue::None, NativeBorderColorValue::Color(color)) => {
+            Some(NativeBorderDeclaration::CompleteNone { width, color })
+        }
+        (NativeBorderStyleValue::None, NativeBorderColorValue::CurrentColor) => {
+            Some(NativeBorderDeclaration::CompleteNoneCurrentColor { width })
+        }
+        (NativeBorderStyleValue::Hidden, NativeBorderColorValue::Color(color)) => {
+            Some(NativeBorderDeclaration::CompleteHidden { width, color })
+        }
+        (NativeBorderStyleValue::Hidden, NativeBorderColorValue::CurrentColor) => {
+            Some(NativeBorderDeclaration::CompleteHiddenCurrentColor { width })
+        }
     }
 }
 
@@ -6899,9 +6961,15 @@ mod tests {
             parse_declarations("border: hidden; border-top: HIDDEN; border-right: hidden; border-bottom: Hidden; border-left: hIdDeN").border,
             [Some(LocalCascadeDeclaration::Value(NativeBorderDeclaration::Hidden)); 4]
         );
-        assert_eq!(parse_border("2px hidden red"), None);
-        assert_eq!(parse_border("2px solid currentColor"), None);
-        assert_eq!(parse_border_declaration("2px solid currentColor"), None);
+        assert_eq!(
+            parse_border_declaration("2px solid currentColor"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::CompleteCurrentColor {
+                    width: 2,
+                    style: NativeBorderStyle::Solid,
+                }
+            ))
+        );
         assert_eq!(
             parse_border_declaration("2px HiDdEn red"),
             Some(LocalCascadeDeclaration::Value(
@@ -7047,6 +7115,55 @@ mod tests {
             diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
                 && diagnostic.detail == "border"
         }));
+    }
+
+    #[test]
+    fn complete_border_current_color_parser_covers_physical_styles_and_rejections() {
+        let declarations = parse_declarations(
+            "border: 1px solid CURRENTcolor; border-top: 2px DASHED currentColor; border-right: 3px none CuRrEnTcOlOr; border-bottom: 4px HIDDEN CURRENTCOLOR; border-left: 5px double currentColor",
+        );
+        assert_eq!(
+            declarations.border,
+            [
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CompleteCurrentColor {
+                        width: 2,
+                        style: NativeBorderStyle::Dashed,
+                    }
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CompleteNoneCurrentColor { width: 3 }
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CompleteHiddenCurrentColor { width: 4 }
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CompleteCurrentColor {
+                        width: 5,
+                        style: NativeBorderStyle::Double,
+                    }
+                )),
+            ]
+        );
+        assert_eq!(
+            parse_border_declaration("2px solid red"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::Complete(border_side(2, NativeColor::RED))
+            ))
+        );
+
+        for value in [
+            "2px solid",
+            "2px solid currentColor red",
+            "2px wavy currentColor",
+            "2px solid revert-layer",
+            "2px solid inherit",
+            "2px solid hsl(0 100% 50%)",
+            "2px none",
+            "2px hidden",
+        ] {
+            assert_eq!(parse_border_declaration(value), None, "{value}");
+        }
     }
 
     #[test]

@@ -1493,6 +1493,13 @@ schemas remain unchanged. Focused/full-native/library, strict Clippy, rustdoc,
 two-crate, formatting, static documentation, and bounded cleanup gates passed
 locally; remote CI remains pending because the branch is local-only.
 
+The next dependency-ordered [native-engine-161](tasks/native-engine-161.md)
+slice is designed but not implemented. It is limited to standalone physical
+`border-color` and `border-top|right|bottom|left-color` `currentColor`
+substitution through private color state resolved from the existing local or
+inherited element color. Complete border shorthands, broader CSS color syntax,
+and browser-wide conformance remain outside the planned boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

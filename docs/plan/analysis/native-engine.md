@@ -1350,6 +1350,14 @@ composition no-paint/no-side with public/artifact schemas unchanged. Focused,
 full-native/library, strict Clippy, rustdoc, two-crate, formatting, static
 documentation, and bounded cleanup gates passed locally; remote CI remains
 pending because the branch is local-only.
+The next dependency-ordered `native-engine-161` slice is designed and recorded
+in `docs/plan/tasks/native-engine-161.md`. It is limited to standalone physical
+`border-color` and `border-top|right|bottom|left-color` `currentColor`
+substitution through a private color-value enum, resolving after the existing
+local/inherited `color` owner and preserving the public `NativeColor` border
+surface. Complete border shorthands, broader CSS color semantics, and all
+existing non-table/browser-conformance exclusions remain outside the planned
+boundary; no implementation or completion claim is made yet.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2099,11 +2107,14 @@ visual stacking.
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 | `native-engine-160` | completed bounded complete `Npx none color` values for `border` and physical border shorthands, preserving private declared width/color candidates while projecting none style through the existing private sentinel and keeping public/artifact schemas unchanged; focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, static documentation, and bounded cleanup gates passed locally | `native-engine-159` | arbitrary omitted-component defaults, other CSS-wide reset keywords, logical sides, table layout/conflict resolution, `currentColor`, gradients, border-image, animation, multiple origins, `!important` inversion, and browser-wide CSS border conformance |
+| `native-engine-161` | planned standalone physical `border-color` and physical color-longhand `currentColor` substitution through private declaration state, resolved from the existing local/inherited element color while preserving public/artifact schemas | `native-engine-160` | complete border-shorthand `currentColor`, arbitrary omitted defaults, CSS-wide reset machinery, logical sides, gradients, system colors, color spaces, percentages, animation, multiple origins, `!important` inversion, table conflict resolution, and browser-wide CSS color/border conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-160.md` is the latest completed task;
+`docs/plan/tasks/native-engine-161.md` is the next planned task and has no
+implementation or completion evidence yet;
 `docs/plan/tasks/native-engine-159.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-158.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-157.md` is the preceding completed task;

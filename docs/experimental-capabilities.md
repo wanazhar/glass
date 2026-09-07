@@ -234,7 +234,11 @@ bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback for
 capture, and raster owners; `background-color` also resolves case-insensitive
 `currentColor` from the element's local or inherited `color`, and local `color:
 currentColor` resolves from inherited color with a bounded black initial fallback
-without self-recursion. Gradients, system colors, percentages, color spaces,
+without self-recursion. Local `color` also accepts the case-insensitive CSS-wide
+`inherit`, `unset`, `initial`, and `revert` keywords: the inherited forms use
+the bounded parent-color/black-root fallback, while `initial` resets to black;
+omitted direct roots remain `None`. This is the native engine's one-author-
+origin model. Gradients, system colors, percentages, color spaces,
 and multiple origins remain outside the boundary,
 bounded
 inherited fixed-cell `text-decoration:none|underline|overline|line-through`

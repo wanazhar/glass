@@ -210,6 +210,7 @@ pub(crate) struct NativeBorderSide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeBorderDeclaration {
     Complete(NativeBorderSide),
+    CompleteNone { width: u32, color: NativeColor },
     CompleteHidden { width: u32, color: NativeColor },
     None,
     Hidden,
@@ -3205,6 +3206,9 @@ fn apply_border_width_cascade(
                 width,
                 ..
             }) => Some(LocalCascadeDeclaration::Value(width)),
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteNone {
+                width, ..
+            }) => Some(LocalCascadeDeclaration::Value(width)),
             LocalCascadeDeclaration::Value(
                 NativeBorderDeclaration::None | NativeBorderDeclaration::Hidden,
             ) => None,
@@ -3242,6 +3246,9 @@ fn apply_border_style_cascade(
             }
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteHidden { .. }) => {
                 LocalCascadeDeclaration::Value(NativeBorderStyleValue::Hidden)
+            }
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteNone { .. }) => {
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::None)
             }
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::None) => {
                 LocalCascadeDeclaration::Value(NativeBorderStyleValue::None)
@@ -3286,6 +3293,9 @@ fn apply_border_color_cascade(
             LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteHidden {
                 color,
                 ..
+            }) => Some(LocalCascadeDeclaration::Value(color)),
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::CompleteNone {
+                color, ..
             }) => Some(LocalCascadeDeclaration::Value(color)),
             LocalCascadeDeclaration::Value(
                 NativeBorderDeclaration::None | NativeBorderDeclaration::Hidden,
@@ -4552,7 +4562,11 @@ fn parse_complete_border(value: &str) -> Option<NativeBorderDeclaration> {
     let mut parts = value.split_ascii_whitespace();
     let width = parse_dimension(parts.next()?)?;
     let style = parts.next()?;
-    if style.eq_ignore_ascii_case("hidden") {
+    if style.eq_ignore_ascii_case("none") {
+        let color = parts.collect::<Vec<_>>().join(" ");
+        let color = parse_color(&color)?;
+        Some(NativeBorderDeclaration::CompleteNone { width, color })
+    } else if style.eq_ignore_ascii_case("hidden") {
         let color = parts.collect::<Vec<_>>().join(" ");
         let color = parse_color(&color)?;
         Some(NativeBorderDeclaration::CompleteHidden { width, color })
@@ -6860,6 +6874,15 @@ mod tests {
             ))
         );
         assert_eq!(
+            parse_border_declaration("2px NoNe red"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::CompleteNone {
+                    width: 2,
+                    color: NativeColor::RED,
+                }
+            ))
+        );
+        assert_eq!(
             parse_declarations(
                 "border: 2px hidden red; border-top: 3px HIDDEN blue; border-right: 4px hidden green; border-bottom: 5px Hidden black; border-left: 6px hIdDeN white"
             )
@@ -6901,9 +6924,54 @@ mod tests {
                 )),
             ]
         );
+        assert_eq!(
+            parse_declarations(
+                "border: 2px none red; border-top: 3px NoNe blue; border-right: 4px none green; border-bottom: 5px NONE black; border-left: 6px nOnE white"
+            )
+            .border,
+            [
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CompleteNone {
+                        width: 3,
+                        color: NativeColor {
+                            red: 0,
+                            green: 0,
+                            blue: 255,
+                            alpha: 255,
+                        },
+                    }
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CompleteNone {
+                        width: 4,
+                        color: NativeColor {
+                            red: 0,
+                            green: 128,
+                            blue: 0,
+                            alpha: 255,
+                        },
+                    }
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CompleteNone {
+                        width: 5,
+                        color: NativeColor::BLACK,
+                    }
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CompleteNone {
+                        width: 6,
+                        color: NativeColor::WHITE,
+                    }
+                )),
+            ]
+        );
         assert_eq!(parse_border_declaration("revert"), None);
         assert_eq!(parse_border_declaration("none solid"), None);
         assert_eq!(parse_border_declaration("hidden solid"), None);
+        assert_eq!(parse_border_declaration("none red"), None);
+        assert_eq!(parse_border_declaration("2px none"), None);
+        assert_eq!(parse_border_declaration("2px none red solid"), None);
         assert_eq!(parse_border_declaration("1px solid red dashed"), None);
 
         let mut diagnostics = NativeDiagnosticSink::default();

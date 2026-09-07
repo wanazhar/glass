@@ -688,6 +688,156 @@ fn native_border_revert_layer_preserves_side_geometry_and_artifacts() {
 }
 
 #[test]
+fn native_border_color_revert_layer_preserves_component_geometry_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #shorthand { display:block;width:8px;height:6px;border:1px solid red; } #sides { display:block;width:8px;height:6px;border:2px dashed red; } #repeat { display:block;width:8px;height:6px;border:1px solid red; } #fallback { display:block;width:8px;height:6px;border:1px solid red; } #same { display:block;width:8px;height:6px;border:1px solid red;border-color:revert-layer; } #inline { display:block;width:8px;height:6px;border:1px solid red; } #order-a { display:block;width:8px;height:6px;border-color:blue;border:1px solid red; } #order-b { display:block;width:8px;height:6px;border:1px solid red;border-color:blue; } } @layer theme { #shorthand { border-color:blue green blue black; } #sides { border-top-color:blue;border-right-color:green;border-bottom-color:blue;border-left-color:black; } #sides { border-top-color:revert-layer;border-bottom-color:revert-layer; } #repeat { border-color:blue; } #repeat { border-color:revert-layer; } #fallback { border-color:revert-layer; } #inline { border-color:blue; } } @layer top { #repeat { border-color:revert-layer; } } #shorthand { border-color:revert-layer; } #repeat { border-color:revert-layer; }</style><button id='shorthand'>Shorthand</button><button id='sides'>Sides</button><button id='repeat'>Repeat</button><button id='fallback'>Fallback</button><button id='same'>Same</button><button id='inline' style='border-color:revert-layer'>Inline</button><button id='order-a'>Order A</button><button id='order-b'>Order B</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 72,
+        device_scale_factor_milli: 1000,
+    };
+    let shorthand = document.resolve_target("id=shorthand").unwrap();
+    let sides = document.resolve_target("id=sides").unwrap();
+    let repeat = document.resolve_target("id=repeat").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let same = document.resolve_target("id=same").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let order_a = document.resolve_target("id=order-a").unwrap();
+    let order_b = document.resolve_target("id=order-b").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(shorthand).unwrap().width, 10);
+    assert_eq!(layout.box_for(shorthand).unwrap().height, 8);
+    assert_eq!(layout.box_for(sides).unwrap().width, 12);
+    assert_eq!(layout.box_for(sides).unwrap().height, 10);
+    for node_id in [
+        shorthand, sides, repeat, fallback, same, inline, order_a, order_b,
+    ] {
+        let rectangle = layout.box_for(node_id).expect("border-color layout box");
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in [
+        shorthand, sides, repeat, fallback, same, inline, order_a, order_b,
+    ] {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected border-color fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let shorthand_border = border_for(shorthand).expect("shorthand border command");
+    assert_eq!(
+        shorthand_border.top.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255
+        }
+    );
+    assert_eq!(
+        shorthand_border.right.color,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255
+        }
+    );
+    assert_eq!(
+        shorthand_border.bottom.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255
+        }
+    );
+    assert_eq!(shorthand_border.left.color, NativeColor::BLACK);
+    assert_eq!(shorthand_border.top.width, 1);
+    assert_eq!(shorthand_border.top.style, NativeBorderStyle::Solid);
+
+    let sides_border = border_for(sides).expect("physical color longhand command");
+    assert_eq!(sides_border.top.color, NativeColor::RED);
+    assert_eq!(
+        sides_border.right.color,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255
+        }
+    );
+    assert_eq!(sides_border.bottom.color, NativeColor::RED);
+    assert_eq!(sides_border.left.color, NativeColor::BLACK);
+    assert_eq!(sides_border.top.width, 2);
+    assert_eq!(sides_border.top.style, NativeBorderStyle::Dashed);
+
+    assert_eq!(border_for(repeat).unwrap().top.color, NativeColor::RED);
+    assert_eq!(border_for(fallback).unwrap().top.color, NativeColor::RED);
+    assert_eq!(border_for(same).unwrap().top.color, NativeColor::BLACK);
+    assert_eq!(
+        border_for(inline).unwrap().top.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255
+        }
+    );
+    assert_eq!(border_for(order_a).unwrap().top.color, NativeColor::RED);
+    assert_eq!(
+        border_for(order_b).unwrap().top.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255
+        }
+    );
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "border-color"
+                    | "border-top-color"
+                    | "border-right-color"
+                    | "border-bottom-color"
+                    | "border-left-color"
+            )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(0, 0), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(9, 2), Some([0, 128, 0, 255]));
+    assert_eq!(surface.pixel(0, 2), Some([0, 0, 0, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

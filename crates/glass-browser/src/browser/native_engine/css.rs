@@ -2027,10 +2027,12 @@ impl NativeStylesheet {
                 rule.selector.specificity,
                 rule.order,
                 false,
-                &mut logical_border,
-                &mut logical_border_width,
-                &mut logical_border_style,
-                &mut logical_border_color,
+                NativeLogicalBorderCandidateTargets {
+                    border: &mut logical_border,
+                    width: &mut logical_border_width,
+                    style: &mut logical_border_style,
+                    color: &mut logical_border_color,
+                },
             );
             apply_local_cascade_declaration(
                 rule.declarations.border_radius,
@@ -2495,10 +2497,12 @@ impl NativeStylesheet {
                 u16::MAX,
                 usize::MAX,
                 true,
-                &mut logical_border,
-                &mut logical_border_width,
-                &mut logical_border_style,
-                &mut logical_border_color,
+                NativeLogicalBorderCandidateTargets {
+                    border: &mut logical_border,
+                    width: &mut logical_border_width,
+                    style: &mut logical_border_style,
+                    color: &mut logical_border_color,
+                },
             );
             apply_local_cascade_declaration(
                 declarations.border_radius,
@@ -2553,15 +2557,19 @@ impl NativeStylesheet {
 
         let resolved_direction = resolve_direction(direction, inherited.direction);
         project_logical_border_candidates(
-            &logical_border,
-            &logical_border_width,
-            &logical_border_style,
-            &logical_border_color,
+            NativeLogicalBorderCandidateSources {
+                border: &logical_border,
+                width: &logical_border_width,
+                style: &logical_border_style,
+                color: &logical_border_color,
+            },
             resolved_direction,
-            &mut border,
-            &mut border_width,
-            &mut border_style,
-            &mut border_color,
+            NativePhysicalBorderCandidateTargets {
+                border: &mut border,
+                width: &mut border_width,
+                style: &mut border_style,
+                color: &mut border_color,
+            },
         );
 
         let resolved_padding = padding.map(resolve_local_optional_cascade_declaration);
@@ -3754,6 +3762,32 @@ impl NativeLogicalBorderDeclarations {
     }
 }
 
+type NativeLogicalBorderCandidates<T> = [[Option<CascadeValue<LocalCascadeDeclaration<T>>>;
+    MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
+type NativePhysicalBorderCandidates<T> =
+    [[Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS]; 4];
+
+struct NativeLogicalBorderCandidateSources<'a> {
+    border: &'a NativeLogicalBorderCandidates<NativeBorderDeclaration>,
+    width: &'a NativeLogicalBorderCandidates<NativeBorderWidthValue>,
+    style: &'a NativeLogicalBorderCandidates<NativeBorderStyleValue>,
+    color: &'a NativeLogicalBorderCandidates<NativeBorderColorValue>,
+}
+
+struct NativeLogicalBorderCandidateTargets<'a> {
+    border: &'a mut NativeLogicalBorderCandidates<NativeBorderDeclaration>,
+    width: &'a mut NativeLogicalBorderCandidates<NativeBorderWidthValue>,
+    style: &'a mut NativeLogicalBorderCandidates<NativeBorderStyleValue>,
+    color: &'a mut NativeLogicalBorderCandidates<NativeBorderColorValue>,
+}
+
+struct NativePhysicalBorderCandidateTargets<'a> {
+    border: &'a mut NativePhysicalBorderCandidates<NativeBorderDeclaration>,
+    width: &'a mut NativePhysicalBorderCandidates<NativeBorderWidthValue>,
+    style: &'a mut NativePhysicalBorderCandidates<NativeBorderStyleValue>,
+    color: &'a mut NativePhysicalBorderCandidates<NativeBorderColorValue>,
+}
+
 fn merge_cascade_candidate<T: Copy>(
     candidate: CascadeValue<T>,
     candidates: &mut [Option<CascadeValue<T>>; MAX_NATIVE_CASCADE_LAYERS],
@@ -3782,29 +3816,15 @@ fn logical_border_physical_side(logical_side: usize, direction: DirectionValue) 
 }
 
 fn project_logical_border_candidates(
-    logical_border: &[[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
-         MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES],
-    logical_border_width: &[[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>>;
-         MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES],
-    logical_border_style: &[[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>>;
-         MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES],
-    logical_border_color: &[[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>>;
-         MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES],
+    sources: NativeLogicalBorderCandidateSources<'_>,
     direction: DirectionValue,
-    border: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
-             MAX_NATIVE_CASCADE_LAYERS]; 4],
-    border_width: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>>;
-             MAX_NATIVE_CASCADE_LAYERS]; 4],
-    border_style: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>>;
-             MAX_NATIVE_CASCADE_LAYERS]; 4],
-    border_color: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>>;
-             MAX_NATIVE_CASCADE_LAYERS]; 4],
+    targets: NativePhysicalBorderCandidateTargets<'_>,
 ) {
     for logical_side in 0..LOGICAL_BORDER_SIDES {
         let physical_side = logical_border_physical_side(logical_side, direction);
         for layer in 0..MAX_NATIVE_CASCADE_LAYERS {
-            if let Some(candidate) = logical_border[logical_side][layer] {
-                merge_cascade_candidate(candidate, &mut border[physical_side]);
+            if let Some(candidate) = sources.border[logical_side][layer] {
+                merge_cascade_candidate(candidate, &mut targets.border[physical_side]);
                 if let Some(value) = project_border_width_declaration(candidate.value) {
                     merge_cascade_candidate(
                         CascadeValue {
@@ -3813,7 +3833,7 @@ fn project_logical_border_candidates(
                             order: candidate.order,
                             inline: candidate.inline,
                         },
-                        &mut border_width[physical_side],
+                        &mut targets.width[physical_side],
                     );
                 }
                 if let Some(value) = project_border_style_declaration(candidate.value) {
@@ -3824,7 +3844,7 @@ fn project_logical_border_candidates(
                             order: candidate.order,
                             inline: candidate.inline,
                         },
-                        &mut border_style[physical_side],
+                        &mut targets.style[physical_side],
                     );
                 }
                 if let Some(value) = project_border_color_declaration(candidate.value) {
@@ -3835,18 +3855,18 @@ fn project_logical_border_candidates(
                             order: candidate.order,
                             inline: candidate.inline,
                         },
-                        &mut border_color[physical_side],
+                        &mut targets.color[physical_side],
                     );
                 }
             }
-            if let Some(candidate) = logical_border_width[logical_side][layer] {
-                merge_cascade_candidate(candidate, &mut border_width[physical_side]);
+            if let Some(candidate) = sources.width[logical_side][layer] {
+                merge_cascade_candidate(candidate, &mut targets.width[physical_side]);
             }
-            if let Some(candidate) = logical_border_style[logical_side][layer] {
-                merge_cascade_candidate(candidate, &mut border_style[physical_side]);
+            if let Some(candidate) = sources.style[logical_side][layer] {
+                merge_cascade_candidate(candidate, &mut targets.style[physical_side]);
             }
-            if let Some(candidate) = logical_border_color[logical_side][layer] {
-                merge_cascade_candidate(candidate, &mut border_color[physical_side]);
+            if let Some(candidate) = sources.color[logical_side][layer] {
+                merge_cascade_candidate(candidate, &mut targets.color[physical_side]);
             }
         }
     }
@@ -3896,14 +3916,7 @@ fn apply_logical_border_cascade(
     specificity: u16,
     rule_order: usize,
     inline: bool,
-    border: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
-             MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES],
-    width: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>>;
-             MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES],
-    style: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>>;
-             MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES],
-    color: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>>;
-             MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES],
+    targets: NativeLogicalBorderCandidateTargets<'_>,
 ) {
     apply_logical_cascade_edges(
         &declarations.border,
@@ -3911,7 +3924,7 @@ fn apply_logical_border_cascade(
         specificity,
         rule_order,
         inline,
-        border,
+        &mut *targets.border,
     );
     apply_logical_cascade_edges(
         &declarations.width,
@@ -3919,7 +3932,7 @@ fn apply_logical_border_cascade(
         specificity,
         rule_order,
         inline,
-        width,
+        &mut *targets.width,
     );
     apply_logical_cascade_edges(
         &declarations.style,
@@ -3927,7 +3940,7 @@ fn apply_logical_border_cascade(
         specificity,
         rule_order,
         inline,
-        style,
+        &mut *targets.style,
     );
     apply_logical_cascade_edges(
         &declarations.color,
@@ -3935,7 +3948,7 @@ fn apply_logical_border_cascade(
         specificity,
         rule_order,
         inline,
-        color,
+        &mut *targets.color,
     );
 }
 

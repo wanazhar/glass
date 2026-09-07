@@ -82,6 +82,9 @@ display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden`/
 `overflow:clip` paint clipping, bounded side-specific
 solid/dashed/dotted/double/groove/ridge/inset/outset-border paint primitives,
+bounded exact omitted-component `border:none` and physical `border-top:none`,
+`border-right:none`, `border-bottom:none`, and `border-left:none` no-paint
+shorthands,
 bounded circular border radii, bounded outer/content box geometry with bounded
 min/max width/height constraints, explicit root
 horizontal and vertical viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
@@ -1125,6 +1128,14 @@ border images, and other general CSS border conformance remain outside the
 boundary. Focused/full-native/library, strict Clippy, rustdoc, two-crate,
 formatting, and static documentation gates are recorded in the task; remote CI
 remains pending because the checkout is local-only.
+The next dependency-ordered 157 slice is planned in
+`docs/plan/tasks/native-engine-157.md`. It will accept only exact
+case-insensitive omitted-component `none` in the complete and physical border
+shorthands, route it through a private no-paint declaration into the existing
+style stream, and preserve the current public/artifact schemas. Arbitrary
+omitted-component defaults, `border:hidden`, CSS-wide resets, table conflict
+resolution, and browser-wide border conformance remain outside the planned
+boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -1497,13 +1497,16 @@ Clippy, warning-denied rustdoc, and current documentation audits pass locally;
 issue-level final gates and remote CI remain pending until issue #40 reaches
 its final validation boundary.
 
-The dependency-ordered `native-engine-184` slice is in progress in
-`docs/plan/tasks/native-engine-184.md`. It extends the bounded author-origin
-`!important` partition to the six supported horizontal-tb logical border-style
-declarations, preserving their private `none`/`hidden` behavior and resolved
-`ltr`/`rtl` projection into physical style streams. Complete/side border
-shorthands, logical border width/color, vertical writing modes, and other
-properties remain outside this slice.
+The completed dependency-ordered `native-engine-184` slice is recorded in
+`docs/plan/tasks/native-engine-184.md` and implemented at `26fd347a`. It
+extends the bounded author-origin `!important` partition to the six supported
+horizontal-tb logical border-style declarations, preserving their private
+`none`/`hidden` behavior and resolved `ltr`/`rtl` projection into physical
+style streams. Complete/side border shorthands, logical border width/color,
+vertical writing modes, and other properties remain outside this slice.
+Focused, full-native, feature-library, strict Clippy, warning-denied rustdoc,
+and current documentation audits pass locally; issue-level final gates and
+remote CI remain pending until issue #40 reaches its final validation boundary.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

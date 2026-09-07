@@ -1470,7 +1470,7 @@ is recorded in the task. Remote CI remains pending because the branch is
 local-only.
 
 The completed dependency-ordered [native-engine-159](tasks/native-engine-159.md)
-slice is implemented at `f04623fc` from design `bdbdb208`. It accepts bounded
+slice is implemented at `329b3cfb` from design `bdbdb208`. It accepts bounded
 complete `Npx hidden color` values for the complete and physical border
 shorthands, preserves declared width/color as private component candidates,
 maps only style to the existing private hidden sentinel, and keeps

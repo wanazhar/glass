@@ -1156,7 +1156,7 @@ static documentation gates passed locally; exact target cleanup is recorded in
 the task. Remote CI remains pending because the branch is local-only.
 The completed dependency-ordered 159 slice is recorded in
 `docs/plan/tasks/native-engine-159.md`; design is `bdbdb208` and implementation
-is `f04623fc`. It accepts bounded complete `Npx hidden color` values for the
+is `329b3cfb`. It accepts bounded complete `Npx hidden color` values for the
 complete and physical border shorthands, carries declared width/color through
 private component candidates, maps only style to the existing private hidden
 sentinel, and keeps public/artifact schemas unchanged. Width and color cannot

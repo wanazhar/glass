@@ -1473,24 +1473,24 @@ cleared one unrelated parallel extension-test `ETXTBSY` temporary-script race;
 the plain `glass-dev` package verification remains a known registry API
 mismatch while the patched local-release archive is exact. Remote CI remains
 pending because the checkout is local-only.
-The completed dependency-ordered `native-engine-170` slice is recorded in
-`docs/plan/tasks/native-engine-170.md`; implementation is `cf19800f`. It adds
-the same bounded case-insensitive CSS-wide family to physical `border-width`
-and its four width longhands, with only explicit `inherit` copying effective
-parent side widths, including unpainted and zero-width parents, and reset/
-omission resolving to bounded zero. Existing `revert-layer`, style/color
-composition, border geometry, and all artifact consumers remain unchanged.
-Focused/full-native/library, strict, package, static, workspace, and bounded
-cleanup gates passed locally. Mixed CSS-wide/numeric shorthand, logical sides,
-percentages, medium/thin/thick defaults, multiple origins, and browser-wide
-border conformance remain outside the completed boundary. Remote CI remains
-pending because the checkout is local-only.
-The next dependency-ordered `native-engine-171` slice is designed and recorded
-in `docs/plan/tasks/native-engine-171.md`. It will add the same bounded
-case-insensitive CSS-wide family to physical `border-style` and its four style
-longhands, copying only explicit effective parent styles and retaining the
-existing private `none`/zero-width fallback; no implementation or completion
-claim is made yet.
+The completed dependency-ordered `native-engine-171` slice is recorded in
+`docs/plan/tasks/native-engine-171.md`; implementation is `67e04c0d`. It adds
+the same bounded case-insensitive CSS-wide family to physical `border-style`
+and its four style longhands, with only explicit `inherit` copying effective
+parent side styles, including private `none`/`hidden` and styles from
+unpainted or zero-width parents, and reset/omission retaining the private
+no-style fallback. Existing `revert-layer`, width/color composition, border
+geometry, and all artifact consumers remain unchanged. Focused/full-native/
+library, strict, package, static, workspace, and bounded cleanup gates passed
+locally. Mixed CSS-wide/style shorthand, logical sides, table conflict
+resolution, multiple origins, and browser-wide border conformance remain
+outside the completed boundary. Remote CI remains pending because the checkout
+is local-only.
+The next dependency-ordered `native-engine-172` slice is designed and recorded
+in `docs/plan/tasks/native-engine-172.md`. It will add the same bounded
+case-insensitive CSS-wide family to the physical `border-radius` shorthand,
+copying only explicit effective parent radii and retaining the default
+zero-corner fallback; no implementation or completion claim is made yet.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2250,12 +2250,14 @@ visual stacking.
 | `native-engine-168` | completed bounded local `text-decoration-color` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective decoration color and reset forms resolving to the current element color; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-167` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, and browser-wide text-decoration conformance |
 | `native-engine-169` | completed bounded local physical `border-color` and four physical color-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective per-side color, reset forms resolving to the current element color, and omission retaining the black fallback; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-168` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, logical sides, table conflict resolution, and browser-wide border conformance |
 | `native-engine-170` | completed bounded local physical `border-width` and four physical width-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective per-side width and zero-width omission/reset fallbacks; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-169` | multiple origins, `!important` inversion, percentages, medium/thin/thick defaults, gradients, images, animation, logical sides, table conflict resolution, and browser-wide border conformance |
-| `native-engine-171` | planned bounded local physical `border-style` and four physical style-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying effective parent styles and reset/omission preserving the private no-style fallback | `native-engine-170` | multiple origins, `!important` inversion, logical sides, table conflict resolution, border conflict/collapse, gradients, border-image, animation, unsupported styles, and browser-wide border conformance |
+| `native-engine-171` | completed bounded local physical `border-style` and four physical style-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying effective parent styles and reset/omission preserving the private no-style fallback; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-170` | multiple origins, `!important` inversion, logical sides, table conflict resolution, border conflict/collapse, gradients, border-image, animation, unsupported styles, and browser-wide border conformance |
+| `native-engine-172` | planned bounded local physical `border-radius` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying an effective parent radius and reset/omission preserving the default zero-corner fallback | `native-engine-171` | multiple origins, `!important` inversion, corner longhands, elliptical/percentage radii, logical sides, table conflict resolution, gradients, border-image, animation, and browser-wide border conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-170.md` is the latest completed task;
+`docs/plan/tasks/native-engine-171.md` is the latest completed task;
+`docs/plan/tasks/native-engine-172.md` is the next planned task;
 `docs/plan/tasks/native-engine-169.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-168.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-167.md` is the preceding completed task;
@@ -2372,17 +2374,17 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
-`docs/plan/tasks/native-engine-170.md`: the docs-first design is `e9a77fc0` and
-the implementation is `cf19800f`. It adds the bounded physical
-`border-width`/four-width-longhand CSS-wide keyword family, carrying only
-effective parent widths for explicit `inherit` and resolving reset/omission to
-bounded zero while preserving style/color and all artifact consumers. The
-focused check/unit/consumer tests, full native integration (208/208),
-feature-enabled library tests (972 passed, 1 ignored), strict Clippy,
-warning-denied rustdoc, paired `glass-dev` check/build, package dependency
-check, static validators, workspace all-target/all-feature replay, and exact
-cleanup gates passed locally. The plain `glass-dev` package verification
-remains a registry API mismatch; the patched local-release archive is exact.
+`docs/plan/tasks/native-engine-171.md`: the implementation is `67e04c0d`. It
+adds the bounded physical `border-style`/four-style-longhand CSS-wide keyword
+family, carrying only effective parent styles for explicit `inherit` and
+resolving reset/omission to the private no-style fallback while preserving
+width/color and all artifact consumers. The focused check/unit/consumer tests,
+full native integration (209/209), feature-enabled library tests (973 passed,
+1 ignored), strict Clippy, warning-denied rustdoc, paired `glass-dev`
+check/build, package dependency check, static validators, workspace
+all-target/all-feature replay, and exact cleanup gates passed locally. The
+plain `glass-dev` package verification remains a registry API mismatch; the
+patched local-release archive is exact.
 The preceding 169 checkpoint remains recorded in
 `docs/plan/tasks/native-engine-169.md` with design `b88177dc`, implementation
 `4d9e6979`, test-fixture corrections `a0e77c84` and `801f7b19`, synchronized

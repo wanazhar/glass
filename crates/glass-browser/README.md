@@ -292,8 +292,14 @@ bounded case-insensitive 15-layer/unlayered local `border-style` and physical
 `border-left-style` values from the finite
 `none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset` grammar,
 with one-to-four-value physical shorthand expansion and independent per-side
-`revert-layer` rollback to lower styles. A winning `none` or `hidden` blocks
-lower styles and resolves to the existing no-side/zero-width behavior before
+`revert-layer` rollback to lower styles. The style owner also accepts
+case-insensitive CSS-wide `inherit`, `unset`, `initial`, and `revert`: explicit
+`inherit` copies the parent's effective physical side styles, including private
+`none`/`hidden` and styles from unpainted or zero-width parents; reset forms
+resolve to the private `none` style, ordinary omission retains the no-style
+fallback, a single CSS-wide shorthand token expands to all four sides, and
+mixed CSS-wide/style shorthand forms remain unsupported. A winning `none` or
+`hidden` blocks lower styles and resolves to the existing no-side/zero-width behavior before
 layout and paint; `hidden` remains a private distinction for future table
 conflict resolution. Width, style, and color components compose only after
 independent resolution; width-only or style-only declarations do not invent

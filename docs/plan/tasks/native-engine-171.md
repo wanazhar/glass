@@ -1,7 +1,7 @@
 ---
 id: native-engine-171
 scope: glass-browser/native-engine/cascade-border-style-css-wide-keywords
-status: planned
+status: complete
 depends-on: [native-engine-170]
 ---
 
@@ -28,8 +28,7 @@ Native-engine-153 established the bounded physical border-style owner and its
 private `Paint|None|Hidden` state; native-engine-122/145 established named
 layers and lower-layer rollback; native-engine-169 and native-engine-170
 established the private CSS-wide cascade pattern for physical border colors and
-widths. The physical border-style parser still treats the four reset keywords
-as invalid values.
+widths. This slice applies that bounded pattern to physical border styles.
 
 Normative references:
 
@@ -135,6 +134,54 @@ Remote CI remains unclaimed until an explicitly authorized push.
 
 ## Implementation
 
-Pending. This docs-first contract records the bounded physical border-style
-CSS-wide keyword resolution before changing the parser, private inherited
-side-style state, or computed-style resolver.
+Completed in `67e04c0d` (`feat(native-engine): support border style css-wide
+keywords`). `NativeBorderStyleValue` now distinguishes concrete painted styles,
+private `none`/`hidden`, and declaration-only `inherit`, `unset`, `initial`,
+and `revert` values. The computed-style walk carries only effective private
+per-side styles; explicit `inherit` reads that array, reset forms resolve to
+private `none`, and ordinary omission retains the no-style fallback. The
+existing physical cascade, `revert-layer`, width/color composition, and public
+border/artifact schemas remain unchanged.
+
+The parser and computed-style unit coverage accept all four keywords across
+the shorthand and physical longhands, reject mixed CSS-wide/style shorthands,
+and preserve valid-before-invalid cascade state. The consumer fixture covers
+painted, hidden, none, unpainted, and zero-width parent effective styles;
+shorthand/longhand and layer/unlayered/inline precedence; geometry;
+point-hit; semantic/source order; opacity; display; software raster; and PNG
+capture.
+
+## Certification evidence
+
+The locked focused feature check passed. Border-style unit coverage passed
+4/4, the focused consumer fixture passed 1/1, full native integration passed
+209/209, and feature-enabled `glass-browser` library tests passed 973 with 1
+ignored. Strict all-target/all-feature Clippy with warnings denied,
+warning-denied feature rustdoc, and paired locked `glass-dev` check/build
+passed. Both package archives were generated; the packaged dependency checker
+confirmed exact `glass-browser = 0.3.14` for `glass-dev` with no path or
+feature dependency.
+
+The locked workspace all-target/all-feature replay passed with 974 library
+tests and 1 ignored, 209 native integration tests, 365 `glass-dev` tests, and
+all auxiliary targets. Repository formatting and static documentation gates
+passed at version 0.3.14: 586 Markdown documents, 83 current documents, 57
+previous-version hits, 675 semantic audit hits, and 0 current-claim failures;
+documentation coverage 586 Markdown/345 full-product MCP tools/100
+browser-only tools/17 examples/22 public modules; TUI 15/63; depth 93/19;
+reliability 6/4; adapters 5; Web IR 8/8/11; and release-documentation unit
+tests 9/9. No remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary, or promotion claim is made.
+
+## Cleanup
+
+After all Cargo processes and open handles exited, bounded exact-path cleanup
+removed `/tmp/glass-171-focused` (5,453,463,908 bytes),
+`/tmp/glass-171-package` (2,370,687,762 bytes),
+`/tmp/glass-171-workspace` (4,953,441,457 bytes),
+`/home/ubuntu/work/glass/target` (2,161,871,320 bytes), and
+`/tmp/glass-171-release-documentation.json` (186,554 bytes). The measured
+deletion total was 14,939,651,001 bytes. Final filesystem free space was
+82,347,892,736 bytes. All five exact paths are absent; no Cargo/Rust process
+or open handle remains; and source, durable data, repository history, and
+unrelated workloads were not touched.

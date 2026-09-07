@@ -1128,14 +1128,19 @@ border images, and other general CSS border conformance remain outside the
 boundary. Focused/full-native/library, strict Clippy, rustdoc, two-crate,
 formatting, and static documentation gates are recorded in the task; remote CI
 remains pending because the checkout is local-only.
-The next dependency-ordered 157 slice is planned in
-`docs/plan/tasks/native-engine-157.md`. It will accept only exact
-case-insensitive omitted-component `none` in the complete and physical border
-shorthands, route it through a private no-paint declaration into the existing
-style stream, and preserve the current public/artifact schemas. Arbitrary
+The completed dependency-ordered 157 slice is recorded in
+`docs/plan/tasks/native-engine-157.md`; design is `ab9d6628` and implementation
+is `fb2c56a2`. It accepts only exact case-insensitive omitted-component `none`
+in the complete and physical border shorthands, routes it through a private
+declaration wrapper into the existing no-paint style stream, and preserves the
+current public/artifact schemas. Width and color do not receive synthetic
+candidates, so a winning `none` blocks paint while a later bounded
+`revert-layer` can expose an existing lower painted component. Arbitrary
 omitted-component defaults, `border:hidden`, CSS-wide resets, table conflict
-resolution, and browser-wide border conformance remain outside the planned
-boundary.
+resolution, and browser-wide border conformance remain outside the boundary.
+Focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting,
+and static documentation gates passed locally; exact target cleanup is recorded
+in the task. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

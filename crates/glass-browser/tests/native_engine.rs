@@ -956,6 +956,146 @@ fn native_border_width_revert_layer_preserves_component_geometry_and_artifacts()
 }
 
 #[test]
+fn native_border_style_revert_layer_composes_components_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #shorthand { display:block;width:8px;height:6px;border:1px solid red; } #sides { display:block;width:8px;height:6px;border:2px dashed red; } #repeat { display:block;width:8px;height:6px;border:1px solid red; } #fallback { display:block;width:8px;height:6px;border:1px solid red; } #same { display:block;width:8px;height:6px;border:1px solid red;border-style:revert-layer; } #order-a { display:block;width:8px;height:6px;border-style:dotted;border:1px solid red; } #order-b { display:block;width:8px;height:6px;border:1px solid red;border-style:dashed; } #combined { display:block;width:8px;height:6px;border-width:4px;border-color:green; } #style-only { display:block;width:8px;height:6px;border-style:dashed; } #inline { display:block;width:8px;height:6px;border:1px solid red; } } @layer theme { #shorthand { border-style:dashed dotted solid dashed; } #shorthand { border-top-style:revert-layer; } #sides { border-top-style:solid;border-right-style:revert-layer;border-bottom-style:dotted;border-left-style:solid; } #repeat { border-style:dotted; } #repeat { border-style:revert-layer; } #fallback { border-style:dashed; } #fallback { border-style:revert-layer; } #combined { border-style:dashed; } } @layer top { #repeat { border-style:revert-layer; } #fallback { border-style:revert-layer; } } #shorthand { border-style:revert-layer; } #repeat { border-style:revert-layer; } #fallback { border-style:revert-layer; }</style><button id='shorthand'>Shorthand</button><button id='sides'>Sides</button><button id='repeat'>Repeat</button><button id='fallback'>Fallback</button><button id='same'>Same</button><button id='order-a'>Order A</button><button id='order-b'>Order B</button><button id='combined'>Combined</button><button id='style-only'>Style only</button><button id='inline' style='border-style:dotted'>Inline</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let shorthand = document.resolve_target("id=shorthand").unwrap();
+    let sides = document.resolve_target("id=sides").unwrap();
+    let repeat = document.resolve_target("id=repeat").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let same = document.resolve_target("id=same").unwrap();
+    let order_a = document.resolve_target("id=order-a").unwrap();
+    let order_b = document.resolve_target("id=order-b").unwrap();
+    let combined = document.resolve_target("id=combined").unwrap();
+    let style_only = document.resolve_target("id=style-only").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(shorthand).unwrap().width, 10);
+    assert_eq!(layout.box_for(shorthand).unwrap().height, 8);
+    assert_eq!(layout.box_for(sides).unwrap().width, 12);
+    assert_eq!(layout.box_for(sides).unwrap().height, 10);
+    assert_eq!(layout.box_for(repeat).unwrap().width, 10);
+    assert_eq!(layout.box_for(fallback).unwrap().width, 10);
+    assert_eq!(layout.box_for(same).unwrap().width, 8);
+    assert_eq!(layout.box_for(same).unwrap().height, 6);
+    assert_eq!(layout.box_for(order_a).unwrap().width, 10);
+    assert_eq!(layout.box_for(order_b).unwrap().width, 10);
+    assert_eq!(layout.box_for(combined).unwrap().width, 16);
+    assert_eq!(layout.box_for(combined).unwrap().height, 14);
+    assert_eq!(layout.box_for(style_only).unwrap().width, 8);
+    assert_eq!(layout.box_for(inline).unwrap().width, 10);
+    for node_id in [
+        shorthand, sides, repeat, fallback, same, order_a, order_b, combined, style_only, inline,
+    ] {
+        let rectangle = layout.box_for(node_id).expect("border-style layout box");
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in [
+        shorthand, sides, repeat, fallback, same, order_a, order_b, combined, style_only, inline,
+    ] {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected border-style fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let shorthand_border = border_for(shorthand).expect("shorthand border command");
+    assert_eq!(shorthand_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(shorthand_border.right.style, NativeBorderStyle::Dotted);
+    assert_eq!(shorthand_border.bottom.style, NativeBorderStyle::Solid);
+    assert_eq!(shorthand_border.left.style, NativeBorderStyle::Dashed);
+    assert_eq!(shorthand_border.top.width, 1);
+    assert_eq!(shorthand_border.top.color, NativeColor::RED);
+
+    let sides_border = border_for(sides).expect("physical style longhand command");
+    assert_eq!(sides_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(sides_border.right.style, NativeBorderStyle::Dashed);
+    assert_eq!(sides_border.bottom.style, NativeBorderStyle::Dotted);
+    assert_eq!(sides_border.left.style, NativeBorderStyle::Solid);
+    assert_eq!(sides_border.top.width, 2);
+
+    assert_eq!(
+        border_for(repeat).unwrap().top.style,
+        NativeBorderStyle::Solid
+    );
+    assert_eq!(
+        border_for(fallback).unwrap().top.style,
+        NativeBorderStyle::Solid
+    );
+    assert!(border_for(same).is_none());
+    assert_eq!(
+        border_for(order_a).unwrap().top.style,
+        NativeBorderStyle::Solid
+    );
+    assert_eq!(
+        border_for(order_b).unwrap().top.style,
+        NativeBorderStyle::Dashed
+    );
+    let combined_border = border_for(combined).expect("separate component border command");
+    assert_eq!(combined_border.top.style, NativeBorderStyle::Dashed);
+    assert_eq!(combined_border.top.width, 4);
+    assert_eq!(
+        combined_border.top.color,
+        NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: 255,
+        }
+    );
+    assert!(border_for(style_only).is_none());
+    assert_eq!(
+        border_for(inline).unwrap().top.style,
+        NativeBorderStyle::Dotted
+    );
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "border-style"
+                    | "border-top-style"
+                    | "border-right-style"
+                    | "border-bottom-style"
+                    | "border-left-style"
+            )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(0, 0), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 7), Some([255, 0, 0, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

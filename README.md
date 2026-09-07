@@ -423,6 +423,10 @@ The complete and physical border shorthands also accept bounded complete
 `Npx hidden color` values; declared width and color remain private for future
 table conflict resolution, while current non-table composition suppresses
 hidden paint.
+The complete and physical border shorthands also accept bounded complete
+`Npx none color` values; declared width and color remain private for future
+table conflict resolution, while current non-table composition suppresses
+none paint.
 Bounded
 inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including

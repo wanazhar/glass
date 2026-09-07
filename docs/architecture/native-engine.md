@@ -1168,16 +1168,19 @@ outside the boundary. Focused/full-native/library, strict Clippy, rustdoc,
 two-crate, formatting, and static documentation gates passed locally; exact
 target cleanup is recorded in the task. Remote CI remains pending because the
 branch is local-only.
-The next dependency-ordered slice is `native-engine-160`, recorded in
-`docs/plan/tasks/native-engine-160.md`. It is docs-first planned work for the
-bounded complete `Npx none color` form on the complete and physical border
-shorthands. It will carry declared width/color through private component
-candidates while projecting only the existing private `None` style sentinel,
-so current non-table composition remains no-paint/no-side and public schemas
-remain unchanged. The docs-first design checkpoint is `bf1a7236`;
-implementation and certification are not yet claimed. Arbitrary
+The completed dependency-ordered `native-engine-160` slice is recorded in
+`docs/plan/tasks/native-engine-160.md`; design is `bf1a7236` and implementation
+is `a880c570`. It accepts bounded complete `Npx none color` values on the
+complete and physical border shorthands, carries declared width/color through
+private component candidates, projects only the existing private `None` style
+sentinel, and keeps current non-table composition no-paint/no-side with public
+schemas unchanged. Exact omitted-component none/hidden, complete hidden and
+painted values, and standalone `revert-layer` remain supported. Arbitrary
 omitted defaults, CSS-wide resets, logical sides, table conflict resolution,
-and browser-wide border conformance remain outside the boundary.
+and browser-wide border conformance remain outside the boundary. Focused,
+full-native/library, strict Clippy, rustdoc, two-crate, formatting, static
+documentation, and bounded cleanup gates are recorded in the task; remote CI
+remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

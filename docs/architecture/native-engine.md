@@ -1401,6 +1401,14 @@ gates pass locally; exact evidence and bounded cleanup are recorded in the
 task. Logical corner names, writing-mode-dependent mapping, percentages,
 elliptical radii, and browser corner fidelity remain outside the completed
 boundary. Remote CI remains pending because the checkout is local-only.
+The dependency-ordered `native-engine-176` slice is planned in
+`docs/plan/tasks/native-engine-176.md`. It will add the four bounded logical
+corner longhands through horizontal-tb ltr/rtl direction-aware projection into
+the completed physical per-corner candidate streams, preserving source order,
+CSS-wide values, `revert-layer`, and all existing rounded consumers. Vertical
+writing modes, text orientation, percentages, elliptical radii, and browser
+logical-radius fidelity remain outside the planned boundary. No implementation
+or remote-CI claim is made yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

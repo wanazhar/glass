@@ -19,6 +19,8 @@ const CASCADE_SPECIFICITY_BITS: u32 = 12;
 const CASCADE_SPECIFICITY_STRIDE: u16 = 1 << CASCADE_SPECIFICITY_BITS;
 const MAX_NATIVE_SELECTOR_SPECIFICITY: u16 = CASCADE_SPECIFICITY_STRIDE - 1;
 const MAX_NATIVE_CASCADE_LAYERS: usize = MAX_NATIVE_NAMED_CASCADE_LAYERS + 1;
+const MAX_NATIVE_TEXT_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
+const IMPORTANT_TEXT_CASCADE_OFFSET: usize = MAX_NATIVE_CASCADE_LAYERS;
 const MAX_NATIVE_RADIUS_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
 const IMPORTANT_RADIUS_CASCADE_OFFSET: usize = MAX_NATIVE_CASCADE_LAYERS;
 const MAX_NATIVE_PAINT_CASCADE_LAYERS: usize = MAX_NATIVE_CASCADE_LAYERS * 2;
@@ -1396,15 +1398,15 @@ impl NativeStylesheet {
         let mut opacity: [Option<CascadeValue<LocalCascadeDeclaration<u8>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut white_space: [Option<CascadeValue<WhiteSpaceDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_align: [Option<CascadeValue<TextAlignDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_align_last: [Option<CascadeValue<TextAlignLastDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_justify: [Option<CascadeValue<TextJustifyDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut direction: [Option<CascadeValue<DirectionDeclaration>>; MAX_NATIVE_CASCADE_LAYERS] =
-            [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
+        let mut direction: [Option<CascadeValue<DirectionDeclaration>>;
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut justify_content: [Option<CascadeValue<JustifyContentDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut align_items: [Option<CascadeValue<AlignItemsDeclaration>>;
@@ -1426,40 +1428,40 @@ impl NativeStylesheet {
         let mut flex_basis: [Option<CascadeValue<FlexBasisDeclaration>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut text_decoration: [Option<CascadeValue<NativeTextDecorationDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_decoration_style: [Option<CascadeValue<NativeTextDecorationStyleDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_decoration_skip_ink: [Option<
             CascadeValue<NativeTextDecorationSkipInkDeclaration>,
-        >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_decoration_skip_spaces: [Option<
             CascadeValue<NativeTextDecorationSkipSpacesDeclaration>,
-        >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_decoration_thickness: [Option<
             CascadeValue<NativeTextDecorationThicknessDeclaration>,
-        >; MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_underline_offset: [Option<CascadeValue<NativeTextUnderlineOffsetDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_decoration_color: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
             MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
         let mut text_transform: [Option<CascadeValue<InheritedTextDeclaration<TextTransformValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut font_weight: [Option<CascadeValue<InheritedTextDeclaration<FontWeightValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut font_style: [Option<CascadeValue<InheritedTextDeclaration<FontStyleValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut word_break: [Option<CascadeValue<InheritedTextDeclaration<WordBreakValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_overflow: [Option<CascadeValue<LocalCascadeDeclaration<TextOverflowValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut vertical_align: [Option<CascadeValue<InheritedTextDeclaration<VerticalAlignValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_indent: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut word_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut letter_spacing: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut gap = GapCascade::default();
         let mut width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
@@ -1474,7 +1476,7 @@ impl NativeStylesheet {
         let mut max_height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut line_height: [Option<CascadeValue<LineHeightDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut background_color: [Option<
             CascadeValue<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
         >; MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
@@ -1556,178 +1558,96 @@ impl NativeStylesheet {
                 false,
                 &mut opacity,
             );
-            let layer = cascade_layer_index(rule.selector.specificity);
-            if let Some(value) = rule.declarations.white_space
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    white_space[layer],
-                )
-            {
-                white_space[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.text_align
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_align[layer],
-                )
-            {
-                text_align[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.text_align_last
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_align_last[layer],
-                )
-            {
-                text_align_last[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.text_justify
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_justify[layer],
-                )
-            {
-                text_justify[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.direction
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    direction[layer],
-                )
-            {
-                direction[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.text_decoration {
-                let layer = cascade_layer_index(rule.selector.specificity);
-                if wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_decoration[layer],
-                ) {
-                    text_decoration[layer] = Some(CascadeValue {
-                        value,
-                        specificity: rule.selector.specificity,
-                        order: rule.order,
-                        inline: false,
-                    });
-                }
-            }
-            if let Some(value) = rule.declarations.text_decoration_style {
-                let layer = cascade_layer_index(rule.selector.specificity);
-                if wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_decoration_style[layer],
-                ) {
-                    text_decoration_style[layer] = Some(CascadeValue {
-                        value,
-                        specificity: rule.selector.specificity,
-                        order: rule.order,
-                        inline: false,
-                    });
-                }
-            }
-            if let Some(value) = rule.declarations.text_decoration_skip_ink {
-                let layer = cascade_layer_index(rule.selector.specificity);
-                if wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_decoration_skip_ink[layer],
-                ) {
-                    text_decoration_skip_ink[layer] = Some(CascadeValue {
-                        value,
-                        specificity: rule.selector.specificity,
-                        order: rule.order,
-                        inline: false,
-                    });
-                }
-            }
-            if let Some(value) = rule.declarations.text_decoration_skip_spaces {
-                let layer = cascade_layer_index(rule.selector.specificity);
-                if wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_decoration_skip_spaces[layer],
-                ) {
-                    text_decoration_skip_spaces[layer] = Some(CascadeValue {
-                        value,
-                        specificity: rule.selector.specificity,
-                        order: rule.order,
-                        inline: false,
-                    });
-                }
-            }
-            if let Some(value) = rule.declarations.text_decoration_thickness {
-                let layer = cascade_layer_index(rule.selector.specificity);
-                if wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_decoration_thickness[layer],
-                ) {
-                    text_decoration_thickness[layer] = Some(CascadeValue {
-                        value,
-                        specificity: rule.selector.specificity,
-                        order: rule.order,
-                        inline: false,
-                    });
-                }
-            }
-            if let Some(value) = rule.declarations.text_underline_offset {
-                let layer = cascade_layer_index(rule.selector.specificity);
-                if wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    text_underline_offset[layer],
-                ) {
-                    text_underline_offset[layer] = Some(CascadeValue {
-                        value,
-                        specificity: rule.selector.specificity,
-                        order: rule.order,
-                        inline: false,
-                    });
-                }
-            }
+            apply_text_cascade_declaration(
+                rule.declarations.white_space,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.white_space,
+                &mut white_space,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.text_align,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.text_align,
+                &mut text_align,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.text_align_last,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.text_align_last,
+                &mut text_align_last,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.text_justify,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.text_justify,
+                &mut text_justify,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.direction,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.direction,
+                &mut direction,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.text_decoration,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.text_decoration,
+                &mut text_decoration,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.text_decoration_style,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.text_decoration_style,
+                &mut text_decoration_style,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.text_decoration_skip_ink,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.text_decoration_skip_ink,
+                &mut text_decoration_skip_ink,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.text_decoration_skip_spaces,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations
+                    .text_importance
+                    .text_decoration_skip_spaces,
+                &mut text_decoration_skip_spaces,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.text_decoration_thickness,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.text_decoration_thickness,
+                &mut text_decoration_thickness,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.text_underline_offset,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.text_underline_offset,
+                &mut text_underline_offset,
+            );
             apply_paint_cascade_declaration(
                 rule.declarations.text_decoration_color,
                 rule.selector.specificity,
@@ -1736,67 +1656,76 @@ impl NativeStylesheet {
                 rule.declarations.text_decoration_color_important,
                 &mut text_decoration_color,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 rule.declarations.text_transform,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.text_importance.text_transform,
                 &mut text_transform,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 rule.declarations.font_weight,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.text_importance.font_weight,
                 &mut font_weight,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 rule.declarations.font_style,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.text_importance.font_style,
                 &mut font_style,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 rule.declarations.word_break,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.text_importance.word_break,
                 &mut word_break,
             );
-            apply_local_cascade_declaration(
+            apply_text_cascade_declaration(
                 rule.declarations.text_overflow,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.text_importance.text_overflow,
                 &mut text_overflow,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 rule.declarations.vertical_align,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.text_importance.vertical_align,
                 &mut vertical_align,
             );
-            apply_local_cascade_declaration(
+            apply_text_cascade_declaration(
                 rule.declarations.text_indent,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.text_importance.text_indent,
                 &mut text_indent,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 rule.declarations.word_spacing,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.text_importance.word_spacing,
                 &mut word_spacing,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 rule.declarations.letter_spacing,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.text_importance.letter_spacing,
                 &mut letter_spacing,
             );
             apply_gap_declarations(
@@ -1806,6 +1735,7 @@ impl NativeStylesheet {
                 false,
                 &mut gap,
             );
+            let layer = cascade_layer_index(rule.selector.specificity);
             if let Some(value) = rule.declarations.justify_content
                 && wins(
                     rule.selector.specificity,
@@ -1998,21 +1928,14 @@ impl NativeStylesheet {
                 false,
                 &mut max_height,
             );
-            if let Some(value) = rule.declarations.line_height
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    line_height[layer],
-                )
-            {
-                line_height[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_text_cascade_declaration(
+                rule.declarations.line_height,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.line_height,
+                &mut line_height,
+            );
             apply_paint_cascade_declaration(
                 rule.declarations.background_color,
                 rule.selector.specificity,
@@ -2143,128 +2066,94 @@ impl NativeStylesheet {
                 true,
                 &mut opacity,
             );
-            let layer = usize::from(UNLAYERED_CASCADE_LAYER);
-            if let Some(value) = declarations.white_space
-                && wins(u16::MAX, usize::MAX, true, white_space[layer])
-            {
-                white_space[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.text_align
-                && wins(u16::MAX, usize::MAX, true, text_align[layer])
-            {
-                text_align[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.text_align_last
-                && wins(u16::MAX, usize::MAX, true, text_align_last[layer])
-            {
-                text_align_last[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.text_justify
-                && wins(u16::MAX, usize::MAX, true, text_justify[layer])
-            {
-                text_justify[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.direction
-                && wins(u16::MAX, usize::MAX, true, direction[layer])
-            {
-                direction[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.text_decoration {
-                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
-                if wins(u16::MAX, usize::MAX, true, text_decoration[layer]) {
-                    text_decoration[layer] = Some(CascadeValue {
-                        value,
-                        specificity: u16::MAX,
-                        order: usize::MAX,
-                        inline: true,
-                    });
-                }
-            }
-            if let Some(value) = declarations.text_decoration_style {
-                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
-                if wins(u16::MAX, usize::MAX, true, text_decoration_style[layer]) {
-                    text_decoration_style[layer] = Some(CascadeValue {
-                        value,
-                        specificity: u16::MAX,
-                        order: usize::MAX,
-                        inline: true,
-                    });
-                }
-            }
-            if let Some(value) = declarations.text_decoration_skip_ink {
-                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
-                if wins(u16::MAX, usize::MAX, true, text_decoration_skip_ink[layer]) {
-                    text_decoration_skip_ink[layer] = Some(CascadeValue {
-                        value,
-                        specificity: u16::MAX,
-                        order: usize::MAX,
-                        inline: true,
-                    });
-                }
-            }
-            if let Some(value) = declarations.text_decoration_skip_spaces {
-                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
-                if wins(
-                    u16::MAX,
-                    usize::MAX,
-                    true,
-                    text_decoration_skip_spaces[layer],
-                ) {
-                    text_decoration_skip_spaces[layer] = Some(CascadeValue {
-                        value,
-                        specificity: u16::MAX,
-                        order: usize::MAX,
-                        inline: true,
-                    });
-                }
-            }
-            if let Some(value) = declarations.text_decoration_thickness {
-                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
-                if wins(u16::MAX, usize::MAX, true, text_decoration_thickness[layer]) {
-                    text_decoration_thickness[layer] = Some(CascadeValue {
-                        value,
-                        specificity: u16::MAX,
-                        order: usize::MAX,
-                        inline: true,
-                    });
-                }
-            }
-            if let Some(value) = declarations.text_underline_offset {
-                let layer = usize::from(UNLAYERED_CASCADE_LAYER);
-                if wins(u16::MAX, usize::MAX, true, text_underline_offset[layer]) {
-                    text_underline_offset[layer] = Some(CascadeValue {
-                        value,
-                        specificity: u16::MAX,
-                        order: usize::MAX,
-                        inline: true,
-                    });
-                }
-            }
+            apply_text_cascade_declaration(
+                declarations.white_space,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.white_space,
+                &mut white_space,
+            );
+            apply_text_cascade_declaration(
+                declarations.text_align,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.text_align,
+                &mut text_align,
+            );
+            apply_text_cascade_declaration(
+                declarations.text_align_last,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.text_align_last,
+                &mut text_align_last,
+            );
+            apply_text_cascade_declaration(
+                declarations.text_justify,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.text_justify,
+                &mut text_justify,
+            );
+            apply_text_cascade_declaration(
+                declarations.direction,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.direction,
+                &mut direction,
+            );
+            apply_text_cascade_declaration(
+                declarations.text_decoration,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.text_decoration,
+                &mut text_decoration,
+            );
+            apply_text_cascade_declaration(
+                declarations.text_decoration_style,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.text_decoration_style,
+                &mut text_decoration_style,
+            );
+            apply_text_cascade_declaration(
+                declarations.text_decoration_skip_ink,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.text_decoration_skip_ink,
+                &mut text_decoration_skip_ink,
+            );
+            apply_text_cascade_declaration(
+                declarations.text_decoration_skip_spaces,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.text_decoration_skip_spaces,
+                &mut text_decoration_skip_spaces,
+            );
+            apply_text_cascade_declaration(
+                declarations.text_decoration_thickness,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.text_decoration_thickness,
+                &mut text_decoration_thickness,
+            );
+            apply_text_cascade_declaration(
+                declarations.text_underline_offset,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.text_underline_offset,
+                &mut text_underline_offset,
+            );
             apply_paint_cascade_declaration(
                 declarations.text_decoration_color,
                 u16::MAX,
@@ -2273,70 +2162,80 @@ impl NativeStylesheet {
                 declarations.text_decoration_color_important,
                 &mut text_decoration_color,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 declarations.text_transform,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.text_importance.text_transform,
                 &mut text_transform,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 declarations.font_weight,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.text_importance.font_weight,
                 &mut font_weight,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 declarations.font_style,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.text_importance.font_style,
                 &mut font_style,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 declarations.word_break,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.text_importance.word_break,
                 &mut word_break,
             );
-            apply_local_cascade_declaration(
+            apply_text_cascade_declaration(
                 declarations.text_overflow,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.text_importance.text_overflow,
                 &mut text_overflow,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 declarations.vertical_align,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.text_importance.vertical_align,
                 &mut vertical_align,
             );
-            apply_local_cascade_declaration(
+            apply_text_cascade_declaration(
                 declarations.text_indent,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.text_importance.text_indent,
                 &mut text_indent,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 declarations.word_spacing,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.text_importance.word_spacing,
                 &mut word_spacing,
             );
-            apply_inherited_text_declaration(
+            apply_text_cascade_declaration(
                 declarations.letter_spacing,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.text_importance.letter_spacing,
                 &mut letter_spacing,
             );
             apply_gap_declarations(declarations, u16::MAX, usize::MAX, true, &mut gap);
+            let layer = usize::from(UNLAYERED_CASCADE_LAYER);
             if let Some(value) = declarations.justify_content
                 && wins(u16::MAX, usize::MAX, true, justify_content[layer])
             {
@@ -2479,16 +2378,14 @@ impl NativeStylesheet {
                 true,
                 &mut max_height,
             );
-            if let Some(value) = declarations.line_height
-                && wins(u16::MAX, usize::MAX, true, line_height[layer])
-            {
-                line_height[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_text_cascade_declaration(
+                declarations.line_height,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.line_height,
+                &mut line_height,
+            );
             apply_paint_cascade_declaration(
                 declarations.background_color,
                 u16::MAX,
@@ -2848,7 +2745,7 @@ fn encode_cascade_specificity(specificity: u16, layer: Option<usize>) -> u16 {
 }
 
 fn resolve_white_space(
-    candidates: [Option<CascadeValue<WhiteSpaceDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<WhiteSpaceDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: WhiteSpaceValue,
 ) -> WhiteSpaceValue {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
@@ -2858,7 +2755,7 @@ fn resolve_white_space(
 }
 
 fn resolve_line_height(
-    candidates: [Option<CascadeValue<LineHeightDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<LineHeightDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: Option<u32>,
 ) -> Option<u32> {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
@@ -2868,7 +2765,7 @@ fn resolve_line_height(
 }
 
 fn resolve_direction(
-    candidates: [Option<CascadeValue<DirectionDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<DirectionDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: DirectionValue,
 ) -> DirectionValue {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
@@ -2990,7 +2887,7 @@ fn resolve_flex_basis(
 }
 
 fn resolve_text_align(
-    candidates: [Option<CascadeValue<TextAlignDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<TextAlignDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: TextAlignValue,
 ) -> TextAlignValue {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
@@ -3000,7 +2897,7 @@ fn resolve_text_align(
 }
 
 fn resolve_text_align_last(
-    candidates: [Option<CascadeValue<TextAlignLastDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<TextAlignLastDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: TextAlignLastValue,
 ) -> TextAlignLastValue {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
@@ -3010,7 +2907,7 @@ fn resolve_text_align_last(
 }
 
 fn resolve_text_justify(
-    candidates: [Option<CascadeValue<TextJustifyDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<TextJustifyDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: TextJustifyValue,
 ) -> TextJustifyValue {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
@@ -3020,7 +2917,7 @@ fn resolve_text_justify(
 }
 
 fn resolve_inherited_text_declaration<T: Copy>(
-    candidates: [Option<CascadeValue<InheritedTextDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<InheritedTextDeclaration<T>>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: T,
 ) -> T {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
@@ -3029,8 +2926,8 @@ fn resolve_inherited_text_declaration<T: Copy>(
     })
 }
 
-fn resolve_local_cascade_declaration<T: Copy>(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+fn resolve_local_cascade_declaration<T: Copy, const N: usize>(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
     fallback: T,
 ) -> T {
     resolve_alignment_candidates(candidates, fallback, |declaration| match declaration {
@@ -3182,10 +3079,10 @@ fn resolve_alignment_candidates<T: Copy, U: Copy, const N: usize>(
 
 fn resolve_text_decoration_skip_spaces(
     candidates: [Option<CascadeValue<NativeTextDecorationSkipSpacesDeclaration>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: NativeTextDecorationSkipSpaces,
 ) -> NativeTextDecorationSkipSpaces {
-    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
         let Some((layer, candidate)) =
             candidates
@@ -3215,10 +3112,10 @@ fn resolve_text_decoration_skip_spaces(
 
 fn resolve_text_decoration_style(
     candidates: [Option<CascadeValue<NativeTextDecorationStyleDeclaration>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: NativeTextDecorationStyle,
 ) -> NativeTextDecorationStyle {
-    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
         let Some((layer, candidate)) =
             candidates
@@ -3248,10 +3145,10 @@ fn resolve_text_decoration_style(
 
 fn resolve_text_decoration_thickness(
     candidates: [Option<CascadeValue<NativeTextDecorationThicknessDeclaration>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: u32,
 ) -> u32 {
-    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
         let Some((layer, candidate)) =
             candidates
@@ -3281,10 +3178,10 @@ fn resolve_text_decoration_thickness(
 
 fn resolve_text_underline_offset(
     candidates: [Option<CascadeValue<NativeTextUnderlineOffsetDeclaration>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: i32,
 ) -> i32 {
-    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
         let Some((layer, candidate)) =
             candidates
@@ -3313,10 +3210,11 @@ fn resolve_text_underline_offset(
 }
 
 fn resolve_text_decoration(
-    candidates: [Option<CascadeValue<NativeTextDecorationDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<NativeTextDecorationDeclaration>>;
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: TextDecorationValue,
 ) -> TextDecorationValue {
-    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
         let Some((layer, candidate)) =
             candidates
@@ -3385,10 +3283,10 @@ fn resolve_text_decoration_color(
 
 fn resolve_text_decoration_skip_ink(
     candidates: [Option<CascadeValue<NativeTextDecorationSkipInkDeclaration>>;
-        MAX_NATIVE_CASCADE_LAYERS],
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: NativeTextDecorationSkipInk,
 ) -> NativeTextDecorationSkipInk {
-    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
         let Some((layer, candidate)) =
             candidates
@@ -3560,17 +3458,28 @@ fn apply_gap_declarations(
     }
 }
 
-fn apply_inherited_text_declaration<T: Copy>(
-    declaration: Option<InheritedTextDeclaration<T>>,
+fn text_cascade_layer(specificity: u16, important: bool) -> usize {
+    let layer = cascade_layer_index(specificity);
+    if important {
+        IMPORTANT_TEXT_CASCADE_OFFSET
+            .saturating_add(usize::from(UNLAYERED_CASCADE_LAYER).saturating_sub(layer))
+    } else {
+        layer
+    }
+}
+
+fn apply_text_cascade_declaration<T: Copy>(
+    declaration: Option<T>,
     specificity: u16,
     order: usize,
     inline: bool,
-    candidates: &mut [Option<CascadeValue<InheritedTextDeclaration<T>>>; MAX_NATIVE_CASCADE_LAYERS],
+    important: bool,
+    candidates: &mut [Option<CascadeValue<T>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
 ) {
     let Some(value) = declaration else {
         return;
     };
-    let layer = cascade_layer_index(specificity);
+    let layer = text_cascade_layer(specificity, important);
     if wins(specificity, order, inline, candidates[layer]) {
         candidates[layer] = Some(CascadeValue {
             value,
@@ -4411,10 +4320,36 @@ fn apply_logical_border_cascade(
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeTextDeclarationImportance {
+    white_space: bool,
+    text_align: bool,
+    text_align_last: bool,
+    text_justify: bool,
+    direction: bool,
+    text_decoration: bool,
+    text_decoration_style: bool,
+    text_decoration_skip_ink: bool,
+    text_decoration_skip_spaces: bool,
+    text_decoration_thickness: bool,
+    text_underline_offset: bool,
+    text_transform: bool,
+    font_weight: bool,
+    font_style: bool,
+    word_break: bool,
+    text_overflow: bool,
+    vertical_align: bool,
+    text_indent: bool,
+    word_spacing: bool,
+    letter_spacing: bool,
+    line_height: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayValue>>,
     visibility: Option<LocalCascadeDeclaration<VisibilityValue>>,
     opacity: Option<LocalCascadeDeclaration<u8>>,
+    text_importance: NativeTextDeclarationImportance,
     white_space: Option<WhiteSpaceDeclaration>,
     text_align: Option<TextAlignDeclaration>,
     text_align_last: Option<TextAlignLastDeclaration>,
@@ -5269,16 +5204,28 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "white-space" => {
-                declarations.white_space = parse_white_space_declaration(value);
+                if let Some(parsed) = parse_white_space_declaration(value) {
+                    declarations.white_space = Some(parsed);
+                    declarations.text_importance.white_space = important;
+                }
             }
             "text-align" => {
-                declarations.text_align = parse_text_align_declaration(value);
+                if let Some(parsed) = parse_text_align_declaration(value) {
+                    declarations.text_align = Some(parsed);
+                    declarations.text_importance.text_align = important;
+                }
             }
             "text-align-last" => {
-                declarations.text_align_last = parse_text_align_last_declaration(value);
+                if let Some(parsed) = parse_text_align_last_declaration(value) {
+                    declarations.text_align_last = Some(parsed);
+                    declarations.text_importance.text_align_last = important;
+                }
             }
             "text-justify" => {
-                declarations.text_justify = parse_text_justify_declaration(value);
+                if let Some(parsed) = parse_text_justify_declaration(value) {
+                    declarations.text_justify = Some(parsed);
+                    declarations.text_importance.text_justify = important;
+                }
             }
             "justify-content" => {
                 if let Some(parsed) = parse_justify_content_declaration(value) {
@@ -5310,7 +5257,10 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 declarations.flex_direction = parse_flex_direction_declaration(value);
             }
             "direction" => {
-                declarations.direction = parse_direction_declaration(value);
+                if let Some(parsed) = parse_direction_declaration(value) {
+                    declarations.direction = Some(parsed);
+                    declarations.text_importance.direction = important;
+                }
             }
             "flex-wrap" => {
                 declarations.flex_wrap = parse_flex_wrap_declaration(value);
@@ -5349,22 +5299,40 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "text-decoration" | "text-decoration-line" => {
-                declarations.text_decoration = parse_text_decoration_declaration(value);
+                if let Some(parsed) = parse_text_decoration_declaration(value) {
+                    declarations.text_decoration = Some(parsed);
+                    declarations.text_importance.text_decoration = important;
+                }
             }
             "text-decoration-style" => {
-                declarations.text_decoration_style = parse_text_decoration_style(value);
+                if let Some(parsed) = parse_text_decoration_style(value) {
+                    declarations.text_decoration_style = Some(parsed);
+                    declarations.text_importance.text_decoration_style = important;
+                }
             }
             "text-decoration-skip-ink" => {
-                declarations.text_decoration_skip_ink = parse_text_decoration_skip_ink(value);
+                if let Some(parsed) = parse_text_decoration_skip_ink(value) {
+                    declarations.text_decoration_skip_ink = Some(parsed);
+                    declarations.text_importance.text_decoration_skip_ink = important;
+                }
             }
             "text-decoration-skip-spaces" => {
-                declarations.text_decoration_skip_spaces = parse_text_decoration_skip_spaces(value);
+                if let Some(parsed) = parse_text_decoration_skip_spaces(value) {
+                    declarations.text_decoration_skip_spaces = Some(parsed);
+                    declarations.text_importance.text_decoration_skip_spaces = important;
+                }
             }
             "text-decoration-thickness" => {
-                declarations.text_decoration_thickness = parse_text_decoration_thickness(value);
+                if let Some(parsed) = parse_text_decoration_thickness(value) {
+                    declarations.text_decoration_thickness = Some(parsed);
+                    declarations.text_importance.text_decoration_thickness = important;
+                }
             }
             "text-underline-offset" => {
-                declarations.text_underline_offset = parse_text_underline_offset(value);
+                if let Some(parsed) = parse_text_underline_offset(value) {
+                    declarations.text_underline_offset = Some(parsed);
+                    declarations.text_importance.text_underline_offset = important;
+                }
             }
             "text-decoration-color" => {
                 if let Some(parsed) = parse_text_decoration_color(value) {
@@ -5375,46 +5343,55 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "text-transform" => {
                 if let Some(parsed) = parse_text_transform_declaration(value) {
                     declarations.text_transform = Some(parsed);
+                    declarations.text_importance.text_transform = important;
                 }
             }
             "font-weight" => {
                 if let Some(parsed) = parse_font_weight_declaration(value) {
                     declarations.font_weight = Some(parsed);
+                    declarations.text_importance.font_weight = important;
                 }
             }
             "font-style" => {
                 if let Some(parsed) = parse_font_style_declaration(value) {
                     declarations.font_style = Some(parsed);
+                    declarations.text_importance.font_style = important;
                 }
             }
             "word-break" => {
                 if let Some(parsed) = parse_word_break_declaration(value) {
                     declarations.word_break = Some(parsed);
+                    declarations.text_importance.word_break = important;
                 }
             }
             "text-overflow" => {
                 if let Some(parsed) = parse_text_overflow_declaration(value) {
                     declarations.text_overflow = Some(parsed);
+                    declarations.text_importance.text_overflow = important;
                 }
             }
             "vertical-align" => {
                 if let Some(parsed) = parse_vertical_align_declaration(value) {
                     declarations.vertical_align = Some(parsed);
+                    declarations.text_importance.vertical_align = important;
                 }
             }
             "text-indent" => {
                 if let Some(parsed) = parse_text_indent_declaration(value) {
                     declarations.text_indent = Some(parsed);
+                    declarations.text_importance.text_indent = important;
                 }
             }
             "word-spacing" => {
                 if let Some(parsed) = parse_word_spacing_declaration(value) {
                     declarations.word_spacing = Some(parsed);
+                    declarations.text_importance.word_spacing = important;
                 }
             }
             "letter-spacing" => {
                 if let Some(parsed) = parse_letter_spacing_declaration(value) {
                     declarations.letter_spacing = Some(parsed);
+                    declarations.text_importance.letter_spacing = important;
                 }
             }
             "gap" => {
@@ -5466,7 +5443,10 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "line-height" => {
-                declarations.line_height = parse_line_height_declaration(value);
+                if let Some(parsed) = parse_line_height_declaration(value) {
+                    declarations.line_height = Some(parsed);
+                    declarations.text_importance.line_height = important;
+                }
             }
             "background-color" => {
                 if let Some(parsed) = parse_background_color_declaration(value) {
@@ -14496,6 +14476,95 @@ mod tests {
             line_for("child"),
             TextDecorationValue::new(false, false, true)
         );
+    }
+
+    #[test]
+    fn text_presentation_important_parser_tracks_markers_and_invalid_preservation() {
+        let declarations = parse_declarations(
+            "white-space: pre !IMPORTANT; text-align: center !important; text-align-last: right !important; text-justify: inter-word !important; direction: rtl !important; text-decoration: underline !important; text-decoration-style: dashed !important; text-decoration-skip-ink: none !important; text-decoration-skip-spaces: all !important; text-decoration-thickness: 2px !important; text-underline-offset: -2px !important; text-transform: uppercase !important; font-weight: bold !important; font-style: italic !important; word-break: break-all !important; text-overflow: ellipsis !important; vertical-align: middle !important; text-indent: 4px !important; word-spacing: 2px !important; letter-spacing: 3px !important; line-height: 20px !important",
+        );
+        let importance = declarations.text_importance;
+        assert!(importance.white_space);
+        assert!(importance.text_align);
+        assert!(importance.text_align_last);
+        assert!(importance.text_justify);
+        assert!(importance.direction);
+        assert!(importance.text_decoration);
+        assert!(importance.text_decoration_style);
+        assert!(importance.text_decoration_skip_ink);
+        assert!(importance.text_decoration_skip_spaces);
+        assert!(importance.text_decoration_thickness);
+        assert!(importance.text_underline_offset);
+        assert!(importance.text_transform);
+        assert!(importance.font_weight);
+        assert!(importance.font_style);
+        assert!(importance.word_break);
+        assert!(importance.text_overflow);
+        assert!(importance.vertical_align);
+        assert!(importance.text_indent);
+        assert!(importance.word_spacing);
+        assert!(importance.letter_spacing);
+        assert!(importance.line_height);
+
+        let preserved = parse_declarations(
+            "white-space: pre !important; white-space: invalid !important; text-decoration: underline !important; text-decoration: invalid !important; line-height: 20px !important; line-height: invalid !important",
+        );
+        assert_eq!(
+            preserved.white_space,
+            Some(WhiteSpaceDeclaration::Value(WhiteSpaceValue::Pre))
+        );
+        assert_eq!(
+            preserved.text_decoration,
+            Some(NativeTextDecorationDeclaration::Value(
+                TextDecorationValue::new(true, false, false)
+            ))
+        );
+        assert_eq!(
+            preserved.line_height,
+            Some(LineHeightDeclaration::Value(20))
+        );
+        assert!(preserved.text_importance.white_space);
+        assert!(preserved.text_importance.text_decoration);
+        assert!(preserved.text_importance.line_height);
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_text_presentation_important_priority_and_rollback() {
+        let document = NativeDocument::parse(
+            "<style>.line { display:block; width:32px; } @layer base { #winner { white-space:pre !important; text-align:center !important; text-transform:uppercase !important; text-decoration:underline !important; text-decoration-style:dashed !important; line-height:24px !important; } #rollback { text-transform:uppercase !important; text-decoration-style:dashed !important; } } @layer theme { #winner { white-space:nowrap !important; text-align:right !important; text-transform:lowercase !important; text-decoration:overline !important; text-decoration-style:dotted !important; line-height:12px !important; } #rollback { text-transform:revert-layer !important; text-decoration-style:revert-layer !important; } } #winner { white-space:normal !important; text-align:left !important; text-transform:none !important; text-decoration:none !important; text-decoration-style:solid !important; line-height:8px !important; } #normal { white-space:pre; text-align:right; text-transform:lowercase; line-height:8px; } </style><div id='winner' class='line'>A B</div><div id='rollback' class='line'>A</div><div id='normal' class='line'>A</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style_for = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        let winner = style_for("winner");
+        assert_eq!(winner.white_space(), WhiteSpaceValue::Pre);
+        assert_eq!(winner.text_align(), TextAlignValue::Center);
+        assert_eq!(winner.text_transform(), TextTransformValue::Uppercase);
+        assert_eq!(
+            winner.text_decoration(),
+            TextDecorationValue::new(true, false, false)
+        );
+        assert_eq!(
+            winner.text_decoration_style(),
+            NativeTextDecorationStyle::Dashed
+        );
+        assert_eq!(winner.line_height(), Some(24));
+
+        let rollback = style_for("rollback");
+        assert_eq!(rollback.text_transform(), TextTransformValue::Uppercase);
+        assert_eq!(
+            rollback.text_decoration_style(),
+            NativeTextDecorationStyle::Dashed
+        );
+
+        let normal = style_for("normal");
+        assert_eq!(normal.white_space(), WhiteSpaceValue::Pre);
+        assert_eq!(normal.text_align(), TextAlignValue::Right);
+        assert_eq!(normal.text_transform(), TextTransformValue::Lowercase);
+        assert_eq!(normal.line_height(), Some(8));
     }
 
     #[test]

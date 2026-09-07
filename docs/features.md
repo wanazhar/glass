@@ -126,6 +126,12 @@ source-behavior reference.
   and `border-left-width` values with one-to-four-value shorthand expansion
   and independent per-side `revert-layer` rollback to lower widths or bounded
   zero; width-only declarations do not invent a style or paint a border, and
+  the physical border-width owner also accepts case-insensitive CSS-wide
+  `inherit`, `unset`, `initial`, and `revert`: explicit `inherit` copies the
+  parent's effective top/right/bottom/left widths, reset forms resolve to zero,
+  ordinary omission retains the zero fallback, a single CSS-wide shorthand
+  token expands to all four sides, and mixed CSS-wide/numeric shorthand forms
+  remain unsupported,
   bounded case-insensitive 15-layer/unlayered local `border-style` and
   physical `border-top-style`, `border-right-style`, `border-bottom-style`,
   and `border-left-style` values from the finite

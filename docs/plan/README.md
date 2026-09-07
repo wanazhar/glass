@@ -1615,12 +1615,24 @@ the plain `glass-dev` package path remains a known registry API mismatch while
 the patched local-release archive is exact. Remote CI remains pending because
 the checkout is local-only.
 
-The next dependency-ordered [native-engine-170](tasks/native-engine-170.md)
+The completed dependency-ordered [native-engine-170](tasks/native-engine-170.md)
+slice is implemented at `cf19800f` from the docs-first design in `e9a77fc0`.
+It adds the same bounded case-insensitive CSS-wide family to physical
+`border-width` and its four width longhands, with only explicit `inherit`
+copying effective parent side widths, including unpainted and zero-width
+parents, and reset/omission resolving to bounded zero. Existing
+`revert-layer`, style/color composition, border geometry, and all artifact
+consumers remain unchanged. Focused/full-native/library, strict, package,
+static, workspace, and bounded cleanup gates passed locally; exact evidence is
+recorded in the task. Remote CI remains pending because the checkout is
+local-only.
+
+The next dependency-ordered [native-engine-171](tasks/native-engine-171.md)
 slice is designed but not implemented. It will add the same bounded
-case-insensitive CSS-wide family to physical `border-width` and its four width
-longhands, copying only explicit inherited effective side widths and retaining
-zero-width omission/reset fallbacks; no implementation or completion claim is
-made yet.
+case-insensitive CSS-wide family to physical `border-style` and its four style
+longhands, copying only explicit effective parent styles and retaining the
+existing private `none`/zero-width fallback; no implementation or completion
+claim is made yet.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

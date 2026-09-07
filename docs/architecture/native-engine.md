@@ -1461,15 +1461,17 @@ physical sides. Complete border shorthands, border width/style, vertical
 writing modes, and other properties remain outside this slice. Slice-local
 certification passed; final documentation audit and task-specific cleanup are
 recorded in the task. Issue-level final gates and remote CI remain pending.
-The in-progress dependency-ordered `native-engine-181` slice is recorded in
-`docs/plan/tasks/native-engine-181.md`. It extends bounded author-origin
-`!important` priority to the standalone physical `border-width` shorthand and
-four physical width longhands while preserving one-to-four-value expansion,
-independent per-side resolution, and the existing width/style/color consumers.
-Complete/side border shorthands, logical border width, border style/color,
-vertical writing modes, and other properties remain outside this slice;
-implementation, certification, issue-level final gates, cleanup, and remote
-CI are pending.
+The completed dependency-ordered `native-engine-181` slice is recorded in
+`docs/plan/tasks/native-engine-181.md` and implemented in `436dd02a`. It
+extends bounded author-origin `!important` priority to the standalone physical
+`border-width` shorthand and four physical width longhands while preserving
+one-to-four-value expansion, independent per-side resolution, and the existing
+width/style/color consumers. Complete/side border shorthands, logical border
+width, border style/color, vertical writing modes, and other properties remain
+outside this slice. Focused, full-native, feature-library, strict Clippy,
+warning-denied rustdoc, and current documentation audits pass locally;
+issue-level final gates, task-specific cleanup, and remote CI remain pending
+until issue #40 reaches its final validation boundary.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

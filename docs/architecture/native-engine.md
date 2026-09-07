@@ -34,6 +34,7 @@ bounded-local-dimension-revert-layer,
 bounded-local-box-model-revert-layer,
 bounded-paint-color-revert-layer,
 bounded-inherited-color-current-color,
+bounded-inherited-color-css-wide-keywords,
 bounded-overflow-revert-layer,
 bounded-border-radius-revert-layer,
 bounded-display-visibility-revert-layer,
@@ -106,6 +107,8 @@ bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and
 text paint, bounded inherited `color` literals/alpha with case-insensitive
 `currentColor` resolution from inherited color or the bounded black fallback,
+and bounded case-insensitive `inherit|unset|initial|revert` resolution with
+the inherited parent-color/black-root fallback and explicit initial black,
 bounded fixed-cell `text-decoration:none|underline|overline|line-through`
 paint including distinct shorthand combinations, bounded inherited
 `text-decoration-style:solid|dashed|dotted|double|wavy` presentation, where
@@ -1249,14 +1252,29 @@ colors, color spaces, percentages, custom-property graphs, CSS-wide reset
 machinery beyond the existing `revert-layer`, multiple origins, animation,
 and browser-wide color conformance remain outside the completed boundary.
 Remote CI remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-166` slice is designed and recorded
-in `docs/plan/tasks/native-engine-166.md`. It will add bounded case-insensitive
-`inherit`, `unset`, `initial`, and one-author-origin `revert` handling to the
-inherited `color` owner while preserving the concrete public value and all
-current-color paint consumers. Multiple origins, `!important` inversion,
+The completed dependency-ordered `native-engine-166` slice is recorded in
+`docs/plan/tasks/native-engine-166.md`; design is `d148f766`, implementation is
+`b57ba2b8`, and synchronized current product documentation is `d26a9059`. It
+extends the private inherited color owner with exact case-insensitive
+`inherit`, `unset`, `initial`, and one-author-origin `revert`, resolving the
+inherited forms through the bounded parent-color/black-root fallback and
+resetting `initial` to black while preserving the optional public color value
+and all existing paint consumers. Focused/full-native/library, strict Clippy,
+rustdoc, two-crate, package, formatting, static documentation, workspace
+all-target/all-feature, and bounded cleanup gates passed locally; exact
+evidence is recorded in the task. Multiple origins, `!important` inversion,
 gradients, images, system colors, color spaces, percentages, custom-property
 graphs, animation, and browser-wide color conformance remain outside the
-planned boundary; no implementation or completion claim is made yet.
+completed boundary. Remote CI remains pending because the checkout is
+local-only.
+The next dependency-ordered `native-engine-167` slice is designed and recorded
+in `docs/plan/tasks/native-engine-167.md`. It will add the same bounded
+case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert`
+family to non-inherited `background-color`: only `inherit` may copy the
+parent's optional concrete fill, while the other reset forms resolve to the
+existing no-fill `None` fallback. It preserves `currentColor`,
+`revert-layer`, fill/clip/opacity/capture/raster/hit/semantic owners, and the
+two-crate boundary; no implementation or completion claim is made yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -1556,13 +1556,28 @@ machinery beyond existing `revert-layer`, multiple origins, animation, and
 browser-wide color conformance remain outside the completed boundary. Remote
 CI remains pending because the branch is local-only.
 
-The next dependency-ordered [native-engine-166](tasks/native-engine-166.md)
-slice is designed but not implemented. It will add bounded case-insensitive
-`inherit`, `unset`, `initial`, and one-author-origin `revert` handling to the
-inherited `color` owner while preserving the concrete public value and current
-paint consumers. Multiple origins, `!important` inversion, gradients, images,
-system colors, color spaces, percentages, custom-property graphs, animation,
-and browser-wide color conformance remain outside the planned boundary.
+The completed dependency-ordered [native-engine-166](tasks/native-engine-166.md)
+slice is implemented at `b57ba2b8` from design `d148f766`; synchronized product
+documentation is `d26a9059`. It adds bounded case-insensitive `inherit`,
+`unset`, `initial`, and one-author-origin `revert` handling to inherited
+`color`, resolving inherited forms through the bounded parent-color/black-root
+fallback and resetting `initial` to black while preserving the concrete public
+value and current paint consumers. Focused/full-native/library, strict Clippy,
+rustdoc, two-crate, package, formatting, static documentation, workspace
+all-target/all-feature, and bounded cleanup gates passed locally; exact
+evidence is recorded in the task. Multiple origins, `!important` inversion,
+gradients, images, system colors, color spaces, percentages, custom-property
+graphs, animation, and browser-wide color conformance remain outside the
+completed boundary. Remote CI remains pending because the branch is local-only.
+
+The next dependency-ordered [native-engine-167](tasks/native-engine-167.md)
+slice is designed but not implemented. It will add the same bounded
+case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert`
+family to non-inherited `background-color`: only `inherit` may copy the
+parent's optional concrete fill, while the other reset forms resolve to the
+existing no-fill `None` fallback. It preserves `currentColor`,
+`revert-layer`, fill/clip/opacity/capture/raster/hit/semantic owners, and the
+two-crate boundary; no implementation or completion claim is made yet.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

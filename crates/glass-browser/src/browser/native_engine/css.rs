@@ -3931,6 +3931,7 @@ fn apply_logical_border_radius_cascade(
 struct NativeLogicalBorderDeclarations {
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; LOGICAL_BORDER_SIDES],
     border_order: [usize; LOGICAL_BORDER_SIDES],
+    border_important: [bool; LOGICAL_BORDER_SIDES],
     width: [Option<LocalCascadeDeclaration<NativeBorderWidthValue>>; LOGICAL_BORDER_SIDES],
     width_order: [usize; LOGICAL_BORDER_SIDES],
     width_important: [bool; LOGICAL_BORDER_SIDES],
@@ -4265,6 +4266,46 @@ fn apply_logical_cascade_edges<T: Copy>(
     }
 }
 
+fn apply_logical_border_shorthand_cascade(
+    declarations: &NativeLogicalBorderDeclarations,
+    specificity: u16,
+    rule_order: usize,
+    inline: bool,
+    width: &mut NativeLogicalBorderWidthCandidates,
+    style: &mut NativeLogicalBorderStyleCandidates,
+    color: &mut NativeLogicalBorderColorCandidates,
+) {
+    for index in 0..LOGICAL_BORDER_SIDES {
+        let order = border_cascade_order(rule_order, declarations.border_order[index], inline);
+        let important = declarations.border_important[index];
+        let border = declarations.border[index];
+        apply_paint_cascade_declaration(
+            border.and_then(project_border_width_declaration),
+            specificity,
+            order,
+            inline,
+            important,
+            &mut width[index],
+        );
+        apply_paint_cascade_declaration(
+            border.and_then(project_border_style_declaration),
+            specificity,
+            order,
+            inline,
+            important,
+            &mut style[index],
+        );
+        apply_paint_cascade_declaration(
+            border.and_then(project_border_color_declaration),
+            specificity,
+            order,
+            inline,
+            important,
+            &mut color[index],
+        );
+    }
+}
+
 fn apply_logical_border_color_cascade(
     declarations: &NativeLogicalBorderDeclarations,
     specificity: u16,
@@ -4336,6 +4377,15 @@ fn apply_logical_border_cascade(
         rule_order,
         inline,
         &mut *targets.border,
+    );
+    apply_logical_border_shorthand_cascade(
+        declarations,
+        specificity,
+        rule_order,
+        inline,
+        &mut *targets.width,
+        &mut *targets.style,
+        &mut *targets.color,
     );
     apply_logical_border_width_cascade(
         declarations,
@@ -5479,56 +5529,68 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 set_logical_border_pair(
                     &mut declarations.logical_border.border,
                     &mut declarations.logical_border.border_order,
+                    &mut declarations.logical_border.border_important,
                     LOGICAL_BORDER_BLOCK_START,
                     LOGICAL_BORDER_BLOCK_END,
                     parse_border_declaration(value).map(|parsed| [parsed; 2]),
                     declaration_order,
+                    important,
                 );
             }
             "border-block-start" => {
                 set_logical_border_side(
                     &mut declarations.logical_border.border,
                     &mut declarations.logical_border.border_order,
+                    &mut declarations.logical_border.border_important,
                     LOGICAL_BORDER_BLOCK_START,
                     parse_border_declaration(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-block-end" => {
                 set_logical_border_side(
                     &mut declarations.logical_border.border,
                     &mut declarations.logical_border.border_order,
+                    &mut declarations.logical_border.border_important,
                     LOGICAL_BORDER_BLOCK_END,
                     parse_border_declaration(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-inline" => {
                 set_logical_border_pair(
                     &mut declarations.logical_border.border,
                     &mut declarations.logical_border.border_order,
+                    &mut declarations.logical_border.border_important,
                     LOGICAL_BORDER_INLINE_START,
                     LOGICAL_BORDER_INLINE_END,
                     parse_border_declaration(value).map(|parsed| [parsed; 2]),
                     declaration_order,
+                    important,
                 );
             }
             "border-inline-start" => {
                 set_logical_border_side(
                     &mut declarations.logical_border.border,
                     &mut declarations.logical_border.border_order,
+                    &mut declarations.logical_border.border_important,
                     LOGICAL_BORDER_INLINE_START,
                     parse_border_declaration(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-inline-end" => {
                 set_logical_border_side(
                     &mut declarations.logical_border.border,
                     &mut declarations.logical_border.border_order,
+                    &mut declarations.logical_border.border_important,
                     LOGICAL_BORDER_INLINE_END,
                     parse_border_declaration(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-width" => {
@@ -6725,10 +6787,12 @@ fn set_border_radius_corner(
 fn set_logical_border_pair<T: Copy>(
     sides: &mut [Option<LocalCascadeDeclaration<T>>; LOGICAL_BORDER_SIDES],
     orders: &mut [usize; LOGICAL_BORDER_SIDES],
+    important_flags: &mut [bool; LOGICAL_BORDER_SIDES],
     start: usize,
     end: usize,
     values: Option<[LocalCascadeDeclaration<T>; 2]>,
     declaration_order: usize,
+    important: bool,
 ) {
     let Some([start_value, end_value]) = values else {
         return;
@@ -6737,6 +6801,8 @@ fn set_logical_border_pair<T: Copy>(
     sides[end] = Some(end_value);
     orders[start] = declaration_order;
     orders[end] = declaration_order;
+    important_flags[start] = important;
+    important_flags[end] = important;
 }
 
 fn set_logical_border_width_pair(
@@ -6816,13 +6882,16 @@ fn set_logical_border_style_side(
 fn set_logical_border_side<T: Copy>(
     sides: &mut [Option<LocalCascadeDeclaration<T>>; LOGICAL_BORDER_SIDES],
     orders: &mut [usize; LOGICAL_BORDER_SIDES],
+    important_flags: &mut [bool; LOGICAL_BORDER_SIDES],
     index: usize,
     value: Option<LocalCascadeDeclaration<T>>,
     declaration_order: usize,
+    important: bool,
 ) {
     if let Some(value) = value {
         sides[index] = Some(value);
         orders[index] = declaration_order;
+        important_flags[index] = important;
     }
 }
 
@@ -14073,6 +14142,254 @@ mod tests {
                 NativeBorderStyleValue::None,
                 NativeBorderStyleValue::Paint(NativeBorderStyle::Dotted),
                 NativeBorderStyleValue::None,
+            ]
+        );
+    }
+
+    #[test]
+    fn logical_border_shorthand_important_parser_tracks_valid_terminal_markers() {
+        let declarations = parse_declarations(
+            "border-block: 1px solid red !IMPORTANT; border-inline-start: 2px dashed blue !important; border-inline-end: invalid !important; border-inline-end: 3px dotted green;",
+        );
+        assert_eq!(
+            declarations.logical_border.border_important,
+            [true, true, true, false]
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_logical_border_shorthand_important_priority_and_projection() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #ltr { direction:ltr; border-inline-start:1px solid red !important; } #rtl { direction:rtl; border-inline-start:1px solid red !important; } #pair { border-block:1px solid red !important; border-inline:2px dashed blue !important; } #rollback { border-block:1px solid red !important; } #rollback { border-block:revert-layer !important; } #normal { border-block:1px solid red; } #mixed { border-inline-start:1px solid blue !important; } #sides { border-block:1px solid red !important; border-block-start:2px dashed green !important; border-inline-end:3px dotted blue !important; } #invalid { border-block:1px solid red !important; border-block:invalid !important; } #none { border-block:2px solid red !important; border-block-start:none !important; } #hidden { border-inline:2px solid red !important; border-inline-end:hidden !important; } #wide { border-block:inherit !important; } } @layer theme { #ltr { border-inline-start:2px dashed blue !important; } #rtl { border-inline-start:2px dashed blue !important; } #rollback { border-block:3px groove green !important; } #normal { border-block:2px dashed blue; } #sides { border-block:4px groove green !important; } } #ltr { border-inline-start:3px dotted green !important; } #rtl { border-inline-start:3px dotted green !important; } #normal { border-block:3px double green; } #mixed { border-inline:4px double black; } #sides { border-inline:5px ridge red !important; } #none { border-block-start:4px solid blue; } #hidden { border-inline-end:4px solid blue; }".into(),
+        ])
+        .unwrap();
+        let computed =
+            |id: &str| stylesheet.computed_for(&node(&format!("<div id='{id}'>Text</div>")));
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        let green = NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: u8::MAX,
+        };
+
+        assert_eq!(computed("ltr").border_widths(), [0, 0, 0, 1]);
+        assert_eq!(
+            computed("ltr").border_styles(),
+            [
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+            ]
+        );
+        assert_eq!(
+            computed("ltr").border_colors(),
+            [
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::RED
+            ]
+        );
+        assert_eq!(computed("rtl").border_widths(), [0, 1, 0, 0]);
+
+        assert_eq!(computed("pair").border_widths(), [1, 2, 1, 2]);
+        assert_eq!(
+            computed("pair").border_styles(),
+            [
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Dashed),
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Dashed),
+            ]
+        );
+        assert_eq!(
+            computed("pair").border_colors(),
+            [NativeColor::RED, blue, NativeColor::RED, blue]
+        );
+
+        assert_eq!(computed("rollback").border_widths(), [3, 0, 3, 0]);
+        assert_eq!(
+            computed("rollback").border_styles(),
+            [
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Groove),
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Groove),
+                NativeBorderStyleValue::None,
+            ]
+        );
+        assert_eq!(
+            computed("rollback").border_colors(),
+            [green, NativeColor::BLACK, green, NativeColor::BLACK]
+        );
+
+        assert_eq!(computed("normal").border_widths(), [3, 0, 3, 0]);
+        assert_eq!(
+            computed("normal").border_styles(),
+            [
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Double),
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Double),
+                NativeBorderStyleValue::None,
+            ]
+        );
+        assert_eq!(
+            computed("normal").border_colors(),
+            [green, NativeColor::BLACK, green, NativeColor::BLACK]
+        );
+
+        assert_eq!(computed("mixed").border_widths(), [0, 4, 0, 1]);
+        assert_eq!(
+            computed("mixed").border_styles(),
+            [
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Double),
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+            ]
+        );
+        assert_eq!(
+            computed("mixed").border_colors(),
+            [
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                blue
+            ]
+        );
+
+        assert_eq!(computed("sides").border_widths(), [2, 3, 1, 5]);
+        assert_eq!(
+            computed("sides").border_styles(),
+            [
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Dashed),
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Dotted),
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Ridge),
+            ]
+        );
+        assert_eq!(
+            computed("sides").border_colors(),
+            [green, blue, NativeColor::RED, NativeColor::RED]
+        );
+
+        assert_eq!(computed("invalid").border_widths(), [1, 0, 1, 0]);
+        assert_eq!(
+            computed("invalid").border_styles(),
+            [
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+                NativeBorderStyleValue::None,
+            ]
+        );
+
+        assert_eq!(computed("none").border_widths(), [4, 0, 2, 0]);
+        assert_eq!(
+            computed("none").border_styles(),
+            [
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+                NativeBorderStyleValue::None,
+            ]
+        );
+        assert_eq!(
+            computed("none").border_colors(),
+            [
+                blue,
+                NativeColor::BLACK,
+                NativeColor::RED,
+                NativeColor::BLACK
+            ]
+        );
+
+        assert_eq!(computed("hidden").border_widths(), [0, 4, 0, 2]);
+        assert_eq!(
+            computed("hidden").border_styles(),
+            [
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Hidden,
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Solid),
+            ]
+        );
+        assert_eq!(
+            computed("hidden").border_colors(),
+            [
+                NativeColor::BLACK,
+                blue,
+                NativeColor::BLACK,
+                NativeColor::RED
+            ]
+        );
+
+        let inherited = node("<div id='wide'>Wide</div>");
+        let inherited_width = [9, 8, 7, 6];
+        let inherited_style = [
+            NativeBorderStyleValue::Paint(NativeBorderStyle::Double),
+            NativeBorderStyleValue::Paint(NativeBorderStyle::Groove),
+            NativeBorderStyleValue::Paint(NativeBorderStyle::Ridge),
+            NativeBorderStyleValue::Paint(NativeBorderStyle::Inset),
+        ];
+        let inherited_color = [NativeColor::RED, blue, green, NativeColor::BLACK];
+        let wide = stylesheet.computed_for_with_matcher(
+            &inherited,
+            NativeInheritedStyle {
+                border_width: inherited_width,
+                border_style: inherited_style,
+                border_color: inherited_color,
+                ..NativeInheritedStyle::default()
+            },
+            |selector| selector.matches(&inherited),
+        );
+        assert_eq!(wide.border_widths(), [9, 0, 7, 0]);
+        assert_eq!(
+            wide.border_styles(),
+            [
+                inherited_style[0],
+                NativeBorderStyleValue::None,
+                inherited_style[2],
+                NativeBorderStyleValue::None
+            ]
+        );
+        assert_eq!(
+            wide.border_colors(),
+            [
+                inherited_color[0],
+                NativeColor::BLACK,
+                inherited_color[2],
+                NativeColor::BLACK
+            ]
+        );
+
+        let inline = node(
+            "<div id='inline' style='border-inline-start:6px groove blue !important'>Inline</div>",
+        );
+        let inline_style = stylesheet.computed_for(&inline);
+        assert_eq!(inline_style.border_widths(), [0, 0, 0, 6]);
+        assert_eq!(
+            inline_style.border_styles(),
+            [
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::None,
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Groove),
+            ]
+        );
+        assert_eq!(
+            inline_style.border_colors(),
+            [
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                blue
             ]
         );
     }

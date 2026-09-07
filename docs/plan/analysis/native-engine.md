@@ -1532,6 +1532,14 @@ completed boundary. Focused/full-native/library, strict Clippy,
 warning-denied rustdoc, paired-crate check/build, and formatting gates pass
 locally; remaining package, static, workspace, and cleanup evidence is recorded
 in the task. Remote CI remains pending because the checkout is local-only.
+The next dependency-ordered `native-engine-175` slice is planned in
+`docs/plan/tasks/native-engine-175.md`: four physical `border-radius` corner
+longhands will project into private per-corner candidates and reuse the
+existing shorthand/CSS-wide/`revert-layer` resolver and rounded consumers.
+The planned contract is physical, horizontal-tb, integer-pixel, and
+non-elliptical; logical corners, writing-mode mapping, percentages, and
+browser corner fidelity remain outside it. No implementation or remote-CI
+claim is made yet.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded

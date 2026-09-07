@@ -1708,6 +1708,14 @@ in the task. Vertical writing modes, text orientation, percentages, elliptical
 radii, and browser logical-radius fidelity remain outside the completed
 boundary. Remote CI remains pending because the checkout is local-only.
 
+The in-progress dependency-ordered [native-engine-177](tasks/native-engine-177.md)
+slice extends the complete physical and horizontal-tb logical radius family
+with bounded author-origin `!important` priority. Important candidates use a
+private reversed named-layer partition and outrank normal radius candidates;
+the value grammar, rounded consumers, public schemas, and two-crate boundary
+remain unchanged. Local certification and cleanup are pending; remote CI
+remains pending because the checkout is local-only.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

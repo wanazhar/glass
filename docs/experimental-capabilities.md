@@ -155,6 +155,10 @@ border, point-hit, capture, raster, overflow, and semantic/source-order owners;
 elliptical, percentage, nested-clip, anti-aliasing,
 multiple-origin, and browser-wide border-radius conformance remain outside the
 boundary. The same bounded radius owner also accepts exact case-insensitive
+physical and horizontal-tb logical radius declarations with a terminal
+case-insensitive `!important` marker; important candidates outrank normal
+candidates and named-layer priority reverses within the important partition.
+This remains radius-only and does not claim generic `!important` semantics.
 CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert`: explicit
 `inherit` copies the parent's effective four-corner radius, including from
 unpainted or zero-width parents; reset forms resolve to zero corners and

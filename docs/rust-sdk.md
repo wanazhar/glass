@@ -138,6 +138,10 @@ layout, fill, border, point-hit, capture, raster, overflow, and
 semantic/source-order owners; elliptical, percentage, nested-clip, anti-aliasing,
 multiple-origin, and browser-wide border-radius
 conformance remain outside the boundary,
+plus bounded terminal case-insensitive `!important` priority for the complete
+physical and horizontal-tb logical radius family, with important candidates
+above normal candidates and reversed named-layer order; generic `!important`
+semantics for other properties remain outside the boundary,
 plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
 one-author-origin `revert` for the radius owner: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width

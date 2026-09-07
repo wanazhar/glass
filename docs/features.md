@@ -79,6 +79,11 @@ source-behavior reference.
   capture, raster, overflow, and semantic/source-order owners; elliptical,
   percentage, nested-clip, anti-aliasing, multiple-origin, and browser-wide
   border-radius conformance remain outside the boundary,
+  plus bounded terminal case-insensitive `!important` priority for the
+  complete physical and horizontal-tb logical radius family: important
+  candidates outrank normal candidates and named-layer priority is reversed in
+  the private important partition; generic `!important` semantics for other
+  properties remain outside the boundary,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or

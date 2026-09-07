@@ -1440,13 +1440,19 @@ resolution, gradients, border images, and other general CSS border conformance
 remain outside the boundary. Its complete local evidence is recorded in the
 task file; remote CI remains pending because the checkout is local-only.
 
-The next dependency-ordered [native-engine-157](tasks/native-engine-157.md)
-slice is planned. It will accept only exact case-insensitive omitted-component
-`none` in the complete and physical border shorthands, route it through a
-private no-paint declaration into the existing style stream, and preserve the
-current public and artifact schemas. Arbitrary omitted-component defaults,
-`border:hidden`, CSS-wide resets, table conflict resolution, and browser-wide
-border conformance remain outside the planned boundary.
+The completed dependency-ordered [native-engine-157](tasks/native-engine-157.md)
+slice is implemented at `fb2c56a2` from design `ab9d6628`. It accepts only
+exact case-insensitive omitted-component `none` in the complete and physical
+border shorthands, routes it through a private declaration wrapper into the
+existing no-paint style stream, and preserves the current public and artifact
+schemas. Width and color do not receive synthetic candidates, so a winning
+`none` blocks paint while a later bounded `revert-layer` can expose an existing
+lower painted component. Arbitrary omitted-component defaults, `border:hidden`,
+CSS-wide resets, table conflict resolution, and browser-wide border conformance
+remain outside the boundary. Focused/full-native/library, strict Clippy,
+rustdoc, two-crate, formatting, and static documentation gates passed locally;
+exact target cleanup is recorded in the task. Remote CI remains pending because
+the branch is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

@@ -1457,14 +1457,28 @@ passed locally; exact evidence is recorded in the task. Multiple origins,
 percentages, custom-property graphs, animation, and browser-wide
 text-decoration conformance remain outside the completed boundary. Remote CI
 remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-169` slice is designed and recorded
-in `docs/plan/tasks/native-engine-169.md`. It will add bounded case-insensitive
-`inherit`, `unset`, `initial`, and one-author-origin `revert` to local physical
-`border-color` and its four physical color longhands, copying a parent's
-effective per-side color only for explicit `inherit` and resolving reset forms
-to the current element color. It preserves omitted black fallback,
-`currentColor`, `revert-layer`, width/style composition, border geometry, and
-all artifact owners; no implementation or completion claim is made yet.
+The completed dependency-ordered `native-engine-169` slice is recorded in
+`docs/plan/tasks/native-engine-169.md`; design is `b88177dc`, implementation is
+`4d9e6979`, test-fixture corrections are `a0e77c84` and `801f7b19`, and
+synchronized current product documentation is `07ba3dc4`. It adds bounded
+case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert`
+to local physical `border-color` and its four physical color longhands, with
+only explicit `inherit` copying the parent's effective per-side color and
+reset forms resolving to the current element color. Omitted colors retain the
+black fallback; `currentColor`, `revert-layer`, independent side cascade,
+border geometry, and all existing artifact owners remain unchanged. Focused/
+full-native/library, strict, package, static, workspace, and bounded cleanup
+gates passed locally. The first workspace replay exposed and the next replay
+cleared one unrelated parallel extension-test `ETXTBSY` temporary-script race;
+the plain `glass-dev` package verification remains a known registry API
+mismatch while the patched local-release archive is exact. Remote CI remains
+pending because the checkout is local-only.
+The next dependency-ordered `native-engine-170` slice is designed and recorded
+in `docs/plan/tasks/native-engine-170.md`. It will add the same bounded
+case-insensitive CSS-wide family to physical `border-width` and its four width
+longhands, with only explicit `inherit` copying effective parent side widths
+and zero-width omission/reset fallbacks; no implementation or completion claim
+is made yet.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2222,12 +2236,14 @@ visual stacking.
 | `native-engine-166` | completed bounded inherited `color` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state while preserving concrete public/artifact schemas; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-165` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, and browser-wide color conformance |
 | `native-engine-167` | completed bounded non-inherited `background-color` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only `inherit` copying the parent optional fill and reset forms preserving the existing no-fill `None` fallback; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-166` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, and browser-wide background conformance |
 | `native-engine-168` | completed bounded local `text-decoration-color` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective decoration color and reset forms resolving to the current element color; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-167` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, and browser-wide text-decoration conformance |
-| `native-engine-169` | planned bounded local physical `border-color` and four physical color-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective per-side color and reset forms resolving to the current element color | `native-engine-168` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, logical sides, table conflict resolution, and browser-wide border conformance |
+| `native-engine-169` | completed bounded local physical `border-color` and four physical color-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective per-side color, reset forms resolving to the current element color, and omission retaining the black fallback; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-168` | multiple origins, `!important` inversion, gradients, images, system colors, color spaces, percentages, custom-property graphs, animation, logical sides, table conflict resolution, and browser-wide border conformance |
+| `native-engine-170` | planned bounded local physical `border-width` and four physical width-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective per-side width and zero-width omission/reset fallbacks | `native-engine-169` | multiple origins, `!important` inversion, percentages, medium/thin/thick defaults, gradients, images, animation, logical sides, table conflict resolution, and browser-wide border conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-168.md` is the latest completed task;
+`docs/plan/tasks/native-engine-169.md` is the latest completed task;
+`docs/plan/tasks/native-engine-168.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-167.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-166.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-165.md` is the preceding completed task;
@@ -2342,10 +2358,18 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
-`docs/plan/tasks/native-engine-168.md`: the design is `0bb67e8b`, the
-implementation is `4521f151`, synchronized product documentation is
-`2184d98`, and static truth plus exact isolated-target cleanup evidence are
-recorded in the task file and this local documentation checkpoint. The
+`docs/plan/tasks/native-engine-169.md`: the design is `b88177dc`, the
+implementation is `4d9e6979`, test-fixture corrections are `a0e77c84` and
+`801f7b19`, synchronized product documentation is `07ba3dc4`, and static truth
+plus exact isolated-target cleanup evidence are recorded in the task file and
+this local documentation checkpoint. The first workspace replay exposed one
+unrelated extension-test `ETXTBSY` temporary-script race; its isolated rerun
+and the next complete workspace replay passed. The plain `glass-dev` package
+verification remains a registry API mismatch; the patched local-release
+archive is exact. The preceding 168 checkpoint remains recorded in
+`docs/plan/tasks/native-engine-168.md` with design `0bb67e8b`, implementation
+`4521f151`, synchronized product documentation `2184d98`, and documentation/
+cleanup closeout `7a09b10f`. The
 preceding 167 checkpoint remains recorded in
 `docs/plan/tasks/native-engine-167.md` with design `9e143200`, implementation
 `1ae1f103`, synchronized product documentation `debd6ab4`, and documentation/

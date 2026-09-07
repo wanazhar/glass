@@ -1,7 +1,7 @@
 ---
 id: native-engine-169
 scope: glass-browser/native-engine/cascade-border-color-css-wide-keywords
-status: planned
+status: complete
 depends-on: [native-engine-168]
 ---
 
@@ -129,6 +129,61 @@ Remote CI remains unclaimed until an explicitly authorized push.
 
 ## Implementation
 
-Pending. This docs-first contract records the bounded physical border-color
-CSS-wide keyword resolution before changing the parser, private inherited
-side-color state, or computed-style resolver.
+Completed in `4d9e6979` from this design contract (`b88177dc`). The private
+`NativeBorderColorValue` now distinguishes concrete colors, `currentColor`,
+`inherit`, `unset`, `initial`, and one-author-origin `revert`; the existing
+`LocalCascadeDeclaration::RevertLayer` remains the layer rollback sentinel.
+The computed-style walk carries four effective parent side colors and resolves
+only explicit `inherit` from that array. Reset forms resolve to the local
+current color, while ordinary omission remains the black border-side fallback.
+The complete-border parser continues to reject CSS-wide values, and no public
+computed-style, display-list, capture, raster, dependency, feature, or
+two-crate schema changed.
+
+The parser/cascade unit and the new consumer fixture are covered by the
+additional test-only checkpoints `a0e77c84` and `801f7b19`. The focused locked
+feature check, border-color unit, full native integration, and feature-enabled
+library gates passed; the final workspace replay passed with 972 library tests
+and 1 ignored, 207 native integration tests, 365 `glass-dev` tests, and all
+auxiliary targets. Strict all-target/all-feature Clippy with warnings denied,
+warning-denied native rustdoc, paired locked `glass-dev` check/build, both
+locked package archives, and the exact packaged `glass-browser = 0.3.14`
+dependency check passed. Static truth passed at version 0.3.14, feature parity
+14 capabilities/4 targets, 584 Markdown documents with 83 current documents,
+57 previous-version hits, 673 semantic audit hits, and 0 current-claim
+failures; coverage passed with 345 full-product MCP tools, 100 browser-only
+tools, 17 examples, and 22 public modules. TUI/depth/reliability/adapter/Web
+IR/release-unit gates passed at 15/63, 93/19, 6/4, 5, 8/8/11, and 9/9.
+
+The first workspace attempt also exposed one unrelated parallel extension-test
+`ETXTBSY` temporary-script race; the failing test passed in isolation, and the
+next complete workspace replay passed. This is recorded as environmental
+evidence rather than hidden as a native-engine result. The plain `glass-dev`
+package verification still resolves the registry's older `glass-browser =
+0.3.14` API and fails; the release-certified path uses the existing
+`--no-verify` step with a local crates.io patch, followed by the normalized
+archive dependency check. This is a packaging-environment distinction, not a
+relaxed dependency contract.
+
+## Cleanup
+
+After all Cargo processes and open handles exited, bounded exact-path cleanup
+removed `/tmp/glass-169-focused` (6,615,230,854 bytes, 9,844 files, 1,196
+directories), `/tmp/glass-169-package` (3,432,285,983 bytes, 3,638 files,
+607 directories), `/tmp/glass-169-workspace` (7,008,811,742 bytes, 10,251
+files, 1,068 directories), `/tmp/glass-169-release-documentation.json`
+(186,042 bytes), and the failed extension-test residue
+`/tmp/glass-extension-host-2900665` (98 bytes, 1 file, 1 directory). The
+measured deletion total was 17,056,514,719 bytes. Filesystem free space rose
+from 65,439,412,224 to 82,560,074,240 bytes. All five exact targets are absent
+and no Cargo/Rust process or open handle remains; unrelated source, build
+outputs, durable data, and existing temporary namespaces were not touched.
+
+A final binary-backed documentation-coverage replay then used and removed
+`/tmp/glass-169-final` (2,963,286,079 bytes, 5,239 files, 875 directories) and
+`/tmp/glass-169-release-documentation-final.json` (186,042 bytes), after a
+fresh no-process/no-handle check. That second cleanup removed 2,963,472,121
+bytes, bringing all exact cleanup actions for this slice to 20,019,986,840
+bytes. Both additional paths are absent and final filesystem free space is
+82,559,643,648 bytes; no source, durable data, or unrelated temporary output
+was removed.

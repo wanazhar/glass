@@ -1767,14 +1767,17 @@ current documentation audits, and task-specific cleanup pass locally;
 issue-level final gates and remote CI remain pending until issue #40 reaches
 its final validation boundary.
 
-The in-progress dependency-ordered [native-engine-182](tasks/native-engine-182.md)
-slice extends bounded author-origin `!important` priority to the standalone
-physical `border-style` shorthand and four physical style longhands. It
-preserves one-to-four-value expansion, independent per-side no-paint/paint
-resolution, and the existing width/style/color consumers while retaining
-normal-only behavior for complete/side border shorthands and logical border
-style. Implementation, certification, issue-level final gates, cleanup, and
-remote CI are pending.
+The completed dependency-ordered [native-engine-182](tasks/native-engine-182.md)
+slice is implemented at `008a5766`. It extends bounded author-origin
+`!important` priority to the standalone physical `border-style` shorthand and
+four physical style longhands while preserving one-to-four-value expansion,
+independent per-side no-paint/paint resolution, and the existing
+width/style/color consumers. Complete/side border shorthands, logical border
+style, border width/color, vertical writing modes, and other properties remain
+outside this slice. Focused, full-native, feature-library, strict Clippy,
+warning-denied rustdoc, and current documentation audits pass locally;
+task-specific cleanup, issue-level final gates, and remote CI remain pending
+until issue #40 reaches its final validation boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

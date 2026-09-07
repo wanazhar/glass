@@ -213,13 +213,13 @@ or paint a border. The physical border-width owner also accepts case-insensitive
 CSS-wide `inherit`, `unset`, `initial`, and `revert`: explicit `inherit` copies
 the parent's effective per-side widths, reset forms resolve to zero, ordinary
 omission retains the zero fallback, a single CSS-wide shorthand token expands
-  to all four sides, and mixed CSS-wide/numeric shorthand forms remain
-  unsupported. Standalone physical border-width declarations also accept a
-  terminal case-insensitive `!important` marker: important widths outrank
-  normal widths, use earliest-named-layer priority inside the bounded
-  author-important partition, and preserve per-side `revert-layer` and inline
-  behavior; complete and side-border shorthands remain normal-only in this
-  slice. The same owner also accepts bounded case-insensitive
+to all four sides, and mixed CSS-wide/numeric shorthand forms remain
+unsupported. Standalone physical border-width declarations also accept a
+terminal case-insensitive `!important` marker: important widths outrank normal
+widths, use earliest-named-layer priority inside the bounded author-important
+partition, and preserve per-side `revert-layer` and inline behavior; complete
+and side-border shorthands remain normal-only in this slice. The same owner
+also accepts bounded case-insensitive
 15-layer/unlayered local `border-style` and physical `border-top-style`,
 `border-right-style`, `border-bottom-style`, and `border-left-style` values
 from the finite
@@ -232,7 +232,13 @@ parent's effective physical side styles, including private `none`/`hidden` and
 styles from unpainted or zero-width parents; reset forms resolve to the private
 `none` style, ordinary omission retains the no-style fallback, a single
 CSS-wide shorthand token expands to all four sides, and mixed CSS-wide/style
-shorthand forms remain unsupported. A winning `none` or `hidden` blocks lower
+shorthand forms remain unsupported. Standalone physical border-style
+declarations also accept a terminal case-insensitive `!important` marker:
+important styles outrank normal styles, use earliest-named-layer priority
+inside the bounded author-important partition, preserve per-side
+`revert-layer`, and retain private `none`/`hidden` no-paint behavior; complete
+and side-border shorthands remain normal-only in this slice. A winning `none`
+or `hidden` blocks lower
 styles and resolves
 to no side/zero width before layout and paint; `hidden` remains a private
 distinction for future table conflict resolution. Width, style, and color

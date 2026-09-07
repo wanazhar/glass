@@ -173,6 +173,12 @@ physical `border-color` and physical color longhands also resolve `currentColor`
 from the element's local or inherited color; complete physical border shorthands
 also resolve `currentColor` from that same local or inherited color. Gradients,
 border-image, and browser-wide border conformance remain outside the boundary,
+plus case-insensitive CSS-wide `inherit`, `unset`, `initial`, and `revert` for
+the physical border-color owner: explicit `inherit` copies the parent's
+effective per-side colors, reset forms resolve to the element's current color,
+omission retains the existing black side fallback, a single CSS-wide shorthand
+token expands to all four sides, and mixed CSS-wide/color shorthand forms remain
+unsupported,
 plus bounded case-insensitive 15-layer/unlayered local `border-width`,
 `border-top-width`, `border-right-width`, `border-bottom-width`, and
 `border-left-width` values with one-to-four-value physical shorthand expansion

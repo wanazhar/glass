@@ -1257,7 +1257,8 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut background_color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut border: [Option<CascadeValue<NativeBorderSide>>; 4] = [None; 4];
+        let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderSide>>>;
+            MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut border_radius: [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderRadius>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut padding: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
@@ -1769,7 +1770,7 @@ impl NativeStylesheet {
                 false,
                 &mut background_color,
             );
-            apply_border_sides(
+            apply_local_cascade_edges(
                 &rule.declarations.border,
                 rule.selector.specificity,
                 rule.order,
@@ -2206,7 +2207,7 @@ impl NativeStylesheet {
                 true,
                 &mut background_color,
             );
-            apply_border_sides(
+            apply_local_cascade_edges(
                 &declarations.border,
                 u16::MAX,
                 usize::MAX,
@@ -2342,7 +2343,9 @@ impl NativeStylesheet {
             max_height: resolve_local_optional_cascade_declaration(max_height),
             line_height: resolve_line_height(line_height, inherited.line_height),
             background_color: resolve_local_optional_cascade_declaration(background_color),
-            border: NativeBorder::from_sides(border.map(|value| value.map(|value| value.value))),
+            border: NativeBorder::from_sides(
+                border.map(resolve_local_optional_cascade_declaration),
+            ),
             border_radius: resolve_local_cascade_declaration(
                 border_radius,
                 NativeBorderRadius::default(),
@@ -3094,27 +3097,6 @@ fn apply_local_cascade_edges<T: Copy>(
     }
 }
 
-fn apply_border_sides(
-    declarations: &[Option<NativeBorderSide>; 4],
-    specificity: u16,
-    order: usize,
-    inline: bool,
-    border: &mut [Option<CascadeValue<NativeBorderSide>>; 4],
-) {
-    for (index, value) in declarations.iter().enumerate() {
-        if let Some(value) = value
-            && wins(specificity, order, inline, border[index])
-        {
-            border[index] = Some(CascadeValue {
-                value: *value,
-                specificity,
-                order,
-                inline,
-            });
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayValue>>,
@@ -3165,7 +3147,7 @@ struct NativeDeclarations {
     max_height: Option<LocalCascadeDeclaration<u32>>,
     line_height: Option<LineHeightDeclaration>,
     background_color: Option<LocalCascadeDeclaration<NativeColor>>,
-    border: [Option<NativeBorderSide>; 4],
+    border: [Option<LocalCascadeDeclaration<NativeBorderSide>>; 4],
     border_radius: Option<LocalCascadeDeclaration<NativeBorderRadius>>,
     padding: [Option<LocalCascadeDeclaration<u32>>; 4],
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
@@ -3656,7 +3638,7 @@ fn parse_declarations_with_diagnostics(
             "line-height" => parse_line_height_declaration(value).is_some(),
             "background-color" | "color" => parse_local_color_declaration(value).is_some(),
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
-                parse_border(value).is_some()
+                parse_border_declaration(value).is_some()
             }
             "border-radius" => parse_border_radius_declaration(value).is_some(),
             "padding" => parse_local_box_edges(value).is_some(),
@@ -4034,7 +4016,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "border" => {
-                if let Some(border) = parse_border(value) {
+                if let Some(border) = parse_border_declaration(value) {
                     declarations.border = [Some(border); 4];
                 }
             }
@@ -4148,6 +4130,10 @@ fn parse_border(value: &str) -> Option<NativeBorderSide> {
         style,
         color: parse_color(&color)?,
     })
+}
+
+fn parse_border_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeBorderSide>> {
+    parse_local_cascade_declaration(value, parse_border)
 }
 
 fn parse_border_radius(value: &str) -> Option<NativeBorderRadius> {
@@ -4385,8 +4371,12 @@ fn parse_local_color_declaration(value: &str) -> Option<LocalCascadeDeclaration<
     parse_color(value).map(LocalCascadeDeclaration::Value)
 }
 
-fn set_border_side(sides: &mut [Option<NativeBorderSide>; 4], index: usize, value: &str) {
-    if let Some(border) = parse_border(value) {
+fn set_border_side(
+    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderSide>>; 4],
+    index: usize,
+    value: &str,
+) {
+    if let Some(border) = parse_border_declaration(value) {
         sides[index] = Some(border);
     }
 }
@@ -5710,7 +5700,10 @@ mod tests {
             blue: 48,
             alpha: 255,
         };
-        assert_eq!(declarations.border, [Some(border_side(2, parsed_color)); 4]);
+        assert_eq!(
+            declarations.border,
+            [Some(LocalCascadeDeclaration::Value(border_side(2, parsed_color))); 4]
+        );
         assert_eq!(
             declarations.border_radius,
             Some(LocalCascadeDeclaration::Value(NativeBorderRadius {
@@ -6136,6 +6129,138 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn border_revert_layer_rolls_back_independent_physical_sides() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #card { border: 1px solid red; } #sides { border-top: 1px solid red; border-right: 2px solid green; border-bottom: 3px solid blue; border-left: 4px solid black; } #fallback { border: revert-layer; } #inline { border: 1px solid red; } } @layer theme { #card { border: 3px dashed blue; } #card { border: revert-layer; } #sides { border-top: 5px dotted green; border-right: 6px solid blue; border-bottom: 7px dashed black; border-left: 8px solid red; } #sides { border-top: revert-layer; border-bottom: revert-layer; } #inline { border: 3px solid green; } } #card { border: revert-layer; } #sides { border-top: revert-layer; border-right: revert-layer; border-left: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let card = node("<div id='card'>Card</div>");
+        let sides = node("<div id='sides'>Sides</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let inline = node("<div id='inline' style='border:ReVeRt-LaYeR'>Inline</div>");
+
+        let card_border = stylesheet.computed_for(&card).border.unwrap();
+        assert_eq!(card_border.top(), border_side(1, NativeColor::RED));
+        assert_eq!(card_border.right(), border_side(1, NativeColor::RED));
+        assert_eq!(card_border.bottom(), border_side(1, NativeColor::RED));
+        assert_eq!(card_border.left(), border_side(1, NativeColor::RED));
+
+        let sides_border = stylesheet.computed_for(&sides).border.unwrap();
+        assert_eq!(sides_border.top(), border_side(1, NativeColor::RED));
+        assert_eq!(
+            sides_border.right(),
+            border_side(
+                6,
+                NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: 255,
+                    alpha: 255,
+                },
+            )
+        );
+        assert_eq!(
+            sides_border.bottom(),
+            border_side(
+                3,
+                NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: 255,
+                    alpha: 255,
+                },
+            )
+        );
+        assert_eq!(sides_border.left(), border_side(8, NativeColor::RED));
+        assert_eq!(stylesheet.computed_for(&fallback).border, None);
+
+        let inline_border = stylesheet.computed_for(&inline).border.unwrap();
+        assert_eq!(
+            inline_border.top(),
+            border_side(
+                3,
+                NativeColor {
+                    red: 0,
+                    green: 128,
+                    blue: 0,
+                    alpha: 255,
+                },
+            )
+        );
+
+        let declarations = parse_declarations(
+            "border: 2px solid red; border: 1px double blue; border-top: ReVeRt-LaYeR; border-right: 3px dotted green; border-right: 1px dotted invalid",
+        );
+        assert_eq!(
+            declarations.border,
+            [
+                Some(LocalCascadeDeclaration::RevertLayer),
+                Some(LocalCascadeDeclaration::Value(styled_border_side(
+                    3,
+                    NativeBorderStyle::Dotted,
+                    NativeColor {
+                        red: 0,
+                        green: 128,
+                        blue: 0,
+                        alpha: 255,
+                    },
+                ))),
+                Some(LocalCascadeDeclaration::Value(border_side(
+                    2,
+                    NativeColor::RED
+                ))),
+                Some(LocalCascadeDeclaration::Value(border_side(
+                    2,
+                    NativeColor::RED
+                ))),
+            ]
+        );
+        assert_eq!(
+            parse_border_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(parse_border_declaration("revert"), None);
+        assert_eq!(parse_border_declaration("1px solid red dashed"), None);
+
+        let mut diagnostics = NativeDiagnosticSink::default();
+        NativeStylesheet::from_sources_with_diagnostics(
+            vec![
+                "#valid { border: ReVeRt-LaYeR; border-top: 1px solid red; } #invalid { border-right: 1px double red; border-left: 1px solid; }"
+                    .into(),
+            ],
+            &mut diagnostics,
+        )
+        .unwrap();
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                        && diagnostic.detail == "border-right"
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                        && diagnostic.detail == "border-left"
+                })
+                .count(),
+            1
+        );
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "border"
+        }));
     }
 
     #[test]

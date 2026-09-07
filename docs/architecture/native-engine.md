@@ -45,6 +45,7 @@ bounded-border-color-css-wide-keywords,
 bounded-border-width-css-wide-keywords,
 bounded-border-style-css-wide-keywords,
 bounded-border-radius-css-wide-keywords,
+bounded-complete-border-css-wide-keywords,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -1349,7 +1350,12 @@ Mixed CSS-wide/concrete or slash-separated radii, corner longhands, elliptical
 and percentage radii, multiple origins, and browser-wide border conformance
 remain outside the completed boundary. Remote CI remains pending because the
 checkout is local-only.
-No subsequent native-engine task is selected in this checkout yet.
+The next dependency-ordered `native-engine-173` slice is designed and recorded
+in `docs/plan/tasks/native-engine-173.md`. It will add the same bounded
+case-insensitive CSS-wide family to the complete physical `border`,
+`border-top`, `border-right`, `border-bottom`, and `border-left` shorthands by
+projecting private inherit/reset values into the existing width/style/color
+candidate streams. No implementation or completion claim is made yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

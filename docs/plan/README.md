@@ -1649,7 +1649,12 @@ Mixed CSS-wide/concrete or slash-separated radii, corner longhands, elliptical
 and percentage radii, multiple origins, and browser-wide border conformance
 remain outside the completed boundary. Remote CI remains pending because the
 checkout is local-only.
-No subsequent native-engine task is selected in this checkout yet.
+The next dependency-ordered [native-engine-173](tasks/native-engine-173.md)
+slice is designed and recorded before implementation. It will add the same
+bounded case-insensitive CSS-wide family to the complete physical `border`,
+`border-top`, `border-right`, `border-bottom`, and `border-left` shorthands by
+projecting private inherit/reset values into the existing width/style/color
+candidate streams. No implementation or completion claim is made yet.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

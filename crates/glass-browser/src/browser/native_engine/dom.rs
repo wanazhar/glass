@@ -9,11 +9,11 @@ use super::raster::NativeSurface;
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
-        DirectionValue, FontStyleValue, FontWeightValue, NativeBorderStyleValue, NativeColor,
-        NativeComputedStyle, NativeInheritedStyle, NativeTextDecorationSkipInk,
-        NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, TextAlignLastValue,
-        TextAlignValue, TextDecorationValue, TextJustifyValue, TextTransformValue,
-        VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        DirectionValue, FontStyleValue, FontWeightValue, NativeBorderRadius,
+        NativeBorderStyleValue, NativeColor, NativeComputedStyle, NativeInheritedStyle,
+        NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
+        TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
+        TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use std::collections::BTreeMap;
@@ -855,6 +855,7 @@ impl NativeDocument {
         let mut inherited_border_color = [NativeColor::BLACK; 4];
         let mut inherited_border_width = [0; 4];
         let mut inherited_border_style = [NativeBorderStyleValue::None; 4];
+        let mut inherited_border_radius = NativeBorderRadius::default();
         let mut inherited_direction = DirectionValue::Ltr;
         let mut inherited_white_space = WhiteSpaceValue::Normal;
         let mut inherited_line_height = None;
@@ -888,6 +889,7 @@ impl NativeDocument {
                     border_color: inherited_border_color,
                     border_width: inherited_border_width,
                     border_style: inherited_border_style,
+                    border_radius: inherited_border_radius,
                     direction: inherited_direction,
                     white_space: inherited_white_space,
                     line_height: inherited_line_height,
@@ -917,6 +919,7 @@ impl NativeDocument {
             inherited_border_color = style.border_colors();
             inherited_border_width = style.border_widths();
             inherited_border_style = style.border_styles();
+            inherited_border_radius = style.border_radius();
             inherited_direction = style.direction();
             inherited_white_space = style.white_space();
             inherited_line_height = style.line_height().or(inherited_line_height);

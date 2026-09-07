@@ -1,7 +1,7 @@
 ---
 id: native-engine-173
 scope: glass-browser/native-engine/cascade-complete-border-css-wide-keywords
-status: planned
+status: complete
 depends-on: [native-engine-172]
 ---
 
@@ -28,9 +28,10 @@ complete physical border owners. Native-engine-159 through native-engine-171
 established the private component streams and their CSS-wide values for border
 none/hidden, color, width, and style. Native-engine-172 established the same
 private family for physical `border-radius` and the effective parent style walk.
-The complete border parser currently accepts bounded concrete forms,
+Before this slice, the complete border parser accepted bounded concrete forms,
 omitted-component `none`/`hidden`, `currentColor`, and `revert-layer`, but
-rejects standalone CSS-wide values.
+rejected standalone CSS-wide values. This slice closes that parser and
+projection gap without changing the public border surface.
 
 Normative references:
 
@@ -136,6 +137,55 @@ Remote CI remains unclaimed until an explicitly authorized push.
 
 ## Implementation
 
-Pending. This docs-first contract records the complete physical `border`
-CSS-wide keyword boundary before changing the private declaration projection or
-the existing component candidate owners.
+Completed in `f5f53cec` (`feat(native-engine): support complete border css-wide
+keywords`). `NativeBorderDeclaration` now retains exact case-insensitive
+`inherit`, `unset`, `initial`, and one-author-origin `revert` values privately
+for the complete `border` and four physical side shorthands. The parser keeps
+CSS-wide values standalone, preserving concrete, omitted-component,
+`currentColor`, and `revert-layer` grammars while rejecting mixed forms and
+preserving valid-before-invalid declarations.
+
+The existing width/style/color projection owners now translate explicit
+`inherit` into the effective parent side streams and translate reset forms into
+zero-width, private `none`, and `currentColor` candidates. The existing
+computed-style composition then retains later independent component
+declarations, side order, layer/unlayered/inline precedence, and private
+none/hidden/zero/unpainted behavior. The new integration fixture exercises
+layout/content geometry, display-list paint, raster/PNG capture, point hit
+testing, semantics, diagnostics, invalid preservation, and component
+composition. No public schema, dependency, feature default, or crate boundary
+changed.
+
+## Certification evidence
+
+The locked focused native-feature check passed. Focused parser/cascade tests
+passed 2/2, the focused complete-border consumer fixture passed 1/1, affected
+border library regressions passed 23/23, affected border integration
+regressions passed 25/25, full native integration passed 211/211, and the
+feature-enabled `glass-browser` library passed 975 with 1 ignored. Strict
+all-target/all-feature Clippy with warnings denied, warning-denied native
+feature rustdoc, and paired locked `glass-dev` check/build passed.
+
+Locked packages were generated for both crates: `glass-browser` contained 196
+files and `glass-dev` 69 files. The packaged-dependency checker confirmed
+`glass-dev` resolves `glass-browser` exactly at `0.3.14` without a path or
+feature dependency; Cargo emitted only the existing yanked `chacha20` warning.
+Static gates passed at source version `0.3.14`: version sync, feature parity
+(14 capabilities across 4 targets), release documentation (587 Markdown
+documents, 83 current documents, 57 previous-version hits, 677 semantic audit
+hits, 0 current-claim failures), documentation coverage (587 Markdown/345
+full-product MCP tools/100 browser-only tools/17 examples/22 public modules),
+depth (93 current guides/19 substantive contracts), TUI shortcut parity
+(15/63), reliability (6 scenarios/4 targets), public read-only adapters (5),
+Web IR (8 fixtures/8 scenarios/11 categories), and GitHub release records (40
+published tags/4 retained failed candidates).
+
+The locked workspace all-target/all-feature replay passed with 976 library
+tests and 1 ignored, 211 native integration tests, 365 `glass-dev` tests, and
+all auxiliary targets. No remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary, or promotion claim is made.
+
+## Cleanup
+
+Pending exact-path regenerable-output cleanup after all Cargo processes and
+open-handle checks complete.

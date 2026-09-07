@@ -110,6 +110,14 @@ source-behavior reference.
   styles, animation,
   multiple origins, and browser-wide CSS border conformance remain outside the
   boundary,
+  plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
+  one-author-origin `revert` for the complete physical `border`, `border-top`,
+  `border-right`, `border-bottom`, and `border-left` shorthands: explicit
+  `inherit` copies effective parent width/style/color side values, including
+  private `none`/`hidden`, zero-width, and unpainted states; reset forms project
+  zero width, private `none`, and `currentColor` for later component composition;
+  ordinary omission remains omission and mixed CSS-wide/concrete forms remain
+  unsupported,
   plus bounded case-insensitive 15-layer/unlayered local `border-color` and
   physical `border-top-color`, `border-right-color`, `border-bottom-color`,
   and `border-left-color` values with one-to-four-value shorthand expansion
@@ -479,6 +487,14 @@ projection, and point hit-testing,
   zero-width parents; reset forms resolve to zero corners and ordinary
   omission remains zero. Mixed CSS-wide/concrete and slash-separated radius
   forms remain unsupported,
+  plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
+  one-author-origin `revert` for the complete physical `border`, `border-top`,
+  `border-right`, `border-bottom`, and `border-left` shorthands: explicit
+  `inherit` copies effective parent width/style/color side values, including
+  private `none`/`hidden`, zero-width, and unpainted states; reset forms project
+  zero width, private `none`, and `currentColor` for later component composition;
+  ordinary omission remains omission and mixed CSS-wide/concrete forms remain
+  unsupported,
   normal-flow outer/content box geometry with physical four-side padding/margin
   shorthands and longhands, bounded physical min/max width/height constraints
   with bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback

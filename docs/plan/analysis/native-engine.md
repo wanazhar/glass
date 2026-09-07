@@ -1499,12 +1499,24 @@ slash-separated radii, corner longhands, elliptical and percentage radii,
 multiple origins, and browser-wide border conformance remain outside the
 completed boundary. Remote CI remains pending because the checkout is
 local-only.
-The next dependency-ordered `native-engine-173` slice is designed and recorded
-in `docs/plan/tasks/native-engine-173.md`. It will add the same bounded
-case-insensitive CSS-wide family to the complete physical `border`,
-`border-top`, `border-right`, `border-bottom`, and `border-left` shorthands by
-projecting private inherit/reset values into the existing width/style/color
-candidate streams. No implementation or completion claim is made yet.
+The completed dependency-ordered `native-engine-173` slice is recorded in
+`docs/plan/tasks/native-engine-173.md`; implementation is `f5f53cec`. It adds
+exact case-insensitive `inherit`, `unset`, `initial`, and one-author-origin
+`revert` to the complete physical `border`, `border-top`, `border-bottom`,
+`border-right`, and `border-left` shorthands by projecting private values into
+the existing width/style/color candidate streams. Explicit `inherit` copies
+effective parent side values; reset forms project zero-width, private `none`,
+and `currentColor` so later component declarations can compose; ordinary
+omission remains omission and mixed CSS-wide/concrete forms remain
+unsupported. Existing concrete, omitted-component, `currentColor`,
+`revert-layer`, geometry, display/raster, capture, hit, and semantic owners
+remain unchanged. Focused/full-native/library, strict Clippy, warning-denied
+rustdoc, paired-crate check/build, packaging, static documentation, and
+workspace all-target/all-feature gates pass locally; exact evidence is
+recorded in the task. Logical sides, table conflict resolution, multiple
+origins, `!important` inversion, and browser-wide border conformance remain
+outside the completed boundary. Remote CI remains pending because the checkout
+is local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2266,12 +2278,12 @@ visual stacking.
 | `native-engine-170` | completed bounded local physical `border-width` and four physical width-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective per-side width and zero-width omission/reset fallbacks; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-169` | multiple origins, `!important` inversion, percentages, medium/thin/thick defaults, gradients, images, animation, logical sides, table conflict resolution, and browser-wide border conformance |
 | `native-engine-171` | completed bounded local physical `border-style` and four physical style-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying effective parent styles and reset/omission preserving the private no-style fallback; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-170` | multiple origins, `!important` inversion, logical sides, table conflict resolution, border conflict/collapse, gradients, border-image, animation, unsupported styles, and browser-wide border conformance |
 | `native-engine-172` | completed bounded local physical `border-radius` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying an effective parent radius and reset/omission preserving the default zero-corner fallback; implementation `b0bbe45a` | `native-engine-171` | multiple origins, `!important` inversion, corner longhands, elliptical/percentage radii, logical sides, table conflict resolution, gradients, border-image, animation, and browser-wide border conformance |
-| `native-engine-173` | planned bounded complete physical `border` and four side-border shorthand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` projected through the existing private width/style/color component streams | `native-engine-172` | multiple origins, `!important` inversion, logical sides, table conflict resolution, gradients, border-image, animation, arbitrary omitted defaults, and browser-wide border conformance |
+| `native-engine-173` | completed bounded complete physical `border` and four side-border shorthand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` projected through the existing private width/style/color component streams, preserving concrete and omitted-component forms, independent composition, geometry, and artifacts; implementation `f5f53cec` | `native-engine-172` | multiple origins, `!important` inversion, logical sides, table conflict resolution, gradients, border-image, animation, arbitrary omitted defaults, and browser-wide border conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-172.md` is the latest completed task;
+`docs/plan/tasks/native-engine-173.md` is the latest completed task;
 `docs/plan/tasks/native-engine-171.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-169.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-168.md` is the preceding completed task;
@@ -2314,7 +2326,7 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-121.md` is the earlier completed task;
 `docs/plan/tasks/native-engine-120.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-119.md` is the earlier completed task;
-`docs/plan/tasks/native-engine-118.md` is the latest completed checkpoint;
+`docs/plan/tasks/native-engine-118.md` is an earlier completed checkpoint;
 `docs/plan/tasks/native-engine-117.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-116.md` is the preceding completed checkpoint;
 `docs/plan/tasks/native-engine-115.md` is the preceding completed checkpoint;
@@ -2389,28 +2401,20 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The completed current checkpoint is recorded for
-`docs/plan/tasks/native-engine-172.md`: the implementation is `b0bbe45a`. It
-adds the bounded physical `border-radius` CSS-wide keyword family, carrying
-only effective parent radii for explicit `inherit` and resolving reset/omission
-to the default zero-corner fallback while preserving concrete expansion,
-`revert-layer`, rounded geometry, and all artifact consumers. Focused/full
-native/library tests passed locally: focused parser/cascade 4/4, focused
-consumer 1/1, full native integration 210/210, and feature-enabled
-`glass-browser` library 974 passed with 1 ignored. Strict Clippy,
-warning-denied rustdoc, paired `glass-dev` check/build, package dependency
-check, static validators, workspace all-target/all-feature replay, and exact
-cleanup gates also passed. The workspace replay had 975 library tests passed
-with 1 ignored, 210 native integration tests, 365 `glass-dev` tests, and all
-auxiliary targets. The plain `glass-dev` package verification remains a
-registry API mismatch; the patched local-release archive is exact. Static
-truth is 586 Markdown documents, 83 current documents, 57 previous-version
-hits, 675 semantic audit hits, and 0 current-claim failures; coverage is 586
-Markdown/345 full-product MCP tools/100 browser-only tools/17 examples/22
-public modules; TUI 15/63; depth 93/19; reliability 6/4; adapters 5; Web IR
-8/8/11; and release-documentation unit tests 9/9. Exact cleanup removed
-14,944,329,455 measured bytes and left 82,336,038,912 bytes free. No remote
-CI, push, release, tag, registry publication, browser-parity,
-security-boundary, or promotion claim is made.
+`docs/plan/tasks/native-engine-173.md`: the implementation is `f5f53cec`. It
+adds the bounded complete physical `border` and four side-border shorthand
+CSS-wide keyword family, projecting explicit `inherit` and reset values into
+the existing width/style/color streams while preserving concrete and
+omitted-component forms, `currentColor`, `revert-layer`, independent
+composition, geometry, and all artifact consumers. Local evidence currently
+includes focused parser/cascade 2/2, focused consumer 1/1, border library
+regressions 23/23, border integration regressions 25/25, full native
+integration 211/211, and feature-enabled `glass-browser` library 975 passed
+with 1 ignored. Strict Clippy, warning-denied rustdoc, paired `glass-dev`
+check/build, package, static documentation, workspace all-target/all-feature,
+and bounded cleanup gates remain to be recorded in the task. No remote CI,
+push, release, tag, registry publication, browser-parity, security-boundary,
+or promotion claim is made.
 The preceding 169 checkpoint remains recorded in
 `docs/plan/tasks/native-engine-169.md` with design `b88177dc`, implementation
 `4d9e6979`, test-fixture corrections `a0e77c84` and `801f7b19`, synchronized

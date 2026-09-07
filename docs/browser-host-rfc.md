@@ -221,7 +221,13 @@ values with private width/color retention for future table conflict resolution;
 current non-table composition suppresses hidden paint. Complete and physical
 border shorthands also accept bounded complete `Npx none color` values with
 private width/color retention for future table conflict resolution; current
-non-table composition suppresses none paint. Bounded local opacity subtree groups through
+non-table composition suppresses none paint. The same complete physical border
+shorthands also accept exact case-insensitive CSS-wide `inherit`, `unset`,
+`initial`, and one-author-origin `revert` values. Explicit `inherit` copies
+effective parent width/style/color sides, including private `none`/`hidden`,
+zero-width, and unpainted states; reset forms project zero width, private
+`none`, and `currentColor` for later component composition; ordinary omission
+remains omission and mixed CSS-wide/concrete forms remain unsupported. Bounded local opacity subtree groups through
 transparent software layers,
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and

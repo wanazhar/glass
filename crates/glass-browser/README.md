@@ -284,12 +284,12 @@ sides, fractional/percentage widths, `wavy` and other unsupported styles, and
 browser-wide
 border conformance remain outside the boundary.
 The complete and physical border shorthands also accept the exact
-case-insensitive omitted-component `none` form through the same private
-no-paint style sentinel. A winning `border:none`, `border-top:none`,
-`border-right:none`, `border-bottom:none`, or `border-left:none` shorthand
-blocks lower paint without adding a public `None` style or inventing
-shorthand defaults; arbitrary omitted-component forms remain outside this
-bounded surface.
+case-insensitive omitted-component `none` and `hidden` forms through private
+no-paint style sentinels. A winning `border:none`/`border:hidden`,
+`border-top|right|bottom|left:none|hidden` shorthand blocks lower paint
+without adding public `None`/`Hidden` styles or inventing shorthand defaults;
+`hidden` remains private for future table conflict resolution and arbitrary
+omitted-component forms remain outside this bounded surface.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and

@@ -1454,14 +1454,20 @@ rustdoc, two-crate, formatting, and static documentation gates passed locally;
 exact target cleanup is recorded in the task. Remote CI remains pending because
 the branch is local-only.
 
-The next dependency-ordered [native-engine-158](tasks/native-engine-158.md)
-slice is planned. It will accept only exact case-insensitive omitted-component
-`hidden` in the complete and physical border shorthands, route it through the
-existing private hidden style stream, preserve the private distinction needed
-for future table conflict resolution, and keep the current public and artifact
-schemas unchanged. Arbitrary omitted-component defaults, CSS-wide resets,
-logical sides, table conflict resolution, and browser-wide border conformance
-remain outside the planned boundary.
+The completed dependency-ordered [native-engine-158](tasks/native-engine-158.md)
+slice is implemented at `f04623fc` from design `6041a479`. It accepts only
+exact case-insensitive omitted-component `hidden` in the complete and physical
+border shorthands, routes it through the existing private hidden style stream,
+preserves the private distinction needed for future table conflict resolution,
+and keeps the current public and artifact schemas unchanged. Width and color
+do not receive synthetic candidates, so a winning `hidden` blocks paint while
+a later bounded `revert-layer` can expose an existing lower painted component.
+Arbitrary omitted-component defaults, CSS-wide resets, logical sides, table
+conflict resolution, and browser-wide border conformance remain outside the
+boundary. Focused/full-native/library, strict Clippy, rustdoc, two-crate,
+formatting, and static documentation gates passed locally; exact target cleanup
+is recorded in the task. Remote CI remains pending because the branch is
+local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

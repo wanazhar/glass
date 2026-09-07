@@ -1141,14 +1141,19 @@ resolution, and browser-wide border conformance remain outside the boundary.
 Focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting,
 and static documentation gates passed locally; exact target cleanup is recorded
 in the task. Remote CI remains pending because the branch is local-only.
-The next dependency-ordered 158 slice is planned in
-`docs/plan/tasks/native-engine-158.md`. It will accept only exact
-case-insensitive omitted-component `hidden` in the complete and physical
-border shorthands, route it through the existing private hidden style stream,
-and preserve the current public/artifact schemas and future table-conflict
-distinction. Arbitrary omitted-component defaults, CSS-wide resets, logical
-sides, table conflict resolution, and browser-wide border conformance remain
-outside the planned boundary.
+The completed dependency-ordered 158 slice is recorded in
+`docs/plan/tasks/native-engine-158.md`; design is `6041a479` and implementation
+is `f04623fc`. It accepts only exact case-insensitive omitted-component
+`hidden` in the complete and physical border shorthands, routes it through the
+existing private hidden style stream, and preserves the current public/artifact
+schemas and future table-conflict distinction. Width and color do not receive
+synthetic candidates, so a winning `hidden` blocks paint while a later bounded
+`revert-layer` can expose an existing lower painted component. Arbitrary
+omitted-component defaults, CSS-wide resets, logical sides, table conflict
+resolution, and browser-wide border conformance remain outside the boundary.
+Focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, and
+static documentation gates passed locally; exact target cleanup is recorded in
+the task. Remote CI remains pending because the branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

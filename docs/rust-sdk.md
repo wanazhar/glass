@@ -190,9 +190,10 @@ declarations do not invent missing paint components; collapsed-table border
 conflict resolution, logical sides, fractional/percentage widths, `wavy` and
 other unsupported styles, and browser-wide border conformance remain outside
 the boundary. The complete and physical border shorthands also accept the
-exact case-insensitive omitted-component `none` form through the same private
-no-paint style sentinel; arbitrary omitted-component forms remain outside this
-bounded surface. The native engine provides bounded side-specific
+exact case-insensitive omitted-component `none` and `hidden` forms through
+private no-paint style sentinels; winning omitted-component `hidden` remains
+private for future table conflict resolution and arbitrary omitted-component
+forms remain outside this bounded surface. The native engine provides bounded side-specific
 solid/dashed/dotted/double/groove/ridge/inset/outset-border paint, bounded
 physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height

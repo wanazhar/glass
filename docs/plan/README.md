@@ -1743,6 +1743,14 @@ rustdoc gates pass locally; final documentation audit and task-specific
 cleanup are recorded in the task. Issue-level final gates and remote CI remain
 pending until issue #40 reaches its final validation boundary.
 
+The in-progress dependency-ordered [native-engine-180](tasks/native-engine-180.md)
+slice extends bounded author-origin `!important` priority to the six supported
+horizontal-tb logical border-color declarations. It preserves the existing
+`ltr`/`rtl` projection into physical sides while carrying the private reversed
+named-layer partition through projection. Complete border shorthands, physical
+border-color, width/style, vertical writing modes, and other properties remain
+outside this focused slice; implementation and certification are pending.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

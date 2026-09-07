@@ -42,6 +42,7 @@ bounded-border-revert-layer,
 bounded-border-color-revert-layer,
 bounded-border-color-current-color,
 bounded-border-color-css-wide-keywords,
+bounded-border-width-css-wide-keywords,
 bounded-flex-auto-margins,
 bounded-flex-wrapped-auto-margins,
 bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-justification,
@@ -1317,12 +1318,27 @@ and bounded cleanup gates passed locally. Multiple origins, `!important`
 inversion, logical sides, table conflict resolution, gradients, images,
 animation, and browser-wide border conformance remain outside the completed
 boundary. Remote CI remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-170` slice is designed and recorded
-in `docs/plan/tasks/native-engine-170.md`. It will extend the same bounded
-case-insensitive CSS-wide family to physical `border-width` and its four width
-longhands, copying only explicit inherited effective side widths and retaining
-zero-width omission/reset fallbacks; no implementation or completion claim is
-made yet.
+The completed dependency-ordered `native-engine-170` slice is recorded in
+`docs/plan/tasks/native-engine-170.md`; implementation is `cf19800f`. It extends
+the physical `border-width` shorthand and four width longhands with exact
+case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert`.
+Only explicit `inherit` copies the parent's effective top/right/bottom/left
+widths, including widths from an unpainted parent; reset forms resolve to zero
+and ordinary omission retains the zero fallback. Existing `revert-layer`,
+style/color composition, border geometry, and all display, capture, raster,
+point-hit, semantic, and public/artifact owners remain unchanged. Focused,
+full-native/library, strict Clippy, rustdoc, two-crate, package, formatting,
+static documentation, workspace all-target/all-feature, and bounded cleanup
+gates passed locally. Mixed CSS-wide/numeric shorthand, logical sides,
+percentages, medium/thin/thick defaults, multiple origins, and browser-wide
+border conformance remain outside the completed boundary. Remote CI remains
+pending because the checkout is local-only.
+The next dependency-ordered `native-engine-171` slice is designed and recorded
+in `docs/plan/tasks/native-engine-171.md`. It will extend the same bounded
+case-insensitive CSS-wide family to physical `border-style` and its four style
+longhands, copying only explicit effective parent styles and retaining the
+existing private `none`/zero-width fallback; no implementation or completion
+claim is made yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

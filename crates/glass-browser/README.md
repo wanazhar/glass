@@ -266,9 +266,16 @@ The native border width surface also accepts bounded case-insensitive
 physical shorthand expansion and independent per-side `revert-layer` rollback
 to lower widths or bounded zero. Width-only declarations do not invent a style
 or paint a border; existing border style/color and all box-model and artifact
-consumers remain the owners. Standalone border-style, logical sides,
-fractional/percentage widths, and browser-wide border conformance remain
-outside the boundary.
+consumers remain the owners. The native border style surface also accepts
+bounded case-insensitive 15-layer/unlayered local `border-style` and physical
+`border-top-style`, `border-right-style`, `border-bottom-style`, and
+`border-left-style` values from the finite `solid|dashed|dotted` grammar, with
+one-to-four-value physical shorthand expansion and independent per-side
+`revert-layer` rollback to lower styles. Width, style, and color components
+compose only after independent resolution; width-only or style-only declarations
+do not invent missing paint components. `none`, logical sides,
+fractional/percentage widths, unsupported styles, and browser-wide border
+conformance remain outside the boundary.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and

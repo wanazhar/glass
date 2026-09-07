@@ -397,9 +397,16 @@ local `border-width` and physical `border-top-width`, `border-right-width`,
 `border-bottom-width`, and `border-left-width` values with one-to-four-value
 shorthand expansion and independent per-side `revert-layer` rollback to lower
 widths or bounded zero, preserving border style/color and the existing box-model
-and artifact consumers. Standalone border-style, logical sides,
-fractional/percentage widths, and browser-wide border conformance remain
-outside the boundary. Bounded
+and artifact consumers. The native border style surface also accepts bounded
+case-insensitive 15-layer/unlayered local `border-style` and physical
+`border-top-style`, `border-right-style`, `border-bottom-style`, and
+`border-left-style` values from the finite `solid|dashed|dotted` grammar, with
+one-to-four-value shorthand expansion and independent per-side `revert-layer`
+rollback to lower styles. Width, style, and color components compose only after
+their independent resolution; width-only or style-only declarations do not
+invent missing paint components. `none`, logical sides, fractional/percentage
+widths, unsupported styles, and browser-wide border conformance remain outside
+the boundary. Bounded
 inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using

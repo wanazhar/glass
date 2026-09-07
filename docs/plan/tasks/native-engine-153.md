@@ -1,7 +1,7 @@
 ---
 id: native-engine-153
 scope: glass-browser/native-engine/cascade-border-style
-status: planned
+status: done
 depends-on: [native-engine-152]
 ---
 
@@ -128,8 +128,53 @@ The completed slice must cover:
 
 ## Implementation
 
-To be filled after the implementation checkpoint.
+Implemented in `6169cabc`. The parser accepts the five bounded physical
+`border-style` names, expands valid one-to-four-value shorthands, preserves
+case-insensitive standalone `revert-layer`, and rejects mixed/CSS-wide/
+malformed/unsupported forms through the existing typed diagnostic path.
+`NativeDeclarations` retains per-side declaration positions for the private
+style stream. Computed style carries selected styles from complete border
+values into that stream, resolves style independently from width and color,
+and composes a border only after the required components resolve. Existing
+box-model, display-list, capture, raster, hit, and semantic/source-order
+owners remain unchanged.
 
 ## Evidence
 
-To be filled after local certification and bounded target cleanup.
+Local certification completed in the isolated regenerable target
+`/tmp/glass-153-focused`:
+
+- `CARGO_TARGET_DIR=/tmp/glass-153-focused cargo check -q -p glass-browser --features native-engine --tests --locked` passed.
+- Focused parser/cascade units: 2 passed, 965 filtered.
+- Focused integration: 1 passed, 190 filtered.
+- Full native integration: 191 passed, 0 failed.
+- Affected library with `RUST_MIN_STACK=16777216`: 966 passed, 1 ignored.
+- Strict affected-package Clippy with all targets/features and `-D warnings` passed.
+- Feature rustdoc with `RUSTDOCFLAGS=-Dwarnings` passed.
+- `CARGO_TARGET_DIR=/tmp/glass-153-focused cargo check -q -p glass-dev --locked` and
+  `CARGO_TARGET_DIR=/tmp/glass-153-focused cargo build -q -p glass-dev --locked`
+  passed; the configured `glass` and `glass-browser` binaries were produced.
+- `cargo fmt --all -- --check` and `git diff --check` passed; the integration
+  fixture covered geometry, display-list styles, separate component
+  composition, no-style fallback, hit/semantic continuity, raster, and PNG
+  serialization. No valid style declaration produced an unsupported-value
+  diagnostic and no rollback keyword entered the public artifacts.
+- Final static gates passed: 567 Markdown documents; 83 current-version
+  documents; 57 previous-version hits; 657 semantic audit hits; 0 current-claim
+  failures; feature parity 14 capabilities across 4 targets; TUI 15
+  implementation help keys and 63 documentation markers; documentation depth
+  93 guides and 19 substantive contracts; reliability 6 scenarios across 4
+  targets; public read-only adapters 5; Web IR 8 fixtures, 8 scenarios, and
+  11 categories; and documentation coverage 567 Markdown files, 345
+  full-product MCP tools (100 browser-only), 17 examples, and 22 public
+  modules.
+
+## Cleanup evidence
+
+- After all implementation, test, documentation, and coverage gates passed,
+  `/tmp/glass-153-focused` was verified as a real directory with no active
+  Cargo/Rust consumer and no open handles, then removed with bounded,
+  same-filesystem `find -P /tmp/glass-153-focused -xdev -depth -delete`.
+- The target contained 5,423,644,672 bytes, 9,066 files, and 1,185
+  directories. Available `/tmp` space increased from 78,350,573,568 bytes to
+  83,774,210,048 bytes, and `/home/ubuntu/work/glass/target` remains absent.

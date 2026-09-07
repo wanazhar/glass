@@ -174,9 +174,16 @@ plus bounded case-insensitive 15-layer/unlayered local `border-width`,
 `border-top-width`, `border-right-width`, `border-bottom-width`, and
 `border-left-width` values with one-to-four-value physical shorthand expansion
 and independent per-side `revert-layer` rollback to lower widths or bounded
-zero. Width-only declarations do not invent a style or paint a border;
-standalone border-style, logical sides, fractional/percentage widths, and
-browser-wide border conformance remain outside the boundary,
+zero. Width-only declarations do not invent a style or paint a border. The
+same owner also accepts bounded case-insensitive 15-layer/unlayered local
+`border-style` and physical `border-top-style`, `border-right-style`,
+`border-bottom-style`, and `border-left-style` values from the finite
+`solid|dashed|dotted` grammar with one-to-four-value physical shorthand
+expansion and independent per-side `revert-layer` rollback to lower styles.
+Width, style, and color components compose only after independent resolution,
+and width-only or style-only declarations do not invent missing paint
+components; `none`, logical sides, fractional/percentage widths, unsupported
+styles, and browser-wide border conformance remain outside the boundary,
 side-specific solid/dashed/dotted-border paint, bounded physical circular
 border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

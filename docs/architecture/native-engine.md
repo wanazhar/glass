@@ -1085,6 +1085,15 @@ integration tests, full-native integration/library tests, strict Clippy,
 feature rustdoc, two-crate check/build, formatting, and static documentation
 gates are recorded in the task; remote CI remains pending because the checkout
 is local-only.
+The next dependency-ordered 154 slice is design-ready in
+`docs/plan/tasks/native-engine-154.md`. It will add explicit physical
+`border-style:none` to the one-to-four-value shorthand and four physical style
+longhands through a private no-paint sentinel, so a winning `none` blocks lower
+styles and converts to the existing no-side/zero-width behavior before layout
+and artifacts. The public paint enum and display-list schema remain unchanged;
+`hidden`, other border styles, logical sides, `currentColor`, gradients,
+border-image, and browser-wide border conformance remain outside the planned
+boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

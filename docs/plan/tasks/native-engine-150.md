@@ -1,7 +1,7 @@
 ---
 id: native-engine-150
 scope: glass-browser/native-engine/cascade-layers-border-revert-layer
-status: planned
+status: done
 depends-on: [native-engine-149]
 ---
 
@@ -123,8 +123,34 @@ The completed slice must cover:
 
 ## Implementation
 
-Pending the implementation checkpoint.
+Implemented in `1fdbe75d`. The implementation keeps four independent private
+side candidate arrays, reuses the bounded 15-layer resolver, preserves existing
+shorthand expansion and side-longhand precedence, and adds no public
+computed-style, display-list, raster, diagnostic transport, dependency,
+feature-default, or crate-boundary changes.
 
 ## Evidence
 
-Pending implementation and local certification.
+Local certification completed:
+
+- `CARGO_TARGET_DIR=/tmp/glass-150-focused cargo check -q -p glass-browser --features native-engine --tests --locked` passed.
+- Focused parser/cascade unit: 1 passed, 960 filtered.
+- Focused integration: 1 passed, 187 filtered.
+- Full native integration: 188 passed, 0 failed.
+- Affected library with `RUST_MIN_STACK=16777216`: 960 passed, 1 ignored.
+- Strict affected-package Clippy with `-D warnings` passed.
+- Feature rustdoc with `RUSTDOCFLAGS=-Dwarnings` passed.
+- `CARGO_TARGET_DIR=/tmp/glass-150-focused cargo check -q -p glass-dev --locked` and
+  `CARGO_TARGET_DIR=/tmp/glass-150-focused cargo build -q -p glass-dev --locked`
+  passed.
+- `cargo fmt --all` and `git diff --check` passed.
+- Static documentation gates passed: 564 Markdown files; 83 current-version
+  references; 57 previous-version references; 656 semantic audit hits; 0
+  current-claim failures; feature parity 14 capabilities across 4 targets; TUI
+  shortcut parity 15 implementation keys and 63 documentation markers; depth
+  93 guides and 19 substantive contracts; reliability 6 scenarios across 4
+  targets; public read-only adapters 5; Web IR 8 fixtures, 8 scenarios, and
+  11 categories.
+- Documentation coverage passed: 564 Markdown files, 345 full-product MCP
+  tools (100 browser-only), 17 examples, and 22 public modules.
+- Remote CI remains unclaimed because the checkout is local-only.

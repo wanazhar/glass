@@ -801,6 +801,15 @@ display-list, capture, raster, and semantic/source-order owners. Inherited
 visibility, display decomposition, formatting-context parity, table/ruby/
 flow-root details, animation, multiple origins, and browser-wide CSS
 display/visibility conformance remain outside the boundary.
+The native border surface also accepts bounded case-insensitive 15-layer/
+unlayered local `revert-layer` for the physical `border`, `border-top`,
+`border-right`, `border-bottom`, and `border-left` owners. Rollback resolves
+each side through lower concrete candidates or the existing zero-width/no-paint
+fallback, preserving shorthand/longhand precedence and the existing box-model
+inset, border display-list, capture, raster, point-hit, and semantic/source-order
+owners. Logical sides, border-image, gradients, other border styles, animation,
+multiple origins, and browser-wide CSS border conformance remain outside the
+boundary.
 The native engine also supports bounded 15-layer/unlayered `revert-layer`
 rollback for inherited `text-align`, `text-align-last`, and `text-justify`.
 The current native decoration-color surface additionally accepts bounded

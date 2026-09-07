@@ -1208,15 +1208,19 @@ boundary. Focused, full-native, affected-library, strict Clippy, feature
 rustdoc, formatting, and static documentation gates passed locally; exact
 evidence and cleanup are recorded in the task. Remote CI remains pending
 because the checkout is local-only.
-The next dependency-ordered `native-engine-150` contract is planned in
-`docs/plan/tasks/native-engine-150.md`. It will reuse the same private bounded
-layer resolver for standalone, case-insensitive `revert-layer` on the existing
+The dependency-ordered `native-engine-150` implementation is complete in
+`1fdbe75d` (design `27cf6c1a`) and is recorded in
+`docs/plan/tasks/native-engine-150.md`. It reuses the same private bounded layer
+resolver for standalone, case-insensitive `revert-layer` on the existing
 physical `border`, `border-top`, `border-right`, `border-bottom`, and
 `border-left` owners, preserving the zero-width/no-paint fallback and the
 existing box-model inset, border display-list, capture, raster, point-hit, and
 semantic/source-order owners. Logical sides, border-image, gradients, other
 border styles, animation, multiple origins, and browser-wide CSS border
-conformance remain outside the planned boundary.
+conformance remain outside the boundary. Focused, full-native,
+affected-library, strict Clippy, feature rustdoc, formatting, and static
+documentation gates passed locally; exact evidence and cleanup are recorded in
+the task. Remote CI remains pending because the checkout is local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1511,7 +1515,7 @@ semantic identity is established before mutation and parser state consume it:
 | `native-engine-147` | completed reuse of bounded named-layer priority and private rollback for local one-to-four-value integer `border-radius:revert-layer`, preserving zero-corner fallback and existing rounded fill/border/point-hit consumers | `native-engine-146` | other CSS-wide keywords, elliptical or percentage radii, corner longhands, nested clips, anti-aliasing, multiple origins, and browser-wide CSS border-radius conformance |
 | `native-engine-148` | completed reuse of bounded named-layer priority and private rollback for local 8-bit `opacity:revert-layer`, preserving full-opacity fallback, reduced-opacity group/compositing consumers, and unchanged geometry/artifact owners | `native-engine-147` | other CSS-wide keywords, inherited opacity, stacking-context/blending parity, filters, animation, multiple origins, and browser-wide CSS opacity conformance |
 | `native-engine-149` | completed reuse of bounded named-layer priority and private rollback for local `display:revert-layer` and `visibility:revert-layer`, preserving normal-flow/visible fallbacks and existing hidden-subtree/artifact consumers | `native-engine-148` | other CSS-wide keywords, inherited visibility, display decomposition, formatting-context parity, table/ruby/flow-root details, animation, multiple origins, and browser-wide CSS display/visibility conformance |
-| `native-engine-150` | planned reuse of bounded named-layer priority and private per-side rollback for physical `border:revert-layer` and `border-top|right|bottom|left:revert-layer`, preserving zero-width/no-paint fallbacks and existing box-model/border-artifact consumers | `native-engine-149` | other CSS-wide keywords, logical sides, border-image, gradients, unsupported border styles, animation, multiple origins, and browser-wide CSS border conformance |
+| `native-engine-150` | completed reuse of bounded named-layer priority and private per-side rollback for physical `border:revert-layer` and `border-top|right|bottom|left:revert-layer`, preserving zero-width/no-paint fallbacks and existing box-model/border-artifact consumers | `native-engine-149` | other CSS-wide keywords, logical sides, border-image, gradients, unsupported border styles, animation, multiple origins, and browser-wide CSS border conformance |
 
 The DOM remains a single-owner arena. Semantic projections are derived views;
 they do not become a second mutable source of truth. The document's current
@@ -1944,13 +1948,14 @@ visual stacking.
 | bounded border-radius rollback | completed extension of the proven layer rollback to the local one-to-four-value integer `border-radius` shorthand without changing public computed values or artifact schemas | one fixed candidate array adds bounded local cascade state; grouping rounded fill, border, point-hit, capture, and raster checks broadens the existing geometry regression; no elliptical/percentage radii, corner longhands, nested clips, anti-aliasing, multiple origins, or browser border-radius parity | reuse the optional local resolver with a zero-corner fallback, keep the existing shorthand expansion/normalization and shared rounded geometry owner, and test named/repeated/unlayered/inline rollback, invalid-later preservation, rounded display/raster/hit behavior, overflow, capture, and semantic/source order together; focused and full-native gates passed locally |
 | bounded opacity rollback | completed extension of the proven layer rollback to the local quantized 8-bit `opacity` owner without changing layout, semantic, display-list, or raster schemas | one fixed candidate array adds bounded local cascade state; group-marker/compositing assertions broaden the artifact regression while full-opacity remains the explicit fallback; no inherited opacity, stacking-context/blending parity, filters, animation, multiple origins, or browser opacity parity | reuse the optional local resolver with a `255` fallback, preserve the existing quantization and reduced-opacity group owner, and test named/repeated/unlayered/inline rollback, invalid-later preservation, zero/full/reduced alpha, group replay, layout, hit testing, capture, and semantic/source order together; focused and full-native gates passed locally |
 | bounded display/visibility rollback | completed extension of the proven layer rollback to local `display` and `visibility` owners without changing public computed-style or artifact schemas | two fixed candidate arrays add bounded local cascade state; the hidden-subtree gate retains normal-flow/visible fallbacks and existing `display:none`, `visibility:hidden`, and `display:contents` behavior; no inherited visibility, display decomposition, formatting-context parity, table/ruby/flow-root details, animation, multiple origins, or browser display/visibility parity | reuse the generic local resolver with `display:auto`/visible fallbacks, keep display and visibility property-local, and test named/repeated/unlayered/inline rollback, invalid-later preservation, hidden subtree, contents descendants, layout, hit testing, capture, display list, raster, and semantic/source order together; focused and full-native gates passed locally |
-| bounded border rollback | planned extension of the proven layer rollback to the four physical `border` side owners without changing public computed-style or artifact schemas | four fixed side candidate arrays add bounded local cascade state; shorthand expansion and side-longhand precedence must remain explicit while zero-width/no-paint fallback and existing box-model/paint owners stay unchanged; no logical sides, border-image, gradients, other border styles, animation, multiple origins, or browser border parity | reuse the generic local resolver with a zero-width/no-paint side fallback, preserve shorthand expansion and independent side ownership, and test named/repeated/unlayered/inline rollback, invalid-later preservation, geometry, border commands, capture, decoded raster, point hit testing, and semantic/source order together |
+| bounded border rollback | completed extension of the proven layer rollback to the four physical `border` side owners without changing public computed-style or artifact schemas | four fixed side candidate arrays add bounded local cascade state; shorthand expansion and side-longhand precedence remain explicit while zero-width/no-paint fallback and existing box-model/paint owners stay unchanged; no logical sides, border-image, gradients, other border styles, animation, multiple origins, or browser border parity | reuse the generic local resolver with a zero-width/no-paint side fallback, preserve shorthand expansion and independent side ownership, and test named/repeated/unlayered/inline rollback, invalid-later preservation, geometry, border commands, capture, decoded raster, point hit testing, and semantic/source order together; focused and full-native gates passed locally |
 | no new dependencies | preserves build time and supply-chain surface | parser/rendering work is slower to build ourselves | keep boundaries explicit; evaluate focused libraries only per issue rules |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-149.md` is the latest completed task;
+`docs/plan/tasks/native-engine-150.md` is the latest completed task;
+`docs/plan/tasks/native-engine-149.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-148.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-146.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-145.md` is the preceding completed task;

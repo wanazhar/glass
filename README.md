@@ -405,8 +405,14 @@ hit, and semantic/source-order owners. Standalone physical `border-color` and
 physical color longhands also resolve `currentColor` from the element's local
 or inherited color; complete physical border shorthands also resolve
 `currentColor` from that same local or inherited color. Gradients, border-image,
-and browser-wide border conformance remain outside the boundary. The native
-border width surface also accepts bounded case-insensitive 15-layer/unlayered
+and browser-wide border conformance remain outside the boundary. The physical
+border-color owner also accepts case-insensitive CSS-wide `inherit`, `unset`,
+`initial`, and `revert`: explicit `inherit` copies the parent's effective
+top/right/bottom/left colors, reset forms resolve to the element's current
+color, and omission retains the existing black side fallback. A CSS-wide
+shorthand token expands to all four sides, while mixed CSS-wide/color shorthand
+forms remain unsupported. The native border width surface also accepts bounded
+case-insensitive 15-layer/unlayered
 local `border-width` and physical `border-top-width`, `border-right-width`,
 `border-bottom-width`, and `border-left-width` values with one-to-four-value
 shorthand expansion and independent per-side `revert-layer` rollback to lower

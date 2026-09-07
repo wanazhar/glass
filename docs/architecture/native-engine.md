@@ -51,6 +51,7 @@ bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-re
 bounded-cascade-layers/bounded-text-decoration-skip-spaces-revert-layer/
 bounded-text-decoration-skip-ink-revert-layer/
 bounded-text-decoration-color-revert-layer,
+bounded-text-decoration-color-current-color,
 bounded-text-decoration-line-revert-layer,
 bounded-base64-data-url/bounded-fragment-navigation-history/
 bounded-local-link-activation/bounded-fragment-target-scroll/
@@ -119,9 +120,10 @@ inherited signed
 fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
 decreasing or increasing y, bounded
-local `text-decoration-color` rollback through the 15-layer registry with a
-separate glyph/decoration paint color and the existing `Option<NativeColor>`
-fallback, bounded inherited
+local `text-decoration-color` literal/alpha values and case-insensitive
+`currentColor` resolution through the 15-layer registry with a separate
+glyph/decoration paint color and the existing `Option<NativeColor>` fallback,
+bounded inherited
 `text-decoration-line` and `text-decoration` rollback through the same
 15-layer registry with their shared three-bit line-state owner and inherited
 fallback, and bounded inherited `text-align`, `text-align-last`, and
@@ -1216,15 +1218,29 @@ Focused/full-native/library, strict Clippy, rustdoc, two-crate, package,
 formatting, static documentation, workspace all-target/all-feature, and bounded
 cleanup gates passed locally; exact evidence is recorded in the task. Remote CI
 remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-164` slice is designed and recorded
-in `docs/plan/tasks/native-engine-164.md`. It will extend the private
-deferred-color pattern to local `text-decoration-color: currentColor`, resolving
-against the element's local or inherited `color` while preserving the public
-`Option<NativeColor>`, separate glyph/decoration paint owners, and all existing
-text artifact schemas. `color: currentColor`, gradients, images, system colors,
-color spaces, percentages, animations, multiple origins, and browser-wide text
-color conformance remain outside the planned boundary; no implementation or
-completion claim is made yet.
+The completed dependency-ordered `native-engine-164` slice is recorded in
+`docs/plan/tasks/native-engine-164.md`; design is `e11821c5`, implementation is
+`cceb61bf`, the diagnostics follow-up is `005083c3`, and synchronized product
+documentation is `2960ecc5`. It extends the private deferred-color boundary to
+local `text-decoration-color: currentColor`, resolving against the element's
+local or inherited `color` while preserving the public `Option<NativeColor>`,
+separate glyph/decoration paint owners, and all existing text artifact
+schemas. Focused/full-native/library, strict Clippy, rustdoc, two-crate,
+package, formatting, static documentation, workspace all-target/all-feature,
+and bounded cleanup gates passed locally; exact evidence is recorded in the
+task. Gradients, images, system colors, color spaces, percentages, animations,
+multiple origins, `color: currentColor`, and browser-wide text-color
+conformance remain outside the completed boundary. Remote CI remains pending
+because the checkout is local-only.
+The next dependency-ordered `native-engine-165` slice is designed and recorded
+in `docs/plan/tasks/native-engine-165.md`. It will extend the private color
+owner to local `color: currentColor`, resolving the self-reference from the
+already-computed inherited color or bounded initial black fallback while
+preserving the optional public color value and all existing paint consumers.
+Gradients, images, system colors, color spaces, percentages, custom-property
+graphs, CSS-wide reset machinery beyond the existing `revert-layer`, multiple
+origins, animation, and browser-wide color conformance remain outside the
+planned boundary; no implementation or completion claim is made yet.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

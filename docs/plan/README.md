@@ -1528,13 +1528,27 @@ Focused/full-native/library, strict Clippy, rustdoc, two-crate, package,
 formatting, static documentation, workspace all-target/all-feature, and bounded
 cleanup gates passed locally; exact evidence is recorded in the task. Remote CI
 remains pending because the branch is local-only.
-The next dependency-ordered [native-engine-164](tasks/native-engine-164.md)
-slice is designed but not implemented. It will extend private decoration-color
-state to local `text-decoration-color: currentColor`, resolving from the
-element's local or inherited `color` at computed-style construction while
-preserving the public optional concrete color and separate glyph/decoration
-paint owners. Gradients, images, system colors, color spaces, percentages,
-CSS-wide reset machinery, multiple origins, animation, and browser-wide text
+The completed dependency-ordered [native-engine-164](tasks/native-engine-164.md)
+slice is implemented at `cceb61bf` from design `e11821c5`; the diagnostics
+follow-up is `005083c3` and synchronized product documentation is `2960ecc5`.
+It adds case-insensitive local `text-decoration-color: currentColor` through
+private deferred decoration state, resolving against the element's local or
+inherited `color` while preserving the public optional concrete color,
+separate glyph/decoration paint owners, and all existing text artifact
+consumers. Focused/full-native/library, strict Clippy, rustdoc, two-crate,
+package, formatting, static documentation, workspace all-target/all-feature,
+and bounded cleanup gates passed locally; exact evidence is recorded in the
+task. `color: currentColor`, gradients, images, system colors, color spaces,
+percentages, animations, multiple origins, and browser-wide text-color
+conformance remain outside the completed boundary. Remote CI remains pending
+because the branch is local-only.
+The next dependency-ordered [native-engine-165](tasks/native-engine-165.md)
+slice is designed but not implemented. It will add local `color: currentColor`
+by resolving the self-reference from the already-computed inherited color or
+bounded initial black fallback, preserving the optional public color value and
+existing background/border/text consumers. Gradients, images, system colors,
+color spaces, percentages, custom-property graphs, CSS-wide reset machinery
+beyond existing `revert-layer`, multiple origins, animation, and browser-wide
 color conformance remain outside the planned boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)

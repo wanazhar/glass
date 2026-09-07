@@ -1,7 +1,7 @@
 ---
 id: native-engine-164
 scope: glass-browser/native-engine/cascade-text-decoration-color-current-color
-status: planned
+status: complete
 depends-on: [native-engine-163]
 ---
 
@@ -125,5 +125,60 @@ The completed slice must cover:
 
 ## Implementation
 
-Pending. This docs-first contract records the exact private decoration-color
-boundary before the parser and computed-style resolver are changed.
+Implemented in `cceb61bf` from design checkpoint `e11821c5`; the diagnostics
+fixture follow-up is `005083c3` and synchronized product documentation is
+`2960ecc5`.
+
+- Added a private `CurrentColor` variant to the local decoration-color
+  declaration owner, preserving the public `Option<NativeColor>` computed
+  style and the immutable text command/display/raster schemas.
+- Accepted exact case-insensitive `text-decoration-color: currentColor`,
+  resolved it after the existing local/inherited `color` owner is selected,
+  and retained the bounded black fallback when neither color is present.
+- Preserved local-property non-inheritance, named-layer/unlayered/inline
+  precedence, specificity, source order, same-block order, valid-before-
+  invalid handling, transparent values, `revert-layer`, and omitted-color
+  fallback behavior.
+- Added an integration fixture covering local, inherited, black-fallback,
+  rollback, invalid-later, inline, transparent, omitted, opacity, geometry,
+  hit-test, semantic/source order, display-list, PNG raster, and typed
+  diagnostics. The diagnostics fixture now uses an unsupported gradient so it
+  continues to test typed rejection after `currentColor` became supported.
+
+## Evidence
+
+- `cargo fmt --all` and `git diff --check` passed.
+- Focused feature check passed:
+  `RUST_MIN_STACK=16777216 CARGO_TARGET_DIR=/tmp/glass-164-focused cargo check -q -p glass-browser --features native-engine --tests --locked`.
+- Focused decoration-color unit coverage passed 3/3 and the focused integration
+  fixture passed 1/1.
+- Full native integration passed 202/202. Feature-enabled library tests
+  passed 968, with 1 ignored.
+- Strict affected-package Clippy passed with all targets/features and
+  `-D warnings`; warning-denied feature rustdoc passed; paired locked
+  `glass-dev` check and build passed.
+- Both locked package archives were created with `--no-verify`; the packaged
+  dependency checker confirmed `glass-dev` resolves exact `glass-browser =
+  0.3.14` without a local path or feature dependency.
+- Static gates passed: version sync 0.3.14; feature parity 14 capabilities
+  across 4 targets; release docs 578 Markdown/current documents 83/previous
+  hits 57/semantic hits 668/current-claim failures 0; TUI 15 implementation
+  help keys/63 documentation markers; documentation depth 93 guides/19
+  contracts; documentation coverage 578 Markdown, 345 full-product MCP
+  tools, 100 browser-only tools, 17 examples, and 22 public modules;
+  reliability 6 scenarios/4 targets; adapters 5; Web IR 8 fixtures/8
+  scenarios/11 categories; and release-documentation unit tests 9/9.
+- Workspace all-target/all-feature testing passed. The matrix included
+  feature-enabled `glass-browser` with 969 passed and 1 ignored library test,
+  202/202 native integration tests, `glass-dev` with 365/365 tests, and all
+  auxiliary targets.
+- Before cleanup, `/tmp/glass-164-focused` contained 6,764,908,544 measured
+  bytes (9,887 files/1,204 directories), `/tmp/glass-164-package` contained
+  3,162,112 bytes (5 files/3 directories), and `/tmp/glass-164-workspace`
+  contained 4,154,884,096 bytes (5,541 files/624 directories). No cargo,
+  rustc, rustdoc, or clippy process or open handle targeted those paths.
+  Exact bounded deletion removed 10,922,954,752 measured bytes; filesystem
+  free space rose from 71,870,935,040 to 82,793,873,408 bytes. All three
+  temporary paths were verified absent afterward.
+- Remote CI, push, release, tag, registry publication, browser parity, and
+  security-boundary claims remain unmade because this checkout is local-only.

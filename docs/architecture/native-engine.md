@@ -1154,6 +1154,14 @@ resolution, and browser-wide border conformance remain outside the boundary.
 Focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, and
 static documentation gates passed locally; exact target cleanup is recorded in
 the task. Remote CI remains pending because the branch is local-only.
+The next dependency-ordered 159 slice is planned in
+`docs/plan/tasks/native-engine-159.md`. It will accept the bounded complete
+`Npx hidden color` form for the complete and physical border shorthands,
+preserve declared width/color as private component candidates, map only style
+to the existing private hidden sentinel, and keep public/artifact schemas
+unchanged. Arbitrary omitted defaults, CSS-wide resets, logical sides, table
+conflict resolution, and browser-wide border conformance remain outside the
+planned boundary.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

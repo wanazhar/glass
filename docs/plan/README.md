@@ -1469,6 +1469,14 @@ formatting, and static documentation gates passed locally; exact target cleanup
 is recorded in the task. Remote CI remains pending because the branch is
 local-only.
 
+The next dependency-ordered [native-engine-159](tasks/native-engine-159.md)
+slice is planned. It will accept the bounded complete `Npx hidden color` form
+for the complete and physical border shorthands, preserve declared width/color
+as private component candidates, map only style to the existing private
+hidden sentinel, and keep public/artifact schemas unchanged. Arbitrary
+omitted defaults, CSS-wide resets, logical sides, table conflict resolution,
+and browser-wide border conformance remain outside the planned boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

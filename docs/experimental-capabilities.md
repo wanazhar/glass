@@ -249,7 +249,11 @@ inherited fixed-cell `text-decoration:none|underline|overline|line-through`
 paint including distinct shorthand combinations, bounded local
 `text-decoration-color` using the existing fixed palette and alpha grammar
 plus case-insensitive `currentColor` resolved from the element's local or
-inherited `color`, with separate glyph and line paint, bounded
+inherited `color`, with separate glyph and line paint, plus case-insensitive
+CSS-wide `inherit`, `unset`, `initial`, and `revert`: explicit `inherit` copies
+the parent's effective decoration color, the reset forms resolve to the
+element's current glyph color, and omission keeps the existing local fallback.
+Bounded
 `text-decoration-line` longhand
 combinations sharing the same line-state owner, bounded inherited
 `text-decoration-style:solid|dashed|dotted|double|wavy` presentation, where

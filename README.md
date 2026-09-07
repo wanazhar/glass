@@ -447,7 +447,11 @@ inherited fixed-cell
 distinct shorthand combinations, bounded local `text-decoration-color` using
 the existing fixed palette and alpha grammar plus case-insensitive `currentColor`
 resolved from the element's local or inherited `color`, with separate glyph and
-line paint, including bounded 15-layer/unlayered `revert-layer` rollback with
+line paint, plus case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
+`revert`: explicit `inherit` copies the parent's effective decoration color,
+the reset forms resolve to the element's current glyph color, and omission
+keeps the existing local fallback. This includes bounded 15-layer/unlayered
+`revert-layer` rollback with
 the existing local fallback, bounded `text-decoration-line` longhand combinations
 sharing the same line-state owner, including case-insensitive 15-layer/unlayered
 `revert-layer` rollback with inherited/root fallback, bounded inherited
@@ -877,9 +881,13 @@ case-insensitive `text-decoration-color:currentColor` and
 `text-decoration-color:revert-layer` through the existing 15-layer registry and
 unlayered/inline bucket. `currentColor` resolves from the element's local or
 inherited `color`; no-candidate resolution remains the local omitted-color
-fallback, and glyph/decoration paint colors remain separate. Gradients, image
-functions, system colors, color spaces, percentages, and browser-wide text-color
-conformance remain outside the boundary.
+fallback, and glyph/decoration paint colors remain separate. It also accepts
+case-insensitive CSS-wide `inherit`, `unset`, `initial`, and `revert`: explicit
+`inherit` copies the parent's effective decoration color, while the reset
+forms resolve to the element's current glyph color and omission remains the
+local fallback. Gradients, image functions, system colors, color spaces,
+percentages, and browser-wide text-color conformance remain outside the
+boundary.
 The native engine also supports bounded inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; the offset moves only the underline toward
 decreasing or increasing y while overline and line-through origins remain

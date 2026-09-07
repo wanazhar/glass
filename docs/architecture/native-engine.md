@@ -35,6 +35,7 @@ bounded-local-box-model-revert-layer,
 bounded-paint-color-revert-layer,
 bounded-paint-color-important/bounded-physical-border-color-important,
 bounded-logical-border-color-important,
+bounded-text-presentation-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
 bounded-inherited-color-current-color,
@@ -157,7 +158,13 @@ fixed-cell characters in each emitted fragment, bounded inherited
 inherited `font-style:normal|italic` fixed-cell raster presentation, and
 bounded inherited `word-break:normal|break-all` fixed-cell wrapping, and
 bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
-fixed-cell inline and inline-block line items, and
+fixed-cell inline and inline-block line items. These supported
+text-presentation declarations also accept a terminal case-insensitive
+`!important` marker through a private doubled author-origin partition with
+reversed named-layer order, inline important precedence, invalid-later
+preservation, and `revert-layer` rollback; remaining properties retain their
+existing bounded priority behavior. The inherited/local value owners and
+artifact consumers remain unchanged, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
@@ -1536,6 +1543,22 @@ conformance remain outside this slice. Focused, full-native, feature-library,
 strict Clippy, warning-denied rustdoc, current documentation audits, and
 task-specific cleanup pass locally; issue-level final gates and remote CI
 remain pending until issue #40 reaches its final validation boundary.
+
+The completed dependency-ordered `native-engine-187` slice is recorded in
+`docs/plan/tasks/native-engine-187.md` and implemented at `65883117`. It
+extends the bounded author-origin `!important` partition to the supported
+text-flow and text-decoration declarations through a private doubled text
+partition, preserving important-over-normal ordering, reversed named-layer
+priority, inline important precedence, invalid-later preservation,
+inherited/local fallbacks, and `revert-layer` rollback. Existing layout,
+decoration, raster, capture, hit, diagnostics, schema, dependency, default,
+and two-crate owners remain unchanged. Display/visibility/opacity, flex/gap,
+dimensions/box model, overflow, multiple origins, transitions, animations,
+vertical writing modes, and browser-wide CSS conformance remain outside this
+bounded slice. Focused, full-native, feature-library, strict Clippy,
+warning-denied rustdoc, current documentation audits, and task-specific
+cleanup pass locally; issue-level final gates and remote CI remain pending
+until issue #40 reaches its final validation boundary.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

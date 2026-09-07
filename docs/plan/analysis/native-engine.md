@@ -1556,17 +1556,19 @@ Clippy, warning-denied rustdoc, paired-crate, packaging, static documentation,
 workspace all-target/all-feature, security/fuzz, and formatting gates pass
 locally; exact evidence and bounded cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
-The dependency-ordered `native-engine-177` slice is in progress under
-`docs/plan/tasks/native-engine-177.md`. It extends the complete physical and
-horizontal-tb logical radius family with bounded author-origin `!important`
-priority using a private doubled layer partition: important candidates outrank
-normal candidates, named-layer priority reverses within the important
-partition, and inline important values use the unlayered important bucket.
-The existing radius grammar and rounded consumers remain unchanged; generic
-importance for other properties, multiple origins, transitions, animations,
-vertical writing modes, elliptical/percentage geometry, and browser parity
-remain outside the slice. Certification is pending and the checkout remains
-local-only.
+The completed dependency-ordered `native-engine-177` through
+`native-engine-187` slices are recorded in their task files. This run's latest
+slice, `native-engine-187`, extends the bounded author-origin `!important`
+partition from the radius, paint-color, and border families to the supported
+text-flow and text-decoration declarations through one private doubled text
+partition. Important-over-normal ordering, reversed named-layer priority,
+inline important precedence, invalid-later preservation, inherited/local
+fallbacks, and `revert-layer` rollback are covered without changing public
+schemas, artifact owners, dependencies, defaults, or the two-crate boundary.
+Display/visibility/opacity, flex/gap, dimensions/box model, overflow, multiple
+origins, transitions, animations, vertical writing modes, and browser-wide CSS
+conformance remain outside the bounded contract. Local certification for the
+latest slice is recorded below; the checkout remains local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -1641,7 +1643,7 @@ real edit touching the native module, and target-directory growth separately.
 | `native_engine::history` | current local history and per-entry root scroll state | committed URL/revision/scroll offset | bounded entries/current index | native limits + layout point |
 | `native_engine::origin` | Phase 1 origin placeholder | loaded URL | opaque origin | none |
 | `native_engine::resource_loader` | fixture/data/about resource boundary | validated URL | bounded local HTML resource | `url`, config fixtures |
-| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, and bounded non-inherited flex-row `justify-content:normal|flex-start|center|flex-end|space-between|space-around|space-evenly|stretch`, flex-item `order`, flex cross-axis `align-items`, `align-self:auto|flex-start|center|flex-end`, `flex-direction`, `flex-wrap`, `flex-flow`, `align-content:flex-start|center|flex-end|space-between|space-around|space-evenly|stretch|normal`, integer `flex-grow`, integer `flex-shrink`, `flex-basis:auto|Npx`, and `flex` shorthand | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
+| `native_engine::css` | bounded selector/rule parsing, display/visibility presentation, inherited color, positive-pixel line-height, pixel dimensions, physical solid/dashed/dotted borders, circular border radii, physical padding/margin edges, local opacity alpha, inherited `font-weight:normal|bold|400|700`, inherited `font-style:normal|italic`, inherited `word-break:normal|break-all`, inherited `vertical-align:baseline|top|middle|bottom`, bounded author-origin `!important` priority for the supported text-flow and text-decoration declarations, and bounded non-inherited flex-row `justify-content:normal|flex-start|center|flex-end|space-between|space-around|space-evenly|stretch`, flex-item `order`, flex cross-axis `align-items`, `align-self:auto|flex-start|center|flex-end`, `flex-direction`, `flex-wrap`, `flex-flow`, `align-content:flex-start|center|flex-end|space-between|space-around|space-evenly|stretch|normal`, integer `flex-grow`, integer `flex-shrink`, `flex-basis:auto|Npx`, and `flex` shorthand | style text, inline style, native element attributes, ancestor styles | deterministic computed presentation values | native DOM element surface |
 | `native_engine::layout` | viewport-bounded block/inline normal-flow geometry, bounded outer/content box model, side-specific border insets, rounded-box metadata, preflight inline line placement, inherited fixed line-height floors, direct-text fragments, whitespace-boundary flow, source-order paint entries, aligned line-item ranges with bounded vertical offsets, opacity group boundaries, root scroll projection, rounded point hit testing, bounded inherited word-break wrapping, bounded fixed-width flex-row free-space placement, stable visual flex-item order sorting, complete flex cross-axis alignment with explicit/auto line sizing and per-item `align-self` overrides, bounded physical flex wrapping and wrap-reverse line stacking, bounded cross-line alignment, `justify-content:normal|stretch|space-around|space-evenly` through the flex-start placement owner, explicit `align-content:normal` line distribution, bounded positive flex-grow allocation with max-width freeze/redistribution, base-width-weighted flex-shrink allocation with min-width freezing, explicit flex-basis base sizing, and flex shorthand/flow component reuse | DOM, computed presentation, viewport, scroll offset | document-space layout boxes/text fragments, paint order, scroll metadata, and deterministic hit target | native DOM + CSS presentation |
 | `native_engine::paint` | revisioned clear/fill/text-fragment/physical-border display-list derivation, bounded rounded paint masks, source-order entries, opacity group markers, ancestor clips, and scroll metadata | current layout, bounded computed colors/text/borders/radii/opacity/font presentation, and overflow presentation | immutable document-space display-list commands | native DOM + layout |
 | `native_engine::raster` | bounded logical RGBA surface replay for fills, text, rounded solid/dashed/dotted borders, nested opacity layers, PNG encoding, and viewport translation | immutable display-list commands and scroll offset | immutable software surface or bounded PNG bytes | native display list + existing `png` dependency |
@@ -2348,11 +2350,13 @@ visual stacking.
 | `native-engine-185` | completed bounded author-origin `!important` priority for complete physical `border` and four physical side-border shorthands by carrying one private importance bit per side into the existing doubled width/style/color component streams; preserved independent component composition, CSS-wide/omitted `none`/`hidden`/`revert-layer` behavior, public schemas, and the two-crate boundary; implementation `bfcb6dc9`; focused/full-native/library, strict Clippy, warning-denied rustdoc, current documentation, and cleanup evidence recorded locally | `native-engine-184` | logical complete shorthands, vertical writing modes, table conflict resolution, border-image, gradients, multiple origins, transitions, animations, percentages, elliptical radii, arbitrary CSS border values, and browser-wide conformance |
 
 | `native-engine-186` | completed bounded author-origin `!important` priority for the six supported horizontal-tb logical complete/side border shorthands by carrying one private importance bit per logical side into the existing doubled width/style/color component streams before resolved `ltr`/`rtl` projection; preserved independent component composition, CSS-wide/omitted `none`/`hidden`/`revert-layer` behavior, public schemas, and the two-crate boundary; implementation `274441e1`, strict-lint helper correction `758b891a`; focused/full-native/library, strict Clippy, warning-denied rustdoc, current documentation, and cleanup evidence recorded locally | `native-engine-185` | vertical writing modes, logical radius, table conflict resolution, border-image, gradients, multiple origins, transitions, animations, percentages, elliptical radii, arbitrary logical-border values, and browser-wide conformance |
+| `native-engine-187` | completed bounded author-origin `!important` priority for the supported text-flow and text-decoration declarations through one private doubled text cascade partition, preserving important-over-normal ordering, reversed named-layer priority, inline important precedence, invalid-later preservation, inherited/local fallbacks, and `revert-layer` rollback with existing layout, decoration, raster, capture, hit, diagnostics, schemas, and two-crate boundaries unchanged; implementation `65883117`; focused/full-native/library, strict Clippy, warning-denied rustdoc, current documentation, and cleanup evidence recorded locally | `native-engine-186` | display/visibility/opacity, flex/gap, dimensions/box model, overflow, dependencies, multiple origins, transitions, animations, vertical writing modes, and browser-wide CSS conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-186.md` is the latest completed task;
+`docs/plan/tasks/native-engine-187.md` is the latest completed task;
+`docs/plan/tasks/native-engine-186.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-185.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-183.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-180.md` is the preceding completed task;
@@ -2474,7 +2478,28 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-032.md` is an earlier completed checkpoint,
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
-The completed current checkpoint is recorded for
+The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-187.md`: implementation is `65883117`. It
+extends bounded author-origin `!important` priority to the supported text-flow
+and text-decoration declarations through a private doubled text partition,
+preserving important-over-normal ordering, reversed named-layer priority,
+inline important precedence, invalid-later preservation, inherited/local
+fallbacks, `revert-layer` rollback, and the existing layout, decoration,
+raster, capture, hit, diagnostics, schema, and two-crate owners. The focused
+native check, 2 parser/cascade unit tests, 1 integration regression, full
+native integration (225/225), feature-enabled library (1,004 passed, 1
+ignored), strict Clippy, warning-denied rustdoc, and formatting gates passed.
+Static release truth passed over 601 Markdown documents with 83 current
+documents, 57 previous-version hits, 697 semantic-audit hits, and 0 current-
+claim failures; documentation coverage passed with 601 Markdown files, 345
+full-product MCP tools (100 browser-only), 17 examples, and 22 public modules;
+documentation depth passed with 93 guides and 19 substantive contracts;
+feature parity, TUI shortcut, and version-sync gates passed. Task-specific
+cleanup and issue-level workspace, release, security/fuzz, paired-crate,
+package, and remote-CI gates remain deferred to the final issue #40
+certification boundary. No remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, or promotion claim is made.
+The historical checkpoint remains recorded for
 `docs/plan/tasks/native-engine-173.md`: the implementation is `f5f53cec`. It
 adds the bounded complete physical `border` and four side-border shorthand
 CSS-wide keyword family, projecting explicit `inherit` and reset values into

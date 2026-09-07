@@ -1796,6 +1796,151 @@ fn native_border_hidden_shorthand_blocks_or_reveals_components_and_artifacts() {
 }
 
 #[test]
+fn native_complete_border_hidden_preserves_components_and_suppresses_paint() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #shorthand { display:block;width:8px;height:6px;border:2px solid red; } #physical { display:block;width:8px;height:6px;border:2px solid red; } #components { display:block;width:8px;height:6px;border:2px solid red; } #exposed { display:block;width:8px;height:6px;border:2px solid red; } #repeated { display:block;width:8px;height:6px;border:2px solid red; } #invalid { display:block;width:8px;height:6px;border:2px solid red; } #order-a { display:block;width:8px;height:6px;border:2px solid red; } #order-b { display:block;width:8px;height:6px;border:2px solid red; } #inline { display:block;width:8px;height:6px;border:2px solid red; } } @layer theme { #shorthand { border: 4px HiDdEn blue; } #physical { border-top: 3px hidden green; border-right: 4px HIDDEN blue; } #components { border: 4px hidden blue; border-width: 5px; border-color: green; } #exposed { border: 4px hidden blue; border-style: revert-layer; } #repeated { border: 4px hidden blue; } #repeated { border-style: revert-layer; } #repeated { border-style: revert-layer; } #invalid { border: 4px hidden blue; } #invalid { border: unsupported; } #order-a { border: 4px hidden blue; border-style: solid; } #order-b { border-style: solid; border: 4px hidden blue; } } @layer top { #repeated { border-style: revert-layer; } } #inline { border: 4px hidden blue; }</style><button id='shorthand'>Shorthand</button><button id='physical'></button><button id='components'>Components</button><button id='exposed'>Exposed</button><button id='repeated'>Repeated</button><button id='invalid'>Invalid</button><button id='order-a'>Order A</button><button id='order-b'>Order B</button><button id='inline'>Inline</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let ids = [
+        "shorthand",
+        "physical",
+        "components",
+        "exposed",
+        "repeated",
+        "invalid",
+        "order-a",
+        "order-b",
+        "inline",
+    ];
+    let nodes = ids.map(|id| document.resolve_target(&format!("id={id}")).unwrap());
+    let layout = document.layout(viewport).unwrap();
+    let expected_sizes = [
+        (8, 6),
+        (10, 8),
+        (8, 6),
+        (16, 14),
+        (16, 14),
+        (8, 6),
+        (16, 14),
+        (8, 6),
+        (8, 6),
+    ];
+    for (node_id, (width, height)) in nodes.iter().zip(expected_sizes) {
+        let rectangle = layout
+            .box_for(*node_id)
+            .expect("complete hidden layout box");
+        assert_eq!((rectangle.width, rectangle.height), (width, height));
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(*node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    let positions: Vec<_> = nodes
+        .iter()
+        .map(|node_id| {
+            semantic_nodes
+                .iter()
+                .position(|node| node.node_id == *node_id && !node.hidden)
+                .expect("visible complete hidden semantic node")
+        })
+        .collect();
+    assert!(positions.windows(2).all(|window| window[0] < window[1]));
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    for index in [0, 2, 5, 7, 8] {
+        assert!(
+            border_for(nodes[index]).is_none(),
+            "unexpected border command {index}"
+        );
+    }
+    for index in [1, 3, 4, 6] {
+        assert!(
+            border_for(nodes[index]).is_some(),
+            "missing border command {index}"
+        );
+    }
+    let physical = border_for(nodes[1]).expect("physical border command");
+    assert_eq!(physical.top.width, 0);
+    assert_eq!(physical.right.width, 0);
+    assert_eq!(physical.bottom.width, 2);
+    assert_eq!(physical.left.width, 2);
+    let exposed = border_for(nodes[3]).expect("reopened complete hidden border");
+    assert_eq!(exposed.top.width, 4);
+    assert_eq!(exposed.top.style, NativeBorderStyle::Solid);
+    assert_eq!(
+        exposed.top.color,
+        NativeColor {
+            red: 0,
+            green: 0,
+            blue: 255,
+            alpha: 255,
+        }
+    );
+    let repeated = border_for(nodes[4]).expect("repeated rollback border");
+    assert_eq!(repeated.top.width, 4);
+    assert_eq!(repeated.top.style, NativeBorderStyle::Solid);
+    assert_eq!(repeated.top.color, exposed.top.color);
+    let order_a = border_for(nodes[6]).expect("same-block style override border");
+    assert_eq!(order_a.top.width, 4);
+    assert_eq!(order_a.top.style, NativeBorderStyle::Solid);
+    assert_eq!(order_a.top.color, exposed.top.color);
+
+    let border_diagnostics = document
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "border"
+        })
+        .count();
+    assert_eq!(border_diagnostics, 1);
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail.contains("hidden")
+    }));
+
+    let surface = list.rasterize().unwrap();
+    let physical_rect = layout.box_for(nodes[1]).unwrap();
+    assert_eq!(
+        surface.pixel(physical_rect.x + physical_rect.width / 2, physical_rect.y),
+        Some([255, 255, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(
+            physical_rect.x + physical_rect.width / 2,
+            physical_rect.y + physical_rect.height - 1,
+        ),
+        Some([255, 0, 0, 255])
+    );
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (48, 180));
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

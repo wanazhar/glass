@@ -1,7 +1,7 @@
 ---
 id: native-engine-185
 scope: glass-browser/native-engine/cascade-physical-border-shorthand-important-priority
-status: in-progress
+status: complete
 depends-on: [native-engine-184]
 ---
 
@@ -163,5 +163,35 @@ checks, post-delete absence, and filesystem free-space delta.
 
 ## Evidence
 
-Implementation, certification, documentation synchronization, and cleanup
-evidence will be recorded here when the slice is complete.
+Implementation and slice-local certification are complete at `bfcb6dc9`.
+
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- The locked native-feature check passed with
+  `CARGO_TARGET_DIR=/tmp/glass-185-focused cargo check -q -p glass-browser --features native-engine --tests --locked`.
+- Focused `physical_border_shorthand_important` coverage passed: 2 library
+  unit tests and 1 integration test.
+- The full `native_engine` integration target passed 223/223 tests.
+- The feature-enabled `glass-browser` library target passed 1,000 tests with 1
+  intentionally ignored.
+- Strict all-target Clippy with `-D warnings` passed for `glass-browser` with
+  `native-engine`.
+- Warning-denied rustdoc passed for `glass-browser` with `native-engine`.
+- The release documentation truth audit passed over 599 Markdown documents
+  with 83 current documents, 57 previous-version hits, 693 semantic-audit
+  hits, and 0 current-claim failures.
+- Documentation depth passed with 93 current guides and 19 substantive
+  contracts; the TUI shortcut inventory passed with 15 implementation help
+  keys and 63 documentation markers.
+- Issue-level workspace, release, security/fuzz, paired-crate, static
+  documentation, and remote-CI gates remain deferred to the final issue #40
+  certification boundary.
+
+Task-specific cleanup completed after all Cargo/Rust processes and open handles
+exited: `/tmp/glass-185-focused` measured 4,735,324,160 bytes across 9,117
+files and 894 directories, and `/tmp/glass-release-documentation-185.json`
+measured 192,512 bytes. The process and open-handle checks were empty.
+Bounded exact-path deletion removed only those regenerable paths;
+post-delete absence checks passed. Available filesystem bytes moved from
+77,705,113,600 to 82,440,450,048, an observed increase of 4,735,336,448
+bytes. Source, repository targets, durable data, unrelated workloads, and
+issue snapshots were preserved.

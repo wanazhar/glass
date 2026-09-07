@@ -146,8 +146,9 @@ physical-side projection. The supported text-presentation set (`white-space`,
 line/style/skip-ink/skip-spaces/thickness/underline-offset, `text-transform`,
 `font-weight`, `font-style`, `word-break`, `text-overflow`, `vertical-align`,
 `text-indent`, `word-spacing`, `letter-spacing`, and `line-height`) also honors
-the same terminal priority; remaining properties retain their existing bounded
-behavior.
+the same terminal priority; local `display`, `visibility`, and `opacity`
+declarations honor the same terminal priority; remaining properties retain
+their existing bounded behavior.
 owner also accepts exact case-insensitive CSS-wide `inherit`, `unset`,
 `initial`, and one-author-origin `revert`: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width

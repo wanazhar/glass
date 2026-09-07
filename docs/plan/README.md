@@ -1842,6 +1842,20 @@ documentation audits, and task-specific cleanup pass locally; issue-level
 final gates and remote CI remain pending until issue #40 reaches its final
 validation boundary.
 
+The completed dependency-ordered [native-engine-188](tasks/native-engine-188.md)
+slice is implemented at `ca0b47bd`. It extends bounded author-origin
+`!important` priority to local `display`, `visibility`, and `opacity` through a
+private doubled local cascade partition, preserving important-over-normal
+ordering, reversed named-layer priority, inline important precedence,
+invalid-later preservation, and `revert-layer` rollback through the existing
+hidden-subtree, semantic, layout, display-list, raster, capture, and point-hit
+owners. Flex/gap, dimensions/box model, overflow, other properties,
+dependencies, multiple origins, transitions, animations, vertical writing
+modes, and browser-wide CSS conformance remain outside this slice. Scoped
+check, focused/full-native integration, strict Clippy, warning-denied rustdoc,
+and formatting pass locally; issue-level final gates and remote CI remain
+pending until issue #40 reaches its final validation boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

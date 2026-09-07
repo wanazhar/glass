@@ -132,7 +132,8 @@ The completed slice must cover:
 
 Not implemented. This task is the docs-first design and acceptance contract;
 implementation must remain a separate coherent batch after this record is
-committed and issue #40 is updated with the design checkpoint.
+committed as design checkpoint `bf1a7236` and issue #40 is updated with that
+checkpoint.
 
 ## Evidence
 

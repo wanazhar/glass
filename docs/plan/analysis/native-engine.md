@@ -1347,8 +1347,8 @@ complete and physical border shorthands, carrying declared width/color through
 private component candidates while projecting only the existing private
 `NativeBorderStyleValue::None` sentinel. Current non-table composition will
 remain no-paint/no-side and public/artifact schemas will remain unchanged.
-Implementation and certification are not yet claimed; the design checkpoint
-will be pinned after this docs-first record is committed.
+The docs-first design checkpoint is `bf1a7236`; implementation and
+certification are not yet claimed.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded

@@ -5530,8 +5530,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     &mut declarations.logical_border.border,
                     &mut declarations.logical_border.border_order,
                     &mut declarations.logical_border.border_important,
-                    LOGICAL_BORDER_BLOCK_START,
-                    LOGICAL_BORDER_BLOCK_END,
+                    [LOGICAL_BORDER_BLOCK_START, LOGICAL_BORDER_BLOCK_END],
                     parse_border_declaration(value).map(|parsed| [parsed; 2]),
                     declaration_order,
                     important,
@@ -5564,8 +5563,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     &mut declarations.logical_border.border,
                     &mut declarations.logical_border.border_order,
                     &mut declarations.logical_border.border_important,
-                    LOGICAL_BORDER_INLINE_START,
-                    LOGICAL_BORDER_INLINE_END,
+                    [LOGICAL_BORDER_INLINE_START, LOGICAL_BORDER_INLINE_END],
                     parse_border_declaration(value).map(|parsed| [parsed; 2]),
                     declaration_order,
                     important,
@@ -6788,8 +6786,7 @@ fn set_logical_border_pair<T: Copy>(
     sides: &mut [Option<LocalCascadeDeclaration<T>>; LOGICAL_BORDER_SIDES],
     orders: &mut [usize; LOGICAL_BORDER_SIDES],
     important_flags: &mut [bool; LOGICAL_BORDER_SIDES],
-    start: usize,
-    end: usize,
+    indices: [usize; 2],
     values: Option<[LocalCascadeDeclaration<T>; 2]>,
     declaration_order: usize,
     important: bool,
@@ -6797,6 +6794,7 @@ fn set_logical_border_pair<T: Copy>(
     let Some([start_value, end_value]) = values else {
         return;
     };
+    let [start, end] = indices;
     sides[start] = Some(start_value);
     sides[end] = Some(end_value);
     orders[start] = declaration_order;

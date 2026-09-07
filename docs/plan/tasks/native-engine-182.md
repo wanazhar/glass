@@ -1,7 +1,7 @@
 ---
 id: native-engine-182
 scope: glass-browser/native-engine/cascade-physical-border-style-important-priority
-status: in-progress
+status: complete
 depends-on: [native-engine-181]
 ---
 
@@ -140,4 +140,30 @@ checks, post-delete absence, and filesystem free-space delta.
 
 ## Evidence
 
-Pending implementation and local certification.
+Implementation and slice-local certification are complete at `008a5766`.
+
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- The locked native-feature check passed with
+  `CARGO_TARGET_DIR=/tmp/glass-182-focused cargo check -q -p glass-browser --features native-engine --tests --locked`.
+- Focused `physical_border_style_important` coverage passed: 2 library unit
+  tests and 1 integration test.
+- The full `native_engine` integration target passed 220/220 tests.
+- The feature-enabled `glass-browser` library target passed 994 tests with 1
+  intentionally ignored.
+- Strict all-target Clippy with `-D warnings` passed for `glass-browser` with
+  `native-engine`.
+- Warning-denied rustdoc passed for `glass-browser` with `native-engine`.
+- The release documentation truth audit passed over 596 Markdown documents
+  with 83 current documents, 57 previous-version hits, 689 semantic-audit
+  hits, and 0 current-claim failures.
+- Documentation depth passed with 93 current guides and 19 substantive
+  contracts; the TUI shortcut inventory passed with 15 implementation help
+  keys and 63 documentation markers.
+- Issue-level workspace, release, security/fuzz, paired-crate, static
+  documentation, cleanup, and remote-CI gates remain deferred to the final
+  issue #40 certification boundary.
+
+Task-specific cleanup remains pending until all task reports are complete. It
+must remove only the exact isolated target and reports created for this task
+after Cargo/Rust processes and open handles have exited, then record measured
+bytes/files, post-delete absence, and filesystem free-space delta.

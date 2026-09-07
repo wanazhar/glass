@@ -187,7 +187,12 @@ source-behavior reference.
   unpainted or zero-width parents; reset forms resolve to the private `none`
   style, ordinary omission retains the no-style fallback, a single CSS-wide
   shorthand token expands to all four sides, and mixed CSS-wide/style shorthand
-  forms remain unsupported;
+  forms remain unsupported. Standalone physical border-style declarations also
+  accept a terminal case-insensitive `!important` marker: important styles
+  outrank normal styles, use earliest-named-layer priority inside the bounded
+  author-important partition, preserve per-side `revert-layer`, and retain
+  private `none`/`hidden` no-paint behavior; complete and side-border
+  shorthands remain normal-only in this slice,
   a winning `none` or `hidden` blocks lower styles and resolves to no side/zero
   width before layout and paint; `hidden` remains a private distinction for
   future table conflict resolution; width, style, and color components compose

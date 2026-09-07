@@ -160,9 +160,10 @@ source-behavior reference.
   inherited `color`, preserving the existing `None`/parent-root fallbacks and
   fill/text display-list, clipping, opacity, capture, and raster owners;
   `background-color` also resolves case-insensitive `currentColor` from the
-  element's local or inherited `color`; `color: currentColor`, gradients, system
-  colors, percentages, color spaces, and multiple origins remain outside the
-  boundary, bounded inherited
+  element's local or inherited `color`, and local `color: currentColor` resolves
+  from inherited color with a bounded black initial fallback without
+  self-recursion. Gradients, system colors, percentages, color spaces, and
+  multiple origins remain outside the boundary, bounded inherited
   fixed-cell
   `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using

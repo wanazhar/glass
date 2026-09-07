@@ -330,9 +330,10 @@ The local paint-color surface also accepts bounded case-insensitive
 resolving through the existing `None`/parent-root fallbacks without changing
 fill/text display-list, clipping, opacity, capture, or raster owners.
 `background-color` also resolves case-insensitive `currentColor` from the
-element's local or inherited `color`; `color: currentColor`, gradients, system
-colors, percentages, color spaces, and multiple origins remain outside the
-boundary.
+element's local or inherited `color`, and local `color: currentColor` resolves
+from inherited color with a bounded black initial fallback without
+self-recursion. Gradients, system colors, percentages, color spaces, and
+multiple origins remain outside the boundary.
 The local overflow surface also accepts bounded case-insensitive
 15-layer/unlayered `revert-layer` for `overflow`, `overflow-x`, and `overflow-y`,
 resolving through independent visible/no-clip fallbacks while preserving the

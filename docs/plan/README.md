@@ -1637,11 +1637,19 @@ strict, package, static, workspace, and cleanup gates passed locally; exact
 evidence is recorded in the task. Remote CI remains pending because the
 checkout is local-only.
 
-The next dependency-ordered [native-engine-172](tasks/native-engine-172.md)
-slice is designed but not implemented. It will add the same bounded
-case-insensitive CSS-wide family to the physical `border-radius` shorthand,
-copying only explicit effective parent radii and retaining the default
-zero-corner fallback; no implementation or completion claim is made yet.
+The completed dependency-ordered [native-engine-172](tasks/native-engine-172.md)
+slice is implemented at `b0bbe45a`. It adds the same bounded case-insensitive
+CSS-wide family to the physical `border-radius` shorthand, copying only
+explicit effective parent radii while reset and ordinary omission retain the
+default zero-corner fallback. Existing bounded one-to-four-value expansion,
+`revert-layer`, rounded geometry, display replay, raster, point-hit, capture,
+and semantic/source-order owners remain unchanged. Focused/full-native/library
+tests pass locally; remaining certification evidence is recorded in the task.
+Mixed CSS-wide/concrete or slash-separated radii, corner longhands, elliptical
+and percentage radii, multiple origins, and browser-wide border conformance
+remain outside the completed boundary. Remote CI remains pending because the
+checkout is local-only.
+No subsequent native-engine task is selected in this checkout yet.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

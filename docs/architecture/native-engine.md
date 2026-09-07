@@ -1154,14 +1154,20 @@ resolution, and browser-wide border conformance remain outside the boundary.
 Focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, and
 static documentation gates passed locally; exact target cleanup is recorded in
 the task. Remote CI remains pending because the branch is local-only.
-The next dependency-ordered 159 slice is planned in
-`docs/plan/tasks/native-engine-159.md`. It will accept the bounded complete
-`Npx hidden color` form for the complete and physical border shorthands,
-preserve declared width/color as private component candidates, map only style
-to the existing private hidden sentinel, and keep public/artifact schemas
-unchanged. Arbitrary omitted defaults, CSS-wide resets, logical sides, table
-conflict resolution, and browser-wide border conformance remain outside the
-planned boundary.
+The completed dependency-ordered 159 slice is recorded in
+`docs/plan/tasks/native-engine-159.md`; design is `bdbdb208` and implementation
+is `f04623fc`. It accepts bounded complete `Npx hidden color` values for the
+complete and physical border shorthands, carries declared width/color through
+private component candidates, maps only style to the existing private hidden
+sentinel, and keeps public/artifact schemas unchanged. Width and color cannot
+resurrect a hidden side in current non-table composition, while a later
+bounded `revert-layer` can expose a lower painted style with the retained
+complete components. Arbitrary omitted defaults, CSS-wide resets, logical
+sides, table conflict resolution, and browser-wide border conformance remain
+outside the boundary. Focused/full-native/library, strict Clippy, rustdoc,
+two-crate, formatting, and static documentation gates passed locally; exact
+target cleanup is recorded in the task. Remote CI remains pending because the
+branch is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

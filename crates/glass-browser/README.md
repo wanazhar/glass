@@ -290,6 +290,10 @@ no-paint style sentinels. A winning `border:none`/`border:hidden`,
 without adding public `None`/`Hidden` styles or inventing shorthand defaults;
 `hidden` remains private for future table conflict resolution and arbitrary
 omitted-component forms remain outside this bounded surface.
+The complete and physical border shorthands also accept bounded complete
+`Npx hidden color` values; declared width and color remain private for future
+table conflict resolution, while current non-table composition suppresses
+hidden paint.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and

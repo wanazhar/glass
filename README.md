@@ -419,6 +419,10 @@ no-paint style sentinels, so a winning `border:none`/`border:hidden` or physical
 without adding public `None`/`Hidden` styles or inventing shorthand defaults;
 `hidden` remains private for future table conflict resolution and arbitrary
 omitted-component forms remain outside this bounded surface.
+The complete and physical border shorthands also accept bounded complete
+`Npx hidden color` values; declared width and color remain private for future
+table conflict resolution, while current non-table composition suppresses
+hidden paint.
 Bounded
 inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including

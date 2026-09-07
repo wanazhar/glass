@@ -1,7 +1,7 @@
 ---
 id: native-engine-159
 scope: glass-browser/native-engine/cascade-border-hidden-complete
-status: planned
+status: complete
 depends-on: [native-engine-158]
 ---
 
@@ -130,8 +130,60 @@ The completed slice must cover:
 
 ## Implementation
 
-To be filled after the implementation checkpoint.
+Implemented in `f04623fc` (`feat(native-engine): support border hidden shorthand`),
+with the design contract and synchronized pre-implementation records in
+`bdbdb208`. The private `NativeBorderDeclaration` wrapper now carries a
+complete hidden value with its declared width and color. Complete hidden
+projects width and color into their independent private candidates while
+projecting hidden style to `NativeBorderStyleValue::Hidden`; current non-table
+composition suppresses paint without changing public computed or artifact
+schemas. Exact omitted-component `none`/`hidden` and complete painted values
+remain unchanged.
 
 ## Evidence
 
-To be filled after local certification and bounded target cleanup.
+Local certification passed on 2026-09-07 UTC:
+
+- `cargo fmt --all` and `git diff --check` passed.
+- Feature-enabled `cargo check -p glass-browser --features native-engine --tests
+  --locked` passed with `CARGO_TARGET_DIR=/tmp/glass-159-focused` and
+  `RUST_MIN_STACK=16777216`.
+- Focused border library selection passed: 17 passed, 951 filtered.
+- Focused complete-hidden artifact integration test passed: 1 passed, 196
+  filtered.
+- Full `native_engine` integration suite passed: 197 passed, 0 failed.
+- Feature-enabled library suite passed: 967 passed, 1 ignored.
+- Strict affected-package Clippy (`--all-targets --all-features -- -D warnings`)
+  passed.
+- Feature rustdoc with `RUSTDOCFLAGS=-Dwarnings` passed.
+- Paired `glass-dev` check/build passed, and both debug binaries were present:
+  `glass` and `glass-browser`.
+- Static release documentation passed: 573 Markdown documents, 83 current
+  documents, 57 previous-version hits, 662 semantic audit hits, and 0 current-
+  claim failures. Version sync remained at 0.3.14.
+- Static feature parity passed: 14 capabilities across 4 targets. TUI shortcut
+  inventory passed at 15 implementation keys and 63 documentation markers;
+  documentation depth passed at 93 current guides and 19 substantive
+  contracts; reliability passed at 6 scenarios across 4 targets; public
+  read-only adapters passed at 5; Web IR passed at 8 fixtures, 8 scenarios,
+  and 11 categories; binary documentation coverage passed at 573 Markdown
+  files, 345 full-product MCP tools (100 browser-only), 17 examples, and 22
+  public modules.
+
+The focused and full integration coverage exercises complete and physical
+case-insensitive `Npx hidden color`, exact omitted-component hidden/none,
+complete painted values, mixed/incomplete/malformed rejection, private
+hidden-versus-painted separation, declaration order, named-layer/specificity/
+source-order/inline precedence, same-block style override, repeated rollback,
+valid-before-invalid preservation, retained width/color behavior, current
+no-side geometry and raster suppression, reopened painted artifacts, point-hit
+testing, capture dimensions, and semantic order. No remote CI, push, release,
+registry publication, or browser parity claim is made because the checkout
+remains local-only.
+
+The regenerable `/tmp/glass-159-focused` target was inventoried as an exact
+real directory with no active compiler process or open handle: 5,666,385,920
+bytes, 9,099 files, and 1,192 directories. It was removed with bounded
+`find -P /tmp/glass-159-focused -xdev -depth -delete`; the path is absent and
+free space increased from 77,711,831,040 to 83,378,364,416 bytes. The
+repository `target/` directory remains absent.

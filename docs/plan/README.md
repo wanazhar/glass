@@ -1469,13 +1469,19 @@ formatting, and static documentation gates passed locally; exact target cleanup
 is recorded in the task. Remote CI remains pending because the branch is
 local-only.
 
-The next dependency-ordered [native-engine-159](tasks/native-engine-159.md)
-slice is planned. It will accept the bounded complete `Npx hidden color` form
-for the complete and physical border shorthands, preserve declared width/color
-as private component candidates, map only style to the existing private
-hidden sentinel, and keep public/artifact schemas unchanged. Arbitrary
-omitted defaults, CSS-wide resets, logical sides, table conflict resolution,
-and browser-wide border conformance remain outside the planned boundary.
+The completed dependency-ordered [native-engine-159](tasks/native-engine-159.md)
+slice is implemented at `f04623fc` from design `bdbdb208`. It accepts bounded
+complete `Npx hidden color` values for the complete and physical border
+shorthands, preserves declared width/color as private component candidates,
+maps only style to the existing private hidden sentinel, and keeps
+public/artifact schemas unchanged. Width and color cannot resurrect a hidden
+side in current non-table composition, while a later bounded `revert-layer`
+can expose a lower painted style with the retained complete components.
+Arbitrary omitted defaults, CSS-wide resets, logical sides, table conflict
+resolution, and browser-wide border conformance remain outside the boundary.
+Focused/full-native/library, strict Clippy, rustdoc, two-crate, formatting, and
+static documentation gates passed locally; exact target cleanup is recorded in
+the task. Remote CI remains pending because the branch is local-only.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

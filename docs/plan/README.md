@@ -111,13 +111,13 @@ box-sizing, individual sides, non-solid styles, scrolling, transforms, or
 screenshot evidence. Capture transport is separately owned by
 [native-engine-015](tasks/native-engine-015.md).
 
-The current capture slice is
+The completed capture slice is
 [native-engine-015](tasks/native-engine-015.md). It adds bounded PNG encoding
 for the existing logical RGBA surface and exposes explicit
 `CaptureFormat::Png` through the native backend while keeping screenshot-
 containing evidence, JPEG/PDF, physical pixels, and native CLI screenshots
-unsupported. It must be verified and committed before the next renderer or
-resource expansion changes this boundary.
+unsupported. It was verified and committed before later renderer and resource
+expansions changed this boundary.
 
 The completed box-model slice is
 [native-engine-016](tasks/native-engine-016.md). It adds bounded uniform

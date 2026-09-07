@@ -939,7 +939,7 @@ fn native_border_color_current_color_resolves_after_cascade_and_inheritance() {
     let shorthand_box = layout.box_for(shorthand).unwrap();
     let surface = list.rasterize().unwrap();
     assert_eq!(
-        surface.pixel(shorthand_box.x as u32, shorthand_box.y as u32),
+        surface.pixel(shorthand_box.x, shorthand_box.y),
         Some([0, 0, 255, 255])
     );
     assert!(!surface.to_png().unwrap().is_empty());

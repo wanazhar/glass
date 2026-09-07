@@ -1,7 +1,7 @@
 ---
 id: native-engine-166
 scope: glass-browser/native-engine/cascade-color-css-wide-keywords
-status: planned
+status: complete
 depends-on: [native-engine-165]
 ---
 
@@ -25,9 +25,9 @@ that the same keyword semantics are implemented for unrelated properties.
 Native-engine-145 established bounded `color: revert-layer` rollback through
 the named-layer and unlayered candidate streams. Native-engine-165 added the
 deferred `color: currentColor` value and resolves it from the already-computed
-inherited color without self-recursion. The color owner still treats the other
-CSS-wide keywords as unsupported even though the property is inherited and
-already has a single parent-style fallback.
+inherited color without self-recursion. This slice completes the bounded
+CSS-wide keyword family for the inherited color owner without introducing a
+generic reset graph.
 
 Normative references:
 
@@ -137,5 +137,37 @@ The completed slice must cover:
 
 ## Implementation
 
-Pending. This docs-first contract records the bounded one-author-origin color
-keyword resolution before changing the parser or computed-style resolver.
+Completed in `b57ba2b8` from this design contract (`d148f766`). The private
+`NativeColorValue` now distinguishes `Color`, `CurrentColor`, `Inherit`,
+`Unset`, `Initial`, and `Revert`. Exact case-insensitive keyword parsing feeds
+the existing cascade candidate stream; inherited/unset/revert values resolve
+from the supplied parent color with bounded black fallback, while initial
+resets to black. The concrete `Option<NativeColor>` public surface and all
+layout/display-list/capture/raster/hit/semantic owners remain unchanged.
+
+The synchronized current product documentation is `d26a9059`. Focused locked
+feature check, the parser/resolver unit (1/1), the new keyword integration
+fixture (1/1), full native integration (204/204), and feature-enabled library
+tests (968 passed, 1 ignored) passed. Strict all-target/all-feature Clippy
+with warnings denied, feature rustdoc with warnings denied, paired locked
+`glass-dev` check/build, both locked package archives, and the exact packaged
+`glass-browser = 0.3.14` dependency check passed. Static truth passed at
+version 0.3.14, feature parity 14 capabilities/4 targets, 580 Markdown
+documents with 83 current documents/57 previous-version hits/670 semantic
+audit hits/0 current-claim failures, documentation coverage 580 Markdown/
+345 full-product MCP tools/100 browser-only tools/17 examples/22 public
+modules, TUI 15/63, depth 93/19, reliability 6/4, adapters 5, Web IR
+8/8/11, and release-documentation unit tests 9/9. The locked workspace
+all-target/all-feature gate passed with 969 library tests and 1 ignored,
+native integration 204/204, `glass-dev` 365/365, and all auxiliary targets.
+
+Exact regenerable cleanup removed `/tmp/glass-166-focused` (5,406,130,484
+bytes, 9,071 files, 1,185 directories), `/tmp/glass-166-package`
+(3,134,139 bytes, 5 files, 3 directories), and `/tmp/glass-166-workspace`
+(4,141,759,121 bytes, 5,541 files, 624 directories) after no active Cargo/
+Rust processes and no open handles were found. Measured deletion was
+9,551,023,744 bytes; filesystem free space rose from 73,002,225,664 to
+82,596,917,248 bytes (a 9,594,691,584-byte filesystem delta). All exact
+targets and the run-created experiment directories were absent afterward.
+Remote CI, push, release, tag, registry publication, browser parity, and
+promotion remain unclaimed.

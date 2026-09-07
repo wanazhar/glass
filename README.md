@@ -391,7 +391,15 @@ including one-to-four-value shorthand expansion and independent per-side
 `revert-layer` rollback with a bounded black fallback, while preserving the
 existing border width/style, box-model, display-list, capture, raster, point-
 hit, and semantic/source-order owners. `currentColor`, gradients, border-image,
-and browser-wide border conformance remain outside the boundary. Bounded
+and browser-wide border conformance remain outside the boundary. The native
+border width surface also accepts bounded case-insensitive 15-layer/unlayered
+local `border-width` and physical `border-top-width`, `border-right-width`,
+`border-bottom-width`, and `border-left-width` values with one-to-four-value
+shorthand expansion and independent per-side `revert-layer` rollback to lower
+widths or bounded zero, preserving border style/color and the existing box-model
+and artifact consumers. Standalone border-style, logical sides,
+fractional/percentage widths, and browser-wide border conformance remain
+outside the boundary. Bounded
 inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using

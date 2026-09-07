@@ -260,6 +260,15 @@ physical shorthand expansion and independent per-side `revert-layer` rollback
 to lower colors or bounded black, while preserving border width/style and all
 existing box-model and artifact consumers. `currentColor`, gradients,
 border-image, and browser-wide border conformance remain outside the boundary.
+The native border width surface also accepts bounded case-insensitive
+15-layer/unlayered `border-width`, `border-top-width`, `border-right-width`,
+`border-bottom-width`, and `border-left-width` values, with one-to-four-value
+physical shorthand expansion and independent per-side `revert-layer` rollback
+to lower widths or bounded zero. Width-only declarations do not invent a style
+or paint a border; existing border style/color and all box-model and artifact
+consumers remain the owners. Standalone border-style, logical sides,
+fractional/percentage widths, and browser-wide border conformance remain
+outside the boundary.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and

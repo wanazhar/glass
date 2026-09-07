@@ -163,6 +163,14 @@ physical shorthand expansion and independent per-side `revert-layer` rollback
 to lower colors or bounded black, preserving border width/style and the
 existing box-model and artifact consumers; `currentColor`, gradients,
 border-image, and browser-wide border conformance remain outside the boundary.
+The same native border owner also accepts bounded case-insensitive
+15-layer/unlayered `border-width`, `border-top-width`, `border-right-width`,
+`border-bottom-width`, and `border-left-width` values with one-to-four-value
+physical shorthand expansion and independent per-side `revert-layer` rollback
+to lower widths or bounded zero. Width-only declarations do not invent a style
+or paint a border; standalone border-style, logical sides,
+fractional/percentage widths, and browser-wide border conformance remain
+outside the boundary.
 bounded local opacity subtree groups through transparent software layers,
 bounded inherited physical `text-align:left|center|right` line placement, and
 bounded functional `rgba(R, G, B, A)` alpha colors for background, border, and

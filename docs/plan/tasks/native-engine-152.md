@@ -1,7 +1,7 @@
 ---
 id: native-engine-152
 scope: glass-browser/native-engine/cascade-border-width
-status: planned
+status: done
 depends-on: [native-engine-151]
 ---
 
@@ -126,8 +126,48 @@ The completed slice must cover:
 
 ## Implementation
 
-To be filled after the implementation checkpoint.
+Implemented in `7dfcc7f5`. The parser accepts the five bounded physical
+`border-width` names, expands valid one-to-four-value shorthands, preserves
+case-insensitive standalone `revert-layer`, and rejects mixed/CSS-wide/
+malformed forms through the existing typed diagnostic path. `NativeDeclarations`
+retains per-side declaration positions for the existing border values and new
+width values. Computed style resolves an independent per-side width candidate
+stream, carries selected widths into the existing `NativeBorderSide`, and
+leaves style/color cascade, display-list, raster, capture, hit, and
+semantic/source-order owners unchanged.
 
 ## Evidence
 
-To be filled after local certification and bounded target cleanup.
+Local certification completed in the isolated regenerable target
+`/tmp/glass-152-focused`:
+
+- `CARGO_TARGET_DIR=/tmp/glass-152-focused cargo check -q -p glass-browser --features native-engine --tests --locked` passed.
+- Focused parser/cascade units: 2 passed, 963 filtered.
+- Focused integration: 1 passed, 189 filtered.
+- Full native integration: 190 passed, 0 failed.
+- Affected library with `RUST_MIN_STACK=16777216`: 964 passed, 1 ignored.
+- Strict affected-package Clippy with `-D warnings` passed.
+- Feature rustdoc with `RUSTDOCFLAGS=-Dwarnings` passed.
+- `CARGO_TARGET_DIR=/tmp/glass-152-focused cargo check -q -p glass-dev --locked` and
+  `CARGO_TARGET_DIR=/tmp/glass-152-focused cargo build -q -p glass-dev --locked`
+  passed.
+- `cargo fmt --all`, `git diff --check`, and the focused artifact assertions
+  passed; width-only declarations remain non-painting without a style and no
+  rollback keyword or unsupported diagnostic leaked from the feature surface.
+- Final static gates passed: 567 Markdown documents; 83 current-version
+  documents; 57 previous-version hits; 657 semantic audit hits; 0 current-claim
+  failures; feature parity 14 capabilities across 4 targets; TUI 15
+  implementation help keys and 63 documentation markers; documentation depth
+  93 guides and 19 substantive contracts; reliability 6 scenarios across 4
+  targets; public read-only adapters 5; Web IR 8 fixtures, 8 scenarios, and
+  11 categories; and documentation coverage 567 Markdown files, 345 full-
+  product MCP tools (100 browser-only), 17 examples, and 22 public modules.
+
+## Cleanup evidence
+
+- After all implementation, test, documentation, and coverage gates passed,
+  `/tmp/glass-152-focused` was verified as a real directory with no active
+  Cargo/Rust consumer and no open handles, then removed with bounded,
+  same-filesystem `find -P /tmp/glass-152-focused -xdev -depth -delete`.
+- The exact target size, entry counts, and before/after free-space readings
+  are recorded in the cleanup checkpoint after deletion.

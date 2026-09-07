@@ -2341,12 +2341,13 @@ visual stacking.
 
 | `native-engine-182` | completed bounded author-origin `!important` priority for the standalone physical `border-style` shorthand and four physical style longhands, preserving per-side expansion/resolution, private `none`/`hidden` distinctions, and existing width/style/color consumers through a private reversed named-layer partition; implementation `008a5766`; focused/full-native/library, strict Clippy, warning-denied rustdoc, and current documentation gates passed locally | `native-engine-181` | complete/side border shorthands, logical border style, border width/color, vertical writing modes, multiple origins, transitions, animations, percentages, elliptical radii, and browser-wide conformance |
 
-| `native-engine-183` | in-progress bounded author-origin `!important` priority for the six supported horizontal-tb logical border-width declarations, preserving `ltr`/`rtl` projection into physical width streams through a private reversed named-layer partition; implementation and certification pending | `native-engine-182` | complete/side border shorthands, logical border style/color, vertical writing modes, multiple origins, transitions, animations, percentages, elliptical radii, and browser-wide conformance |
+| `native-engine-183` | completed bounded author-origin `!important` priority for the six supported horizontal-tb logical border-width declarations, preserving `ltr`/`rtl` projection into physical width streams through a private reversed named-layer partition; implementation `6013d0c5`; focused/full-native/library, strict Clippy, warning-denied rustdoc, and current documentation gates passed locally | `native-engine-182` | complete/side border shorthands, logical border style, vertical writing modes, multiple origins, transitions, animations, percentages, elliptical radii, and browser-wide conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-181.md` is the latest completed task;
+`docs/plan/tasks/native-engine-183.md` is the latest completed task;
+`docs/plan/tasks/native-engine-182.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-180.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-177.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-173.md` is the preceding completed task;

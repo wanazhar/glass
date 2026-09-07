@@ -1779,13 +1779,16 @@ warning-denied rustdoc, current documentation audits, and task-specific cleanup
 pass locally; issue-level final gates and remote CI remain pending until issue
 #40 reaches its final validation boundary.
 
-The dependency-ordered [native-engine-183](tasks/native-engine-183.md) slice is
-in progress. It extends bounded author-origin `!important` priority to the six
-supported horizontal-tb logical border-width declarations, preserving their
-resolved `ltr`/`rtl` projection into physical width streams. Complete/side
-border shorthands, logical border style/color, vertical writing modes, and
-other properties remain outside this slice; focused and issue-level evidence
-will be recorded in the task before it is marked complete.
+The completed dependency-ordered [native-engine-183](tasks/native-engine-183.md)
+slice is implemented at `6013d0c5`. It extends bounded author-origin
+`!important` priority to the six supported horizontal-tb logical border-width
+declarations, preserving their resolved `ltr`/`rtl` projection into physical
+width streams. Complete/side border shorthands, logical border style, vertical
+writing modes, and other properties remain outside this slice. Focused,
+full-native, feature-library, strict Clippy, warning-denied rustdoc, current
+documentation audits, and task-specific cleanup pass locally; issue-level
+final gates and remote CI remain pending until issue #40 reaches its final
+validation boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

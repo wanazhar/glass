@@ -1,7 +1,7 @@
 ---
 id: native-engine-183
 scope: glass-browser/native-engine/cascade-logical-border-width-important-priority
-status: in-progress
+status: complete
 depends-on: [native-engine-182]
 ---
 
@@ -135,7 +135,38 @@ task may be removed; source, durable data, issue snapshots, and unrelated
 workloads remain untouched. Record measured bytes/files, process/open-handle
 checks, post-delete absence, and filesystem free-space delta.
 
+Task-specific cleanup completed after all Cargo/Rust processes and open handles
+exited: `/tmp/glass-183-focused` measured 3,783,188,480 bytes across 7,510
+files and 878 directories, and `/tmp/glass-release-documentation-183.json`
+measured 190,191 bytes. The process and open-handle checks were empty.
+Bounded exact-path deletion removed only those regenerable paths;
+post-delete absence checks passed. Available filesystem bytes moved from
+78,666,530,816 to 82,449,907,712, an observed increase of 3,783,376,896
+bytes. Source, repository targets, durable data, unrelated workloads, and
+issue snapshots were preserved.
+
 ## Evidence
 
-Implementation and slice-local certification are pending.
+The design checkpoint is `d6bd9f17`; implementation and slice-local
+certification are complete at `6013d0c5`.
 
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- The locked native-feature check passed with
+  `CARGO_TARGET_DIR=/tmp/glass-183-focused cargo check -q -p glass-browser --features native-engine --tests --locked`.
+- Focused `logical_border_width_important` coverage passed: 2 library unit
+  tests and 1 integration test.
+- The full `native_engine` integration target passed 221/221 tests.
+- The feature-enabled `glass-browser` library target passed 996 tests with 1
+  intentionally ignored.
+- Strict all-target Clippy with `-D warnings` passed for `glass-browser` with
+  `native-engine`.
+- Warning-denied rustdoc passed for `glass-browser` with `native-engine`.
+- The release documentation truth audit passed over 597 Markdown documents
+  with 83 current documents, 57 previous-version hits, 690 semantic-audit
+  hits, and 0 current-claim failures.
+- Documentation depth passed with 93 current guides and 19 substantive
+  contracts; the TUI shortcut inventory passed with 15 implementation help
+  keys and 63 documentation markers.
+- Issue-level workspace, release, security/fuzz, paired-crate, static
+  documentation, and remote-CI gates remain deferred to the final issue #40
+  certification boundary.

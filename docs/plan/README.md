@@ -1542,14 +1542,27 @@ task. `color: currentColor`, gradients, images, system colors, color spaces,
 percentages, animations, multiple origins, and browser-wide text-color
 conformance remain outside the completed boundary. Remote CI remains pending
 because the branch is local-only.
-The next dependency-ordered [native-engine-165](tasks/native-engine-165.md)
-slice is designed but not implemented. It will add local `color: currentColor`
-by resolving the self-reference from the already-computed inherited color or
-bounded initial black fallback, preserving the optional public color value and
-existing background/border/text consumers. Gradients, images, system colors,
-color spaces, percentages, custom-property graphs, CSS-wide reset machinery
-beyond existing `revert-layer`, multiple origins, animation, and browser-wide
-color conformance remain outside the planned boundary.
+The completed dependency-ordered [native-engine-165](tasks/native-engine-165.md)
+slice is implemented at `f7b5fd4e` from design `75544c39`; synchronized product
+documentation is `01438316`. It adds local `color: currentColor` by resolving
+the self-reference from the already-computed inherited color or bounded
+initial black fallback, preserving the optional public color value and existing
+background/border/text consumers. Focused/full-native/library, strict Clippy,
+rustdoc, two-crate, package, formatting, static documentation, workspace
+all-target/all-feature, and bounded cleanup gates passed locally; exact
+evidence and cleanup are recorded in the task. Gradients, images, system
+colors, color spaces, percentages, custom-property graphs, CSS-wide reset
+machinery beyond existing `revert-layer`, multiple origins, animation, and
+browser-wide color conformance remain outside the completed boundary. Remote
+CI remains pending because the branch is local-only.
+
+The next dependency-ordered [native-engine-166](tasks/native-engine-166.md)
+slice is designed but not implemented. It will add bounded case-insensitive
+`inherit`, `unset`, `initial`, and one-author-origin `revert` handling to the
+inherited `color` owner while preserving the concrete public value and current
+paint consumers. Multiple origins, `!important` inversion, gradients, images,
+system colors, color spaces, percentages, custom-property graphs, animation,
+and browser-wide color conformance remain outside the planned boundary.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

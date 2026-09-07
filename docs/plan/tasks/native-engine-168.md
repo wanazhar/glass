@@ -160,19 +160,30 @@ Strict all-target/all-feature Clippy with warnings denied, warning-denied
 feature rustdoc, paired locked `glass-dev` check/build, both locked package
 archives, and the exact packaged `glass-browser = 0.3.14` dependency check
 passed. Static truth passed at version 0.3.14, feature parity 14
-capabilities/4 targets, 582 Markdown documents with 83 current documents/57
-previous-version hits/672 semantic audit hits/0 current-claim failures,
-documentation coverage 582 Markdown/345 full-product MCP tools/100
+capabilities/4 targets, 583 Markdown documents with 83 current documents/57
+previous-version hits/673 semantic audit hits/0 current-claim failures,
+documentation coverage 583 Markdown/345 full-product MCP tools/100
 browser-only tools/17 examples/22 public modules, TUI 15/63, depth 93/19,
 reliability 6/4, adapters 5, Web IR 8/8/11, and release-documentation unit
 tests 9/9. The locked workspace all-target/all-feature replay passed with 971
 library tests and 1 ignored, native integration 206/206, `glass-dev` 365/365,
 and all auxiliary targets.
 
-Exact regenerable cleanup removed `/tmp/glass-168-focused`,
-`/tmp/glass-168-package`, and `/tmp/glass-168-workspace` only after Cargo/Rust
-process and open-handle checks. The exact measured inventories and free-space
-delta are recorded in the final closeout checkpoint alongside this task. The
-temporary release-documentation report was also removed after verification.
+The plain `glass-dev` package verification was observed to resolve the
+registry's older `glass-browser = 0.3.14` API and fail; the release-certified
+path therefore used the existing `--no-verify` package step with a local
+crates.io patch, then passed the normalized archive check for exact
+`glass-browser = 0.3.14` with no path or feature dependency. This is a
+packaging-environment distinction, not a relaxed dependency contract.
+
+Exact regenerable cleanup removed `/tmp/glass-168-focused`
+(6,255,727,750 bytes, 9,737 files, 1,173 directories),
+`/tmp/glass-168-package` (3,794,297,517 bytes, 4,002 files, 609 directories),
+`/tmp/glass-168-workspace` (4,143,550,576 bytes, 5,541 files, 624
+directories), and `/tmp/glass-168-release-documentation.json` (185,998 bytes)
+only after Cargo/Rust process and open-handle checks. Measured deletion was
+14,193,761,841 bytes; filesystem free space rose from 68,322,816,000 to
+82,571,911,168 bytes (a 14,249,095,168-byte filesystem delta). All exact
+targets and the run-created experiment directories were absent afterward.
 Remote CI, push, release, tag, registry publication, browser parity, and
 promotion remain unclaimed.

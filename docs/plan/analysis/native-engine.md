@@ -1499,7 +1499,12 @@ slash-separated radii, corner longhands, elliptical and percentage radii,
 multiple origins, and browser-wide border conformance remain outside the
 completed boundary. Remote CI remains pending because the checkout is
 local-only.
-No subsequent native-engine task is selected in this checkout yet.
+The next dependency-ordered `native-engine-173` slice is designed and recorded
+in `docs/plan/tasks/native-engine-173.md`. It will add the same bounded
+case-insensitive CSS-wide family to the complete physical `border`,
+`border-top`, `border-right`, `border-bottom`, and `border-left` shorthands by
+projecting private inherit/reset values into the existing width/style/color
+candidate streams. No implementation or completion claim is made yet.
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2261,6 +2266,7 @@ visual stacking.
 | `native-engine-170` | completed bounded local physical `border-width` and four physical width-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying the parent's effective per-side width and zero-width omission/reset fallbacks; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-169` | multiple origins, `!important` inversion, percentages, medium/thin/thick defaults, gradients, images, animation, logical sides, table conflict resolution, and browser-wide border conformance |
 | `native-engine-171` | completed bounded local physical `border-style` and four physical style-longhand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying effective parent styles and reset/omission preserving the private no-style fallback; focused/full-native/library, strict, package, static, workspace, and cleanup gates passed locally | `native-engine-170` | multiple origins, `!important` inversion, logical sides, table conflict resolution, border conflict/collapse, gradients, border-image, animation, unsupported styles, and browser-wide border conformance |
 | `native-engine-172` | completed bounded local physical `border-radius` CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` through private declaration state, with only explicit `inherit` copying an effective parent radius and reset/omission preserving the default zero-corner fallback; implementation `b0bbe45a` | `native-engine-171` | multiple origins, `!important` inversion, corner longhands, elliptical/percentage radii, logical sides, table conflict resolution, gradients, border-image, animation, and browser-wide border conformance |
+| `native-engine-173` | planned bounded complete physical `border` and four side-border shorthand CSS-wide keyword family: case-insensitive `inherit`, `unset`, `initial`, and one-author-origin `revert` projected through the existing private width/style/color component streams | `native-engine-172` | multiple origins, `!important` inversion, logical sides, table conflict resolution, gradients, border-image, animation, arbitrary omitted defaults, and browser-wide border conformance |
 
 ## Delivery evidence
 

@@ -969,17 +969,17 @@ fn native_border_color_css_wide_keywords_preserve_physical_paint_and_consumers()
             }
             #layered { border-color:revert-layer; }
         </style>
-        <div id='parent'>
-            <div id='inherit' class='box'>Inherit</div>
-            <div id='physical' class='box'>Physical</div>
-            <div id='reset' class='box'>Reset</div>
-            <div id='initial' class='box'>Initial</div>
-            <div id='revert' class='box'>Revert</div>
-            <div id='omitted' class='box'>Omitted</div>
-            <div id='invalid' class='box'>Invalid</div>
-            <div id='mixed' class='box'>Mixed</div>
-            <div id='layered' class='box'>Layered</div>
-            <div id='inline' class='box' style='border-color:inherit'>Inline</div>
+        <div id='parent' role='button'>
+            <div id='inherit' class='box' role='button'>Inherit</div>
+            <div id='physical' class='box' role='button'>Physical</div>
+            <div id='reset' class='box' role='button'>Reset</div>
+            <div id='initial' class='box' role='button'>Initial</div>
+            <div id='revert' class='box' role='button'>Revert</div>
+            <div id='omitted' class='box' role='button'>Omitted</div>
+            <div id='invalid' class='box' role='button'>Invalid</div>
+            <div id='mixed' class='box' role='button'>Mixed</div>
+            <div id='layered' class='box' role='button'>Layered</div>
+            <div id='inline' class='box' role='button' style='border-color:inherit'>Inline</div>
         </div>"#,
         &NativeEngineLimits::default(),
     )
@@ -1134,7 +1134,7 @@ fn native_border_color_css_wide_keywords_preserve_physical_paint_and_consumers()
             layout.box_for(reset).unwrap().x,
             layout.box_for(reset).unwrap().y
         ),
-        Some([0, 0, 255, 128])
+        Some([127, 127, 255, 255])
     );
     assert!(!surface.to_png().unwrap().is_empty());
 }

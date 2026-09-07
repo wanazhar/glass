@@ -150,4 +150,11 @@ Implementation and slice-local certification are complete at `ed1cda27`.
 - The final documentation truth audit passed over 593 Markdown documents with 83 current documents, 57 previous-version hits, 688 semantic-audit hits, and 0 current-claim failures.
 - Issue-level workspace, release, security/fuzz, paired-crate, cleanup, and remote-CI gates remain deferred to the final issue #40 certification boundary.
 
-Task-specific cleanup is pending the final documentation audit report removal.
+Task-specific cleanup was completed after all local Cargo/Rust processes and
+open handles exited: `/tmp/glass-179-focused` measured 4,621,983,231 bytes
+across 9,117 files and 894 directories, and the nine named reports measured
+193,105 bytes. Bounded exact-path deletion removed only those paths; post-delete
+absence checks passed. Available filesystem bytes moved from 77,825,740,800 to
+82,471,096,320, an observed increase of 4,645,355,520 bytes. Source,
+repository targets, durable data, unrelated workloads, and issue snapshots
+were preserved.

@@ -1416,6 +1416,16 @@ cleanup evidence; remote CI remains pending because the checkout is local-only.
 `hidden`, other border styles, logical sides, `currentColor`, gradients,
 border-image, and browser-wide border conformance remain outside the boundary.
 
+The next dependency-ordered [native-engine-155](tasks/native-engine-155.md)
+slice is planned. It will add explicit physical `border-style:hidden` to the
+bounded one-to-four-value shorthand and four physical style longhands through
+a distinct private no-paint sentinel. In the current non-table engine, a
+winning `hidden` will block lower styles and use the same no-side/zero-width
+result as `none`, while preserving a private distinction for future
+collapsed-table conflict resolution. Public enums and display-list schemas
+remain unchanged; table conflict resolution and other border styles remain
+outside the planned boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

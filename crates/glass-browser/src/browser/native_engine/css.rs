@@ -59,6 +59,11 @@ pub enum NativeBorderStyle {
     Solid,
     Dashed,
     Dotted,
+    Double,
+    Groove,
+    Ridge,
+    Inset,
+    Outset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4706,6 +4711,11 @@ fn parse_border_style(value: &str) -> Option<NativeBorderStyle> {
         "solid" => Some(NativeBorderStyle::Solid),
         "dashed" => Some(NativeBorderStyle::Dashed),
         "dotted" => Some(NativeBorderStyle::Dotted),
+        "double" => Some(NativeBorderStyle::Double),
+        "groove" => Some(NativeBorderStyle::Groove),
+        "ridge" => Some(NativeBorderStyle::Ridge),
+        "inset" => Some(NativeBorderStyle::Inset),
+        "outset" => Some(NativeBorderStyle::Outset),
         _ => None,
     }
 }
@@ -6312,7 +6322,7 @@ mod tests {
             ))
         );
         let unsupported_sides = parse_declarations(
-            "border-top: 1px double red; border-right: -1px solid blue; border-bottom: 20000px solid red; border-left: 1em solid green",
+            "border-top: 1px wavy red; border-right: -1px solid blue; border-bottom: 20000px solid red; border-left: 1em solid green",
         );
         assert_eq!(unsupported_sides.border, [None; 4]);
         assert_eq!(
@@ -6728,7 +6738,7 @@ mod tests {
         );
 
         let declarations = parse_declarations(
-            "border: 2px solid red; border: 1px double blue; border-top: ReVeRt-LaYeR; border-right: 3px dotted green; border-right: 1px dotted invalid",
+            "border: 2px solid red; border: 1px wavy blue; border-top: ReVeRt-LaYeR; border-right: 3px dotted green; border-right: 1px dotted invalid",
         );
         assert_eq!(
             declarations.border,
@@ -6764,7 +6774,7 @@ mod tests {
         let mut diagnostics = NativeDiagnosticSink::default();
         NativeStylesheet::from_sources_with_diagnostics(
             vec![
-                "#valid { border: ReVeRt-LaYeR; border-top: 1px solid red; } #invalid { border-right: 1px double red; border-left: 1px solid; }"
+                "#valid { border: ReVeRt-LaYeR; border-top: 1px solid red; } #invalid { border-right: 1px wavy red; border-left: 1px solid; }"
                     .into(),
             ],
             &mut diagnostics,
@@ -7048,7 +7058,7 @@ mod tests {
         );
         assert_eq!(declarations.border_style_order, [1, 2, 0, 4]);
         assert_eq!(
-            parse_border_style_declaration("solid dashed dotted double"),
+            parse_border_style_declaration("solid dashed dotted wavy"),
             None
         );
         assert_eq!(
@@ -7076,7 +7086,6 @@ mod tests {
             "revert-layer solid",
             "solid revert-layer",
             "solid dashed dotted solid double",
-            "double",
             "solid 1px",
         ] {
             assert_eq!(parse_border_style_declaration(value), None, "{value}");
@@ -7120,6 +7129,29 @@ mod tests {
             parse_border_style_side_declaration("HiDdEn"),
             Some(LocalCascadeDeclaration::Value(
                 NativeBorderStyleValue::Hidden
+            ))
+        );
+        assert_eq!(
+            parse_border_style_declaration("double groove ridge inset"),
+            Some([
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Double,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Groove,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Ridge,
+                )),
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(
+                    NativeBorderStyle::Inset,
+                )),
+            ])
+        );
+        assert_eq!(
+            parse_border_style_side_declaration("OuTsEt"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderStyleValue::Paint(NativeBorderStyle::Outset)
             ))
         );
     }
@@ -9265,7 +9297,20 @@ mod tests {
             parse_border_style("DOTTED"),
             Some(NativeBorderStyle::Dotted)
         );
-        assert_eq!(parse_border_style("double"), None);
+        assert_eq!(
+            parse_border_style("DOUBLE"),
+            Some(NativeBorderStyle::Double)
+        );
+        assert_eq!(
+            parse_border_style("groove"),
+            Some(NativeBorderStyle::Groove)
+        );
+        assert_eq!(parse_border_style("RIDGE"), Some(NativeBorderStyle::Ridge));
+        assert_eq!(parse_border_style("inset"), Some(NativeBorderStyle::Inset));
+        assert_eq!(
+            parse_border_style("OUTSET"),
+            Some(NativeBorderStyle::Outset)
+        );
         assert_eq!(parse_border_style("wavy"), None);
         assert_eq!(parse_border_style("solid dashed"), None);
         assert_eq!(parse_border_style(""), None);

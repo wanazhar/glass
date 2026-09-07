@@ -196,6 +196,10 @@ impl NativeTextUnderlineOffsetDeclaration {
 enum NativeTextDecorationColorDeclaration {
     Value(NativeColor),
     CurrentColor,
+    Inherit,
+    Unset,
+    Initial,
+    Revert,
     RevertLayer,
 }
 
@@ -769,6 +773,7 @@ impl NativeMarginValue {
 pub(crate) struct NativeInheritedStyle {
     pub(crate) color: Option<NativeColor>,
     pub(crate) background_color: Option<NativeColor>,
+    pub(crate) text_decoration_color: NativeColor,
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
@@ -795,6 +800,7 @@ impl Default for NativeInheritedStyle {
         Self {
             color: None,
             background_color: None,
+            text_decoration_color: NativeColor::BLACK,
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
@@ -1248,6 +1254,7 @@ impl NativeStylesheet {
             node_id,
             NativeInheritedStyle {
                 color: inherited_color,
+                text_decoration_color: inherited_color.unwrap_or(NativeColor::BLACK),
                 ..NativeInheritedStyle::default()
             },
         )
@@ -2511,6 +2518,7 @@ impl NativeStylesheet {
             text_decoration_color: resolve_text_decoration_color(
                 text_decoration_color,
                 current_color,
+                inherited.text_decoration_color,
             ),
             text_transform: resolve_inherited_text_declaration(
                 text_transform,
@@ -3054,6 +3062,7 @@ fn resolve_text_decoration_color(
     candidates: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
         MAX_NATIVE_CASCADE_LAYERS],
     current_color: NativeColor,
+    inherited_color: NativeColor,
 ) -> Option<NativeColor> {
     let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
     loop {
@@ -3079,6 +3088,10 @@ fn resolve_text_decoration_color(
         return match candidate.value {
             NativeTextDecorationColorDeclaration::Value(value) => Some(value),
             NativeTextDecorationColorDeclaration::CurrentColor => Some(current_color),
+            NativeTextDecorationColorDeclaration::Inherit => Some(inherited_color),
+            NativeTextDecorationColorDeclaration::Unset
+            | NativeTextDecorationColorDeclaration::Initial
+            | NativeTextDecorationColorDeclaration::Revert => Some(current_color),
             NativeTextDecorationColorDeclaration::RevertLayer => unreachable!(),
         };
     }
@@ -5127,11 +5140,22 @@ fn parse_text_underline_offset(value: &str) -> Option<NativeTextUnderlineOffsetD
 }
 
 fn parse_text_decoration_color(value: &str) -> Option<NativeTextDecorationColorDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("revert-layer") {
         return Some(NativeTextDecorationColorDeclaration::RevertLayer);
     }
-    if value.trim().eq_ignore_ascii_case("currentColor") {
+    if value.eq_ignore_ascii_case("currentColor") {
         return Some(NativeTextDecorationColorDeclaration::CurrentColor);
+    }
+    for (keyword, declaration) in [
+        ("inherit", NativeTextDecorationColorDeclaration::Inherit),
+        ("unset", NativeTextDecorationColorDeclaration::Unset),
+        ("initial", NativeTextDecorationColorDeclaration::Initial),
+        ("revert", NativeTextDecorationColorDeclaration::Revert),
+    ] {
+        if value.eq_ignore_ascii_case(keyword) {
+            return Some(declaration);
+        }
     }
     parse_color(value).map(NativeTextDecorationColorDeclaration::Value)
 }
@@ -10623,7 +10647,7 @@ mod tests {
     }
 
     #[test]
-    fn text_decoration_color_parser_accepts_only_bounded_values_and_revert_layer() {
+    fn text_decoration_color_parser_accepts_bounded_values_and_css_wide_keywords() {
         assert_eq!(
             parse_text_decoration_color("ReVeRt-LaYeR"),
             Some(NativeTextDecorationColorDeclaration::RevertLayer)
@@ -10650,9 +10674,18 @@ mod tests {
             parse_text_decoration_color("CuRrEnTcOlOr"),
             Some(NativeTextDecorationColorDeclaration::CurrentColor)
         );
-        assert_eq!(parse_text_decoration_color("inherit"), None);
-        assert_eq!(parse_text_decoration_color("unset"), None);
-        assert_eq!(parse_text_decoration_color("revert"), None);
+        for (value, expected) in [
+            ("InHeRiT", NativeTextDecorationColorDeclaration::Inherit),
+            ("UnSeT", NativeTextDecorationColorDeclaration::Unset),
+            ("InItIaL", NativeTextDecorationColorDeclaration::Initial),
+            ("ReVeRt", NativeTextDecorationColorDeclaration::Revert),
+        ] {
+            assert_eq!(
+                parse_text_decoration_color(value),
+                Some(expected),
+                "value={value}"
+            );
+        }
         assert_eq!(
             parse_text_decoration_color("linear-gradient(red, blue)"),
             None
@@ -10668,6 +10701,58 @@ mod tests {
             .text_decoration_color,
             Some(NativeTextDecorationColorDeclaration::CurrentColor)
         );
+    }
+
+    #[test]
+    fn text_decoration_color_css_wide_keywords_preserve_local_fallback_and_parent_effective_color()
+    {
+        let green = NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: u8::MAX,
+        };
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { text-decoration-color: inherit; } #unset { text-decoration-color: unset; } #initial { text-decoration-color: initial; } #revert { text-decoration-color: revert; } #current { text-decoration-color: currentColor; } #invalid { text-decoration-color: red; text-decoration-color: inherit; text-decoration-color: invalid; }".into(),
+        ])
+        .unwrap();
+        let computed = |id: &str, inherited_decoration_color| {
+            let element = node(&format!("<div id='{id}'>Text</div>"));
+            stylesheet
+                .computed_for_with_matcher(
+                    &element,
+                    NativeInheritedStyle {
+                        color: Some(green),
+                        text_decoration_color: inherited_decoration_color,
+                        ..NativeInheritedStyle::default()
+                    },
+                    |selector| selector.matches(&element),
+                )
+                .text_decoration_color()
+        };
+        assert_eq!(
+            computed("inherit", NativeColor::RED),
+            Some(NativeColor::RED)
+        );
+        for id in ["unset", "initial", "revert", "current"] {
+            assert_eq!(computed(id, NativeColor::RED), Some(green), "id={id}");
+        }
+        assert_eq!(
+            computed("invalid", NativeColor::RED),
+            Some(NativeColor::RED)
+        );
+        let omitted = stylesheet
+            .computed_for_with_matcher(
+                &node("<div>Text</div>"),
+                NativeInheritedStyle {
+                    color: Some(green),
+                    text_decoration_color: NativeColor::RED,
+                    ..NativeInheritedStyle::default()
+                },
+                |_| false,
+            )
+            .text_decoration_color();
+        assert_eq!(omitted, None);
     }
 
     #[test]

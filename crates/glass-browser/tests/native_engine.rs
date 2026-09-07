@@ -3527,6 +3527,166 @@ fn native_text_decoration_current_color_reaches_separate_text_artifacts() {
 }
 
 #[test]
+fn native_text_decoration_color_css_wide_keywords_preserve_effective_parent_and_reset_colors() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block;width:80px;height:20px;line-height:20px;text-decoration:underline overline line-through; } #parent { display:block;width:96px;color:green;text-decoration:underline overline line-through;text-decoration-color:red; } #invalid { text-decoration-color:red;text-decoration-color:InHeRiT;text-decoration-color:invalid; } #inline { text-decoration-color:red; } @layer base { #named { text-decoration-color:red; } #rollback { text-decoration-color:red; } } @layer theme { .named { text-decoration-color:blue; } #rollback { text-decoration-color:blue; } } #named { text-decoration-color:revert-layer; } #rollback { text-decoration-color:revert-layer; }</style><div id='parent'><button id='inherit' class='line' style='text-decoration-color:inherit'>Inherit</button><button id='unset' class='line' style='text-decoration-color:UnSeT'>Unset</button><button id='initial' class='line' style='text-decoration-color:initial'>Initial</button><button id='revert' class='line' style='text-decoration-color:revert'>Revert</button><button id='current' class='line' style='text-decoration-color:CuRrEnTcOlOr'>Current</button><button id='invalid' class='line'>Invalid</button><button id='omitted' class='line'>Omitted</button><button id='precedence' class='line' style='text-decoration-color:inherit'>Precedence</button><button id='inline' class='line' style='color:green;text-decoration-color:blue'>Inline</button><button id='named' class='line named'>Named</button><button id='rollback' class='line'>Rollback</button></div><button id='root-inherit' class='line' style='color:red;text-decoration-color:inherit'>Root</button><div id='blue-parent' style='display:block;width:96px;color:blue;text-decoration:underline'><button id='blue-inherit' class='line' style='text-decoration-color:inherit'>Blue</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 112,
+        height: 320,
+        device_scale_factor_milli: 1000,
+    };
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+    let node_for = |id| document.resolve_target(&format!("id={id}")).unwrap();
+    let command_for = |id| {
+        let node_id = node_for(id);
+        document
+            .display_list(viewport)
+            .unwrap()
+            .commands
+            .into_iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::TextRun {
+                    node_id: command_node_id,
+                    origin,
+                    color,
+                    decoration_color,
+                    underline,
+                    overline,
+                    line_through,
+                    ..
+                } if command_node_id == node_id => Some((
+                    origin,
+                    color,
+                    decoration_color,
+                    underline,
+                    overline,
+                    line_through,
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text command for {id}"))
+    };
+
+    assert_eq!(command_for("inherit").1, green);
+    assert_eq!(command_for("inherit").2, NativeColor::RED);
+    for id in ["unset", "initial", "revert", "current", "omitted"] {
+        assert_eq!(command_for(id).1, green, "glyph color for {id}");
+        assert_eq!(command_for(id).2, green, "decoration color for {id}");
+    }
+    assert_eq!(command_for("precedence").1, green);
+    assert_eq!(command_for("precedence").2, NativeColor::RED);
+    assert_eq!(command_for("invalid").2, NativeColor::RED);
+    assert_eq!(command_for("inline").1, green);
+    assert_eq!(command_for("inline").2, blue);
+    assert_eq!(command_for("named").2, blue);
+    assert_eq!(command_for("rollback").2, blue);
+    assert_eq!(command_for("root-inherit").1, NativeColor::RED);
+    assert_eq!(command_for("root-inherit").2, NativeColor::BLACK);
+    assert_eq!(command_for("blue-inherit").1, blue);
+    assert_eq!(command_for("blue-inherit").2, blue);
+    for id in [
+        "inherit",
+        "unset",
+        "initial",
+        "revert",
+        "current",
+        "invalid",
+        "omitted",
+        "precedence",
+        "inline",
+        "named",
+        "rollback",
+        "root-inherit",
+        "blue-inherit",
+    ] {
+        let command = command_for(id);
+        assert!(
+            command.3 && command.4 && command.5,
+            "decoration flags for {id}"
+        );
+    }
+
+    let layout = document.layout(viewport).unwrap();
+    for id in ["inherit", "root-inherit", "blue-inherit"] {
+        let node_id = node_for(id);
+        let rect = layout.box_for(node_id).unwrap();
+        assert_eq!(
+            layout.hit_test(i64::from(rect.x) + 1, i64::from(rect.y) + 1),
+            Ok(Some(node_id))
+        );
+    }
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    let inherit = command_for("inherit");
+    let named = command_for("named");
+    let root_inherit = command_for("root-inherit");
+    assert_eq!(
+        surface.pixel(inherit.0.x, inherit.0.y + 7),
+        Some([255, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(named.0.x, named.0.y + 7),
+        Some([0, 0, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(root_inherit.0.x, root_inherit.0.y + 7),
+        Some([0, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [
+        ("inherit", "unset"),
+        ("unset", "initial"),
+        ("initial", "revert"),
+        ("revert", "current"),
+        ("current", "invalid"),
+        ("invalid", "omitted"),
+        ("omitted", "precedence"),
+        ("precedence", "inline"),
+        ("inline", "named"),
+        ("named", "rollback"),
+    ] {
+        let first = node_for(pair.0);
+        let second = node_for(pair.1);
+        assert!(
+            semantic_ids.iter().position(|id| *id == first)
+                < semantic_ids.iter().position(|id| *id == second),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert_eq!(
+        document
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                    && diagnostic.detail == "text-decoration-color"
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn native_text_decoration_color_revert_layer_preserves_local_fallback_and_glyph_paint() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:green; text-decoration:underline overline line-through; } @layer base { #named { text-decoration-color:red; } #rollback { text-decoration-color:red; } #repeated { text-decoration-color:red; } #unlayered { text-decoration-color:red; } #inline { text-decoration-color:red; } #fallback { text-decoration-color:revert-layer; } } @layer theme { .named { text-decoration-color:blue; } #rollback { text-decoration-color:blue; } #repeated { text-decoration-color:revert-layer; } #unlayered { text-decoration-color:blue; } #inline { text-decoration-color:blue; } } @layer top { #repeated { text-decoration-color:revert-layer; } } #named { text-decoration-color:revert-layer; } #unlayered { text-decoration-color:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='repeated' class='line'>A</div><div id='unlayered' class='line'>A</div><div id='inline' class='line' style='text-decoration-color:revert-layer'>A</div><div id='fallback' class='line'>A</div><div id='parent' class='line' style='text-decoration-color:red'><span id='child'>A</span></div>",

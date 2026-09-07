@@ -1522,6 +1522,18 @@ warning-denied rustdoc, current documentation audits, and task-specific
 cleanup pass locally; issue-level final gates and remote CI remain pending until
 issue #40 reaches its final validation boundary.
 
+The dependency-ordered `native-engine-186` slice is in progress. It will extend
+the bounded author-origin `!important` partition to the six supported
+horizontal-tb logical complete/side border shorthands by carrying one private
+importance bit per logical side into the existing doubled width/style/color
+component streams before resolved `ltr`/`rtl` projection. This preserves
+independent component composition, CSS-wide/omitted `none`/`hidden`/
+`revert-layer` behavior, logical direction mapping, physical layout and paint
+consumers, public schemas, and the two-crate boundary. Vertical writing modes
+and browser-wide logical-border conformance remain outside this slice;
+issue-level final gates and remote CI remain pending until issue #40 reaches its
+final validation boundary.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

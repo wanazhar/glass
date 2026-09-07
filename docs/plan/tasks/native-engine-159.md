@@ -130,7 +130,7 @@ The completed slice must cover:
 
 ## Implementation
 
-Implemented in `f04623fc` (`feat(native-engine): support border hidden shorthand`),
+Implemented in `329b3cfb` (`feat(native-engine): support complete hidden borders`),
 with the design contract and synchronized pre-implementation records in
 `bdbdb208`. The private `NativeBorderDeclaration` wrapper now carries a
 complete hidden value with its declared width and color. Complete hidden
@@ -159,7 +159,7 @@ Local certification passed on 2026-09-07 UTC:
 - Paired `glass-dev` check/build passed, and both debug binaries were present:
   `glass` and `glass-browser`.
 - Static release documentation passed: 573 Markdown documents, 83 current
-  documents, 57 previous-version hits, 662 semantic audit hits, and 0 current-
+  documents, 57 previous-version hits, 664 semantic audit hits, and 0 current-
   claim failures. Version sync remained at 0.3.14.
 - Static feature parity passed: 14 capabilities across 4 targets. TUI shortcut
   inventory passed at 15 implementation keys and 63 documentation markers;

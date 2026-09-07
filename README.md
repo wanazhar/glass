@@ -383,8 +383,16 @@ text paint, plus bounded case-insensitive 15-layer/unlayered local
 `revert-layer` rollback for `background-color` and inherited `color`, preserving
 the existing `None`/parent-root fallbacks and fill/text display-list, clipping,
 opacity, capture, and raster owners; `currentColor`, gradients, system colors,
-border-color, percentages, color spaces, and multiple origins remain outside
-the boundary, bounded inherited fixed-cell
+percentages, color spaces, and multiple origins remain outside the boundary.
+The native border surface also accepts bounded case-insensitive 15-layer/
+unlayered local `border-color` and physical `border-top-color`,
+`border-right-color`, `border-bottom-color`, and `border-left-color` values,
+including one-to-four-value shorthand expansion and independent per-side
+`revert-layer` rollback with a bounded black fallback, while preserving the
+existing border width/style, box-model, display-list, capture, raster, point-
+hit, and semantic/source-order owners. `currentColor`, gradients, border-image,
+and browser-wide border conformance remain outside the boundary. Bounded
+inherited fixed-cell
 `text-decoration:none|underline|overline|line-through` paint, including
 distinct shorthand combinations, bounded local `text-decoration-color` using
 the existing fixed palette and alpha grammar with separate glyph and line

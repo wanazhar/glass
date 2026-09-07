@@ -360,7 +360,7 @@ markers and software compositing, and unchanged layout, point-hit, capture,
 raster, overflow, and semantic/source-order owners; inherited opacity,
 stacking-context/blending parity, filters, animation, multiple origins, and
 browser-wide opacity conformance remain outside the boundary. It also
-provides bounded side-specific solid/dashed/dotted-border paint, bounded
+provides bounded side-specific solid/dashed/dotted/double/groove/ridge/inset/outset-border paint, bounded
 physical circular border radii, bounded inline-box line placement, bounded
 fixed pixel line-height flow with bounded inherited line-height and
 case-insensitive 15-layer/unlayered `line-height: revert-layer` rollback with
@@ -400,7 +400,8 @@ widths or bounded zero, preserving border style/color and the existing box-model
 and artifact consumers. The native border style surface also accepts bounded
 case-insensitive 15-layer/unlayered local `border-style` and physical
 `border-top-style`, `border-right-style`, `border-bottom-style`, and
-`border-left-style` values from the finite `none|hidden|solid|dashed|dotted` grammar,
+`border-left-style` values from the finite
+`none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset` grammar,
 with one-to-four-value shorthand expansion and independent per-side
 `revert-layer` rollback to lower styles. A winning `none` or `hidden` blocks
 lower styles and resolves to the existing no-side/zero-width behavior before
@@ -408,7 +409,8 @@ layout and paint; `hidden` remains a private distinction for future table
 conflict resolution. Width, style, and color components compose only after
 their independent resolution; width-only or style-only declarations do not
 invent missing paint components. Collapsed-table border conflict resolution,
-logical sides, fractional/percentage widths, unsupported styles, and
+logical sides, fractional/percentage widths, `wavy` and other unsupported
+styles, and
 browser-wide border conformance remain outside the boundary.
 Bounded
 inherited fixed-cell
@@ -834,7 +836,8 @@ unlayered local `revert-layer` for the physical `border`, `border-top`,
 each side through lower concrete candidates or the existing zero-width/no-paint
 fallback, preserving shorthand/longhand precedence and the existing box-model
 inset, border display-list, capture, raster, point-hit, and semantic/source-order
-owners. Logical sides, border-image, gradients, other border styles, animation,
+owners. Logical sides, border-image, gradients, `wavy` and other unsupported
+border styles, animation,
 multiple origins, and browser-wide CSS border conformance remain outside the
 boundary.
 The native engine also supports bounded 15-layer/unlayered `revert-layer`

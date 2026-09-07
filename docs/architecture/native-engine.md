@@ -80,7 +80,8 @@ parser gates, a narrow CSS presentation subset, and deterministic integer-pixel
 normal-flow geometry with point hit testing, a Rust-only clear/fill/text/border
 display list, a bounded logical RGBA software surface and PNG capture,
 inherited text color through DOM parent links, bounded `overflow:hidden`/
-`overflow:clip` paint clipping, bounded side-specific solid/dashed/dotted-border paint primitives,
+`overflow:clip` paint clipping, bounded side-specific
+solid/dashed/dotted/double/groove/ridge/inset/outset-border paint primitives,
 bounded circular border radii, bounded outer/content box geometry with bounded
 min/max width/height constraints, explicit root
 horizontal and vertical viewport scrolling, bounded inline-box line placement, and bounded fixed pixel
@@ -1112,14 +1113,18 @@ library tests, strict Clippy, feature rustdoc, two-crate check/build,
 formatting, and static documentation gates passed locally; exact evidence and
 bounded target cleanup are recorded in the task. Remote CI remains pending
 because the checkout is local-only.
-The next dependency-ordered 156 slice is planned in
-`docs/plan/tasks/native-engine-156.md`. It will batch the remaining painted
-physical styles `double`, `groove`, `ridge`, `inset`, and `outset` through the
-bounded style parser, public computed paint enum, and deterministic software
-replay. Integer-pixel double stripes and two-tone/edge-directed shading are
-explicit native rules, not browser-fidelity claims; logical sides, table
-conflict resolution, gradients, border images, and other general CSS border
-conformance remain outside the planned boundary.
+The dependency-ordered 156 implementation is complete in `5270d013` (design
+`13c8e90f`) and is recorded in `docs/plan/tasks/native-engine-156.md`. It batches the
+painted physical styles `double`, `groove`, `ridge`, `inset`, and `outset`
+through the bounded style parser, public computed paint enum, and deterministic
+software replay. Integer-pixel double stripes and two-tone/edge-directed
+shading are explicit native rules, not browser-fidelity claims; the existing
+display-list shape, clipping, capture, point-hit, and semantic/source-order
+owners remain stable. Logical sides, table conflict resolution, gradients,
+border images, and other general CSS border conformance remain outside the
+boundary. Focused/full-native/library, strict Clippy, rustdoc, two-crate,
+formatting, and static documentation gates are recorded in the task; remote CI
+remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

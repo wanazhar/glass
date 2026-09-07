@@ -1417,6 +1417,167 @@ fn native_physical_border_width_important_priority_reaches_border_artifacts() {
 }
 
 #[test]
+fn native_physical_border_style_important_priority_reaches_border_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            .box { display:block;width:16px;height:8px;border:2px solid black; }
+            @layer base {
+                #early { border-style:solid !important; }
+                #rollback { border-style:dashed !important; }
+                #rollback { border-style:revert-layer !important; }
+                #normal { border-style:dotted; }
+                #mixed { border-top-style:hidden !important; }
+                #sides { border-style:solid !important;border-top-style:none !important;border-right-style:hidden !important; }
+                #invalid { border-style:double !important;border-style:invalid !important; }
+            }
+            @layer theme {
+                #early { border-style:dashed !important; }
+                #rollback { border-style:groove !important; }
+                #normal { border-style:double; }
+                #sides { border-style:ridge !important; }
+            }
+            #early { border-style:dotted !important; }
+            #normal { border-style:outset; }
+            #mixed { border-style:double; }
+            #sides { border-style:inset !important; }
+            #invalid { border-style:dashed; }
+        </style>
+        <div id='early' class='box' role='button'>Early</div>
+        <div id='rollback' class='box' role='button'>Rollback</div>
+        <div id='normal' class='box' role='button'>Normal</div>
+        <div id='mixed' class='box' role='button'>Mixed</div>
+        <div id='sides' class='box' role='button'>Sides</div>
+        <div id='invalid' class='box' role='button'>Invalid</div>
+        <div id='inline' class='box' role='button' style='border-style:hidden !important'>Inline</div>
+        <div id='style-only' style='display:block;width:8px;height:6px;border-style:solid !important'>Only</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 160,
+        device_scale_factor_milli: 1000,
+    };
+    let early = document.resolve_target("id=early").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let sides = document.resolve_target("id=sides").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let style_only = document.resolve_target("id=style-only").unwrap();
+    let targets = [early, rollback, normal, mixed, sides, invalid, inline];
+    let layout = document.layout(viewport).unwrap();
+    for (node_id, (expected_width, expected_height)) in [
+        (early, (20, 12)),
+        (rollback, (20, 12)),
+        (normal, (20, 12)),
+        (mixed, (20, 10)),
+        (sides, (18, 10)),
+        (invalid, (20, 12)),
+        (inline, (16, 8)),
+    ] {
+        let rectangle = layout.box_for(node_id).expect("border-style layout box");
+        assert_eq!(rectangle.width, expected_width);
+        assert_eq!(rectangle.height, expected_height);
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 3).into(), (rectangle.y + 3).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+    let style_only_box = layout.box_for(style_only).expect("style-only layout box");
+    assert_eq!((style_only_box.width, style_only_box.height), (8, 6));
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    for (node_id, expected_style) in [
+        (early, NativeBorderStyle::Solid),
+        (rollback, NativeBorderStyle::Groove),
+        (normal, NativeBorderStyle::Outset),
+        (invalid, NativeBorderStyle::Double),
+    ] {
+        let borders = border_for(node_id).expect("border-style command");
+        assert_eq!(
+            [
+                borders.top.style,
+                borders.right.style,
+                borders.bottom.style,
+                borders.left.style,
+            ],
+            [expected_style; 4],
+            "border styles for {node_id:?}"
+        );
+        assert_eq!(
+            [
+                borders.top.width,
+                borders.right.width,
+                borders.bottom.width,
+                borders.left.width,
+            ],
+            [2; 4]
+        );
+        assert_eq!(
+            [
+                borders.top.color,
+                borders.right.color,
+                borders.bottom.color,
+                borders.left.color,
+            ],
+            [NativeColor::BLACK; 4]
+        );
+    }
+    let mixed_border = border_for(mixed).expect("mixed border-style command");
+    assert_eq!(mixed_border.top.width, 0);
+    assert_eq!(mixed_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(mixed_border.right.style, NativeBorderStyle::Double);
+    assert_eq!(mixed_border.bottom.style, NativeBorderStyle::Double);
+    assert_eq!(mixed_border.left.style, NativeBorderStyle::Double);
+    assert_eq!(mixed_border.right.width, 2);
+    let sides_border = border_for(sides).expect("side border-style command");
+    assert_eq!(sides_border.top.width, 0);
+    assert_eq!(sides_border.right.width, 0);
+    assert_eq!(sides_border.bottom.style, NativeBorderStyle::Solid);
+    assert_eq!(sides_border.left.style, NativeBorderStyle::Solid);
+    assert!(border_for(inline).is_none());
+    assert!(border_for(style_only).is_none());
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in targets.windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-style"
+    }));
+    let early_box = layout.box_for(early).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(early_box.x + 10, early_box.y),
+        Some([0, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_logical_border_color_important_priority_reaches_projected_border_artifacts() {
     let document = NativeDocument::parse(
         r#"<style>

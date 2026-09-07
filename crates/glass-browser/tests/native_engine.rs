@@ -838,6 +838,114 @@ fn native_border_color_revert_layer_preserves_component_geometry_and_artifacts()
 }
 
 #[test]
+fn native_border_color_current_color_resolves_after_cascade_and_inheritance() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #parent { color:green; } #shorthand { display:block;width:8px;height:6px;color:blue;border:1px solid red;border-color:CURRENTcolor green currentColor black; } #sides { display:block;width:8px;height:6px;color:blue;border:2px dashed red;border-top-color:currentColor;border-right-color:CuRrEnTcOlOr;border-bottom-color:CURRENTCOLOR;border-left-color:currentColor; } #inherited { display:block;width:8px;height:6px;border:1px solid red;border-color:currentColor; } #rollback { display:block;width:8px;height:6px;color:red;border:1px solid red; } #repeat { display:block;width:8px;height:6px;color:red;border:1px solid red; } #same { display:block;width:8px;height:6px;color:green;border:1px solid red;border-color:blue;border-color:currentColor; } #invalid { display:block;width:8px;height:6px;color:blue;border:1px solid red;border-color:green;border-color:invalid; } #complete { display:block;width:8px;height:6px;color:blue;border:1px solid red;border:2px solid currentColor; } #black { display:block;width:8px;height:6px;border:1px solid red;border-color:currentColor; } #inline { display:block;width:8px;height:6px;color:blue;border:1px solid red; } } @layer theme { #rollback { color:blue;border-color:currentColor; } #repeat { color:blue;border-color:currentColor; } #same { border-color:revert-layer; } } @layer top { #rollback { border-color:revert-layer; } #repeat { border-color:currentColor;border-color:revert-layer; } } #inline { color:green;border-color:currentColor; }</style><div id='parent'><button id='shorthand'>Shorthand</button><button id='sides'>Sides</button><button id='inherited'>Inherited</button><button id='rollback'>Rollback</button><button id='repeat'>Repeat</button><button id='same'>Same</button><button id='invalid'>Invalid</button><button id='complete'>Complete</button></div><button id='black'>Black</button><button id='inline'>Inline</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 110,
+        device_scale_factor_milli: 1000,
+    };
+    let shorthand = document.resolve_target("id=shorthand").unwrap();
+    let sides = document.resolve_target("id=sides").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let repeat = document.resolve_target("id=repeat").unwrap();
+    let same = document.resolve_target("id=same").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let complete = document.resolve_target("id=complete").unwrap();
+    let black = document.resolve_target("id=black").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let targets = [
+        shorthand, sides, inherited, rollback, repeat, same, invalid, complete, black, inline,
+    ];
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: 255,
+        alpha: 255,
+    };
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: 255,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    for node_id in targets {
+        let rectangle = layout.box_for(node_id).expect("currentColor layout box");
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in targets {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected currentColor fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let shorthand_border = border_for(shorthand).expect("currentColor shorthand border command");
+    assert_eq!(shorthand_border.top.color, blue);
+    assert_eq!(shorthand_border.right.color, green);
+    assert_eq!(shorthand_border.bottom.color, blue);
+    assert_eq!(shorthand_border.left.color, NativeColor::BLACK);
+    let sides_border = border_for(sides).expect("currentColor physical border command");
+    assert_eq!(sides_border.top.color, blue);
+    assert_eq!(sides_border.right.color, blue);
+    assert_eq!(sides_border.bottom.color, blue);
+    assert_eq!(sides_border.left.color, blue);
+    assert_eq!(border_for(inherited).unwrap().top.color, green);
+    assert_eq!(border_for(rollback).unwrap().top.color, blue);
+    assert_eq!(border_for(repeat).unwrap().top.color, blue);
+    assert_eq!(border_for(same).unwrap().top.color, green);
+    assert_eq!(border_for(invalid).unwrap().top.color, green);
+    assert_eq!(border_for(complete).unwrap().top.color, NativeColor::RED);
+    assert_eq!(border_for(black).unwrap().top.color, NativeColor::BLACK);
+    assert_eq!(border_for(inline).unwrap().top.color, green);
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border"
+    }));
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-color"
+    }));
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "color"
+    }));
+
+    let shorthand_box = layout.box_for(shorthand).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(shorthand_box.x as u32, shorthand_box.y as u32),
+        Some([0, 0, 255, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_border_width_revert_layer_preserves_component_geometry_and_artifacts() {
     let document = NativeDocument::parse(
         "<style>@layer base { #shorthand { display:block;width:8px;height:6px;border:1px solid red; } #sides { display:block;width:8px;height:6px;border:2px dashed red; } #repeat { display:block;width:8px;height:6px;border:1px solid red; } #fallback { display:block;width:8px;height:6px;border:1px solid red; } #same { display:block;width:8px;height:6px;border:1px solid red;border-width:revert-layer; } #order-a { display:block;width:8px;height:6px;border-width:3px;border:1px solid red; } #order-b { display:block;width:8px;height:6px;border:1px solid red;border-width:3px; } #width-only { display:block;width:8px;height:6px;border-width:4px; } #inline { display:block;width:8px;height:6px;border:1px solid red; } } @layer theme { #shorthand { border-width:5px 6px 7px 8px; } #shorthand { border-top-width:revert-layer; } #sides { border-top-width:4px;border-right-width:revert-layer;border-bottom-width:6px;border-left-width:8px; } #repeat { border-width:4px; } #repeat { border-width:revert-layer; } #fallback { border-width:4px; } #fallback { border-width:revert-layer; } } @layer top { #repeat { border-width:revert-layer; } #fallback { border-width:revert-layer; } } #shorthand { border-width:revert-layer; } #repeat { border-width:revert-layer; } #fallback { border-width:revert-layer; }</style><button id='shorthand'>Shorthand</button><button id='sides'>Sides</button><button id='repeat'>Repeat</button><button id='fallback'>Fallback</button><button id='same'>Same</button><button id='order-a'>Order A</button><button id='order-b'>Order B</button><button id='width-only'>Width only</button><button id='inline' style='border-width:4px'>Inline</button>",

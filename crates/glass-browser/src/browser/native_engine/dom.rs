@@ -851,6 +851,7 @@ impl NativeDocument {
         let mut inherited_color = Some(NativeColor::BLACK);
         let mut inherited_background_color = None;
         let mut inherited_text_decoration_color = NativeColor::BLACK;
+        let mut inherited_border_color = [NativeColor::BLACK; 4];
         let mut inherited_direction = DirectionValue::Ltr;
         let mut inherited_white_space = WhiteSpaceValue::Normal;
         let mut inherited_line_height = None;
@@ -881,6 +882,7 @@ impl NativeDocument {
                     color: inherited_color,
                     background_color: inherited_background_color,
                     text_decoration_color: inherited_text_decoration_color,
+                    border_color: inherited_border_color,
                     direction: inherited_direction,
                     white_space: inherited_white_space,
                     line_height: inherited_line_height,
@@ -907,6 +909,7 @@ impl NativeDocument {
             inherited_text_decoration_color = style
                 .text_decoration_color()
                 .unwrap_or(style.color().unwrap_or(NativeColor::BLACK));
+            inherited_border_color = style.border_colors();
             inherited_direction = style.direction();
             inherited_white_space = style.white_space();
             inherited_line_height = style.line_height().or(inherited_line_height);

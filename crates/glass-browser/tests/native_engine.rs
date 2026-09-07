@@ -838,6 +838,124 @@ fn native_border_color_revert_layer_preserves_component_geometry_and_artifacts()
 }
 
 #[test]
+fn native_border_width_revert_layer_preserves_component_geometry_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>@layer base { #shorthand { display:block;width:8px;height:6px;border:1px solid red; } #sides { display:block;width:8px;height:6px;border:2px dashed red; } #repeat { display:block;width:8px;height:6px;border:1px solid red; } #fallback { display:block;width:8px;height:6px;border:1px solid red; } #same { display:block;width:8px;height:6px;border:1px solid red;border-width:revert-layer; } #order-a { display:block;width:8px;height:6px;border-width:3px;border:1px solid red; } #order-b { display:block;width:8px;height:6px;border:1px solid red;border-width:3px; } #width-only { display:block;width:8px;height:6px;border-width:4px; } #inline { display:block;width:8px;height:6px;border:1px solid red; } } @layer theme { #shorthand { border-width:5px 6px 7px 8px; } #shorthand { border-top-width:revert-layer; } #sides { border-top-width:4px;border-right-width:revert-layer;border-bottom-width:6px;border-left-width:8px; } #repeat { border-width:4px; } #repeat { border-width:revert-layer; } #fallback { border-width:4px; } #fallback { border-width:revert-layer; } } @layer top { #repeat { border-width:revert-layer; } #fallback { border-width:revert-layer; } } #shorthand { border-width:revert-layer; } #repeat { border-width:revert-layer; } #fallback { border-width:revert-layer; }</style><button id='shorthand'>Shorthand</button><button id='sides'>Sides</button><button id='repeat'>Repeat</button><button id='fallback'>Fallback</button><button id='same'>Same</button><button id='order-a'>Order A</button><button id='order-b'>Order B</button><button id='width-only'>Width only</button><button id='inline' style='border-width:4px'>Inline</button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let shorthand = document.resolve_target("id=shorthand").unwrap();
+    let sides = document.resolve_target("id=sides").unwrap();
+    let repeat = document.resolve_target("id=repeat").unwrap();
+    let fallback = document.resolve_target("id=fallback").unwrap();
+    let same = document.resolve_target("id=same").unwrap();
+    let order_a = document.resolve_target("id=order-a").unwrap();
+    let order_b = document.resolve_target("id=order-b").unwrap();
+    let width_only = document.resolve_target("id=width-only").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(shorthand),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 22,
+            height: 14,
+        })
+    );
+    assert_eq!(layout.box_for(sides).unwrap().width, 18);
+    assert_eq!(layout.box_for(sides).unwrap().height, 16);
+    assert_eq!(layout.box_for(repeat).unwrap().width, 10);
+    assert_eq!(layout.box_for(fallback).unwrap().width, 10);
+    assert_eq!(layout.box_for(same).unwrap().width, 8);
+    assert_eq!(layout.box_for(same).unwrap().height, 6);
+    assert_eq!(layout.box_for(order_a).unwrap().width, 10);
+    assert_eq!(layout.box_for(order_b).unwrap().width, 14);
+    assert_eq!(layout.box_for(width_only).unwrap().width, 8);
+    assert_eq!(layout.box_for(inline).unwrap().width, 16);
+    for node_id in [
+        shorthand, sides, repeat, fallback, same, order_a, order_b, width_only, inline,
+    ] {
+        let rectangle = layout.box_for(node_id).expect("border-width layout box");
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 1).into(), (rectangle.y + 1).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in [
+        shorthand, sides, repeat, fallback, same, order_a, order_b, width_only, inline,
+    ] {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected border-width fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    let shorthand_border = border_for(shorthand).expect("shorthand border command");
+    assert_eq!(shorthand_border.top.width, 1);
+    assert_eq!(shorthand_border.right.width, 6);
+    assert_eq!(shorthand_border.bottom.width, 7);
+    assert_eq!(shorthand_border.left.width, 8);
+    assert_eq!(shorthand_border.top.style, NativeBorderStyle::Solid);
+    assert_eq!(shorthand_border.top.color, NativeColor::RED);
+
+    let sides_border = border_for(sides).expect("physical width longhand command");
+    assert_eq!(sides_border.top.width, 4);
+    assert_eq!(sides_border.right.width, 2);
+    assert_eq!(sides_border.bottom.width, 6);
+    assert_eq!(sides_border.left.width, 8);
+    assert_eq!(sides_border.top.style, NativeBorderStyle::Dashed);
+    assert_eq!(sides_border.top.color, NativeColor::RED);
+
+    assert_eq!(border_for(repeat).unwrap().top.width, 1);
+    assert_eq!(border_for(fallback).unwrap().top.width, 1);
+    assert!(border_for(same).is_none());
+    assert_eq!(border_for(order_a).unwrap().top.width, 1);
+    assert_eq!(border_for(order_b).unwrap().top.width, 3);
+    assert!(border_for(width_only).is_none());
+    assert_eq!(border_for(inline).unwrap().top.width, 4);
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "border-width"
+                    | "border-top-width"
+                    | "border-right-width"
+                    | "border-bottom-width"
+                    | "border-left-width"
+            )
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(0, 0), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 7), Some([255, 0, 0, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_opacity_groups_composite_subtrees_and_preserve_layout_hit_testing() {
     let document = NativeDocument::parse(
         "<div id='parent' style='display:block;width:40px;height:20px;background-color:red;opacity:50%'><div id='child' style='display:block;width:20px;height:10px;background-color:blue'></div></div>",

@@ -1274,6 +1274,201 @@ fn native_physical_border_color_important_priority_reaches_border_artifacts() {
 }
 
 #[test]
+fn native_logical_border_color_important_priority_reaches_projected_border_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            .box { display:block;width:16px;height:8px;border:2px solid black; }
+            @layer base {
+                #ltr { direction:ltr;border-inline-start-color:red !important; }
+                #rtl { direction:rtl;border-inline-start-color:red !important; }
+                #pair { border-block-color:red blue !important; }
+                #rollback { border-block-color:red !important; }
+                #rollback { border-block-color:revert-layer !important; }
+                #normal { border-block-color:red; }
+                #mixed { border-inline-color:red !important; }
+                #invalid { border-inline-color:red !important;border-inline-color:invalid !important; }
+            }
+            @layer theme {
+                #ltr { border-inline-start-color:blue !important; }
+                #rtl { border-inline-start-color:blue !important; }
+                #pair { border-block-color:green green !important; }
+                #rollback { border-block-color:green !important; }
+                #normal { border-block-color:blue; }
+            }
+            #ltr { border-inline-start-color:green !important; }
+            #rtl { border-inline-start-color:green !important; }
+            #pair { border-block-color:green green !important; }
+            #normal { border-block-color:green; }
+            #mixed { border-inline-color:green; }
+            #invalid { border-inline-color:green; }
+        </style>
+        <div id='ltr' class='box' role='button'>Ltr</div>
+        <div id='rtl' class='box' role='button'>Rtl</div>
+        <div id='pair' class='box' role='button'>Pair</div>
+        <div id='rollback' class='box' role='button'>Rollback</div>
+        <div id='normal' class='box' role='button'>Normal</div>
+        <div id='mixed' class='box' role='button'>Mixed</div>
+        <div id='invalid' class='box' role='button'>Invalid</div>
+        <div id='inline' class='box' role='button' style='border-inline-start-color:green !important'>Inline</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let ltr = document.resolve_target("id=ltr").unwrap();
+    let rtl = document.resolve_target("id=rtl").unwrap();
+    let pair = document.resolve_target("id=pair").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let targets = [ltr, rtl, pair, rollback, normal, mixed, invalid, inline];
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let layout = document.layout(viewport).unwrap();
+    for node_id in targets {
+        let rectangle = layout
+            .box_for(node_id)
+            .expect("logical border-color layout box");
+        assert_eq!(rectangle.width, 20);
+        assert_eq!(rectangle.height, 12);
+        assert_eq!(
+            layout
+                .hit_test((rectangle.x + 3).into(), (rectangle.y + 3).into())
+                .unwrap(),
+            Some(node_id)
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    for (node_id, expected) in [
+        (
+            ltr,
+            [
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::RED,
+            ],
+        ),
+        (
+            rtl,
+            [
+                NativeColor::BLACK,
+                NativeColor::RED,
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+            ],
+        ),
+        (
+            pair,
+            [
+                NativeColor::RED,
+                NativeColor::BLACK,
+                blue,
+                NativeColor::BLACK,
+            ],
+        ),
+        (
+            rollback,
+            [green, NativeColor::BLACK, green, NativeColor::BLACK],
+        ),
+        (
+            normal,
+            [green, NativeColor::BLACK, green, NativeColor::BLACK],
+        ),
+        (
+            mixed,
+            [
+                NativeColor::BLACK,
+                NativeColor::RED,
+                NativeColor::BLACK,
+                NativeColor::RED,
+            ],
+        ),
+        (
+            invalid,
+            [
+                NativeColor::BLACK,
+                NativeColor::RED,
+                NativeColor::BLACK,
+                NativeColor::RED,
+            ],
+        ),
+        (
+            inline,
+            [
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                green,
+            ],
+        ),
+    ] {
+        let borders = border_for(node_id).expect("logical border-color command");
+        assert_eq!(
+            [
+                borders.top.color,
+                borders.right.color,
+                borders.bottom.color,
+                borders.left.color,
+            ],
+            expected,
+            "border colors for {node_id:?}"
+        );
+        assert_eq!(borders.top.width, 2);
+        assert_eq!(borders.top.style, NativeBorderStyle::Solid);
+    }
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in targets.windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-inline-color"
+    }));
+    let pair_box = layout.box_for(pair).unwrap();
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(pair_box.x + 10, pair_box.y),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+}
+
+#[test]
 fn native_complete_border_current_color_projects_all_physical_forms() {
     let document = NativeDocument::parse(
         r#"<style>@layer base {

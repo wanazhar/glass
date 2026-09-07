@@ -1502,8 +1502,9 @@ impl NativeStylesheet {
             [[None; MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS]; 4];
         let mut logical_border_color: [[Option<
             CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>,
-        >; MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES] =
-            [[None; MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
+        >; MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS];
+            LOGICAL_BORDER_SIDES] =
+            [[None; MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
         let mut border_radius: [[Option<
             CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>,
         >; MAX_NATIVE_RADIUS_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_RADIUS_CASCADE_LAYERS]; 4];
@@ -3928,6 +3929,7 @@ struct NativeLogicalBorderDeclarations {
     style_order: [usize; LOGICAL_BORDER_SIDES],
     color: [Option<LocalCascadeDeclaration<NativeBorderColorValue>>; LOGICAL_BORDER_SIDES],
     color_order: [usize; LOGICAL_BORDER_SIDES],
+    color_important: [bool; LOGICAL_BORDER_SIDES],
 }
 
 impl NativeLogicalBorderDeclarations {
@@ -3954,6 +3956,9 @@ impl NativeLogicalBorderRadiusDeclarations {
 
 type NativeLogicalBorderCandidates<T> = [[Option<CascadeValue<LocalCascadeDeclaration<T>>>;
     MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
+type NativeLogicalBorderColorCandidates =
+    [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>>;
+        MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
 type NativeLogicalBorderRadiusCandidates =
     [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>>;
         MAX_NATIVE_RADIUS_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
@@ -3970,14 +3975,14 @@ struct NativeLogicalBorderCandidateSources<'a> {
     border: &'a NativeLogicalBorderCandidates<NativeBorderDeclaration>,
     width: &'a NativeLogicalBorderCandidates<NativeBorderWidthValue>,
     style: &'a NativeLogicalBorderCandidates<NativeBorderStyleValue>,
-    color: &'a NativeLogicalBorderCandidates<NativeBorderColorValue>,
+    color: &'a NativeLogicalBorderColorCandidates,
 }
 
 struct NativeLogicalBorderCandidateTargets<'a> {
     border: &'a mut NativeLogicalBorderCandidates<NativeBorderDeclaration>,
     width: &'a mut NativeLogicalBorderCandidates<NativeBorderWidthValue>,
     style: &'a mut NativeLogicalBorderCandidates<NativeBorderStyleValue>,
-    color: &'a mut NativeLogicalBorderCandidates<NativeBorderColorValue>,
+    color: &'a mut NativeLogicalBorderColorCandidates,
 }
 
 struct NativePhysicalBorderCandidateTargets<'a> {
@@ -4004,10 +4009,10 @@ fn merge_cascade_candidate<T: Copy>(
 
 fn merge_border_color_cascade_candidate(
     candidate: CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>,
+    layer: usize,
     candidates: &mut [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>>;
              MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS],
 ) {
-    let layer = cascade_layer_index(candidate.specificity);
     if wins(
         candidate.specificity,
         candidate.order,
@@ -4103,6 +4108,7 @@ fn project_logical_border_candidates(
                             order: candidate.order,
                             inline: candidate.inline,
                         },
+                        layer,
                         &mut targets.color[physical_side],
                     );
                 }
@@ -4114,7 +4120,20 @@ fn project_logical_border_candidates(
                 merge_cascade_candidate(candidate, &mut targets.style[physical_side]);
             }
             if let Some(candidate) = sources.color[logical_side][layer] {
-                merge_border_color_cascade_candidate(candidate, &mut targets.color[physical_side]);
+                merge_border_color_cascade_candidate(
+                    candidate,
+                    layer,
+                    &mut targets.color[physical_side],
+                );
+            }
+        }
+        for layer in MAX_NATIVE_CASCADE_LAYERS..MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS {
+            if let Some(candidate) = sources.color[logical_side][layer] {
+                merge_border_color_cascade_candidate(
+                    candidate,
+                    layer,
+                    &mut targets.color[physical_side],
+                );
             }
         }
     }
@@ -4174,6 +4193,25 @@ fn apply_logical_cascade_edges<T: Copy>(
     }
 }
 
+fn apply_logical_border_color_cascade(
+    declarations: &NativeLogicalBorderDeclarations,
+    specificity: u16,
+    rule_order: usize,
+    inline: bool,
+    candidates: &mut NativeLogicalBorderColorCandidates,
+) {
+    for (index, declaration) in declarations.color.iter().copied().enumerate() {
+        apply_paint_cascade_declaration(
+            declaration,
+            specificity,
+            border_cascade_order(rule_order, declarations.color_order[index], inline),
+            inline,
+            declarations.color_important[index],
+            &mut candidates[index],
+        );
+    }
+}
+
 fn apply_logical_border_cascade(
     declarations: &NativeLogicalBorderDeclarations,
     specificity: u16,
@@ -4205,9 +4243,8 @@ fn apply_logical_border_cascade(
         inline,
         &mut *targets.style,
     );
-    apply_logical_cascade_edges(
-        &declarations.color,
-        &declarations.color_order,
+    apply_logical_border_color_cascade(
+        declarations,
         specificity,
         rule_order,
         inline,
@@ -5622,59 +5659,71 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 );
             }
             "border-block-color" => {
-                set_logical_border_pair(
+                set_logical_border_color_pair(
                     &mut declarations.logical_border.color,
                     &mut declarations.logical_border.color_order,
+                    &mut declarations.logical_border.color_important,
                     LOGICAL_BORDER_BLOCK_START,
                     LOGICAL_BORDER_BLOCK_END,
                     parse_logical_border_color_pair(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-block-start-color" => {
-                set_logical_border_side(
+                set_logical_border_color_side(
                     &mut declarations.logical_border.color,
                     &mut declarations.logical_border.color_order,
+                    &mut declarations.logical_border.color_important,
                     LOGICAL_BORDER_BLOCK_START,
                     parse_border_color_side_declaration(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-block-end-color" => {
-                set_logical_border_side(
+                set_logical_border_color_side(
                     &mut declarations.logical_border.color,
                     &mut declarations.logical_border.color_order,
+                    &mut declarations.logical_border.color_important,
                     LOGICAL_BORDER_BLOCK_END,
                     parse_border_color_side_declaration(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-inline-color" => {
-                set_logical_border_pair(
+                set_logical_border_color_pair(
                     &mut declarations.logical_border.color,
                     &mut declarations.logical_border.color_order,
+                    &mut declarations.logical_border.color_important,
                     LOGICAL_BORDER_INLINE_START,
                     LOGICAL_BORDER_INLINE_END,
                     parse_logical_border_color_pair(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-inline-start-color" => {
-                set_logical_border_side(
+                set_logical_border_color_side(
                     &mut declarations.logical_border.color,
                     &mut declarations.logical_border.color_order,
+                    &mut declarations.logical_border.color_important,
                     LOGICAL_BORDER_INLINE_START,
                     parse_border_color_side_declaration(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-inline-end-color" => {
-                set_logical_border_side(
+                set_logical_border_color_side(
                     &mut declarations.logical_border.color,
                     &mut declarations.logical_border.color_order,
+                    &mut declarations.logical_border.color_important,
                     LOGICAL_BORDER_INLINE_END,
                     parse_border_color_side_declaration(value),
                     declaration_order,
+                    important,
                 );
             }
             "border-radius" => {
@@ -6541,6 +6590,43 @@ fn set_logical_border_side<T: Copy>(
     if let Some(value) = value {
         sides[index] = Some(value);
         orders[index] = declaration_order;
+    }
+}
+
+fn set_logical_border_color_pair(
+    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderColorValue>>; LOGICAL_BORDER_SIDES],
+    orders: &mut [usize; LOGICAL_BORDER_SIDES],
+    important_flags: &mut [bool; LOGICAL_BORDER_SIDES],
+    start: usize,
+    end: usize,
+    values: Option<[LocalCascadeDeclaration<NativeBorderColorValue>; 2]>,
+    declaration_order: usize,
+    important: bool,
+) {
+    let Some([start_value, end_value]) = values else {
+        return;
+    };
+    sides[start] = Some(start_value);
+    sides[end] = Some(end_value);
+    orders[start] = declaration_order;
+    orders[end] = declaration_order;
+    important_flags[start] = important;
+    important_flags[end] = important;
+}
+
+fn set_logical_border_color_side(
+    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderColorValue>>; LOGICAL_BORDER_SIDES],
+    orders: &mut [usize; LOGICAL_BORDER_SIDES],
+    important_flags: &mut [bool; LOGICAL_BORDER_SIDES],
+    index: usize,
+    value: Option<LocalCascadeDeclaration<NativeBorderColorValue>>,
+    declaration_order: usize,
+    important: bool,
+) {
+    if let Some(value) = value {
+        sides[index] = Some(value);
+        orders[index] = declaration_order;
+        important_flags[index] = important;
     }
 }
 
@@ -13109,6 +13195,129 @@ mod tests {
 
         let inline = node("<div id='inline' style='border-color:green !important'>Inline</div>");
         assert_eq!(stylesheet.computed_for(&inline).border_colors(), [green; 4]);
+    }
+
+    #[test]
+    fn logical_border_color_important_parser_tracks_valid_terminal_markers() {
+        let declarations = parse_declarations(
+            "border-block-color: red !IMPORTANT; border-inline-start-color: blue !important; border-inline-end-color: invalid !important; border-inline-end-color: green;",
+        );
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        let green = NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: u8::MAX,
+        };
+        assert_eq!(
+            declarations.logical_border.color,
+            [
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderColorValue::Color(NativeColor::RED)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderColorValue::Color(NativeColor::RED)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderColorValue::Color(blue)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderColorValue::Color(green)
+                )),
+            ]
+        );
+        assert_eq!(
+            declarations.logical_border.color_important,
+            [true, true, true, false]
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_logical_border_color_important_priority_and_projection() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #start { direction:ltr; border-inline-start-color:red !important; } #rtl { direction:rtl; border-inline-start-color:red !important; } #rollback { border-block-color:red !important; } #rollback { border-block-color:revert-layer !important; } #normal { border-block-color:red; } #mixed { border-inline-color:red !important; } #pair { border-block-color:red blue !important; } } @layer theme { #start { border-inline-start-color:blue !important; } #rtl { border-inline-start-color:blue !important; } #rollback { border-block-color:green !important; } #normal { border-block-color:blue; } #pair { border-block-color:green green !important; } } #start { border-inline-start-color:green !important; } #rtl { border-inline-start-color:green !important; } #normal { border-block-color:green; } #mixed { border-inline-color:green; } #pair { border-block-color:green green !important; } #inline { border-inline-start-color:red !important; } #rollback { border-block-color:green !important; }".into(),
+        ])
+        .unwrap();
+        let computed = |id: &str| {
+            stylesheet
+                .computed_for(&node(&format!("<div id='{id}'>Text</div>")))
+                .border_colors()
+        };
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        let green = NativeColor {
+            red: 0,
+            green: 128,
+            blue: 0,
+            alpha: u8::MAX,
+        };
+
+        assert_eq!(
+            computed("start"),
+            [
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::RED
+            ]
+        );
+        assert_eq!(
+            computed("rtl"),
+            [
+                NativeColor::BLACK,
+                NativeColor::RED,
+                NativeColor::BLACK,
+                NativeColor::BLACK
+            ]
+        );
+        assert_eq!(
+            computed("rollback"),
+            [green, NativeColor::BLACK, green, NativeColor::BLACK]
+        );
+        assert_eq!(
+            computed("normal"),
+            [green, NativeColor::BLACK, green, NativeColor::BLACK]
+        );
+        assert_eq!(
+            computed("mixed"),
+            [
+                NativeColor::BLACK,
+                NativeColor::RED,
+                NativeColor::BLACK,
+                NativeColor::RED
+            ]
+        );
+        assert_eq!(
+            computed("pair"),
+            [
+                NativeColor::RED,
+                NativeColor::BLACK,
+                blue,
+                NativeColor::BLACK
+            ]
+        );
+
+        let inline = node(
+            "<div id='inline' style='border-inline-start-color:green !important'>Inline</div>",
+        );
+        assert_eq!(
+            stylesheet.computed_for(&inline).border_colors(),
+            [
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                green
+            ]
+        );
     }
 
     #[test]

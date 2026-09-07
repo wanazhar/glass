@@ -1203,15 +1203,19 @@ browser-wide border conformance remain outside the boundary. Focused,
 full-native/library, strict Clippy, rustdoc, two-crate, formatting, static
 documentation, and bounded cleanup gates are recorded in the task; remote CI
 remains pending because the checkout is local-only.
-The next dependency-ordered `native-engine-163` slice is designed and recorded
-in `docs/plan/tasks/native-engine-163.md`. It will extend the same private
-deferred-color boundary to `background-color: currentColor`, resolving against
-the element's local or inherited `color` only at computed-style construction
-while preserving the public `Option<NativeColor>` fill surface and all existing
+The completed dependency-ordered `native-engine-163` slice is recorded in
+`docs/plan/tasks/native-engine-163.md`; design is `764e0c86` and implementation
+is `7a406855`. It extends the same private deferred-color boundary to
+`background-color: currentColor`, resolving against the element's local or
+inherited `color` only at computed-style construction while preserving the
+public `Option<NativeColor>` fill surface and all existing
 layout/display-list/capture/raster/hit/semantic owners. `color: currentColor`,
 gradients, images, system colors, color spaces, percentages, CSS-wide reset
-machinery, and browser-wide color conformance remain outside the planned
-boundary; no implementation or completion claim is made yet.
+machinery, and browser-wide color conformance remain outside the boundary.
+Focused/full-native/library, strict Clippy, rustdoc, two-crate, package,
+formatting, static documentation, workspace all-target/all-feature, and bounded
+cleanup gates passed locally; exact evidence is recorded in the task. Remote CI
+remains pending because the checkout is local-only.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

@@ -328,6 +328,13 @@ The complete and physical border shorthands also accept bounded complete
 `Npx none color` values; declared width and color remain private for future
 table conflict resolution, while current non-table composition suppresses
 none paint.
+The complete and physical border shorthands also accept exact case-insensitive
+CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert` values.
+Explicit `inherit` copies the parent's effective physical width, style, and
+color side values, including private `none`/`hidden`, zero-width, and unpainted
+states; reset forms project zero width, private `none`, and `currentColor` so
+later component declarations can compose, while ordinary omission remains
+omission. Mixed CSS-wide/concrete forms remain unsupported.
 The native decoration surface also supports inherited signed fixed-pixel
 `text-underline-offset:-4px..=4px`; it moves only the underline toward
 decreasing or increasing y, keeps overline and line-through origins stable, and

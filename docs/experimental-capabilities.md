@@ -240,7 +240,13 @@ values with private width/color retention for future table conflict resolution;
 current non-table composition suppresses hidden paint. Complete and physical
 border shorthands also accept bounded complete `Npx none color` values with
 private width/color retention for future table conflict resolution; current
-non-table composition suppresses none paint. It also provides bounded side-specific
+non-table composition suppresses none paint. The same complete physical border
+shorthands also accept exact case-insensitive CSS-wide `inherit`, `unset`,
+`initial`, and one-author-origin `revert` values. Explicit `inherit` copies
+effective parent width/style/color sides, including private `none`/`hidden`,
+zero-width, and unpainted states; reset forms project zero width, private
+`none`, and `currentColor` for later component composition; ordinary omission
+remains omission and mixed CSS-wide/concrete forms remain unsupported. It also provides bounded side-specific
 solid/dashed/dotted/double/groove/ridge/inset/outset-border paint,
 bounded physical circular border radii, bounded inline-box line placement, bounded fixed pixel line-height
 flow with bounded inherited line-height, bounded direct-text flow fragments and

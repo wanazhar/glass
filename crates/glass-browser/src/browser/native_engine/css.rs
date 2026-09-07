@@ -53,6 +53,24 @@ impl NativeColor {
     };
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeColorValue {
+    Color(NativeColor),
+    CurrentColor,
+}
+
+impl NativeColorValue {
+    const fn resolve(self, inherited: Option<NativeColor>) -> NativeColor {
+        match self {
+            Self::Color(color) => color,
+            Self::CurrentColor => match inherited {
+                Some(color) => color,
+                None => NativeColor::BLACK,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeBorderStyle {
     #[default]
@@ -1345,7 +1363,7 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut box_sizing: [Option<CascadeValue<LocalCascadeDeclaration<NativeBoxSizing>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>;
+        let mut color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColorValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut overflow_x: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
@@ -2395,7 +2413,7 @@ impl NativeStylesheet {
             std::array::from_fn(|index| {
                 resolve_local_optional_cascade_declaration(border_style[index])
             });
-        let resolved_color = resolve_local_optional_cascade_declaration(color).or(inherited.color);
+        let resolved_color = resolve_local_color_declaration(color, inherited.color);
         let current_color = resolved_color.unwrap_or(NativeColor::BLACK);
         let resolved_background_color =
             resolve_local_optional_cascade_declaration(background_color)
@@ -2790,6 +2808,17 @@ fn resolve_local_optional_cascade_declaration<T: Copy>(
 ) -> Option<T> {
     resolve_alignment_candidates(candidates, None, |declaration| match declaration {
         LocalCascadeDeclaration::Value(value) => Some(Some(value)),
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_color_declaration(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeColorValue>>>;
+        MAX_NATIVE_CASCADE_LAYERS],
+    inherited: Option<NativeColor>,
+) -> Option<NativeColor> {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => Some(Some(value.resolve(inherited))),
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -3490,7 +3519,7 @@ struct NativeDeclarations {
     padding: [Option<LocalCascadeDeclaration<u32>>; 4],
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
     box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
-    color: Option<LocalCascadeDeclaration<NativeColor>>,
+    color: Option<LocalCascadeDeclaration<NativeColorValue>>,
     overflow: Option<LocalCascadeDeclaration<OverflowValue>>,
     overflow_x: Option<LocalCascadeDeclaration<OverflowValue>>,
     overflow_y: Option<LocalCascadeDeclaration<OverflowValue>>,
@@ -5064,11 +5093,18 @@ fn parse_text_decoration_color(value: &str) -> Option<NativeTextDecorationColorD
     parse_color(value).map(NativeTextDecorationColorDeclaration::Value)
 }
 
-fn parse_local_color_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeColor>> {
+fn parse_local_color_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeColorValue>> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some(LocalCascadeDeclaration::RevertLayer);
     }
-    parse_color(value).map(LocalCascadeDeclaration::Value)
+    if value.trim().eq_ignore_ascii_case("currentColor") {
+        return Some(LocalCascadeDeclaration::Value(
+            NativeColorValue::CurrentColor,
+        ));
+    }
+    parse_color(value)
+        .map(NativeColorValue::Color)
+        .map(LocalCascadeDeclaration::Value)
 }
 
 fn set_border_side(
@@ -6452,7 +6488,9 @@ mod tests {
         );
         assert_eq!(
             declarations.color,
-            Some(LocalCascadeDeclaration::Value(NativeColor::RED))
+            Some(LocalCascadeDeclaration::Value(NativeColorValue::Color(
+                NativeColor::RED
+            )))
         );
         let parsed_color = NativeColor {
             red: 16,
@@ -6608,12 +6646,14 @@ mod tests {
         );
         assert_eq!(
             parse_local_color_declaration("rgba(1, 2, 3, 0.5)"),
-            Some(LocalCascadeDeclaration::Value(NativeColor {
-                red: 1,
-                green: 2,
-                blue: 3,
-                alpha: 128,
-            }))
+            Some(LocalCascadeDeclaration::Value(NativeColorValue::Color(
+                NativeColor {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                    alpha: 128,
+                }
+            )))
         );
         for value in [
             "revert-layer red",
@@ -6621,12 +6661,60 @@ mod tests {
             "inherit",
             "unset",
             "revert",
-            "currentColor",
             "linear-gradient(red, blue)",
             "color(display-p3 1 0 0)",
         ] {
             assert_eq!(parse_local_color_declaration(value), None, "value={value}");
         }
+        assert_eq!(
+            parse_local_color_declaration("CuRrEnTcOlOr"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeColorValue::CurrentColor
+            ))
+        );
+
+        let document = NativeDocument::parse(
+            "<style>#parent { color:green; } #current { color:currentColor; } #root { color:currentColor; }</style><div id='parent'><span id='current'>Current</span></div><div id='root'>Root</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let current = document.resolve_target("id=current").unwrap();
+        let root = document.resolve_target("id=root").unwrap();
+        let omitted_document = NativeDocument::parse(
+            "<div id='omitted'>Omitted</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let omitted = omitted_document.resolve_target("id=omitted").unwrap();
+        assert_eq!(
+            document.computed_style_for_layout(parent).color(),
+            Some(NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: u8::MAX,
+            })
+        );
+        assert_eq!(
+            document.computed_style_for_layout(current).color(),
+            Some(NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: u8::MAX,
+            })
+        );
+        assert_eq!(
+            document.computed_style_for_layout(root).color(),
+            Some(NativeColor::BLACK)
+        );
+        assert_eq!(
+            NativeStylesheet::default()
+                .computed_for(omitted_document.node(omitted).unwrap())
+                .color(),
+            None
+        );
 
         let declarations = parse_declarations(
             "background-color: red; background-color: currentColor; color: blue; color: inherit",
@@ -6639,7 +6727,9 @@ mod tests {
         );
         assert_eq!(
             declarations.color,
-            Some(LocalCascadeDeclaration::Value(blue))
+            Some(LocalCascadeDeclaration::Value(NativeColorValue::Color(
+                blue
+            )))
         );
         assert_eq!(
             parse_declarations("background-color: revert-layer").background_color,

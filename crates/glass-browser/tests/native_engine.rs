@@ -6155,6 +6155,142 @@ fn native_background_current_color_resolves_through_fill_and_raster_owners() {
 }
 
 #[test]
+fn native_color_current_color_resolves_from_inherited_owner_without_recursion() {
+    let document = NativeDocument::parse(
+        "<style>.surface { display:block;width:64px;height:20px;line-height:20px;background-color:currentColor;border:1px solid currentColor;text-decoration:underline;text-decoration-color:currentColor; } @layer base { #parent { color:green; } #surface { color:currentColor; } #rollback { color:red; } #invalid { color:red;color:currentColor;color:invalid; } } @layer theme { #rollback { color:currentColor; } } #rollback { color:revert-layer; } #concrete { color:blue; }</style><div id='parent' role='button'><div id='surface' class='surface' role='button'>Surface</div><div id='rollback' class='surface' role='button'>Rollback</div><div id='invalid' class='surface' role='button'>Invalid</div><div id='inline' class='surface' style='color:currentColor'>Inline</div></div><div id='root-current' class='surface'>Root</div><div id='concrete' class='surface' style='color:currentColor;color:blue'>Concrete</div><div id='omitted' class='surface'>Omitted</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 80,
+        height: 220,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let surface = document.resolve_target("id=surface").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let root_current = document.resolve_target("id=root-current").unwrap();
+    let concrete = document.resolve_target("id=concrete").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let green = NativeColor {
+        red: 0,
+        green: 128,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let blue = NativeColor {
+        red: 0,
+        green: 0,
+        blue: u8::MAX,
+        alpha: u8::MAX,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout
+            .hit_test(
+                (layout.box_for(surface).unwrap().x + 1).into(),
+                (layout.box_for(surface).unwrap().y + 1).into(),
+            )
+            .unwrap(),
+        Some(surface)
+    );
+    assert!(layout.box_for(root_current).is_some());
+    assert!(layout.box_for(omitted).is_some());
+
+    let list = document.display_list(viewport).unwrap();
+    let text_for = |node_id| {
+        list.commands
+            .iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::TextRun {
+                    node_id: command_node_id,
+                    origin,
+                    color,
+                    decoration_color,
+                    ..
+                } if *command_node_id == node_id => Some((*origin, *color, *decoration_color)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text command for {node_id:?}"))
+    };
+    let fill_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                color,
+                ..
+            } if *command_node_id == node_id => Some(*color),
+            _ => None,
+        })
+    };
+    let border_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                borders,
+                ..
+            } if *command_node_id == node_id => Some(*borders),
+            _ => None,
+        })
+    };
+    for node_id in [surface, rollback, invalid, inline] {
+        let text = text_for(node_id);
+        assert_eq!(text.1, green);
+        assert_eq!(text.2, green);
+        assert_eq!(fill_for(node_id), Some(green));
+        assert_eq!(border_for(node_id).unwrap().top.color, green);
+    }
+    assert_eq!(text_for(root_current).1, NativeColor::BLACK);
+    assert_eq!(text_for(root_current).2, NativeColor::BLACK);
+    assert_eq!(fill_for(root_current), Some(NativeColor::BLACK));
+    assert_eq!(
+        border_for(root_current).unwrap().top.color,
+        NativeColor::BLACK
+    );
+    assert_eq!(text_for(concrete).1, blue);
+    assert_eq!(text_for(concrete).2, blue);
+    assert_eq!(fill_for(concrete), Some(blue));
+    assert_eq!(border_for(concrete).unwrap().top.color, blue);
+    assert_eq!(text_for(omitted).1, NativeColor::BLACK);
+    assert_eq!(text_for(omitted).2, NativeColor::BLACK);
+
+    let surface_text = text_for(surface);
+    let raster = list.rasterize().unwrap();
+    assert_eq!(
+        raster.pixel(surface_text.0.x + 1, surface_text.0.y),
+        Some([0, 128, 0, 255])
+    );
+    assert!(!raster.to_png().unwrap().is_empty());
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [(parent, surface), (surface, rollback), (rollback, invalid)] {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair.0)
+                < semantic_ids.iter().position(|id| *id == pair.1),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert_eq!(
+        document
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                    && diagnostic.detail == "color"
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn native_display_list_inherits_text_color_and_preserves_transparent_override() {
     let document = NativeDocument::parse(
         "<style>#parent { color: blue; }</style><div id='parent'><span id='child'>Child</span><span id='transparent' style='color:transparent'>Clear</span></div>",

@@ -1194,6 +1194,13 @@ documentation, and bounded cleanup gates passed locally; exact evidence is
 recorded in the task. Remote CI remains pending because the checkout is
 local-only. Complete border shorthands with `currentColor` and broader
 `currentColor` semantics remain outside the boundary.
+The next dependency-ordered `native-engine-162` slice is designed and recorded
+in `docs/plan/tasks/native-engine-162.md`. It will extend the private deferred
+color path to complete physical `Npx <style> currentColor` values, including
+the existing private `none` and `hidden` style forms, while preserving concrete
+public border values and leaving omitted defaults and broader color semantics
+outside the boundary. It remains planned until implementation and local gates
+are complete.
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

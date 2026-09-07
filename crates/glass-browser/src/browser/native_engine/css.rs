@@ -19,6 +19,7 @@ const CASCADE_SPECIFICITY_BITS: u32 = 12;
 const CASCADE_SPECIFICITY_STRIDE: u16 = 1 << CASCADE_SPECIFICITY_BITS;
 const MAX_NATIVE_SELECTOR_SPECIFICITY: u16 = CASCADE_SPECIFICITY_STRIDE - 1;
 const MAX_NATIVE_CASCADE_LAYERS: usize = MAX_NATIVE_NAMED_CASCADE_LAYERS + 1;
+const CASCADE_DECLARATION_ORDER_STRIDE: usize = 256 * 1024 + 1;
 
 /// A bounded RGBA color used by the native display-list seed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1259,6 +1260,8 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderSide>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
+        let mut border_color: [[Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>;
+            MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut border_radius: [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderRadius>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut padding: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
@@ -1777,6 +1780,13 @@ impl NativeStylesheet {
                 false,
                 &mut border,
             );
+            apply_border_color_cascade(
+                &rule.declarations,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                &mut border_color,
+            );
             apply_local_cascade_declaration(
                 rule.declarations.border_radius,
                 rule.selector.specificity,
@@ -2214,6 +2224,13 @@ impl NativeStylesheet {
                 true,
                 &mut border,
             );
+            apply_border_color_cascade(
+                &declarations,
+                u16::MAX,
+                usize::MAX,
+                true,
+                &mut border_color,
+            );
             apply_local_cascade_declaration(
                 declarations.border_radius,
                 u16::MAX,
@@ -2267,6 +2284,14 @@ impl NativeStylesheet {
 
         let resolved_padding = padding.map(resolve_local_optional_cascade_declaration);
         let resolved_margin = margin.map(resolve_local_optional_cascade_declaration);
+        let resolved_border = border.map(resolve_local_optional_cascade_declaration);
+        let resolved_border_color = border_color.map(resolve_local_optional_cascade_declaration);
+        let resolved_border = std::array::from_fn(|index| {
+            resolved_border[index].map(|side| NativeBorderSide {
+                color: resolved_border_color[index].unwrap_or(NativeColor::BLACK),
+                ..side
+            })
+        });
 
         NativeComputedStyle {
             display: resolve_local_cascade_declaration(display, DisplayValue::Auto),
@@ -2343,9 +2368,7 @@ impl NativeStylesheet {
             max_height: resolve_local_optional_cascade_declaration(max_height),
             line_height: resolve_line_height(line_height, inherited.line_height),
             background_color: resolve_local_optional_cascade_declaration(background_color),
-            border: NativeBorder::from_sides(
-                border.map(resolve_local_optional_cascade_declaration),
-            ),
+            border: NativeBorder::from_sides(resolved_border),
             border_radius: resolve_local_cascade_declaration(
                 border_radius,
                 NativeBorderRadius::default(),
@@ -3078,6 +3101,44 @@ fn apply_local_cascade_declaration<T: Copy>(
     }
 }
 
+fn border_cascade_order(rule_order: usize, declaration_order: usize, inline: bool) -> usize {
+    if inline {
+        declaration_order
+    } else {
+        rule_order
+            .saturating_mul(CASCADE_DECLARATION_ORDER_STRIDE)
+            .saturating_add(declaration_order)
+    }
+}
+
+fn apply_border_color_cascade(
+    declarations: &NativeDeclarations,
+    specificity: u16,
+    rule_order: usize,
+    inline: bool,
+    candidates: &mut [[Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>; MAX_NATIVE_CASCADE_LAYERS];
+             4],
+) {
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        let border_order =
+            border_cascade_order(rule_order, declarations.border_order[index], inline);
+        let border_color = declarations.border[index].map(|declaration| match declaration {
+            LocalCascadeDeclaration::Value(border) => {
+                LocalCascadeDeclaration::Value(border.color())
+            }
+            LocalCascadeDeclaration::RevertLayer => LocalCascadeDeclaration::RevertLayer,
+        });
+        apply_local_cascade_declaration(border_color, specificity, border_order, inline, candidate);
+        apply_local_cascade_declaration(
+            declarations.border_color[index],
+            specificity,
+            border_cascade_order(rule_order, declarations.border_color_order[index], inline),
+            inline,
+            candidate,
+        );
+    }
+}
+
 fn apply_local_cascade_edges<T: Copy>(
     declarations: &[Option<LocalCascadeDeclaration<T>>; 4],
     specificity: u16,
@@ -3148,6 +3209,9 @@ struct NativeDeclarations {
     line_height: Option<LineHeightDeclaration>,
     background_color: Option<LocalCascadeDeclaration<NativeColor>>,
     border: [Option<LocalCascadeDeclaration<NativeBorderSide>>; 4],
+    border_order: [usize; 4],
+    border_color: [Option<LocalCascadeDeclaration<NativeColor>>; 4],
+    border_color_order: [usize; 4],
     border_radius: Option<LocalCascadeDeclaration<NativeBorderRadius>>,
     padding: [Option<LocalCascadeDeclaration<u32>>; 4],
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
@@ -3449,6 +3513,7 @@ fn parse_style_rule(
         || declarations.line_height.is_some()
         || declarations.background_color.is_some()
         || declarations.border.iter().any(Option::is_some)
+        || declarations.border_color.iter().any(Option::is_some)
         || declarations.border_radius.is_some()
         || declarations.padding.iter().any(Option::is_some)
         || declarations.margin.iter().any(Option::is_some)
@@ -3640,6 +3705,11 @@ fn parse_declarations_with_diagnostics(
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
                 parse_border_declaration(value).is_some()
             }
+            "border-color" => parse_border_color_declaration(value).is_some(),
+            "border-top-color"
+            | "border-right-color"
+            | "border-bottom-color"
+            | "border-left-color" => parse_border_color_side_declaration(value).is_some(),
             "border-radius" => parse_border_radius_declaration(value).is_some(),
             "padding" => parse_local_box_edges(value).is_some(),
             "margin" => parse_local_margin_edges(value).is_some(),
@@ -3748,6 +3818,11 @@ fn is_known_css_property(property: &str) -> bool {
             | "border-right"
             | "border-bottom"
             | "border-left"
+            | "border-color"
+            | "border-top-color"
+            | "border-right-color"
+            | "border-bottom-color"
+            | "border-left-color"
             | "border-radius"
             | "padding"
             | "margin"
@@ -4018,19 +4093,86 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "border" => {
                 if let Some(border) = parse_border_declaration(value) {
                     declarations.border = [Some(border); 4];
+                    declarations.border_order = [declaration_order; 4];
                 }
             }
             "border-top" => {
-                set_border_side(&mut declarations.border, 0, value);
+                set_border_side(
+                    &mut declarations.border,
+                    &mut declarations.border_order,
+                    0,
+                    value,
+                    declaration_order,
+                );
             }
             "border-right" => {
-                set_border_side(&mut declarations.border, 1, value);
+                set_border_side(
+                    &mut declarations.border,
+                    &mut declarations.border_order,
+                    1,
+                    value,
+                    declaration_order,
+                );
             }
             "border-bottom" => {
-                set_border_side(&mut declarations.border, 2, value);
+                set_border_side(
+                    &mut declarations.border,
+                    &mut declarations.border_order,
+                    2,
+                    value,
+                    declaration_order,
+                );
             }
             "border-left" => {
-                set_border_side(&mut declarations.border, 3, value);
+                set_border_side(
+                    &mut declarations.border,
+                    &mut declarations.border_order,
+                    3,
+                    value,
+                    declaration_order,
+                );
+            }
+            "border-color" => {
+                if let Some(values) = parse_border_color_declaration(value) {
+                    declarations.border_color = values.map(Some);
+                    declarations.border_color_order = [declaration_order; 4];
+                }
+            }
+            "border-top-color" => {
+                set_border_color_side(
+                    &mut declarations.border_color,
+                    &mut declarations.border_color_order,
+                    0,
+                    value,
+                    declaration_order,
+                );
+            }
+            "border-right-color" => {
+                set_border_color_side(
+                    &mut declarations.border_color,
+                    &mut declarations.border_color_order,
+                    1,
+                    value,
+                    declaration_order,
+                );
+            }
+            "border-bottom-color" => {
+                set_border_color_side(
+                    &mut declarations.border_color,
+                    &mut declarations.border_color_order,
+                    2,
+                    value,
+                    declaration_order,
+                );
+            }
+            "border-left-color" => {
+                set_border_color_side(
+                    &mut declarations.border_color,
+                    &mut declarations.border_color_order,
+                    3,
+                    value,
+                    declaration_order,
+                );
             }
             "border-radius" => {
                 if let Some(parsed) = parse_border_radius_declaration(value) {
@@ -4134,6 +4276,68 @@ fn parse_border(value: &str) -> Option<NativeBorderSide> {
 
 fn parse_border_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeBorderSide>> {
     parse_local_cascade_declaration(value, parse_border)
+}
+
+fn parse_border_color(value: &str) -> Option<[NativeColor; 4]> {
+    let values = split_css_value_tokens(value)?
+        .into_iter()
+        .map(parse_color)
+        .collect::<Option<Vec<_>>>()?;
+    match values.as_slice() {
+        [all] => Some([*all; 4]),
+        [top, right] => Some([*top, *right, *top, *right]),
+        [top, horizontal, bottom] => Some([*top, *horizontal, *bottom, *horizontal]),
+        [top, right, bottom, left] => Some([*top, *right, *bottom, *left]),
+        _ => None,
+    }
+}
+
+fn parse_border_color_declaration(
+    value: &str,
+) -> Option<[LocalCascadeDeclaration<NativeColor>; 4]> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some([LocalCascadeDeclaration::RevertLayer; 4]);
+    }
+    parse_border_color(value).map(|values| values.map(LocalCascadeDeclaration::Value))
+}
+
+fn parse_border_color_side_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeColor>> {
+    parse_local_cascade_declaration(value, parse_color)
+}
+
+fn split_css_value_tokens(value: &str) -> Option<Vec<&str>> {
+    let mut tokens = Vec::new();
+    let mut start = None;
+    let mut parentheses = 0usize;
+    for (index, byte) in value.bytes().enumerate() {
+        match byte {
+            b'(' => {
+                if start.is_none() {
+                    start = Some(index);
+                }
+                parentheses = parentheses.checked_add(1)?;
+            }
+            b')' => {
+                parentheses = parentheses.checked_sub(1)?;
+            }
+            byte if byte.is_ascii_whitespace() && parentheses == 0 => {
+                if let Some(start) = start.take() {
+                    tokens.push(&value[start..index]);
+                }
+            }
+            _ if start.is_none() => start = Some(index),
+            _ => {}
+        }
+    }
+    if parentheses != 0 {
+        return None;
+    }
+    if let Some(start) = start {
+        tokens.push(&value[start..]);
+    }
+    (!tokens.is_empty()).then_some(tokens)
 }
 
 fn parse_border_radius(value: &str) -> Option<NativeBorderRadius> {
@@ -4373,11 +4577,27 @@ fn parse_local_color_declaration(value: &str) -> Option<LocalCascadeDeclaration<
 
 fn set_border_side(
     sides: &mut [Option<LocalCascadeDeclaration<NativeBorderSide>>; 4],
+    orders: &mut [usize; 4],
     index: usize,
     value: &str,
+    declaration_order: usize,
 ) {
     if let Some(border) = parse_border_declaration(value) {
         sides[index] = Some(border);
+        orders[index] = declaration_order;
+    }
+}
+
+fn set_border_color_side(
+    sides: &mut [Option<LocalCascadeDeclaration<NativeColor>>; 4],
+    orders: &mut [usize; 4],
+    index: usize,
+    value: &str,
+    declaration_order: usize,
+) {
+    if let Some(color) = parse_border_color_side_declaration(value) {
+        sides[index] = Some(color);
+        orders[index] = declaration_order;
     }
 }
 
@@ -6261,6 +6481,143 @@ mod tests {
             diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
                 && diagnostic.detail == "border"
         }));
+    }
+
+    #[test]
+    fn border_color_parser_expands_physical_values_and_rejects_mixed_forms() {
+        let declarations = parse_declarations(
+            "border-color: red green rgb(1, 2, 3) #123456; border-top-color: transparent; border-right-color: RGBA(4, 5, 6, 0.5); border-bottom-color: ReVeRt-LaYeR; border-left-color: #abcdef",
+        );
+        assert_eq!(
+            declarations.border_color,
+            [
+                Some(LocalCascadeDeclaration::Value(NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    alpha: 0,
+                })),
+                Some(LocalCascadeDeclaration::Value(NativeColor {
+                    red: 4,
+                    green: 5,
+                    blue: 6,
+                    alpha: 128,
+                })),
+                Some(LocalCascadeDeclaration::RevertLayer),
+                Some(LocalCascadeDeclaration::Value(NativeColor {
+                    red: 171,
+                    green: 205,
+                    blue: 239,
+                    alpha: 255,
+                })),
+            ]
+        );
+        assert_eq!(declarations.border_color_order, [1, 2, 3, 4]);
+        assert_eq!(
+            parse_border_color("red green blue black"),
+            Some([
+                NativeColor::RED,
+                NativeColor {
+                    red: 0,
+                    green: 128,
+                    blue: 0,
+                    alpha: 255,
+                },
+                NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: 255,
+                    alpha: 255,
+                },
+                NativeColor::BLACK,
+            ])
+        );
+        assert_eq!(
+            parse_border_color_declaration("revert-layer"),
+            Some([LocalCascadeDeclaration::RevertLayer; 4])
+        );
+        for value in [
+            "revert-layer red",
+            "red revert-layer",
+            "red green blue black white",
+            "red currentColor",
+            "rgb(1, 2, 3",
+        ] {
+            assert_eq!(parse_border_color_declaration(value), None, "{value}");
+        }
+        assert_eq!(
+            parse_border_color_side_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+        assert_eq!(parse_border_color_side_declaration("red blue"), None);
+    }
+
+    #[test]
+    fn border_color_revert_layer_resolves_component_candidates_in_order() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #named { border: 2px solid red; border-color: red green blue black; } #repeat { border: 1px solid red; } #fallback { border: 1px solid red; } #same { border: 1px solid red; border-color: revert-layer; } #order-a { border-color: blue; border: 1px solid red; } #order-b { border: 1px solid red; border-color: blue; } } @layer theme { #named { border-color: blue green blue black; } #named { border-top-color: revert-layer; } #repeat { border-color: blue; } #repeat { border-color: revert-layer; } #fallback { border-color: revert-layer; } } @layer top { #repeat { border-color: revert-layer; } } #named { border-color: revert-layer; } #repeat { border-color: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let named = node("<div id='named'>Named</div>");
+        let repeat = node("<div id='repeat'>Repeat</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let same = node("<div id='same'>Same</div>");
+        let order_a = node("<div id='order-a'>Order A</div>");
+        let order_b = node("<div id='order-b'>Order B</div>");
+
+        let named_border = stylesheet.computed_for(&named).border.unwrap();
+        assert_eq!(named_border.top(), border_side(2, NativeColor::RED));
+        assert_eq!(
+            named_border.right(),
+            border_side(
+                2,
+                NativeColor {
+                    red: 0,
+                    green: 128,
+                    blue: 0,
+                    alpha: 255,
+                },
+            )
+        );
+        assert_eq!(
+            named_border.bottom(),
+            border_side(
+                2,
+                NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: 255,
+                    alpha: 255,
+                },
+            )
+        );
+        assert_eq!(named_border.left(), border_side(2, NativeColor::BLACK));
+
+        let repeat_border = stylesheet.computed_for(&repeat).border.unwrap();
+        assert_eq!(repeat_border, uniform_border(1, NativeColor::RED));
+        let fallback_border = stylesheet.computed_for(&fallback).border.unwrap();
+        assert_eq!(fallback_border, uniform_border(1, NativeColor::RED));
+        assert_eq!(
+            stylesheet.computed_for(&same).border.unwrap(),
+            uniform_border(1, NativeColor::BLACK)
+        );
+        assert_eq!(
+            stylesheet.computed_for(&order_a).border.unwrap(),
+            uniform_border(1, NativeColor::RED)
+        );
+        assert_eq!(
+            stylesheet.computed_for(&order_b).border.unwrap(),
+            uniform_border(
+                1,
+                NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: 255,
+                    alpha: 255,
+                },
+            )
+        );
     }
 
     #[test]

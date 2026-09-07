@@ -1749,11 +1749,7 @@ fn native_border_style_css_wide_keywords_preserve_physical_geometry_and_consumer
     }
     for node_id in [invalid, layered, inline] {
         assert_eq!(layout.box_for(node_id).unwrap().width, 10, "id={node_id:?}");
-        assert_eq!(
-            layout.box_for(node_id).unwrap().height,
-            8,
-            "id={node_id:?}"
-        );
+        assert_eq!(layout.box_for(node_id).unwrap().height, 8, "id={node_id:?}");
     }
     assert_eq!(layout.box_for(unpainted).unwrap().width, 32);
     assert_eq!(layout.box_for(unpainted).unwrap().height, 10);
@@ -7961,6 +7957,330 @@ fn native_border_radius_revert_layer_preserves_rounded_consumers() {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "border-radius"
     }));
+}
+
+#[test]
+fn native_border_radius_css_wide_keywords_preserve_rounded_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+            @layer base {
+                #parent { display:block;width:32px;height:260px;border-width:2px 3px 4px 5px;border-style:solid;border-color:red;background-color:red;border-radius:4px 3px 2px 1px; }
+                .box { display:block;width:8px;height:6px;border:1px solid blue;background-color:blue; }
+                #inherit { border-radius:inherit; }
+                #physical { border-radius:1px 2px 3px 4px; }
+                #reset { border-radius:unset; }
+                #initial { border-radius:initial; }
+                #revert { border-radius:revert; }
+                #omitted { }
+                #invalid { border-radius:inherit;border-radius:invalid; }
+                #mixed { border-radius:inherit 1px; }
+                #layered { border-radius:1px; }
+                #unpainted { display:block;width:32px;height:10px;border-radius:5px; }
+                #unpainted-child { border-radius:inherit; }
+                #zero-parent { display:block;width:32px;height:10px;border-width:0;border-style:solid;border-color:red;border-radius:7px; }
+                #zero-child { border-radius:inherit; }
+            }
+            @layer theme {
+                #layered { border-radius:inherit; }
+            }
+            #layered { border-radius:revert-layer; }
+        </style>
+        <div id='parent' role='button'>
+            <div id='inherit' class='box' role='button'>Inherit</div>
+            <div id='physical' class='box' role='button'>Physical</div>
+            <div id='reset' class='box' role='button'>Reset</div>
+            <div id='initial' class='box' role='button'>Initial</div>
+            <div id='revert' class='box' role='button'>Revert</div>
+            <div id='omitted' class='box' role='button'>Omitted</div>
+            <div id='invalid' class='box' role='button'>Invalid</div>
+            <div id='mixed' class='box' role='button'>Mixed</div>
+            <div id='layered' class='box' role='button'>Layered</div>
+            <div id='inline' class='box' role='button' style='border-radius:inherit'>Inline</div>
+        </div>
+        <div id='unpainted' role='button'>
+            <div id='unpainted-child' class='box' role='button'>Unpainted child</div>
+        </div>
+        <div id='zero-parent' role='button'>
+            <div id='zero-child' class='box' role='button'>Zero child</div>
+        </div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 600,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let physical = document.resolve_target("id=physical").unwrap();
+    let reset = document.resolve_target("id=reset").unwrap();
+    let initial = document.resolve_target("id=initial").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let mixed = document.resolve_target("id=mixed").unwrap();
+    let layered = document.resolve_target("id=layered").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let unpainted = document.resolve_target("id=unpainted").unwrap();
+    let unpainted_child = document.resolve_target("id=unpainted-child").unwrap();
+    let zero_parent = document.resolve_target("id=zero-parent").unwrap();
+    let zero_child = document.resolve_target("id=zero-child").unwrap();
+    let targets = [
+        parent,
+        inherit,
+        physical,
+        reset,
+        initial,
+        revert,
+        omitted,
+        invalid,
+        mixed,
+        layered,
+        inline,
+        unpainted,
+        unpainted_child,
+        zero_parent,
+        zero_child,
+    ];
+    let parent_radius = NativeBorderRadius {
+        top_left: 4,
+        top_right: 3,
+        bottom_right: 2,
+        bottom_left: 1,
+    };
+    let physical_radius = NativeBorderRadius {
+        top_left: 1,
+        top_right: 2,
+        bottom_right: 3,
+        bottom_left: 4,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    let layout_box_for = |node_id| {
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == node_id)
+            .expect("border-radius layout box")
+    };
+    assert_eq!(layout.box_for(parent).unwrap().width, 40);
+    assert_eq!(layout.box_for(parent).unwrap().height, 266);
+    for node_id in [
+        inherit, physical, reset, initial, revert, omitted, invalid, mixed, layered, inline,
+    ] {
+        assert_eq!(layout.box_for(node_id).unwrap().width, 10, "id={node_id:?}");
+        assert_eq!(layout.box_for(node_id).unwrap().height, 8, "id={node_id:?}");
+    }
+    assert_eq!(layout.box_for(unpainted).unwrap().width, 32);
+    assert_eq!(layout.box_for(unpainted).unwrap().height, 10);
+    assert_eq!(layout.box_for(unpainted_child).unwrap().width, 10);
+    assert_eq!(layout.box_for(unpainted_child).unwrap().height, 8);
+    assert_eq!(layout.box_for(zero_parent).unwrap().width, 32);
+    assert_eq!(layout.box_for(zero_parent).unwrap().height, 10);
+    assert_eq!(layout.box_for(zero_child).unwrap().width, 10);
+    assert_eq!(layout.box_for(zero_child).unwrap().height, 8);
+
+    let parent_box = layout.box_for(parent).unwrap();
+    assert_eq!(layout_box_for(parent).border_radius, parent_radius);
+    assert_eq!(layout_box_for(inherit).border_radius, parent_radius);
+    assert_eq!(layout_box_for(physical).border_radius, physical_radius);
+    for node_id in [reset, initial, revert, omitted, mixed] {
+        assert_eq!(
+            layout_box_for(node_id).border_radius,
+            NativeBorderRadius::default(),
+            "id={node_id:?}"
+        );
+    }
+    for node_id in [invalid, layered, inline] {
+        assert_eq!(
+            layout_box_for(node_id).border_radius,
+            parent_radius,
+            "id={node_id:?}"
+        );
+    }
+    assert_eq!(
+        layout_box_for(unpainted).border_radius,
+        NativeBorderRadius {
+            top_left: 5,
+            top_right: 5,
+            bottom_right: 5,
+            bottom_left: 5,
+        }
+    );
+    assert_eq!(
+        layout_box_for(unpainted_child).border_radius,
+        NativeBorderRadius {
+            top_left: 5,
+            top_right: 5,
+            bottom_right: 5,
+            bottom_left: 5,
+        }
+    );
+    assert_eq!(
+        layout_box_for(zero_parent).border_radius,
+        NativeBorderRadius {
+            top_left: 7,
+            top_right: 7,
+            bottom_right: 7,
+            bottom_left: 7,
+        }
+    );
+    assert_eq!(
+        layout_box_for(zero_child).border_radius,
+        NativeBorderRadius {
+            top_left: 7,
+            top_right: 7,
+            bottom_right: 7,
+            bottom_left: 7,
+        }
+    );
+
+    for node_id in targets {
+        let rectangle = layout.box_for(node_id).expect("border-radius layout box");
+        assert_eq!(
+            layout
+                .hit_test(
+                    (rectangle.x + rectangle.width / 2).into(),
+                    (rectangle.y + rectangle.height / 2).into(),
+                )
+                .unwrap(),
+            Some(node_id),
+            "id={node_id:?}"
+        );
+    }
+    assert_eq!(
+        layout
+            .hit_test(parent_box.x.into(), parent_box.y.into())
+            .unwrap(),
+        None
+    );
+    let inherit_box = layout.box_for(inherit).unwrap();
+    assert_ne!(
+        layout
+            .hit_test(inherit_box.x.into(), inherit_box.y.into())
+            .unwrap(),
+        Some(inherit)
+    );
+
+    let semantic_nodes = document.semantic_nodes();
+    for node_id in targets {
+        assert!(
+            semantic_nodes
+                .iter()
+                .any(|node| node.node_id == node_id && !node.hidden),
+            "expected border-radius fixture node {node_id:?} to remain visible"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    let fill_radius_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                radius,
+                ..
+            } if *command_node_id == node_id => Some(*radius),
+            _ => None,
+        })
+    };
+    let border_radius_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::BorderRect {
+                node_id: command_node_id,
+                radius,
+                ..
+            } if *command_node_id == node_id => Some(*radius),
+            _ => None,
+        })
+    };
+    for node_id in [
+        parent,
+        inherit,
+        physical,
+        reset,
+        initial,
+        revert,
+        omitted,
+        invalid,
+        mixed,
+        layered,
+        inline,
+        unpainted_child,
+        zero_child,
+    ] {
+        assert!(
+            fill_radius_for(node_id).is_some(),
+            "missing fill command for {node_id:?}"
+        );
+        assert!(
+            border_radius_for(node_id).is_some(),
+            "missing border command for {node_id:?}"
+        );
+    }
+    assert_eq!(fill_radius_for(parent), Some(parent_radius));
+    assert_eq!(border_radius_for(parent), Some(parent_radius));
+    for node_id in [inherit, invalid, layered, inline] {
+        assert_eq!(
+            fill_radius_for(node_id),
+            Some(parent_radius),
+            "id={node_id:?}"
+        );
+        assert_eq!(
+            border_radius_for(node_id),
+            Some(parent_radius),
+            "id={node_id:?}"
+        );
+    }
+    assert_eq!(fill_radius_for(physical), Some(physical_radius));
+    assert_eq!(border_radius_for(physical), Some(physical_radius));
+    for node_id in [reset, initial, revert, omitted, mixed] {
+        assert_eq!(
+            fill_radius_for(node_id),
+            Some(NativeBorderRadius::default())
+        );
+        assert_eq!(
+            border_radius_for(node_id),
+            Some(NativeBorderRadius::default())
+        );
+    }
+    assert_eq!(
+        fill_radius_for(unpainted_child),
+        Some(NativeBorderRadius {
+            top_left: 5,
+            top_right: 5,
+            bottom_right: 5,
+            bottom_left: 5,
+        })
+    );
+    assert_eq!(
+        fill_radius_for(zero_child),
+        Some(NativeBorderRadius {
+            top_left: 7,
+            top_right: 7,
+            bottom_right: 7,
+            bottom_left: 7,
+        })
+    );
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "border-radius"
+    }));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(parent_box.x, parent_box.y),
+        Some([255, 255, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(parent_box.x + parent_box.width / 2, parent_box.y),
+        Some([255, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(inherit_box.x + inherit_box.width / 2, inherit_box.y),
+        Some([0, 0, 255, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
 }
 
 #[test]

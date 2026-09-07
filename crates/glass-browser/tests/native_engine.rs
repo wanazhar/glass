@@ -7919,7 +7919,14 @@ fn native_border_radius_corner_longhands_reach_all_rounded_consumers() {
     let inherited = document.resolve_target("id=inherited").unwrap();
     let invalid = document.resolve_target("id=invalid").unwrap();
     let layout = document.layout(viewport).unwrap();
-    let card_box = layout.box_for(card).unwrap();
+    let layout_box_for = |node_id| {
+        layout
+            .boxes
+            .iter()
+            .find(|layout_box| layout_box.node_id == node_id)
+            .unwrap()
+    };
+    let card_box = layout_box_for(card);
     assert_eq!(
         card_box.border_radius,
         NativeBorderRadius {
@@ -7930,7 +7937,7 @@ fn native_border_radius_corner_longhands_reach_all_rounded_consumers() {
         }
     );
     assert_eq!(
-        layout.box_for(inherited).unwrap().border_radius,
+        layout_box_for(inherited).border_radius,
         NativeBorderRadius {
             top_left: 7,
             top_right: 0,
@@ -7939,7 +7946,7 @@ fn native_border_radius_corner_longhands_reach_all_rounded_consumers() {
         }
     );
     assert_eq!(
-        layout.box_for(invalid).unwrap().border_radius,
+        layout_box_for(invalid).border_radius,
         NativeBorderRadius {
             top_left: 5,
             top_right: 5,
@@ -7950,15 +7957,15 @@ fn native_border_radius_corner_longhands_reach_all_rounded_consumers() {
     assert_eq!(
         layout
             .hit_test(
-                (card_box.x + card_box.width / 2).into(),
-                (card_box.y + card_box.height / 2).into(),
+                (card_box.rect.x + card_box.rect.width / 2).into(),
+                (card_box.rect.y + card_box.rect.height / 2).into(),
             )
             .unwrap(),
         Some(card)
     );
     assert_ne!(
         layout
-            .hit_test(card_box.x.into(), card_box.y.into())
+            .hit_test(card_box.rect.x.into(), card_box.rect.y.into())
             .unwrap(),
         Some(card)
     );
@@ -7980,7 +7987,7 @@ fn native_border_radius_corner_longhands_reach_all_rounded_consumers() {
                 command,
                 NativeDisplayCommand::FillRect { node_id: command_node_id, radius, .. }
                     if *command_node_id == node_id
-                        && *radius == layout.box_for(node_id).unwrap().border_radius
+                        && *radius == layout_box_for(node_id).border_radius
             )
         }));
         assert!(list.commands.iter().any(|command| {
@@ -7988,15 +7995,15 @@ fn native_border_radius_corner_longhands_reach_all_rounded_consumers() {
                 command,
                 NativeDisplayCommand::BorderRect { node_id: command_node_id, radius, .. }
                     if *command_node_id == node_id
-                        && *radius == layout.box_for(node_id).unwrap().border_radius
+                        && *radius == layout_box_for(node_id).border_radius
             )
         }));
     }
     let surface = list.rasterize().unwrap();
     assert_eq!(
         surface.pixel(
-            card_box.x + card_box.width / 2,
-            card_box.y + card_box.height / 2
+            card_box.rect.x + card_box.rect.width / 2,
+            card_box.rect.y + card_box.rect.height / 2,
         ),
         Some([255, 0, 0, 255])
     );

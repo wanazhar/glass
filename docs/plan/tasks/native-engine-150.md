@@ -154,3 +154,13 @@ Local certification completed:
 - Documentation coverage passed: 564 Markdown files, 345 full-product MCP
   tools (100 browser-only), 17 examples, and 22 public modules.
 - Remote CI remains unclaimed because the checkout is local-only.
+
+## Cleanup evidence
+
+- After all build, test, documentation, and coverage gates passed, the isolated
+  regenerable target `/tmp/glass-150-focused` was audited and removed with
+  bounded, same-filesystem deletion. It contained 5,459,222,528 bytes, 9,193
+  files, and 1,187 directories; it was a real directory, not a symlink, had no
+  active Rust/Cargo consumer, and had no open handles.
+- Available space on `/tmp` increased from 78,398,373,888 bytes to
+  83,857,588,224 bytes. `/home/ubuntu/work/glass/target` remains absent.

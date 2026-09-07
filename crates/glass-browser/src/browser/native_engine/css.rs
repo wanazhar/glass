@@ -207,6 +207,12 @@ pub(crate) struct NativeBorderSide {
     color: NativeColor,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBorderDeclaration {
+    Complete(NativeBorderSide),
+    None,
+}
+
 impl NativeBorderSide {
     pub(crate) const fn width(self) -> u32 {
         self.width
@@ -1270,7 +1276,7 @@ impl NativeStylesheet {
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
         let mut background_color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColor>>>;
             MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderSide>>>;
+        let mut border: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
         let mut border_width: [[Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
             MAX_NATIVE_CASCADE_LAYERS]; 4] = [[None; MAX_NATIVE_CASCADE_LAYERS]; 4];
@@ -3189,11 +3195,12 @@ fn apply_border_width_cascade(
              4],
 ) {
     for (index, candidate) in candidates.iter_mut().enumerate() {
-        let border_width = declarations.border[index].map(|declaration| match declaration {
-            LocalCascadeDeclaration::Value(border) => {
-                LocalCascadeDeclaration::Value(border.width())
+        let border_width = declarations.border[index].and_then(|declaration| match declaration {
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => {
+                Some(LocalCascadeDeclaration::Value(border.width()))
             }
-            LocalCascadeDeclaration::RevertLayer => LocalCascadeDeclaration::RevertLayer,
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::None) => None,
+            LocalCascadeDeclaration::RevertLayer => Some(LocalCascadeDeclaration::RevertLayer),
         });
         apply_local_cascade_declaration(
             border_width,
@@ -3222,8 +3229,11 @@ fn apply_border_style_cascade(
 ) {
     for (index, candidate) in candidates.iter_mut().enumerate() {
         let border_style = declarations.border[index].map(|declaration| match declaration {
-            LocalCascadeDeclaration::Value(border) => {
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => {
                 LocalCascadeDeclaration::Value(NativeBorderStyleValue::Paint(border.style()))
+            }
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::None) => {
+                LocalCascadeDeclaration::Value(NativeBorderStyleValue::None)
             }
             LocalCascadeDeclaration::RevertLayer => LocalCascadeDeclaration::RevertLayer,
         });
@@ -3255,11 +3265,12 @@ fn apply_border_color_cascade(
     for (index, candidate) in candidates.iter_mut().enumerate() {
         let border_order =
             border_cascade_order(rule_order, declarations.border_order[index], inline);
-        let border_color = declarations.border[index].map(|declaration| match declaration {
-            LocalCascadeDeclaration::Value(border) => {
-                LocalCascadeDeclaration::Value(border.color())
+        let border_color = declarations.border[index].and_then(|declaration| match declaration {
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => {
+                Some(LocalCascadeDeclaration::Value(border.color()))
             }
-            LocalCascadeDeclaration::RevertLayer => LocalCascadeDeclaration::RevertLayer,
+            LocalCascadeDeclaration::Value(NativeBorderDeclaration::None) => None,
+            LocalCascadeDeclaration::RevertLayer => Some(LocalCascadeDeclaration::RevertLayer),
         });
         apply_local_cascade_declaration(border_color, specificity, border_order, inline, candidate);
         apply_local_cascade_declaration(
@@ -3341,7 +3352,7 @@ struct NativeDeclarations {
     max_height: Option<LocalCascadeDeclaration<u32>>,
     line_height: Option<LineHeightDeclaration>,
     background_color: Option<LocalCascadeDeclaration<NativeColor>>,
-    border: [Option<LocalCascadeDeclaration<NativeBorderSide>>; 4],
+    border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; 4],
     border_order: [usize; 4],
     border_width: [Option<LocalCascadeDeclaration<u32>>; 4],
     border_width_order: [usize; 4],
@@ -4517,8 +4528,19 @@ fn parse_border(value: &str) -> Option<NativeBorderSide> {
     })
 }
 
-fn parse_border_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeBorderSide>> {
-    parse_local_cascade_declaration(value, parse_border)
+fn parse_border_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<NativeBorderDeclaration>> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some(LocalCascadeDeclaration::RevertLayer);
+    }
+    if value.trim().eq_ignore_ascii_case("none") {
+        return Some(LocalCascadeDeclaration::Value(
+            NativeBorderDeclaration::None,
+        ));
+    }
+    parse_border(value)
+        .map(|border| LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)))
 }
 
 fn parse_border_width_declaration(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 4]> {
@@ -4861,7 +4883,7 @@ fn parse_local_color_declaration(value: &str) -> Option<LocalCascadeDeclaration<
 }
 
 fn set_border_side(
-    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderSide>>; 4],
+    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; 4],
     orders: &mut [usize; 4],
     index: usize,
     value: &str,
@@ -6247,7 +6269,9 @@ mod tests {
         };
         assert_eq!(
             declarations.border,
-            [Some(LocalCascadeDeclaration::Value(border_side(2, parsed_color))); 4]
+            [Some(LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::Complete(border_side(2, parsed_color)),
+            )); 4]
         );
         assert_eq!(
             declarations.border_radius,
@@ -6744,31 +6768,43 @@ mod tests {
             declarations.border,
             [
                 Some(LocalCascadeDeclaration::RevertLayer),
-                Some(LocalCascadeDeclaration::Value(styled_border_side(
-                    3,
-                    NativeBorderStyle::Dotted,
-                    NativeColor {
-                        red: 0,
-                        green: 128,
-                        blue: 0,
-                        alpha: 255,
-                    },
-                ))),
-                Some(LocalCascadeDeclaration::Value(border_side(
-                    2,
-                    NativeColor::RED
-                ))),
-                Some(LocalCascadeDeclaration::Value(border_side(
-                    2,
-                    NativeColor::RED
-                ))),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::Complete(styled_border_side(
+                        3,
+                        NativeBorderStyle::Dotted,
+                        NativeColor {
+                            red: 0,
+                            green: 128,
+                            blue: 0,
+                            alpha: 255,
+                        },
+                    )),
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::Complete(border_side(2, NativeColor::RED)),
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::Complete(border_side(2, NativeColor::RED)),
+                )),
             ]
         );
         assert_eq!(
             parse_border_declaration("ReVeRt-LaYeR"),
             Some(LocalCascadeDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_border_declaration("NoNe"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::None
+            ))
+        );
+        assert_eq!(
+            parse_declarations("border: none; border-top: NONE; border-right: none; border-bottom: none; border-left: NoNe").border,
+            [Some(LocalCascadeDeclaration::Value(NativeBorderDeclaration::None)); 4]
+        );
         assert_eq!(parse_border_declaration("revert"), None);
+        assert_eq!(parse_border_declaration("none solid"), None);
+        assert_eq!(parse_border_declaration("hidden"), None);
         assert_eq!(parse_border_declaration("1px solid red dashed"), None);
 
         let mut diagnostics = NativeDiagnosticSink::default();

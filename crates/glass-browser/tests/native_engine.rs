@@ -8636,6 +8636,71 @@ fn native_text_decoration_thickness_revert_layer_reaches_all_line_owners() {
 }
 
 #[test]
+fn native_text_decoration_thickness_css_wide_resets_reach_raster() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:32px; height:20px; line-height:20px; color:black; text-decoration:underline; text-decoration-style:solid; text-decoration-thickness:1px; } #parent { text-decoration-thickness:3px; } #initial { text-decoration-thickness:initial; } #inherit { text-decoration-thickness:inherit; } #unset { text-decoration-thickness:unset; } #revert { text-decoration-thickness:revert; } #invalid { text-decoration-thickness:4px; text-decoration-thickness:5px; } #important { text-decoration-thickness:3px !important; } #important { text-decoration-thickness:1px; }</style><div id='parent' class='line'>P<span id='initial' class='line'>A</span><span id='inherit' class='line'>B</span><span id='unset' class='line'>C</span><span id='revert' class='line'>D</span><span id='invalid' class='line'>E</span><span id='important' class='line'>F</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 160,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let command_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                decoration_thickness,
+                underline,
+                ..
+            } if *command_node_id == node_id => Some((*origin, *decoration_thickness, *underline)),
+            _ => None,
+        })
+    };
+    let initial = command_for("initial").expect("initial thickness command");
+    let inherited = command_for("inherit").expect("inherit thickness command");
+    let unset = command_for("unset").expect("unset thickness command");
+    let revert = command_for("revert").expect("revert thickness command");
+    let invalid = command_for("invalid").expect("invalid thickness command");
+    let important = command_for("important").expect("important thickness command");
+    assert_eq!(initial.1, 1);
+    assert_eq!(inherited.1, 3);
+    assert_eq!(unset.1, 3);
+    assert_eq!(revert.1, 3);
+    assert_eq!(invalid.1, 4);
+    assert_eq!(important.1, 3);
+    assert!(initial.2 && inherited.2 && important.2);
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(initial.0.x, initial.0.y + 7),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(initial.0.x, initial.0.y + 8),
+        Some([255, 255, 255, 255])
+    );
+    for offset in 0..3 {
+        assert_eq!(
+            surface.pixel(inherited.0.x, inherited.0.y + 7 + offset),
+            Some([0, 0, 0, 255])
+        );
+    }
+    assert_eq!(
+        surface.pixel(inherited.0.x, inherited.0.y + 10),
+        Some([255, 255, 255, 255])
+    );
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-thickness"
+    }));
+}
+
+#[test]
 fn native_text_underline_offset_moves_only_underlines_through_shared_artifacts() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline overline line-through; text-decoration-style:dashed; text-decoration-thickness:2px; } #negative { text-underline-offset:-2px; } #zero { text-underline-offset:0px; } #positive { text-underline-offset:3px; } #parent { text-decoration-style:dotted; text-underline-offset:-3px; }</style><div id='negative' class='line'>AB</div><div id='zero' class='line'>AB</div><div id='positive' class='line'>AB</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override' style='text-underline-offset:2px'>B</span></div>",

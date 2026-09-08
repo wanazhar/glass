@@ -551,6 +551,10 @@ standalone case-insensitive `order:inherit` copies the computed parent order
 only when explicitly authored while omitted `order` remains local with the
 bounded `0` fallback; visual `(order, source_index)` sorting preserves
 semantic/source order,
+standalone case-insensitive `gap:inherit` copies the computed parent row and
+column gap components only when explicitly authored while omitted `gap` remains
+local with the bounded `0` fallback; direct `row-gap:inherit` and
+`column-gap:inherit` remain outside this shorthand-only boundary,
 bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
 placement using explicit content height or the auto row's maximum item outer
 height,

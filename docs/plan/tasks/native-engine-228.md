@@ -1,7 +1,7 @@
 ---
 id: native-engine-228
 scope: glass-browser/native-engine/gap-inherit
-status: planned
+status: complete
 depends-on: [native-engine-227]
 ---
 
@@ -94,6 +94,13 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
-registry publication, browser-parity, security-boundary certification, and
-promotion remain outside this local task.
+Implementation is committed at `978ae3b5`, with the compatibility fixture
+follow-up at `b645585b`. The focused gap parser/cascade group passed 11/11; the
+public inherited row/column layout/artifact integration passed 1/1; the full
+native integration passed 266/266; and the feature library passed 1,045 tests
+with 1 ignored. Formatting, the scoped workspace check, strict Clippy, paired
+crate builds, and warnings-as-errors rustdoc passed locally. Static
+documentation and release audits are recorded by the issue-40 synchronization
+checkpoint. Remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary certification, and promotion remain outside
+this local task.

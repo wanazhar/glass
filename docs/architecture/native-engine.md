@@ -13,6 +13,7 @@ bounded-clip-aware-root-overflow/bounded-axis-specific-overflow/
 bounded-min-max-dimensions/bounded-opacity-groups/bounded-text-alignment/
 bounded-functional-alpha-colors/bounded-fixed-cell-text-decoration/
 bounded-inherited-text-transform/bounded-first-line-text-indent/
+bounded-explicit-text-indent-inherit/
 bounded-inherited-word-spacing/bounded-inherited-letter-spacing/
 bounded-inherited-font-weight/bounded-inherited-font-style/
 bounded-inherited-word-break slices,
@@ -2264,6 +2265,21 @@ and the two-crate boundary remain bounded. Full native integration (267/267)
 and the feature library (1,046 passed, 1 ignored) pass locally. Remote CI,
 push, release, tag, and registry publication remain unclaimed for this
 local-only checkout.
+
+The completed dependency-ordered `native-engine-230` slice is recorded in
+`docs/plan/tasks/native-engine-230.md` and implemented at `5d214fee` (design
+`3782eb4b`). It adds standalone, case-insensitive `text-indent: inherit`
+through the existing private parent-style chain, copying the computed parent
+first-line indent only when explicitly authored while omitted `text-indent`
+remains local with the bounded `0` fallback. Finite values, CSS-wide resets,
+`revert-layer`, mixed-invalid preservation, source-order/important precedence,
+first-line wrapping, text fragments, display-list, raster/PNG, point-hit,
+semantics, diagnostics, and the two-crate boundary remain bounded. Focused
+parser/cascade coverage (3 tests), public inheritance/artifact integration (1
+test), full-native integration (268/268), the feature library (1,047 passed,
+1 ignored), and formatting/diff checks pass locally. Remote CI, push, release,
+tag, registry publication, browser-parity, security-boundary certification,
+and promotion remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

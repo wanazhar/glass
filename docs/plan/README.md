@@ -2440,6 +2440,20 @@ diagnostics, and the two-crate boundary remain bounded. Full native integration
 (267/267) and the feature library (1,046 passed, 1 ignored) pass locally.
 Remote CI, push, release, tag, and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-230](tasks/native-engine-230.md)
+slice is implemented at `5d214fee` (design `3782eb4b`). It adds bounded
+standalone case-insensitive `text-indent: inherit` through the existing private
+parent-style chain, copying the computed parent first-line indent only when
+explicitly authored while omitted `text-indent` remains local with the bounded
+`0` fallback. Finite values, CSS-wide resets, `revert-layer`, mixed-invalid
+preservation, source-order/important precedence, first-line wrapping, text
+fragments, display-list, raster/PNG, point-hit, semantics, diagnostics, and the
+two-crate boundary remain bounded. Focused parser/cascade coverage (3 tests),
+public inheritance/artifact integration (1 test), full-native integration
+(268/268), the feature library (1,047 passed, 1 ignored), and the locked
+scoped check pass locally. Remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary, and promotion remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

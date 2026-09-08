@@ -2463,11 +2463,13 @@ visual stacking.
 | `native-engine-219` | completed bounded standalone case-insensitive `place-content:inherit` through the existing private `align-content` and `justify-content` parent-style owners; both computed parent components copy only when the shorthand is explicitly authored while omitted `place-content` remains local, preserving finite one-/two-value expansion, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, wrapped-line distribution, main-axis placement, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `23703765`; locked scoped check, focused place-content parser/cascade (5 tests), public inheritance integration (1 test), full-native integration (257/257), feature library (1,040 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-218` | percentages, baseline/safe/unsafe forms, `place-items`, grid, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 
 | `native-engine-220` | completed bounded standalone case-insensitive `flex-direction:inherit` through the existing private parent-style chain; the computed parent direction copies only when explicitly authored while omitted `flex-direction` remains local with the bounded `row` fallback, preserving finite row/column mapping, `flex-flow`/longhand component precedence, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, wrapping eligibility, gap and margin mapping, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `1f64f232`; locked scoped check, focused flex-direction parser/cascade (4 tests), public inheritance integration (1 test), full-native integration (258/258), feature library (1,041 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-219` | percentages, `flex-wrap:inherit`, `flex-flow:inherit`, `place-items`, grid, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
+| `native-engine-221` | completed bounded standalone case-insensitive `flex-wrap:inherit` through the existing private parent-style chain; the computed parent wrap mode copies only when explicitly authored while omitted `flex-wrap` remains local with the bounded `nowrap` fallback, preserving finite wrap modes, `flex-flow`/longhand component precedence, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, row/column wrapping eligibility, line formation and reverse stacking, line sizing, gap and margin mapping, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `ebeb8443`; locked scoped check, focused flex-wrap parser/cascade (3 tests), public inheritance integration (1 test), full-native integration (259/259), feature library (1,042 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-220` | `flex-flow:inherit`, percentages, `place-items`, grid, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-220.md` is the latest completed task;
+`docs/plan/tasks/native-engine-221.md` is the latest completed task;
+`docs/plan/tasks/native-engine-220.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-219.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-218.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-217.md` is the preceding completed task;
@@ -2624,17 +2626,22 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-221.md`: implementation is `ebeb8443` (design
+`2925cc3a`). It adds standalone, case-insensitive `flex-wrap: inherit`
+through the existing private parent-style chain, copying the computed parent
+wrap mode only when explicitly authored while omitted `flex-wrap` remains local
+with the bounded `nowrap` fallback. The locked scoped native check, focused
+flex-wrap parser/cascade coverage (3 tests), public inheritance integration
+(1 test), full-native integration (259/259), feature library (1,042 passed, 1
+ignored), workspace all-target/all-feature check, strict Clippy, paired
+binaries, warning-denied rustdoc, and formatting/diff checks passed. Remote CI,
+push, release, tag, registry publication, browser-parity, security-boundary,
+and promotion claims are not made.
+The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-220.md`: implementation is `1f64f232` (design
 `8ffe1f17`). It adds standalone, case-insensitive `flex-direction: inherit`
-through the existing private parent-style chain, copying the computed parent
-direction only when explicitly authored while omitted `flex-direction` remains
-local with the bounded `row` fallback. The locked scoped native check,
-focused flex-direction parser/cascade coverage (4 tests), public inheritance
-integration (1 test), full-native integration (258/258), feature library
-(1,041 passed, 1 ignored), workspace all-target/all-feature check, strict
-Clippy, paired binaries, warning-denied rustdoc, and formatting/diff checks
-passed. Remote CI, push, release, tag, registry publication, browser-parity,
-security-boundary, and promotion claims are not made.
+through the existing private parent-style chain while omitted
+`flex-direction` remains local with the bounded `row` fallback.
 The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-219.md`: implementation is `23703765` (design
 `0b9e784b`). It adds standalone, case-insensitive `place-content: inherit`

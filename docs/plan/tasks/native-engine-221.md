@@ -1,7 +1,7 @@
 ---
 id: native-engine-221
 scope: glass-browser/native-engine/local-flex-wrap-inherit
-status: planned
+status: complete
 depends-on: [native-engine-220]
 ---
 
@@ -96,6 +96,31 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
-registry publication, browser-parity, security-boundary certification, and
-promotion remain outside this local task.
+Implementation is `ebeb8443` and the design checkpoint is `2925cc3a`.
+The locked scoped native-feature check passed before tests. Focused
+`flex-wrap` parser/cascade coverage passed 3/3, the public wrapped inheritance
+fixture passed 1/1, full native integration passed 259/259, and the
+feature-enabled `glass-browser` library passed 1,042 tests with 1 ignored
+(including the isolated subprocess test). Formatting, workspace all-target/
+all-feature check, strict Clippy, paired `glass-browser` / `glass-dev` builds,
+and warning-denied rustdoc all passed locally.
+
+The fixture covers parent-to-child `wrap-reverse` propagation, omitted local
+nowrap behavior, invalid mixed-form preservation, `flex-flow` component
+precedence, wrapped line formation and reverse stacking, line sizing, nested
+geometry, complete source/semantic ordering, display-list, fixed-cell
+raster/PNG, point-hit, and typed diagnostics. No public schema, dependency,
+feature default, or crate-boundary change was made.
+
+Static closeout audits also passed: release truth `635 Markdown / 83 current /
+59 previous-version / 790 semantic / 0 current-claim failures`, documentation
+coverage `635 Markdown / 345 full-product MCP tools / 100 browser-only / 17
+examples / 22 public modules`, documentation depth `93 current guides / 19
+substantive contracts`, feature parity `14 capabilities across 4 targets`, TUI
+inventory `15 implementation keys / 63 documentation markers`, synchronized
+version `0.3.14`, reliability `6 scenarios across 4 targets`, public read-only
+adapters `5`, Web IR `8 fixtures / 8 scenarios / 11 categories`, and knowledge
+migration v1 round-trip/v2 rejection over 6 records.
+
+Remote CI, push, release, tag, registry publication, browser-parity,
+security-boundary certification, and promotion remain outside this local task.

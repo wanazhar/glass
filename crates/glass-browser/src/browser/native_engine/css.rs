@@ -1410,25 +1410,25 @@ impl NativeStylesheet {
         let mut direction: [Option<CascadeValue<DirectionDeclaration>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut justify_content: [Option<CascadeValue<JustifyContentDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut align_items: [Option<CascadeValue<AlignItemsDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut align_self: [Option<CascadeValue<AlignSelfDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut align_content: [Option<CascadeValue<AlignContentDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut flex_direction: [Option<CascadeValue<FlexDirectionDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut flex_wrap: [Option<CascadeValue<FlexWrapDeclaration>>; MAX_NATIVE_CASCADE_LAYERS] =
-            [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut flex_wrap: [Option<CascadeValue<FlexWrapDeclaration>>;
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut flex_item_order: [Option<CascadeValue<FlexItemOrderDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
-        let mut flex_grow: [Option<CascadeValue<FlexGrowDeclaration>>; MAX_NATIVE_CASCADE_LAYERS] =
-            [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+        let mut flex_grow: [Option<CascadeValue<FlexGrowDeclaration>>;
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut flex_shrink: [Option<CascadeValue<FlexShrinkDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut flex_basis: [Option<CascadeValue<FlexBasisDeclaration>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut text_decoration: [Option<CascadeValue<NativeTextDecorationDeclaration>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_decoration_style: [Option<CascadeValue<NativeTextDecorationStyleDeclaration>>;
@@ -1740,157 +1740,86 @@ impl NativeStylesheet {
                 false,
                 &mut gap,
             );
-            let layer = cascade_layer_index(rule.selector.specificity);
-            if let Some(value) = rule.declarations.justify_content
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    justify_content[layer],
-                )
-            {
-                justify_content[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.order
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    flex_item_order[layer],
-                )
-            {
-                flex_item_order[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.flex_grow
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    flex_grow[layer],
-                )
-            {
-                flex_grow[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.flex_shrink
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    flex_shrink[layer],
-                )
-            {
-                flex_shrink[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.flex_basis
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    flex_basis[layer],
-                )
-            {
-                flex_basis[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.align_items
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    align_items[layer],
-                )
-            {
-                align_items[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.align_self
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    align_self[layer],
-                )
-            {
-                align_self[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.align_content
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    align_content[layer],
-                )
-            {
-                align_content[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.flex_direction
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    flex_direction[layer],
-                )
-            {
-                flex_direction[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
-            if let Some(value) = rule.declarations.flex_wrap
-                && wins(
-                    rule.selector.specificity,
-                    rule.order,
-                    false,
-                    flex_wrap[layer],
-                )
-            {
-                flex_wrap[layer] = Some(CascadeValue {
-                    value,
-                    specificity: rule.selector.specificity,
-                    order: rule.order,
-                    inline: false,
-                });
-            }
+            apply_flex_cascade_declaration(
+                rule.declarations.justify_content,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.justify_content,
+                &mut justify_content,
+            );
+            apply_flex_cascade_declaration(
+                rule.declarations.order,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.order,
+                &mut flex_item_order,
+            );
+            apply_flex_cascade_declaration(
+                rule.declarations.flex_grow,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.flex_grow,
+                &mut flex_grow,
+            );
+            apply_flex_cascade_declaration(
+                rule.declarations.flex_shrink,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.flex_shrink,
+                &mut flex_shrink,
+            );
+            apply_flex_cascade_declaration(
+                rule.declarations.flex_basis,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.flex_basis,
+                &mut flex_basis,
+            );
+            apply_flex_cascade_declaration(
+                rule.declarations.align_items,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.align_items,
+                &mut align_items,
+            );
+            apply_flex_cascade_declaration(
+                rule.declarations.align_self,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.align_self,
+                &mut align_self,
+            );
+            apply_flex_cascade_declaration(
+                rule.declarations.align_content,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.align_content,
+                &mut align_content,
+            );
+            apply_flex_cascade_declaration(
+                rule.declarations.flex_direction,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.flex_direction,
+                &mut flex_direction,
+            );
+            apply_flex_cascade_declaration(
+                rule.declarations.flex_wrap,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.flex_importance.flex_wrap,
+                &mut flex_wrap,
+            );
             apply_local_cascade_declaration(
                 rule.declarations.width,
                 rule.selector.specificity,
@@ -2243,107 +2172,86 @@ impl NativeStylesheet {
                 &mut letter_spacing,
             );
             apply_gap_declarations(declarations, u16::MAX, usize::MAX, true, &mut gap);
-            let layer = usize::from(UNLAYERED_CASCADE_LAYER);
-            if let Some(value) = declarations.justify_content
-                && wins(u16::MAX, usize::MAX, true, justify_content[layer])
-            {
-                justify_content[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.order
-                && wins(u16::MAX, usize::MAX, true, flex_item_order[layer])
-            {
-                flex_item_order[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.flex_grow
-                && wins(u16::MAX, usize::MAX, true, flex_grow[layer])
-            {
-                flex_grow[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.flex_shrink
-                && wins(u16::MAX, usize::MAX, true, flex_shrink[layer])
-            {
-                flex_shrink[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.flex_basis
-                && wins(u16::MAX, usize::MAX, true, flex_basis[layer])
-            {
-                flex_basis[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.align_items
-                && wins(u16::MAX, usize::MAX, true, align_items[layer])
-            {
-                align_items[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.align_self
-                && wins(u16::MAX, usize::MAX, true, align_self[layer])
-            {
-                align_self[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.align_content
-                && wins(u16::MAX, usize::MAX, true, align_content[layer])
-            {
-                align_content[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.flex_direction
-                && wins(u16::MAX, usize::MAX, true, flex_direction[layer])
-            {
-                flex_direction[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
-            if let Some(value) = declarations.flex_wrap
-                && wins(u16::MAX, usize::MAX, true, flex_wrap[layer])
-            {
-                flex_wrap[layer] = Some(CascadeValue {
-                    value,
-                    specificity: u16::MAX,
-                    order: usize::MAX,
-                    inline: true,
-                });
-            }
+            apply_flex_cascade_declaration(
+                declarations.justify_content,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.justify_content,
+                &mut justify_content,
+            );
+            apply_flex_cascade_declaration(
+                declarations.order,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.order,
+                &mut flex_item_order,
+            );
+            apply_flex_cascade_declaration(
+                declarations.flex_grow,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.flex_grow,
+                &mut flex_grow,
+            );
+            apply_flex_cascade_declaration(
+                declarations.flex_shrink,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.flex_shrink,
+                &mut flex_shrink,
+            );
+            apply_flex_cascade_declaration(
+                declarations.flex_basis,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.flex_basis,
+                &mut flex_basis,
+            );
+            apply_flex_cascade_declaration(
+                declarations.align_items,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.align_items,
+                &mut align_items,
+            );
+            apply_flex_cascade_declaration(
+                declarations.align_self,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.align_self,
+                &mut align_self,
+            );
+            apply_flex_cascade_declaration(
+                declarations.align_content,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.align_content,
+                &mut align_content,
+            );
+            apply_flex_cascade_declaration(
+                declarations.flex_direction,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.flex_direction,
+                &mut flex_direction,
+            );
+            apply_flex_cascade_declaration(
+                declarations.flex_wrap,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.flex_importance.flex_wrap,
+                &mut flex_wrap,
+            );
             apply_local_cascade_declaration(
                 declarations.width,
                 u16::MAX,
@@ -2715,19 +2623,21 @@ struct GapCascadeValue<T> {
 
 #[derive(Debug, Clone, Copy)]
 struct GapCascade {
-    shorthand_row: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
-    shorthand_column: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
-    row_gap: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
-    column_gap: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    shorthand_row:
+        [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    shorthand_column:
+        [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    row_gap: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    column_gap: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 }
 
 impl Default for GapCascade {
     fn default() -> Self {
         Self {
-            shorthand_row: [None; MAX_NATIVE_CASCADE_LAYERS],
-            shorthand_column: [None; MAX_NATIVE_CASCADE_LAYERS],
-            row_gap: [None; MAX_NATIVE_CASCADE_LAYERS],
-            column_gap: [None; MAX_NATIVE_CASCADE_LAYERS],
+            shorthand_row: [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+            shorthand_column: [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+            row_gap: [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+            column_gap: [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
         }
     }
 }
@@ -2783,7 +2693,7 @@ fn resolve_direction(
 }
 
 fn resolve_flex_direction(
-    candidates: [Option<CascadeValue<FlexDirectionDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<FlexDirectionDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> FlexDirectionValue {
     resolve_alignment_candidates(candidates, FlexDirectionValue::Row, |declaration| {
         match declaration {
@@ -2794,7 +2704,7 @@ fn resolve_flex_direction(
 }
 
 fn resolve_justify_content(
-    candidates: [Option<CascadeValue<JustifyContentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<JustifyContentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> JustifyContentValue {
     resolve_alignment_candidates(candidates, JustifyContentValue::FlexStart, |declaration| {
         match declaration {
@@ -2805,7 +2715,7 @@ fn resolve_justify_content(
 }
 
 fn resolve_align_items(
-    candidates: [Option<CascadeValue<AlignItemsDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<AlignItemsDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> AlignItemsValue {
     resolve_alignment_candidates(candidates, AlignItemsValue::FlexStart, |declaration| {
         match declaration {
@@ -2816,7 +2726,7 @@ fn resolve_align_items(
 }
 
 fn resolve_align_self(
-    candidates: [Option<CascadeValue<AlignSelfDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<AlignSelfDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> AlignSelfValue {
     resolve_alignment_candidates(
         candidates,
@@ -2829,7 +2739,7 @@ fn resolve_align_self(
 }
 
 fn resolve_align_content(
-    candidates: [Option<CascadeValue<AlignContentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<AlignContentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> AlignContentValue {
     resolve_alignment_candidates(candidates, AlignContentValue::FlexStart, |declaration| {
         match declaration {
@@ -2840,7 +2750,7 @@ fn resolve_align_content(
 }
 
 fn resolve_flex_wrap(
-    candidates: [Option<CascadeValue<FlexWrapDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<FlexWrapDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> FlexWrapValue {
     resolve_alignment_candidates(
         candidates,
@@ -2853,7 +2763,7 @@ fn resolve_flex_wrap(
 }
 
 fn resolve_flex_item_order(
-    candidates: [Option<CascadeValue<FlexItemOrderDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<FlexItemOrderDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> NativeOrderValue {
     resolve_alignment_candidates(candidates, NativeOrderValue::default(), |declaration| {
         match declaration {
@@ -2864,7 +2774,7 @@ fn resolve_flex_item_order(
 }
 
 fn resolve_flex_grow(
-    candidates: [Option<CascadeValue<FlexGrowDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<FlexGrowDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> u32 {
     resolve_alignment_candidates(candidates, 0, |declaration| match declaration {
         FlexGrowDeclaration::Value(value) => Some(value),
@@ -2873,7 +2783,7 @@ fn resolve_flex_grow(
 }
 
 fn resolve_flex_shrink(
-    candidates: [Option<CascadeValue<FlexShrinkDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<FlexShrinkDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> u32 {
     resolve_alignment_candidates(candidates, 1, |declaration| match declaration {
         FlexShrinkDeclaration::Value(value) => Some(value),
@@ -2882,7 +2792,7 @@ fn resolve_flex_shrink(
 }
 
 fn resolve_flex_basis(
-    candidates: [Option<CascadeValue<FlexBasisDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<FlexBasisDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> FlexBasisValue {
     resolve_alignment_candidates(
         candidates,
@@ -3386,19 +3296,23 @@ fn select_gap_candidate(
 }
 
 fn resolve_gap_axis(
-    shorthand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
-    longhand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_CASCADE_LAYERS],
+    shorthand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    longhand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) -> u32 {
-    let mut blocked = [false; MAX_NATIVE_CASCADE_LAYERS];
+    let mut blocked = [false; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
     loop {
-        let Some((layer, candidate)) = (0..MAX_NATIVE_CASCADE_LAYERS).rev().find_map(|layer| {
-            if blocked[layer] {
-                None
-            } else {
-                select_gap_candidate(shorthand[layer], longhand[layer])
-                    .map(|candidate| (layer, candidate))
-            }
-        }) else {
+        let Some((layer, candidate)) =
+            (0..MAX_NATIVE_LOCAL_CASCADE_LAYERS)
+                .rev()
+                .find_map(|layer| {
+                    if blocked[layer] {
+                        None
+                    } else {
+                        select_gap_candidate(shorthand[layer], longhand[layer])
+                            .map(|candidate| (layer, candidate))
+                    }
+                })
+        else {
             return 0;
         };
         match candidate.value {
@@ -3415,8 +3329,8 @@ fn apply_gap_declarations(
     inline: bool,
     cascade: &mut GapCascade,
 ) {
-    let layer = cascade_layer_index(specificity);
     if let Some(value) = declarations.gap {
+        let layer = local_cascade_layer(specificity, declarations.gap_important);
         let (row, column) = match value {
             GapShorthandDeclaration::Value(value) => (
                 GapComponentDeclaration::Value(value.row),
@@ -3445,6 +3359,7 @@ fn apply_gap_declarations(
         );
     }
     if let Some(value) = declarations.row_gap {
+        let layer = local_cascade_layer(specificity, declarations.row_gap_important);
         set_gap_candidate(
             &mut cascade.row_gap[layer],
             value,
@@ -3455,6 +3370,7 @@ fn apply_gap_declarations(
         );
     }
     if let Some(value) = declarations.column_gap {
+        let layer = local_cascade_layer(specificity, declarations.column_gap_important);
         set_gap_candidate(
             &mut cascade.column_gap[layer],
             value,
@@ -3537,6 +3453,28 @@ fn apply_local_important_cascade_declaration<T: Copy>(
     important: bool,
     candidates: &mut [Option<CascadeValue<LocalCascadeDeclaration<T>>>;
              MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+) {
+    let Some(value) = declaration else {
+        return;
+    };
+    let layer = local_cascade_layer(specificity, important);
+    if wins(specificity, order, inline, candidates[layer]) {
+        candidates[layer] = Some(CascadeValue {
+            value,
+            specificity,
+            order,
+            inline,
+        });
+    }
+}
+
+fn apply_flex_cascade_declaration<T: Copy>(
+    declaration: Option<T>,
+    specificity: u16,
+    order: usize,
+    inline: bool,
+    important: bool,
+    candidates: &mut [Option<CascadeValue<T>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
 ) {
     let Some(value) = declaration else {
         return;
@@ -4361,6 +4299,20 @@ fn apply_logical_border_cascade(
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeFlexDeclarationImportance {
+    justify_content: bool,
+    align_items: bool,
+    align_self: bool,
+    align_content: bool,
+    flex_direction: bool,
+    flex_wrap: bool,
+    order: bool,
+    flex_grow: bool,
+    flex_shrink: bool,
+    flex_basis: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeLocalDeclarationImportance {
     display: bool,
     visibility: bool,
@@ -4398,6 +4350,7 @@ struct NativeDeclarations {
     visibility: Option<LocalCascadeDeclaration<VisibilityValue>>,
     opacity: Option<LocalCascadeDeclaration<u8>>,
     local_importance: NativeLocalDeclarationImportance,
+    flex_importance: NativeFlexDeclarationImportance,
     text_importance: NativeTextDeclarationImportance,
     white_space: Option<WhiteSpaceDeclaration>,
     text_align: Option<TextAlignDeclaration>,
@@ -4433,10 +4386,13 @@ struct NativeDeclarations {
     letter_spacing: Option<InheritedTextDeclaration<u32>>,
     gap: Option<GapShorthandDeclaration>,
     gap_order: usize,
+    gap_important: bool,
     row_gap: Option<GapComponentDeclaration>,
     row_gap_order: usize,
+    row_gap_important: bool,
     column_gap: Option<GapComponentDeclaration>,
     column_gap_order: usize,
+    column_gap_important: bool,
     width: Option<LocalCascadeDeclaration<u32>>,
     height: Option<LocalCascadeDeclaration<u32>>,
     min_width: Option<LocalCascadeDeclaration<u32>>,
@@ -5282,6 +5238,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "justify-content" => {
                 if let Some(parsed) = parse_justify_content_declaration(value) {
                     declarations.justify_content = Some(parsed);
+                    declarations.flex_importance.justify_content = important;
                 }
             }
             "place-content" => {
@@ -5290,23 +5247,33 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 {
                     declarations.align_content = Some(align_content);
                     declarations.justify_content = Some(justify_content);
+                    declarations.flex_importance.align_content = important;
+                    declarations.flex_importance.justify_content = important;
                 }
             }
             "align-items" => {
-                declarations.align_items = parse_align_items_declaration(value);
+                if let Some(parsed) = parse_align_items_declaration(value) {
+                    declarations.align_items = Some(parsed);
+                    declarations.flex_importance.align_items = important;
+                }
             }
             "align-self" => {
                 if let Some(parsed) = parse_align_self_declaration(value) {
                     declarations.align_self = Some(parsed);
+                    declarations.flex_importance.align_self = important;
                 }
             }
             "align-content" => {
                 if let Some(parsed) = parse_align_content_declaration(value) {
                     declarations.align_content = Some(parsed);
+                    declarations.flex_importance.align_content = important;
                 }
             }
             "flex-direction" => {
-                declarations.flex_direction = parse_flex_direction_declaration(value);
+                if let Some(parsed) = parse_flex_direction_declaration(value) {
+                    declarations.flex_direction = Some(parsed);
+                    declarations.flex_importance.flex_direction = important;
+                }
             }
             "direction" => {
                 if let Some(parsed) = parse_direction_declaration(value) {
@@ -5315,17 +5282,23 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "flex-wrap" => {
-                declarations.flex_wrap = parse_flex_wrap_declaration(value);
+                if let Some(parsed) = parse_flex_wrap_declaration(value) {
+                    declarations.flex_wrap = Some(parsed);
+                    declarations.flex_importance.flex_wrap = important;
+                }
             }
             "flex-flow" => {
                 if let Some((direction, wrap)) = parse_flex_flow_declaration(value) {
                     declarations.flex_direction = Some(direction);
                     declarations.flex_wrap = Some(wrap);
+                    declarations.flex_importance.flex_direction = important;
+                    declarations.flex_importance.flex_wrap = important;
                 }
             }
             "order" => {
                 if let Some(parsed) = parse_flex_item_order_declaration(value) {
                     declarations.order = Some(parsed);
+                    declarations.flex_importance.order = important;
                 }
             }
             "flex" => {
@@ -5333,21 +5306,27 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     declarations.flex_grow = Some(grow);
                     declarations.flex_shrink = Some(shrink);
                     declarations.flex_basis = Some(basis);
+                    declarations.flex_importance.flex_grow = important;
+                    declarations.flex_importance.flex_shrink = important;
+                    declarations.flex_importance.flex_basis = important;
                 }
             }
             "flex-grow" => {
                 if let Some(parsed) = parse_flex_grow_declaration(value) {
                     declarations.flex_grow = Some(parsed);
+                    declarations.flex_importance.flex_grow = important;
                 }
             }
             "flex-shrink" => {
                 if let Some(parsed) = parse_flex_shrink_declaration(value) {
                     declarations.flex_shrink = Some(parsed);
+                    declarations.flex_importance.flex_shrink = important;
                 }
             }
             "flex-basis" => {
                 if let Some(parsed) = parse_flex_basis_declaration(value) {
                     declarations.flex_basis = Some(parsed);
+                    declarations.flex_importance.flex_basis = important;
                 }
             }
             "text-decoration" | "text-decoration-line" => {
@@ -5450,18 +5429,21 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_gap_declaration(value) {
                     declarations.gap = Some(parsed);
                     declarations.gap_order = declaration_order;
+                    declarations.gap_important = important;
                 }
             }
             "row-gap" => {
                 if let Some(parsed) = parse_gap_component_declaration(value) {
                     declarations.row_gap = Some(parsed);
                     declarations.row_gap_order = declaration_order;
+                    declarations.row_gap_important = important;
                 }
             }
             "column-gap" => {
                 if let Some(parsed) = parse_gap_component_declaration(value) {
                     declarations.column_gap = Some(parsed);
                     declarations.column_gap_order = declaration_order;
+                    declarations.column_gap_important = important;
                 }
             }
             "width" => {
@@ -14722,6 +14704,288 @@ mod tests {
         assert_eq!(normal.text_align(), TextAlignValue::Right);
         assert_eq!(normal.text_transform(), TextTransformValue::Lowercase);
         assert_eq!(normal.line_height(), Some(8));
+    }
+
+    #[test]
+    fn flex_gap_important_parser_tracks_markers_and_invalid_preservation() {
+        let declarations = parse_declarations(
+            "justify-content: center !IMPORTANT; place-content: space-around flex-end !important; align-items: center !important; align-self: flex-end !important; align-content: space-between !important; flex-direction: column !important; flex-wrap: wrap !important; flex-flow: row-reverse wrap-reverse !important; order: -3 !important; flex: 2 3 12px !important; flex-grow: 4 !important; flex-shrink: 5 !important; flex-basis: 16px !important; gap: 2px 3px !important; row-gap: 4px !important; column-gap: 5px !important",
+        );
+        assert_eq!(
+            declarations.justify_content,
+            Some(JustifyContentDeclaration::Value(
+                JustifyContentValue::FlexEnd
+            ))
+        );
+        assert_eq!(
+            declarations.align_content,
+            Some(AlignContentDeclaration::Value(
+                AlignContentValue::SpaceBetween
+            ))
+        );
+        assert_eq!(
+            declarations.flex_direction,
+            Some(FlexDirectionDeclaration::Value(
+                FlexDirectionValue::RowReverse
+            ))
+        );
+        assert_eq!(
+            declarations.flex_wrap,
+            Some(FlexWrapDeclaration::Value(FlexWrapValue::WrapReverse))
+        );
+        assert_eq!(
+            declarations.order,
+            Some(FlexItemOrderDeclaration::Value(NativeOrderValue(-3)))
+        );
+        assert_eq!(declarations.flex_grow, Some(FlexGrowDeclaration::Value(4)));
+        assert_eq!(
+            declarations.flex_shrink,
+            Some(FlexShrinkDeclaration::Value(5))
+        );
+        assert_eq!(
+            declarations.flex_basis,
+            Some(FlexBasisDeclaration::Value(FlexBasisValue::Length(16)))
+        );
+        assert_eq!(
+            declarations.gap,
+            Some(GapShorthandDeclaration::Value(NativeGapValue {
+                row: 2,
+                column: 3,
+            }))
+        );
+        assert_eq!(
+            declarations.row_gap,
+            Some(GapComponentDeclaration::Value(4))
+        );
+        assert_eq!(
+            declarations.column_gap,
+            Some(GapComponentDeclaration::Value(5))
+        );
+        assert!(declarations.flex_importance.justify_content);
+        assert!(declarations.flex_importance.align_items);
+        assert!(declarations.flex_importance.align_self);
+        assert!(declarations.flex_importance.align_content);
+        assert!(declarations.flex_importance.flex_direction);
+        assert!(declarations.flex_importance.flex_wrap);
+        assert!(declarations.flex_importance.order);
+        assert!(declarations.flex_importance.flex_grow);
+        assert!(declarations.flex_importance.flex_shrink);
+        assert!(declarations.flex_importance.flex_basis);
+        assert!(declarations.gap_important);
+        assert!(declarations.row_gap_important);
+        assert!(declarations.column_gap_important);
+
+        let preserved = parse_declarations(
+            "place-content: space-around flex-end !important; place-content: unsupported !important; flex-flow: column wrap !important; flex-flow: column wrap wrap !important; flex: 2 3 12px !important; flex: 1 2 3% !important; gap: 2px 3px !important; gap: 1px 2px 3px !important; row-gap: 4px !important; row-gap: 1px 2px !important; column-gap: 5px !important; column-gap: revert-layer 1px !important",
+        );
+        assert_eq!(
+            preserved.justify_content,
+            Some(JustifyContentDeclaration::Value(
+                JustifyContentValue::FlexEnd
+            ))
+        );
+        assert_eq!(
+            preserved.align_content,
+            Some(AlignContentDeclaration::Value(
+                AlignContentValue::SpaceAround
+            ))
+        );
+        assert_eq!(
+            preserved.flex_direction,
+            Some(FlexDirectionDeclaration::Value(FlexDirectionValue::Column))
+        );
+        assert_eq!(
+            preserved.flex_wrap,
+            Some(FlexWrapDeclaration::Value(FlexWrapValue::Wrap))
+        );
+        assert_eq!(preserved.flex_grow, Some(FlexGrowDeclaration::Value(2)));
+        assert_eq!(preserved.flex_shrink, Some(FlexShrinkDeclaration::Value(3)));
+        assert_eq!(
+            preserved.flex_basis,
+            Some(FlexBasisDeclaration::Value(FlexBasisValue::Length(12)))
+        );
+        assert_eq!(
+            preserved.gap,
+            Some(GapShorthandDeclaration::Value(NativeGapValue {
+                row: 2,
+                column: 3,
+            }))
+        );
+        assert_eq!(preserved.row_gap, Some(GapComponentDeclaration::Value(4)));
+        assert_eq!(
+            preserved.column_gap,
+            Some(GapComponentDeclaration::Value(5))
+        );
+        assert!(preserved.flex_importance.justify_content);
+        assert!(preserved.flex_importance.align_content);
+        assert!(preserved.flex_importance.flex_direction);
+        assert!(preserved.flex_importance.flex_wrap);
+        assert!(preserved.flex_importance.flex_grow);
+        assert!(preserved.flex_importance.flex_shrink);
+        assert!(preserved.flex_importance.flex_basis);
+        assert!(preserved.gap_important);
+        assert!(preserved.row_gap_important);
+        assert!(preserved.column_gap_important);
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_flex_gap_important_priority_and_rollback() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            r#"@layer base {
+                #important { place-content: space-around flex-end !important; align-items: center !important; align-self: flex-end !important; flex-flow: column wrap !important; order: -3 !important; flex: 2 3 12px !important; gap: 4px 6px !important; }
+                #rollback { place-content: revert-layer !important; align-items: revert-layer !important; align-self: revert-layer !important; flex-flow: revert-layer !important; order: revert-layer !important; flex: revert-layer !important; gap: revert-layer !important; }
+                #invalid { place-content: space-around flex-end !important; align-items: center !important; align-self: flex-end !important; flex-flow: column wrap !important; order: -3 !important; flex: 2 3 12px !important; gap: 4px 6px !important; }
+                #normal { place-content: flex-start flex-start; align-items: flex-start; align-self: auto; flex-flow: row nowrap; order: -1; flex: 1 1 8px; gap: 1px 2px; }
+                #inline-normal { place-content: space-around flex-end !important; flex-flow: column wrap !important; flex: 2 3 12px !important; gap: 4px 6px !important; }
+            }
+            @layer theme {
+                #important { place-content: center flex-start !important; align-items: flex-end !important; align-self: flex-start !important; flex-flow: row-reverse nowrap !important; order: 8 !important; flex: 4 5 20px !important; gap: 9px 10px !important; }
+                #rollback { place-content: center flex-end !important; align-items: flex-end !important; align-self: center !important; flex-flow: row-reverse wrap-reverse !important; order: 8 !important; flex: 4 5 20px !important; gap: 9px 10px !important; }
+                #invalid { place-content: unsupported !important; align-items: unsupported !important; align-self: unsupported !important; flex-flow: column wrap wrap !important; order: 1025 !important; flex: 1 2 3% !important; gap: 1px 2px 3px !important; }
+                #normal { place-content: center center; align-items: center; align-self: center; flex-flow: column wrap; order: 2; flex: 2 2 10px; gap: 3px 4px; }
+            }
+            @layer top {
+                #rollback { place-content: flex-end flex-start !important; align-items: flex-start !important; align-self: flex-start !important; flex-flow: column-reverse nowrap !important; order: 12 !important; flex: 6 7 24px !important; gap: 12px 13px !important; }
+            }
+            #important { place-content: flex-start flex-start; align-items: flex-start; align-self: auto; flex-flow: row nowrap; order: 1; flex: 1 1 1px; gap: 1px 1px; }
+            #rollback { place-content: flex-start flex-start; align-items: flex-start; align-self: auto; flex-flow: row nowrap; order: 1; flex: 1 1 1px; gap: 1px 1px; }
+            #invalid { place-content: flex-start flex-start; align-items: flex-start; align-self: auto; flex-flow: row nowrap; order: 1; flex: 1 1 1px; gap: 1px 1px; }
+            #normal { place-content: space-between flex-end; align-items: flex-end; align-self: flex-end; flex-flow: row-reverse wrap-reverse; order: 4; flex: 3 4 12px; gap: 7px 8px; }
+            #inline-normal { place-content: flex-start flex-start; flex-flow: row nowrap; flex: 1 1 1px; gap: 1px 1px; }
+            #inline-important { place-content: flex-end flex-end !important; flex-flow: row-reverse wrap-reverse !important; flex: 3 4 12px !important; gap: 7px 8px !important; }
+        "#
+        .into(),
+        ])
+        .unwrap();
+        let important = node("<div id='important'>Important</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let normal = node("<div id='normal'>Normal</div>");
+        let inline_normal = node(
+            "<div id='inline-normal' style='place-content:center center;flex-flow:column wrap;flex:5 6 18px;gap:11px 12px'>Inline normal</div>",
+        );
+        let inline_important = node(
+            "<div id='inline-important' style='place-content:space-between flex-end !important;flex-flow:column-reverse wrap-reverse !important;flex:5 6 18px !important;gap:11px 12px !important'>Inline important</div>",
+        );
+
+        let assert_values = |element: &NativeNode,
+                             justify_content,
+                             align_items,
+                             align_self,
+                             align_content,
+                             flex_direction,
+                             flex_wrap,
+                             order,
+                             flex_grow,
+                             flex_shrink,
+                             flex_basis,
+                             row_gap,
+                             column_gap| {
+            let style = stylesheet.computed_for(element);
+            assert_eq!(style.justify_content(), justify_content);
+            assert_eq!(style.align_items(), align_items);
+            assert_eq!(style.align_self(), align_self);
+            assert_eq!(style.align_content(), align_content);
+            assert_eq!(style.flex_direction(), flex_direction);
+            assert_eq!(style.flex_wrap(), flex_wrap);
+            assert_eq!(style.flex_item_order(), order);
+            assert_eq!(style.flex_grow(), flex_grow);
+            assert_eq!(style.flex_shrink(), flex_shrink);
+            assert_eq!(style.flex_basis(), flex_basis);
+            assert_eq!(style.row_gap(), row_gap);
+            assert_eq!(style.column_gap(), column_gap);
+        };
+
+        assert_values(
+            &important,
+            JustifyContentValue::FlexEnd,
+            AlignItemsValue::Center,
+            AlignSelfValue::FlexEnd,
+            AlignContentValue::SpaceAround,
+            FlexDirectionValue::Column,
+            FlexWrapValue::Wrap,
+            NativeOrderValue(-3),
+            2,
+            3,
+            FlexBasisValue::Length(12),
+            4,
+            6,
+        );
+        assert_values(
+            &rollback,
+            JustifyContentValue::FlexEnd,
+            AlignItemsValue::FlexEnd,
+            AlignSelfValue::Center,
+            AlignContentValue::Center,
+            FlexDirectionValue::RowReverse,
+            FlexWrapValue::WrapReverse,
+            NativeOrderValue(8),
+            4,
+            5,
+            FlexBasisValue::Length(20),
+            9,
+            10,
+        );
+        assert_values(
+            &invalid,
+            JustifyContentValue::FlexEnd,
+            AlignItemsValue::Center,
+            AlignSelfValue::FlexEnd,
+            AlignContentValue::SpaceAround,
+            FlexDirectionValue::Column,
+            FlexWrapValue::Wrap,
+            NativeOrderValue(-3),
+            2,
+            3,
+            FlexBasisValue::Length(12),
+            4,
+            6,
+        );
+        assert_values(
+            &normal,
+            JustifyContentValue::FlexEnd,
+            AlignItemsValue::FlexEnd,
+            AlignSelfValue::FlexEnd,
+            AlignContentValue::SpaceBetween,
+            FlexDirectionValue::RowReverse,
+            FlexWrapValue::WrapReverse,
+            NativeOrderValue(4),
+            3,
+            4,
+            FlexBasisValue::Length(12),
+            7,
+            8,
+        );
+        assert_values(
+            &inline_normal,
+            JustifyContentValue::FlexEnd,
+            AlignItemsValue::FlexStart,
+            AlignSelfValue::Auto,
+            AlignContentValue::SpaceAround,
+            FlexDirectionValue::Column,
+            FlexWrapValue::Wrap,
+            NativeOrderValue(0),
+            2,
+            3,
+            FlexBasisValue::Length(12),
+            4,
+            6,
+        );
+        assert_values(
+            &inline_important,
+            JustifyContentValue::FlexEnd,
+            AlignItemsValue::FlexStart,
+            AlignSelfValue::Auto,
+            AlignContentValue::SpaceBetween,
+            FlexDirectionValue::ColumnReverse,
+            FlexWrapValue::WrapReverse,
+            NativeOrderValue(0),
+            5,
+            6,
+            FlexBasisValue::Length(18),
+            11,
+            12,
+        );
     }
 
     #[test]

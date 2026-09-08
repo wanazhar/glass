@@ -5048,6 +5048,197 @@ fn native_local_presentation_important_priority_reaches_hidden_and_opacity_owner
 }
 
 #[test]
+fn native_flex_gap_important_priority_reaches_layout_and_artifact_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        @layer base {
+          #row { flex-flow:row nowrap !important; justify-content:flex-start !important; align-items:center !important; gap:4px !important; }
+          #row-second { order:-1 !important; }
+          #column { flex-flow:column nowrap !important; justify-content:flex-start !important; align-items:center !important; gap:3px !important; }
+          #column-second { align-self:flex-end !important; }
+          #wrap { flex-flow:row wrap !important; align-items:flex-start !important; align-content:flex-start !important; gap:2px !important; }
+          #overflow { flex-flow:row nowrap !important; gap:2px !important; }
+          #overflow-first { flex-shrink:0 !important; }
+          #overflow-second { flex-shrink:0 !important; }
+        }
+        @layer theme {
+          #row { flex-flow:column wrap !important; justify-content:flex-end !important; align-items:flex-end !important; gap:1px !important; }
+          #row-second { order:1 !important; }
+          #column { flex-flow:row wrap !important; justify-content:flex-end !important; align-items:flex-end !important; gap:1px !important; }
+          #column-second { align-self:flex-start !important; }
+          #wrap { flex-flow:row nowrap !important; align-items:flex-end !important; align-content:flex-end !important; gap:1px !important; }
+          #overflow { flex-flow:column nowrap !important; gap:1px !important; }
+          #overflow-first { flex-shrink:1 !important; }
+          #overflow-second { flex-shrink:1 !important; }
+        }
+        #row { flex-flow:column wrap; justify-content:flex-end; align-items:flex-end; gap:1px; }
+        #row-second { order:1; }
+        #column { flex-flow:row wrap; justify-content:flex-end; align-items:flex-end; gap:1px; }
+        #column-second { align-self:flex-start; }
+        #wrap { flex-flow:row nowrap; align-items:flex-end; align-content:flex-end; gap:1px; }
+        #overflow { flex-flow:column nowrap; gap:1px; }
+        #overflow-first { flex-shrink:1; }
+        #overflow-second { flex-shrink:1; }
+        </style>
+        <div id='row' style='display:flex;width:20px;height:12px'>
+          <div id='row-first' style='width:6px;height:4px;background-color:red'></div>
+          <div id='row-second' style='width:6px;height:4px;background-color:blue'></div>
+        </div>
+        <div id='column' style='display:flex;width:12px;height:20px'>
+          <div id='column-first' style='width:4px;height:5px;background-color:green'></div>
+          <div id='column-second' style='width:4px;height:5px;background-color:blue'></div>
+        </div>
+        <div id='wrap' style='display:flex;width:14px;height:14px'>
+          <div id='wrap-first' style='width:6px;height:4px;background-color:red'></div>
+          <div id='wrap-second' style='width:6px;height:4px;background-color:blue'></div>
+          <div id='wrap-third' style='width:6px;height:4px;background-color:green'></div>
+        </div>
+        <div id='overflow' style='display:flex;width:10px;height:8px'>
+          <div id='overflow-first' style='width:8px;height:4px;background-color:red'></div>
+          <div id='overflow-second' style='width:8px;height:4px;background-color:blue'></div>
+        </div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !matches!(
+            diagnostic.code,
+            NativeDiagnosticCode::UnsupportedCssProperty
+                | NativeDiagnosticCode::UnsupportedCssValue
+        )
+    }));
+
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let row = document.resolve_target("id=row").unwrap();
+    let row_first = document.resolve_target("id=row-first").unwrap();
+    let row_second = document.resolve_target("id=row-second").unwrap();
+    let column = document.resolve_target("id=column").unwrap();
+    let column_first = document.resolve_target("id=column-first").unwrap();
+    let column_second = document.resolve_target("id=column-second").unwrap();
+    let wrap = document.resolve_target("id=wrap").unwrap();
+    let wrap_first = document.resolve_target("id=wrap-first").unwrap();
+    let wrap_second = document.resolve_target("id=wrap-second").unwrap();
+    let wrap_third = document.resolve_target("id=wrap-third").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    let row_rect = layout.box_for(row).unwrap();
+    let row_first_rect = layout.box_for(row_first).unwrap();
+    let row_second_rect = layout.box_for(row_second).unwrap();
+    assert_eq!(row_rect.height, 12);
+    assert_eq!(row_second_rect.x, row_rect.x);
+    assert_eq!(row_first_rect.x, row_second_rect.right() + 4);
+    assert_eq!(row_first_rect.y, row_rect.y + 4);
+    assert_eq!(row_second_rect.y, row_rect.y + 4);
+    assert_eq!(
+        layout.hit_test(
+            (row_second_rect.x + 1).into(),
+            (row_second_rect.y + 1).into(),
+        ),
+        Ok(Some(row_second))
+    );
+
+    let column_rect = layout.box_for(column).unwrap();
+    let column_first_rect = layout.box_for(column_first).unwrap();
+    let column_second_rect = layout.box_for(column_second).unwrap();
+    assert_eq!(column_rect.height, 20);
+    assert_eq!(column_first_rect.x, column_rect.x + 4);
+    assert_eq!(column_second_rect.x, column_rect.right() - 4);
+    assert_eq!(column_second_rect.y, column_first_rect.bottom() + 3);
+
+    let wrap_rect = layout.box_for(wrap).unwrap();
+    let wrap_first_rect = layout.box_for(wrap_first).unwrap();
+    let wrap_second_rect = layout.box_for(wrap_second).unwrap();
+    let wrap_third_rect = layout.box_for(wrap_third).unwrap();
+    assert_eq!(wrap_rect.height, 14);
+    assert_eq!(wrap_first_rect.x, wrap_rect.x);
+    assert_eq!(wrap_second_rect.x, wrap_first_rect.right() + 2);
+    assert_eq!(wrap_third_rect.x, wrap_rect.x);
+    assert_eq!(wrap_third_rect.y, wrap_first_rect.bottom() + 2);
+
+    let list = document.display_list(viewport).unwrap();
+    for (node_id, rect, color) in [
+        (row_first, row_first_rect, NativeColor::RED),
+        (
+            row_second,
+            row_second_rect,
+            NativeColor {
+                red: 0,
+                green: 0,
+                blue: 255,
+                alpha: 255,
+            },
+        ),
+        (
+            column_first,
+            column_first_rect,
+            NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: 255,
+            },
+        ),
+    ] {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect {
+                    node_id: painted_node,
+                    rect: painted_rect,
+                    color: painted_color,
+                    ..
+                } if *painted_node == node_id
+                    && *painted_rect == rect
+                    && *painted_color == color
+            )
+        }));
+    }
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(row_second_rect.x + 1, row_second_rect.y + 1),
+        Some([0, 0, 255, 255])
+    );
+    assert_eq!(
+        surface.pixel(column_first_rect.x + 1, column_first_rect.y + 1),
+        Some([0, 128, 0, 255])
+    );
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (32, 64));
+
+    let overflow_document = NativeDocument::parse(
+        r#"<style>
+        @layer base { #overflow { flex-flow:row nowrap !important; gap:2px !important; } #first { flex-shrink:0 !important; } #second { flex-shrink:0 !important; } }
+        @layer theme { #overflow { flex-flow:column nowrap !important; gap:1px !important; } #first { flex-shrink:1 !important; } #second { flex-shrink:1 !important; } }
+        #overflow { flex-flow:column nowrap; gap:1px; }
+        </style><div id='overflow' style='display:flex;width:10px;height:8px'><div id='first' style='width:8px;height:4px'></div><div id='second' style='width:8px;height:4px'></div></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let first = overflow_document.resolve_target("id=first").unwrap();
+    let second = overflow_document.resolve_target("id=second").unwrap();
+    let overflow_layout = overflow_document
+        .layout(Viewport {
+            width: 10,
+            height: 12,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(overflow_layout.box_for(first).unwrap().x, 0);
+    assert_eq!(overflow_layout.box_for(second).unwrap().x, 10);
+    assert_eq!(overflow_layout.content_width, 18);
+    assert_eq!(overflow_layout.max_scroll_offset().x, 8);
+    assert_eq!(overflow_layout.hit_test(1, 1), Ok(Some(first)));
+}
+
+#[test]
 fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:45px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",

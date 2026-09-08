@@ -8398,6 +8398,20 @@ fn parse_local_cascade_declaration<T: Copy>(
     parse(value).map(LocalCascadeDeclaration::Value)
 }
 
+fn parse_local_reset_cascade_declaration<T: Copy>(
+    value: &str,
+    parse: fn(&str) -> Option<T>,
+) -> Option<LocalCascadeDeclaration<T>> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("revert-layer") {
+        return Some(LocalCascadeDeclaration::RevertLayer);
+    }
+    if is_local_reset_keyword(value) {
+        return Some(LocalCascadeDeclaration::Reset);
+    }
+    parse(value).map(LocalCascadeDeclaration::Value)
+}
+
 fn parse_text_transform_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<TextTransformValue>> {
@@ -8433,11 +8447,11 @@ fn parse_vertical_align_declaration(
 fn parse_text_overflow_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<TextOverflowValue>> {
-    parse_local_cascade_declaration(value, parse_text_overflow)
+    parse_local_reset_cascade_declaration(value, parse_text_overflow)
 }
 
 fn parse_text_indent_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
-    parse_local_cascade_declaration(value, parse_dimension)
+    parse_local_reset_cascade_declaration(value, parse_dimension)
 }
 
 fn parse_local_dimension_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
@@ -16796,7 +16810,7 @@ mod tests {
     }
 
     #[test]
-    fn local_text_declaration_parsers_accept_only_standalone_revert_layer() {
+    fn local_text_declaration_parsers_accept_css_wide_resets_and_revert_layer() {
         assert_eq!(
             parse_text_overflow_declaration("ReVeRt-LaYeR"),
             Some(LocalCascadeDeclaration::RevertLayer)
@@ -16805,6 +16819,13 @@ mod tests {
             parse_text_overflow_declaration("ellipsis"),
             Some(LocalCascadeDeclaration::Value(TextOverflowValue::Ellipsis))
         );
+        for keyword in ["INITIAL", "UnSeT", "ReVeRt"] {
+            assert_eq!(
+                parse_text_overflow_declaration(keyword),
+                Some(LocalCascadeDeclaration::Reset),
+                "text-overflow {keyword}"
+            );
+        }
         assert_eq!(
             parse_text_indent_declaration(" REVERT-LAYER "),
             Some(LocalCascadeDeclaration::RevertLayer)
@@ -16813,11 +16834,19 @@ mod tests {
             parse_text_indent_declaration("16px"),
             Some(LocalCascadeDeclaration::Value(16))
         );
+        for keyword in ["initial", "UNSET", "revert"] {
+            assert_eq!(
+                parse_text_indent_declaration(keyword),
+                Some(LocalCascadeDeclaration::Reset),
+                "text-indent {keyword}"
+            );
+        }
+        assert_eq!(parse_text_overflow_declaration("inherit"), None);
+        assert_eq!(parse_text_indent_declaration("inherit"), None);
         assert_eq!(
             parse_text_overflow_declaration("revert-layer ellipsis"),
             None
         );
-        assert_eq!(parse_text_indent_declaration("revert"), None);
         assert_eq!(parse_text_indent_declaration("-1px"), None);
         assert_eq!(parse_text_indent_declaration("50%"), None);
         let declarations = parse_declarations(
@@ -16830,6 +16859,41 @@ mod tests {
         assert_eq!(
             declarations.text_overflow,
             Some(LocalCascadeDeclaration::Value(TextOverflowValue::Ellipsis))
+        );
+        let resets = parse_declarations("text-indent: initial; text-overflow: unset;");
+        assert_eq!(resets.text_indent, Some(LocalCascadeDeclaration::Reset));
+        assert_eq!(resets.text_overflow, Some(LocalCascadeDeclaration::Reset));
+    }
+
+    #[test]
+    fn local_text_css_wide_resets_use_fallbacks_and_preserve_invalid_later() {
+        let document = NativeDocument::parse(
+            "<style>#initial { text-indent: 16px; text-indent: initial; text-overflow: ellipsis; text-overflow: initial; } #unset { text-indent: 16px; text-indent: unset; text-overflow: ellipsis; text-overflow: unset; } #revert { text-indent: 16px; text-indent: revert; text-overflow: ellipsis; text-overflow: revert; } #invalid { text-indent: 16px; text-indent: 1px 2px; text-overflow: ellipsis; text-overflow: fade; } #important { text-indent: 16px !important; text-overflow: ellipsis !important; } #important { text-indent: initial; text-overflow: initial; }</style><div id='initial'>Initial</div><div id='unset'>Unset</div><div id='revert'>Revert</div><div id='invalid'>Invalid</div><div id='important'>Important</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        for id in ["initial", "unset", "revert"] {
+            assert_eq!(style(id).text_indent(), 0, "text-indent for {id}");
+            assert_eq!(
+                style(id).text_overflow(),
+                TextOverflowValue::Clip,
+                "text-overflow for {id}"
+            );
+        }
+        assert_eq!(style("invalid").text_indent(), 16);
+        assert_eq!(
+            style("invalid").text_overflow(),
+            TextOverflowValue::Ellipsis
+        );
+        assert_eq!(style("important").text_indent(), 16);
+        assert_eq!(
+            style("important").text_overflow(),
+            TextOverflowValue::Ellipsis
         );
     }
 

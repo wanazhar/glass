@@ -9542,6 +9542,79 @@ fn native_text_indent_shifts_only_block_first_lines_and_preserves_shared_consume
 }
 
 #[test]
+fn native_local_text_css_wide_resets_reach_layout_raster_and_truncation() {
+    let document = NativeDocument::parse(
+        "<style>.indent { display:block; width:48px; line-height:20px; } .overflow { display:block; width:40px; line-height:20px; white-space:nowrap; overflow-x:clip; } #indent-initial { text-indent:InItIaL; } #indent-unset { text-indent:UnSeT; } #indent-revert { text-indent:ReVeRt; } #indent-invalid { text-indent:16px; text-indent:1px 2px; } #indent-important { text-indent:16px !important; } #indent-important { text-indent:initial; } #overflow-initial { text-overflow:INITIAL; } #overflow-unset { text-overflow:UnSeT; } #overflow-revert { text-overflow:ReVeRt; } #overflow-invalid { text-overflow:ellipsis; text-overflow:fade; } #overflow-important { text-overflow:ellipsis !important; } #overflow-important { text-overflow:initial; }</style><div id='indent-initial' class='indent'>A</div><div id='indent-unset' class='indent'>B</div><div id='indent-revert' class='indent'>C</div><div id='indent-invalid' class='indent'>D</div><div id='indent-important' class='indent'>E</div><div id='overflow-initial' class='overflow'>ABCDEFG</div><div id='overflow-unset' class='overflow'>ABCDEFG</div><div id='overflow-revert' class='overflow'>ABCDEFG</div><div id='overflow-invalid' class='overflow'>ABCDEFG</div><div id='overflow-important' class='overflow'>ABCDEFG</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 240,
+        device_scale_factor_milli: 1000,
+    };
+    let indent_initial = document.resolve_target("id=indent-initial").unwrap();
+    let indent_unset = document.resolve_target("id=indent-unset").unwrap();
+    let indent_revert = document.resolve_target("id=indent-revert").unwrap();
+    let indent_invalid = document.resolve_target("id=indent-invalid").unwrap();
+    let indent_important = document.resolve_target("id=indent-important").unwrap();
+    let overflow_initial = document.resolve_target("id=overflow-initial").unwrap();
+    let overflow_unset = document.resolve_target("id=overflow-unset").unwrap();
+    let overflow_revert = document.resolve_target("id=overflow-revert").unwrap();
+    let overflow_invalid = document.resolve_target("id=overflow-invalid").unwrap();
+    let overflow_important = document.resolve_target("id=overflow-important").unwrap();
+    let layout = document.layout(viewport).unwrap();
+    let first_run = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id)
+            .expect("text run")
+    };
+    for node_id in [indent_initial, indent_unset, indent_revert] {
+        assert_eq!(first_run(node_id).origin.x, 0);
+    }
+    assert_eq!(first_run(indent_invalid).origin.x, 16);
+    assert_eq!(first_run(indent_important).origin.x, 16);
+    for node_id in [overflow_initial, overflow_unset, overflow_revert] {
+        let run = first_run(node_id);
+        assert_eq!(run.text, "ABCDEFG");
+        assert!(!run.truncated);
+    }
+    for node_id in [overflow_invalid, overflow_important] {
+        let run = first_run(node_id);
+        assert_eq!(run.text, "AB...");
+        assert!(run.truncated);
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun { node_id, origin, .. }
+                if *node_id == indent_important && origin.x == 16
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert!(surface.pixel(16, 1).is_some());
+    let invalid_origin = first_run(indent_invalid).origin;
+    assert_eq!(
+        layout
+            .hit_test(
+                i64::from(invalid_origin.x + 1),
+                i64::from(invalid_origin.y + 1),
+            )
+            .unwrap(),
+        Some(indent_invalid)
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(diagnostic.detail.as_str(), "text-indent" | "text-overflow")
+    }));
+}
+
+#[test]
 fn native_local_text_revert_layer_preserves_indent_and_ellipsis_consumers() {
     let document = NativeDocument::parse(
         "<style>.indent { display:block; width:40px; line-height:20px; } .overflow { display:block; width:40px; line-height:20px; white-space:nowrap; overflow-x:clip; } @layer base { #indent { text-indent:16px; } #repeat-indent { text-indent:8px; } #inline-indent { text-indent:12px; } #fallback-indent { text-indent:revert-layer; } #invalid-indent { text-indent:16px; } #clip { text-overflow:clip; } #ellipsis { text-overflow:clip; } #repeat-overflow { text-overflow:ellipsis; } #inline-overflow { text-overflow:ellipsis; } #fallback-overflow { text-overflow:revert-layer; } #invalid-overflow { text-overflow:ellipsis; } } @layer theme { #indent { text-indent:24px; } #repeat-indent { text-indent:20px; } #ellipsis { text-overflow:ellipsis; } #repeat-overflow { text-overflow:clip; } } @layer top { #repeat-indent { text-indent:revert-layer; } #repeat-overflow { text-overflow:revert-layer; } } #indent { text-indent:revert-layer; } #repeat-indent { text-indent:revert-layer; } #clip { text-overflow:revert-layer; } #ellipsis { text-overflow:revert-layer; } #repeat-overflow { text-overflow:revert-layer; } #invalid-indent { text-indent:1px 2px; } #invalid-overflow { text-overflow:fade; }</style><div id='indent' class='indent'>ABCDEFGH</div><div id='repeat-indent' class='indent'>ABCDEFGH</div><div id='inline-indent' class='indent' style='text-indent:revert-layer'>ABCDEFGH</div><div id='fallback-indent' class='indent'>ABCDEFGH</div><div id='invalid-indent' class='indent'>ABCDEFGH</div><div id='clip' class='overflow'>ABCDEFG</div><div id='ellipsis' class='overflow'>ABCDEFG</div><div id='repeat-overflow' class='overflow'>ABCDEFG</div><div id='inline-overflow' class='overflow' style='text-overflow:revert-layer'>ABCDEFG</div><div id='fallback-overflow' class='overflow'>ABCDEFG</div><div id='invalid-overflow' class='overflow'>ABCDEFG</div>",

@@ -503,8 +503,10 @@ the existing local resolver to finite `0`; standalone
 existing bounded `flex-start` fallback; standalone
 `initial|unset|revert` reset forms for local `align-items` reuse the existing
 bounded `flex-start` fallback; `inherit`, percentages,
-negative/fractional/intrinsic basis values, `align-self`, `align-content`, and
-`place-content` remain outside the boundary, plus
+negative/fractional/intrinsic basis values; standalone
+`initial|unset|revert` reset forms for local `align-self` reuse the existing
+bounded `auto` fallback and continue through parent `align-items`;
+`align-content` and `place-content` remain outside the boundary, plus
 bounded case-insensitive gap-family
 `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with independent
 finite-pixel components, plus standalone case-insensitive `initial|unset|revert`

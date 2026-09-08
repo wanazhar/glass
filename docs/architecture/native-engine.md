@@ -32,6 +32,7 @@ bounded-flex-flow-css-wide-resets,
 bounded-flex-order-css-wide-resets,
 bounded-flex-justify-content-css-wide-resets,
 bounded-flex-align-items-css-wide-resets,
+bounded-flex-align-self-css-wide-resets,
 bounded-inherited-text-presentation-revert-layer,
 bounded-inherited-text-spacing-revert-layer,
 bounded-inherited-vertical-align-revert-layer,
@@ -2018,6 +2019,19 @@ two-crate boundary remain bounded. Full native integration (249/249) and the
 feature library (1,032 passed, 1 ignored) pass locally. Remote CI, push,
 release, tag, and registry publication remain unclaimed for this local-only
 checkout.
+
+The completed dependency-ordered `native-engine-212` slice is recorded in
+`docs/plan/tasks/native-engine-212.md` and implemented at `0a624642` (design
+`68f42ebe`). It extends the local `align-self` owner with standalone,
+case-insensitive `initial`, `unset`, and one-author-origin `revert`, retaining
+finite item values and named-layer `revert-layer`. Reset forms reuse the
+existing bounded `auto` fallback and continue through parent `align-items`;
+important/source order, invalid-later preservation, complete-subtree movement,
+flex sizing, display-list, fixed-cell raster, PNG capture, point-hit,
+diagnostics, and the two-crate boundary remain bounded. Full native integration
+(250/250) and the feature library (1,033 passed, 1 ignored) pass locally.
+Remote CI, push, release, tag, and registry publication remain unclaimed for
+this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

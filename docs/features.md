@@ -407,6 +407,13 @@ decreasing or increasing y,
   bounded root defaults, `inherit`/`unset` use the computed parent, `revert`
   uses the current one-author-origin parent fallback, and `revert-layer`
   remains the named-layer rollback form,
+  bounded standalone case-insensitive CSS-wide `inherit`, `initial`, `unset`,
+  and one-author-origin `revert` for inherited `text-align`, `text-align-last`,
+  `text-justify`, and `direction`; `initial` uses left, auto, auto, and `ltr`
+  root defaults, `inherit`/`unset` use the computed parent, `revert` uses the
+  current one-author-origin parent fallback, and `revert-layer` remains the
+  named-layer rollback form. The existing logical `ltr`/`rtl` projection and
+  fixed-cell layout/display-list/raster consumers remain bounded,
   bounded case-insensitive 15-layer/unlayered rollback for non-inherited
   `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
   and `flex-direction` owners with their native fallbacks,

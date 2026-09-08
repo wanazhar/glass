@@ -66,6 +66,7 @@ bounded-flex-directionality/bounded-final-line-alignment/bounded-final-line-just
 bounded-text-justification-control/bounded-text-decoration-lines/
 bounded-text-decoration-combinations,
 bounded-text-alignment-revert-layer,
+bounded-inherited-alignment-css-wide-resets,
 bounded-text-decoration-skip-spaces-line-edges,
 bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit/
 bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-revert,
@@ -1801,6 +1802,25 @@ library run reproduces the pre-existing large-Clap parser-test overflow.
 Paired-crate, package, workspace, security/fuzz, cleanup, issue-level, and
 remote-CI gates remain pending.
 
+The completed dependency-ordered `native-engine-199` slice is recorded in
+`docs/plan/tasks/native-engine-199.md` and implemented at `4771f352` (design
+`4b02b41b`). It extends the inherited text-alignment and direction owners with
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert`, while retaining `revert-layer` as the named-layer rollback. Parent
+and root fallbacks, terminal reset behavior, invalid-later preservation, and
+the existing ltr/rtl logical projection remain bounded; the computed values
+continue through the existing layout, display-list, raster, PNG, point-hit,
+semantic, and diagnostic owners without public-schema or crate-boundary
+changes. Focused cascade/parser/integration coverage and full native
+integration (237/237) pass locally. The feature library, paired binaries,
+strict Clippy, warning-denied rustdoc, workspace all-target/all-feature tests,
+doctests, fuzz, package/install, security, static documentation, and
+formatting gates also pass locally. The direct registry-backed dev package
+verification remains blocked by the immutable public `glass-browser 0.3.14`
+API surface; the canonical local patched/no-verify route and clean-install
+transition gate pass. Exact temporary-target cleanup and issue synchronization
+remain; remote CI is not claimed for this local-only checkout.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -2714,6 +2734,11 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded 15-layer/unlayered `revert-layer` rollback for inherited
   `text-align`, `text-align-last`, and `text-justify`, with private declaration
   state and unchanged line/artifact owners.
+- bounded standalone case-insensitive `inherit`, `initial`, `unset`, and
+  one-author-origin `revert` for inherited `text-align`, `text-align-last`,
+  `text-justify`, and `direction`, with parent/root fallbacks, invalid-later
+  preservation, logical `ltr`/`rtl` projection, and unchanged layout,
+  display-list, raster, point-hit, semantic, and diagnostic owners.
 - bounded 15-layer/unlayered `revert-layer` rollback for inherited
   `white-space`, with private declaration state, five finite modes, inherited/
   root fallback, and unchanged line-flow/artifact owners.

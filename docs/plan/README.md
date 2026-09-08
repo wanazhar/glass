@@ -2277,6 +2277,17 @@ integration (254/254) and the feature library (1,037 passed, 1 ignored) pass
 locally. Remote CI, push, release, tag, and registry publication remain
 unclaimed.
 
+The completed dependency-ordered [native-engine-217](tasks/native-engine-217.md)
+slice is implemented at `feb6b607` (design `5ee75fcb`). It adds bounded
+standalone case-insensitive `align-items: inherit` through the existing private
+ancestor-style chain while keeping omitted `align-items` non-inherited with the
+bounded `flex-start` fallback. Mixed invalid forms, source order, cross-axis
+placement, `align-self` overrides, display-list, raster/PNG, point-hit,
+semantics, diagnostics, and the two-crate boundary remain bounded. Full native
+integration (255/255) and the feature library (1,038 passed, 1 ignored) pass
+locally. Remote CI, push, release, tag, and registry publication remain
+unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

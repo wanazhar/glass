@@ -38,6 +38,7 @@ bounded-logical-border-color-important/bounded-text-presentation-important/
 bounded-local-presentation-important,
 bounded-flex-gap-important/bounded-dimension-important/bounded-box-model-important/
 bounded-logical-box-model-edges/
+bounded-box-model-css-wide-resets/
 bounded-overflow-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
@@ -1689,6 +1690,23 @@ focused parser/integration tests, full native integration (231/231), strict
 Clippy, warning-denied rustdoc, and formatting pass locally; final static,
 paired-crate, package, workspace, security/fuzz, cleanup, issue-level, and
 remote-CI gates remain pending.
+
+The completed dependency-ordered `native-engine-194` slice is recorded in
+`docs/plan/tasks/native-engine-194.md` and implemented at `5477fb79` (design
+`e643a64c`). It adds standalone case-insensitive `initial`, `unset`, and
+one-author-origin `revert` to `box-sizing`, physical padding/margin
+shorthands and longhands, and the horizontal-tb logical padding/margin family.
+These forms normalize to the existing content-box and zero-edge fallbacks,
+while `revert-layer` remains a separate rollback candidate and terminal
+`!important` behavior remains unchanged. Existing logical direction projection,
+source order, geometry, normal-flow/flex, overflow, display-list, raster,
+capture, point-hit, and semantic/source-order owners remain unchanged. Explicit
+`inherit`, percentages, negative lengths, margin collapsing, positioning,
+vertical writing modes, multiple origins, and browser-wide CSS-wide conformance
+remain outside this slice. Scoped check, focused parser/integration tests, full
+native integration (232/232), strict Clippy, warning-denied rustdoc, and
+formatting pass locally; final static, paired-crate, package, workspace,
+security/fuzz, cleanup, issue-level, and remote-CI gates remain pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

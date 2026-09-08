@@ -195,8 +195,12 @@ logical `padding-block`/`padding-inline` and `margin-block`/`margin-inline`
 shorthands plus their block/inline start/end longhands project through resolved
 `ltr`/`rtl` direction into the same physical edge owners and honor the same
 bounded important-over-normal, reversed-layer, inline-important, invalid-later,
-and `revert-layer` behavior; logical `box-sizing`, vertical writing modes, and
-remaining properties do not claim generic `!important` semantics.
+and `revert-layer` behavior. The same physical and horizontal-tb logical
+box-model owners accept standalone case-insensitive `initial`, `unset`, and
+one-author-origin `revert`: padding and margin reset to zero and `box-sizing`
+resets to `content-box`; `inherit`, vertical writing modes, and remaining
+properties do not claim generic `!important` semantics or this bounded reset
+family.
 CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert`: explicit
 `inherit` copies the parent's effective four-corner radius, including from
 unpainted or zero-width parents; reset forms resolve to zero corners and

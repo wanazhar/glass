@@ -1940,6 +1940,25 @@ warning-denied rustdoc, and formatting pass locally; final static, paired-crate,
 package, workspace, security/fuzz, cleanup, issue-level, and remote-CI gates
 remain pending until issue #40 reaches its final validation boundary.
 
+The completed dependency-ordered [native-engine-194](tasks/native-engine-194.md)
+slice is implemented at `5477fb79` (design `e643a64c`). It adds bounded
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`
+to `box-sizing`, physical padding/margin shorthands and longhands, and the
+horizontal-tb logical padding/margin family. These forms normalize to the
+existing content-box and zero-edge fallbacks while preserving separate
+`revert-layer` rollback, important-over-normal ordering, reversed named-layer
+priority, inline-important precedence, invalid-later behavior, ltr/rtl
+projection, and the existing geometry, normal-flow/flex, overflow, display-list,
+raster, capture, point-hit, and semantic/source-order owners. Explicit
+`inherit`, percentages, negative lengths, margin collapsing, positioning,
+vertical writing modes, additional logical properties, multiple origins,
+transitions, animations, and browser-wide CSS-wide conformance remain outside
+this slice. Scoped check, focused units/integration, full native integration
+(232/232), strict Clippy, warning-denied rustdoc, and formatting pass locally;
+final static, paired-crate, package, workspace, security/fuzz, cleanup,
+issue-level, and remote-CI gates remain pending until issue #40 reaches its
+final validation boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

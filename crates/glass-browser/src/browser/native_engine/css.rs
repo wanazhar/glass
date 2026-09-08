@@ -8368,6 +8368,9 @@ fn parse_flex_shrink_declaration(value: &str) -> Option<FlexShrinkDeclaration> {
     if is_local_reset_keyword(value) {
         return Some(FlexShrinkDeclaration::Reset);
     }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some(FlexShrinkDeclaration::Inherit);
+    }
     parse_flex_shrink(value).map(FlexShrinkDeclaration::Value)
 }
 
@@ -13624,6 +13627,11 @@ mod tests {
         );
         assert_eq!(parse_flex_grow_declaration("inherit 1"), None);
         assert_eq!(
+            parse_flex_shrink_declaration(" InHeRiT "),
+            Some(FlexShrinkDeclaration::Inherit)
+        );
+        assert_eq!(parse_flex_shrink_declaration("inherit 1"), None);
+        assert_eq!(
             parse_flex_grow_declaration("initial"),
             Some(FlexGrowDeclaration::Reset)
         );
@@ -14164,7 +14172,7 @@ mod tests {
     #[test]
     fn stylesheet_flex_inherit_projects_parent_components() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "@layer base { #layered { flex-grow: 7; } } @layer theme { #layered { flex-grow: inherit; } } #inherit { flex: InHeRiT; } #direct { flex-grow: InHeRiT; } #direct-order { flex-grow: 1; } #direct-order { flex-grow: inherit; } #direct-invalid { flex-grow: 4; flex-grow: inherit 1; } #direct-important { flex-grow: 8 !important; } #direct-important { flex-grow: inherit; } #direct-reset { flex-grow: inherit; flex-grow: initial; } #direct-longhand { flex: 1 1 4px; flex-grow: inherit; } #invalid { flex: 1 1 4px; flex: inherit 1 auto; } #important { flex: 2 3 12px !important; } #important { flex: inherit; } #longhands { flex: 1 1 4px; flex-grow: 4; flex-shrink: 5; flex-basis: 12px; }"
+            "@layer base { #layered { flex-grow: 7; } #shrink-layered { flex-shrink: 7; } } @layer theme { #layered { flex-grow: inherit; } #shrink-layered { flex-shrink: inherit; } } #inherit { flex: InHeRiT; } #direct { flex-grow: InHeRiT; } #direct-order { flex-grow: 1; } #direct-order { flex-grow: inherit; } #direct-invalid { flex-grow: 4; flex-grow: inherit 1; } #direct-important { flex-grow: 8 !important; } #direct-important { flex-grow: inherit; } #direct-reset { flex-grow: inherit; flex-grow: initial; } #direct-longhand { flex: 1 1 4px; flex-grow: inherit; } #shrink-direct { flex-shrink: InHeRiT; } #shrink-order { flex-shrink: 1; } #shrink-order { flex-shrink: inherit; } #shrink-invalid { flex-shrink: 4; flex-shrink: inherit 1; } #shrink-important { flex-shrink: 8 !important; } #shrink-important { flex-shrink: inherit; } #shrink-reset { flex-shrink: inherit; flex-shrink: initial; } #shrink-longhand { flex: 2 3 4px; flex-shrink: inherit; } #invalid { flex: 1 1 4px; flex: inherit 1 auto; } #important { flex: 2 3 12px !important; } #important { flex: inherit; } #longhands { flex: 1 1 4px; flex-grow: 4; flex-shrink: 5; flex-basis: 12px; }"
                 .into(),
         ])
         .unwrap();
@@ -14204,6 +14212,22 @@ mod tests {
         assert_eq!(direct_longhand.flex_grow(), inherited_grow);
         assert_eq!(direct_longhand.flex_shrink(), 1);
         assert_eq!(direct_longhand.flex_basis(), FlexBasisValue::Length(4));
+        let shrink_layered = computed(&node("<div id='shrink-layered'>Shrink layered</div>"));
+        assert_eq!(shrink_layered.flex_shrink(), inherited_shrink);
+        let shrink_direct = computed(&node("<div id='shrink-direct'>Shrink direct</div>"));
+        assert_eq!(shrink_direct.flex_shrink(), inherited_shrink);
+        let shrink_order = computed(&node("<div id='shrink-order'>Shrink order</div>"));
+        assert_eq!(shrink_order.flex_shrink(), inherited_shrink);
+        let shrink_invalid = computed(&node("<div id='shrink-invalid'>Shrink invalid</div>"));
+        assert_eq!(shrink_invalid.flex_shrink(), 4);
+        let shrink_important = computed(&node("<div id='shrink-important'>Shrink important</div>"));
+        assert_eq!(shrink_important.flex_shrink(), 8);
+        let shrink_reset = computed(&node("<div id='shrink-reset'>Shrink reset</div>"));
+        assert_eq!(shrink_reset.flex_shrink(), 1);
+        let shrink_longhand = computed(&node("<div id='shrink-longhand'>Shrink longhand</div>"));
+        assert_eq!(shrink_longhand.flex_grow(), 2);
+        assert_eq!(shrink_longhand.flex_shrink(), inherited_shrink);
+        assert_eq!(shrink_longhand.flex_basis(), FlexBasisValue::Length(4));
         let omitted = computed(&node("<div id='omitted'>Omitted</div>"));
         assert_eq!(omitted.flex_grow(), 0);
         assert_eq!(omitted.flex_shrink(), 1);

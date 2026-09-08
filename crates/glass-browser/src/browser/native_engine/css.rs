@@ -732,6 +732,10 @@ impl TextDecorationValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationDeclaration {
     Value(TextDecorationValue),
+    Inherit,
+    Initial,
+    Unset,
+    Revert,
     RevertLayer,
 }
 
@@ -739,6 +743,8 @@ impl NativeTextDecorationDeclaration {
     const fn resolve(self, inherited: TextDecorationValue) -> TextDecorationValue {
         match self {
             Self::Value(value) => value,
+            Self::Inherit | Self::Unset | Self::Revert => inherited,
+            Self::Initial => TextDecorationValue::none(),
             Self::RevertLayer => inherited,
         }
     }
@@ -8279,10 +8285,14 @@ fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
 }
 
 fn parse_text_decoration_declaration(value: &str) -> Option<NativeTextDecorationDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        return Some(NativeTextDecorationDeclaration::RevertLayer);
+    match value.trim().to_ascii_lowercase().as_str() {
+        "inherit" => Some(NativeTextDecorationDeclaration::Inherit),
+        "initial" => Some(NativeTextDecorationDeclaration::Initial),
+        "unset" => Some(NativeTextDecorationDeclaration::Unset),
+        "revert" => Some(NativeTextDecorationDeclaration::Revert),
+        "revert-layer" => Some(NativeTextDecorationDeclaration::RevertLayer),
+        _ => parse_text_decoration(value).map(NativeTextDecorationDeclaration::Value),
     }
-    parse_text_decoration(value).map(NativeTextDecorationDeclaration::Value)
 }
 
 fn parse_text_transform(value: &str) -> Option<TextTransformValue> {
@@ -15439,10 +15449,26 @@ mod tests {
     }
 
     #[test]
-    fn text_decoration_declaration_parser_accepts_only_revert_layer_or_line_values() {
+    fn text_decoration_declaration_parser_accepts_css_wide_resets_and_line_values() {
         assert_eq!(
             parse_text_decoration_declaration("ReVeRt-LaYeR"),
             Some(NativeTextDecorationDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_text_decoration_declaration("InHeRiT"),
+            Some(NativeTextDecorationDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_text_decoration_declaration("InItIaL"),
+            Some(NativeTextDecorationDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_text_decoration_declaration("UnSeT"),
+            Some(NativeTextDecorationDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_text_decoration_declaration("ReVeRt"),
+            Some(NativeTextDecorationDeclaration::Revert)
         );
         assert_eq!(
             parse_text_decoration_declaration("underline overline line-through"),
@@ -15455,10 +15481,6 @@ mod tests {
             None
         );
         for value in [
-            "initial",
-            "inherit",
-            "unset",
-            "revert",
             "all",
             "revert-layer underline",
             "underline revert-layer",
@@ -15476,6 +15498,43 @@ mod tests {
             parse_declarations("text-decoration: revert-layer").text_decoration,
             Some(NativeTextDecorationDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_declarations("text-decoration-line: inherit").text_decoration,
+            Some(NativeTextDecorationDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_declarations("text-decoration: initial").text_decoration,
+            Some(NativeTextDecorationDeclaration::Initial)
+        );
+    }
+
+    #[test]
+    fn text_decoration_css_wide_resets_follow_parent_and_initial() {
+        let document = NativeDocument::parse(
+            "<style>.line { display:block; } #parent { text-decoration: underline overline; } #initial { text-decoration-line: initial; } #inherit { text-decoration-line: inherit; } #unset { text-decoration: unset; } #revert { text-decoration: revert; } #invalid { text-decoration-line: overline; text-decoration-line: invalid; } #important { text-decoration-line: underline !important; } #important { text-decoration-line: none; } #root-initial { text-decoration-line: initial; }</style><div id='parent' class='line'><span id='initial' class='line'>Initial</span><span id='inherit' class='line'>Inherit</span><span id='unset' class='line'>Unset</span><span id='revert' class='line'>Revert</span><span id='invalid' class='line'>Invalid</span><span id='important' class='line'>Important</span></div><div id='root-initial' class='line'>Root initial</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let line_for = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_decoration()
+        };
+        let parent = TextDecorationValue::new(true, true, false);
+        assert_eq!(line_for("parent"), parent);
+        assert_eq!(line_for("initial"), TextDecorationValue::none());
+        assert_eq!(line_for("inherit"), parent);
+        assert_eq!(line_for("unset"), parent);
+        assert_eq!(line_for("revert"), parent);
+        assert_eq!(
+            line_for("invalid"),
+            TextDecorationValue::new(false, true, false)
+        );
+        assert_eq!(
+            line_for("important"),
+            TextDecorationValue::new(true, false, false)
+        );
+        assert_eq!(line_for("root-initial"), TextDecorationValue::none());
     }
 
     #[test]

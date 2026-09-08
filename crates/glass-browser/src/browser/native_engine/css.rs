@@ -1532,9 +1532,9 @@ impl NativeStylesheet {
         let mut color: [Option<CascadeValue<LocalCascadeDeclaration<NativeColorValue>>>;
             MAX_NATIVE_PAINT_CASCADE_LAYERS] = [None; MAX_NATIVE_PAINT_CASCADE_LAYERS];
         let mut overflow_x: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut overflow_y: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         for rule in &self.rules {
             if !matches(&rule.selector) {
                 continue;
@@ -1970,18 +1970,20 @@ impl NativeStylesheet {
                 rule.declarations.color_important,
                 &mut color,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.overflow_x,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.overflow_importance.x,
                 &mut overflow_x,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.overflow_y,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.overflow_importance.y,
                 &mut overflow_y,
             );
         }
@@ -2411,18 +2413,20 @@ impl NativeStylesheet {
                 declarations.color_important,
                 &mut color,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.overflow_x,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.overflow_importance.x,
                 &mut overflow_x,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.overflow_y,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.overflow_importance.y,
                 &mut overflow_y,
             );
         }
@@ -4376,6 +4380,13 @@ struct NativeBoxModelDeclarationImportance {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeOverflowDeclarationImportance {
+    shorthand: bool,
+    x: bool,
+    y: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeTextDeclarationImportance {
     white_space: bool,
     text_align: bool,
@@ -4488,6 +4499,7 @@ struct NativeDeclarations {
     overflow: Option<LocalCascadeDeclaration<OverflowValue>>,
     overflow_x: Option<LocalCascadeDeclaration<OverflowValue>>,
     overflow_y: Option<LocalCascadeDeclaration<OverflowValue>>,
+    overflow_importance: NativeOverflowDeclarationImportance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6192,16 +6204,21 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     declarations.overflow = Some(parsed);
                     declarations.overflow_x = Some(parsed);
                     declarations.overflow_y = Some(parsed);
+                    declarations.overflow_importance.shorthand = important;
+                    declarations.overflow_importance.x = important;
+                    declarations.overflow_importance.y = important;
                 }
             }
             "overflow-x" => {
                 if let Some(parsed) = parse_overflow_declaration(value) {
                     declarations.overflow_x = Some(parsed);
+                    declarations.overflow_importance.x = important;
                 }
             }
             "overflow-y" => {
                 if let Some(parsed) = parse_overflow_declaration(value) {
                     declarations.overflow_y = Some(parsed);
+                    declarations.overflow_importance.y = important;
                 }
             }
             _ => {}
@@ -11452,6 +11469,100 @@ mod tests {
             diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
                 && diagnostic.detail == "overflow-x"
         }));
+    }
+
+    #[test]
+    fn overflow_important_parser_tracks_markers_and_invalid_preservation() {
+        let declarations = parse_declarations(
+            "overflow: hidden !IMPORTANT; overflow-x: clip; overflow-y: visible !important",
+        );
+        assert_eq!(
+            declarations.overflow,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+        );
+        assert_eq!(
+            declarations.overflow_x,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Clip))
+        );
+        assert_eq!(
+            declarations.overflow_y,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Other))
+        );
+        assert_eq!(
+            declarations.overflow_importance,
+            NativeOverflowDeclarationImportance {
+                shorthand: true,
+                x: false,
+                y: true,
+            }
+        );
+
+        let preserved = parse_declarations(
+            "overflow: hidden !important; overflow: bad !important; overflow-x: clip !important; overflow-x: bad !important; overflow-y: visible !important; overflow-y: bad !important",
+        );
+        assert_eq!(
+            preserved.overflow,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+        );
+        assert_eq!(
+            preserved.overflow_x,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Clip))
+        );
+        assert_eq!(
+            preserved.overflow_y,
+            Some(LocalCascadeDeclaration::Value(OverflowValue::Other))
+        );
+        assert_eq!(
+            preserved.overflow_importance,
+            NativeOverflowDeclarationImportance {
+                shorthand: true,
+                x: true,
+                y: true,
+            }
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_overflow_important_priority_and_rollback() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            r#"@layer base {
+                #important { overflow: hidden !important; }
+                #axis { overflow-x: hidden !important; overflow-y: visible !important; }
+                #rollback { overflow: hidden !important; overflow: revert-layer !important; }
+                #invalid { overflow: hidden !important; overflow: bad !important; overflow-x: clip !important; overflow-x: bad !important; overflow-y: visible !important; overflow-y: bad !important; }
+                #normal { overflow: clip; }
+            }
+            @layer theme {
+                #important { overflow: visible !important; }
+                #axis { overflow-x: visible !important; overflow-y: hidden !important; }
+                #rollback { overflow: clip !important; }
+                #normal { overflow: hidden; }
+            }
+            #important { overflow: clip; }
+            #axis { overflow: clip; }
+            #rollback { overflow: visible !important; }
+            #normal { overflow: visible; }
+            #inline { overflow: visible !important; }"#
+                .into(),
+        ])
+        .unwrap();
+        let important = node("<div id='important'>Important</div>");
+        let axis = node("<div id='axis'>Axis</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let normal = node("<div id='normal'>Normal</div>");
+        let inline = node("<div id='inline' style='overflow:hidden !important'>Inline</div>");
+
+        let clips = |element: &NativeNode| {
+            let style = stylesheet.computed_for(element);
+            (style.overflow_clip_x(), style.overflow_clip_y())
+        };
+        assert_eq!(clips(&important), (true, true));
+        assert_eq!(clips(&axis), (true, false));
+        assert_eq!(clips(&rollback), (true, true));
+        assert_eq!(clips(&invalid), (true, false));
+        assert_eq!(clips(&normal), (false, false));
+        assert_eq!(clips(&inline), (true, true));
     }
 
     #[test]

@@ -1977,6 +1977,24 @@ final static, paired-crate, package, workspace, security/fuzz, cleanup,
 issue-level, and remote-CI gates remain pending until issue #40 reaches its
 final validation boundary.
 
+The completed dependency-ordered [native-engine-196](tasks/native-engine-196.md)
+slice is implemented at `fd6ee415` (design `9231d17f`). It adds bounded
+standalone case-insensitive `inherit` to `width`, `height`, `min-width`,
+`max-width`, `min-height`, and `max-height`, copying the parent's computed
+optional pixel value through the existing private DOM style walk. Explicit
+inheritance can carry a parent `None`/auto fallback, while omitted dimensions
+remain local and do not inherit. Existing important/source-order, invalid-later,
+`revert-layer`, min/max, content-box/border-box, normal-flow/flex, display-list,
+raster, PNG-capture, point-hit, and semantic/source-order owners remain bounded.
+Percentages, negative lengths, intrinsic sizing, aspect ratio, margin collapsing,
+positioning, vertical writing modes, additional origins, transitions, animations,
+and browser-wide sizing conformance remain outside this slice. Scoped check,
+focused unit/integration, full native integration (234/234), strict Clippy,
+warning-denied rustdoc, formatting, static documentation truth/coverage/depth,
+feature parity, TUI shortcut, and version-sync gates pass locally; paired-crate,
+package, workspace, security/fuzz, cleanup, issue-level, and remote-CI gates
+remain pending until issue #40 reaches its final validation boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

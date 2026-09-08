@@ -479,18 +479,6 @@ pub(crate) enum WhiteSpaceValue {
     NoWrap,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WhiteSpaceDeclaration {
-    Value(WhiteSpaceValue),
-    RevertLayer,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LineHeightDeclaration {
-    Value(u32),
-    RevertLayer,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextAlignValue {
     #[default]
@@ -794,6 +782,10 @@ pub(crate) enum WordBreakValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InheritedTextDeclaration<T> {
     Value(T),
+    Inherit,
+    Initial,
+    Unset,
+    Revert,
     RevertLayer,
 }
 
@@ -1448,7 +1440,7 @@ impl NativeStylesheet {
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut opacity: [Option<CascadeValue<LocalCascadeDeclaration<u8>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut white_space: [Option<CascadeValue<WhiteSpaceDeclaration>>;
+        let mut white_space: [Option<CascadeValue<InheritedTextDeclaration<WhiteSpaceValue>>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut text_align: [Option<CascadeValue<TextAlignDeclaration>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
@@ -1526,7 +1518,7 @@ impl NativeStylesheet {
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut max_height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-        let mut line_height: [Option<CascadeValue<LineHeightDeclaration>>;
+        let mut line_height: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut background_color: [Option<
             CascadeValue<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
@@ -2663,10 +2655,23 @@ impl NativeStylesheet {
             text_transform: resolve_inherited_text_declaration(
                 text_transform,
                 inherited.text_transform,
+                TextTransformValue::None,
             ),
-            font_weight: resolve_inherited_text_declaration(font_weight, inherited.font_weight),
-            font_style: resolve_inherited_text_declaration(font_style, inherited.font_style),
-            word_break: resolve_inherited_text_declaration(word_break, inherited.word_break),
+            font_weight: resolve_inherited_text_declaration(
+                font_weight,
+                inherited.font_weight,
+                FontWeightValue::Normal,
+            ),
+            font_style: resolve_inherited_text_declaration(
+                font_style,
+                inherited.font_style,
+                FontStyleValue::Normal,
+            ),
+            word_break: resolve_inherited_text_declaration(
+                word_break,
+                inherited.word_break,
+                WordBreakValue::Normal,
+            ),
             text_overflow: resolve_local_cascade_declaration(
                 text_overflow,
                 TextOverflowValue::Clip,
@@ -2674,12 +2679,18 @@ impl NativeStylesheet {
             vertical_align: resolve_inherited_text_declaration(
                 vertical_align,
                 inherited.vertical_align,
+                VerticalAlignValue::Baseline,
             ),
             text_indent: resolve_local_cascade_declaration(text_indent, 0),
-            word_spacing: resolve_inherited_text_declaration(word_spacing, inherited.word_spacing),
+            word_spacing: resolve_inherited_text_declaration(
+                word_spacing,
+                inherited.word_spacing,
+                0,
+            ),
             letter_spacing: resolve_inherited_text_declaration(
                 letter_spacing,
                 inherited.letter_spacing,
+                0,
             ),
             gap: resolve_gap_axis(gap.shorthand_column, gap.column_gap),
             row_gap: resolve_gap_axis(gap.shorthand_row, gap.row_gap),
@@ -2796,22 +2807,25 @@ fn encode_cascade_specificity(specificity: u16, layer: Option<usize>) -> u16 {
 }
 
 fn resolve_white_space(
-    candidates: [Option<CascadeValue<WhiteSpaceDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<InheritedTextDeclaration<WhiteSpaceValue>>>;
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: WhiteSpaceValue,
 ) -> WhiteSpaceValue {
-    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        WhiteSpaceDeclaration::Value(value) => Some(value),
-        WhiteSpaceDeclaration::RevertLayer => None,
-    })
+    resolve_inherited_text_declaration(candidates, inherited, WhiteSpaceValue::Normal)
 }
 
 fn resolve_line_height(
-    candidates: [Option<CascadeValue<LineHeightDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: Option<u32>,
 ) -> Option<u32> {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        LineHeightDeclaration::Value(value) => Some(Some(value)),
-        LineHeightDeclaration::RevertLayer => None,
+        InheritedTextDeclaration::Value(value) => Some(Some(value)),
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(inherited),
+        InheritedTextDeclaration::Initial => Some(None),
+        InheritedTextDeclaration::RevertLayer => None,
     })
 }
 
@@ -2970,9 +2984,14 @@ fn resolve_text_justify(
 fn resolve_inherited_text_declaration<T: Copy>(
     candidates: [Option<CascadeValue<InheritedTextDeclaration<T>>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: T,
+    initial: T,
 ) -> T {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         InheritedTextDeclaration::Value(value) => Some(value),
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(inherited),
+        InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
 }
@@ -4673,7 +4692,7 @@ struct NativeDeclarations {
     box_model_importance: NativeBoxModelDeclarationImportance,
     flex_importance: NativeFlexDeclarationImportance,
     text_importance: NativeTextDeclarationImportance,
-    white_space: Option<WhiteSpaceDeclaration>,
+    white_space: Option<InheritedTextDeclaration<WhiteSpaceValue>>,
     text_align: Option<TextAlignDeclaration>,
     text_align_last: Option<TextAlignLastDeclaration>,
     text_justify: Option<TextJustifyDeclaration>,
@@ -4720,7 +4739,7 @@ struct NativeDeclarations {
     max_width: Option<LocalCascadeDeclaration<u32>>,
     min_height: Option<LocalCascadeDeclaration<u32>>,
     max_height: Option<LocalCascadeDeclaration<u32>>,
-    line_height: Option<LineHeightDeclaration>,
+    line_height: Option<InheritedTextDeclaration<u32>>,
     background_color: Option<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
     background_color_important: bool,
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; 4],
@@ -7764,12 +7783,8 @@ fn parse_line_height(value: &str) -> Option<u32> {
     parse_dimension(value).filter(|value| *value > 0)
 }
 
-fn parse_line_height_declaration(value: &str) -> Option<LineHeightDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(LineHeightDeclaration::RevertLayer)
-    } else {
-        parse_line_height(value).map(LineHeightDeclaration::Value)
-    }
+fn parse_line_height_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
+    parse_inherited_text_declaration(value, parse_line_height)
 }
 
 fn parse_opacity(value: &str) -> Option<u8> {
@@ -7835,12 +7850,8 @@ fn parse_white_space(value: &str) -> Option<WhiteSpaceValue> {
     }
 }
 
-fn parse_white_space_declaration(value: &str) -> Option<WhiteSpaceDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(WhiteSpaceDeclaration::RevertLayer)
-    } else {
-        parse_white_space(value).map(WhiteSpaceDeclaration::Value)
-    }
+fn parse_white_space_declaration(value: &str) -> Option<InheritedTextDeclaration<WhiteSpaceValue>> {
+    parse_inherited_text_declaration(value, parse_white_space)
 }
 
 fn parse_text_align(value: &str) -> Option<TextAlignValue> {
@@ -8317,6 +8328,18 @@ fn parse_inherited_text_declaration<T: Copy>(
     parse: fn(&str) -> Option<T>,
 ) -> Option<InheritedTextDeclaration<T>> {
     let value = value.trim();
+    if value.eq_ignore_ascii_case("inherit") {
+        return Some(InheritedTextDeclaration::Inherit);
+    }
+    if value.eq_ignore_ascii_case("initial") {
+        return Some(InheritedTextDeclaration::Initial);
+    }
+    if value.eq_ignore_ascii_case("unset") {
+        return Some(InheritedTextDeclaration::Unset);
+    }
+    if value.eq_ignore_ascii_case("revert") {
+        return Some(InheritedTextDeclaration::Revert);
+    }
     if value.eq_ignore_ascii_case("revert-layer") {
         return Some(InheritedTextDeclaration::RevertLayer);
     }
@@ -8792,7 +8815,7 @@ mod tests {
         );
         assert_eq!(
             declarations.white_space,
-            Some(WhiteSpaceDeclaration::Value(WhiteSpaceValue::PreLine))
+            Some(InheritedTextDeclaration::Value(WhiteSpaceValue::PreLine))
         );
         assert_eq!(
             declarations.text_align,
@@ -8944,7 +8967,7 @@ mod tests {
         );
         assert_eq!(
             declarations.line_height,
-            Some(LineHeightDeclaration::Value(28))
+            Some(InheritedTextDeclaration::Value(28))
         );
         assert_eq!(
             declarations.color,
@@ -12183,20 +12206,36 @@ mod tests {
     }
 
     #[test]
-    fn line_height_declaration_parser_accepts_only_standalone_case_insensitive_revert_layer() {
+    fn line_height_declaration_parser_accepts_standalone_css_wide_keywords() {
         assert_eq!(
             parse_line_height_declaration("ReVeRt-LaYeR"),
-            Some(LineHeightDeclaration::RevertLayer)
+            Some(InheritedTextDeclaration::RevertLayer)
         );
         assert_eq!(
             parse_line_height_declaration("28px"),
-            Some(LineHeightDeclaration::Value(28))
+            Some(InheritedTextDeclaration::Value(28))
         );
         assert_eq!(
             parse_line_height_declaration(" REVERT-LAYER "),
-            Some(LineHeightDeclaration::RevertLayer)
+            Some(InheritedTextDeclaration::RevertLayer)
         );
-        assert_eq!(parse_line_height_declaration("inherit"), None);
+        assert_eq!(
+            parse_line_height_declaration("InHeRiT"),
+            Some(InheritedTextDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_line_height_declaration("INITIAL"),
+            Some(InheritedTextDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_line_height_declaration("unset"),
+            Some(InheritedTextDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_line_height_declaration("ReVeRt"),
+            Some(InheritedTextDeclaration::Revert)
+        );
+        assert_eq!(parse_line_height_declaration("inherit 28px"), None);
         assert_eq!(parse_line_height_declaration("0px"), None);
         assert_eq!(parse_line_height_declaration("revert-layer 28px"), None);
     }
@@ -12688,20 +12727,36 @@ mod tests {
     }
 
     #[test]
-    fn white_space_declaration_parser_accepts_bounded_modes_and_revert_layer() {
+    fn white_space_declaration_parser_accepts_bounded_modes_and_css_wide_keywords() {
         assert_eq!(
             parse_white_space_declaration("ReVeRt-LaYeR"),
-            Some(WhiteSpaceDeclaration::RevertLayer)
+            Some(InheritedTextDeclaration::RevertLayer)
         );
         assert_eq!(
             parse_white_space_declaration("PRE-WRAP"),
-            Some(WhiteSpaceDeclaration::Value(WhiteSpaceValue::PreWrap))
+            Some(InheritedTextDeclaration::Value(WhiteSpaceValue::PreWrap))
         );
         assert_eq!(
             parse_white_space_declaration("pre-line"),
-            Some(WhiteSpaceDeclaration::Value(WhiteSpaceValue::PreLine))
+            Some(InheritedTextDeclaration::Value(WhiteSpaceValue::PreLine))
         );
-        assert_eq!(parse_white_space_declaration("inherit"), None);
+        assert_eq!(
+            parse_white_space_declaration("InHeRiT"),
+            Some(InheritedTextDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_white_space_declaration("INITIAL"),
+            Some(InheritedTextDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_white_space_declaration("unset"),
+            Some(InheritedTextDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_white_space_declaration("ReVeRt"),
+            Some(InheritedTextDeclaration::Revert)
+        );
+        assert_eq!(parse_white_space_declaration("inherit pre"), None);
         assert_eq!(parse_white_space_declaration("pre wrap"), None);
         assert_eq!(parse_white_space_declaration("revert-layer pre"), None);
     }
@@ -15355,7 +15410,7 @@ mod tests {
         );
         assert_eq!(
             preserved.white_space,
-            Some(WhiteSpaceDeclaration::Value(WhiteSpaceValue::Pre))
+            Some(InheritedTextDeclaration::Value(WhiteSpaceValue::Pre))
         );
         assert_eq!(
             preserved.text_decoration,
@@ -15365,7 +15420,7 @@ mod tests {
         );
         assert_eq!(
             preserved.line_height,
-            Some(LineHeightDeclaration::Value(20))
+            Some(InheritedTextDeclaration::Value(20))
         );
         assert!(preserved.text_importance.white_space);
         assert!(preserved.text_importance.text_decoration);
@@ -16174,7 +16229,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_text_declaration_parsers_accept_only_standalone_revert_layer() {
+    fn inherited_text_declaration_parsers_accept_standalone_css_wide_keywords() {
         assert_eq!(
             parse_text_transform_declaration("ReVeRt-LaYeR"),
             Some(InheritedTextDeclaration::RevertLayer)
@@ -16195,7 +16250,23 @@ mod tests {
             parse_text_transform_declaration("revert-layer uppercase"),
             None
         );
-        assert_eq!(parse_font_weight_declaration("revert"), None);
+        assert_eq!(
+            parse_font_weight_declaration("revert"),
+            Some(InheritedTextDeclaration::Revert)
+        );
+        assert_eq!(
+            parse_font_style_declaration("INITIAL"),
+            Some(InheritedTextDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_word_break_declaration("unset"),
+            Some(InheritedTextDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_text_transform_declaration("inherit"),
+            Some(InheritedTextDeclaration::Inherit)
+        );
+        assert_eq!(parse_text_transform_declaration("uppercase initial"), None);
         assert_eq!(parse_font_style_declaration("oblique"), None);
         assert_eq!(parse_word_break_declaration("keep-all"), None);
         assert_eq!(
@@ -16207,7 +16278,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_text_spacing_declaration_parsers_accept_only_standalone_revert_layer() {
+    fn inherited_text_spacing_declaration_parsers_accept_standalone_css_wide_keywords() {
         assert_eq!(
             parse_word_spacing_declaration("ReVeRt-LaYeR"),
             Some(InheritedTextDeclaration::RevertLayer)
@@ -16221,7 +16292,14 @@ mod tests {
             Some(InheritedTextDeclaration::Value(16))
         );
         assert_eq!(parse_letter_spacing_declaration("revert-layer 2px"), None);
-        assert_eq!(parse_word_spacing_declaration("revert"), None);
+        assert_eq!(
+            parse_word_spacing_declaration("revert"),
+            Some(InheritedTextDeclaration::Revert)
+        );
+        assert_eq!(
+            parse_letter_spacing_declaration("unset"),
+            Some(InheritedTextDeclaration::Unset)
+        );
         assert_eq!(parse_letter_spacing_declaration("normal"), None);
         assert_eq!(parse_word_spacing_declaration("-1px"), None);
         assert_eq!(parse_letter_spacing_declaration("1.5px"), None);
@@ -16259,6 +16337,70 @@ mod tests {
             declarations.letter_spacing,
             Some(InheritedTextDeclaration::Value(13))
         );
+    }
+
+    #[test]
+    fn inherited_text_css_wide_keywords_resolve_parent_initial_and_terminal_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { white-space:pre; line-height:28px; text-transform:uppercase; font-weight:bold; font-style:italic; word-break:break-all; vertical-align:middle; word-spacing:12px; letter-spacing:13px; }
+            #inherit { white-space:inherit; line-height:inherit; text-transform:inherit; font-weight:inherit; font-style:inherit; word-break:inherit; vertical-align:inherit; word-spacing:inherit; letter-spacing:inherit; }
+            #unset { white-space:unset; line-height:unset; text-transform:unset; font-weight:unset; font-style:unset; word-break:unset; vertical-align:unset; word-spacing:unset; letter-spacing:unset; }
+            #revert { white-space:ReVeRt; line-height:ReVeRt; text-transform:ReVeRt; font-weight:ReVeRt; font-style:ReVeRt; word-break:ReVeRt; vertical-align:ReVeRt; word-spacing:ReVeRt; letter-spacing:ReVeRt; }
+            #initial { white-space:initial; line-height:initial; text-transform:initial; font-weight:initial; font-style:initial; word-break:initial; vertical-align:initial; word-spacing:initial; letter-spacing:initial; }
+            #terminal { white-space:pre; white-space:initial; line-height:28px; line-height:initial; text-transform:uppercase; text-transform:initial; font-weight:bold; font-weight:initial; font-style:italic; font-style:initial; word-break:break-all; word-break:initial; vertical-align:middle; vertical-align:initial; word-spacing:12px; word-spacing:initial; letter-spacing:13px; letter-spacing:initial; }
+            #invalid { white-space:pre; white-space:break-spaces; line-height:28px; line-height:0px; text-transform:uppercase; text-transform:capitalize; font-weight:bold; font-weight:500; font-style:italic; font-style:oblique; word-break:break-all; word-break:keep-all; vertical-align:middle; vertical-align:sub; word-spacing:12px; word-spacing:-1px; letter-spacing:13px; letter-spacing:-1px; }
+            </style>
+            <div id='parent'><span id='inherit'>inherit</span><span id='unset'>unset</span><span id='revert'>revert</span><span id='initial'>initial</span><span id='terminal'>terminal</span><span id='invalid'>invalid</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let values = |id| {
+            let style = document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap());
+            (
+                style.white_space(),
+                style.line_height(),
+                style.text_transform(),
+                style.font_weight(),
+                style.font_style(),
+                style.word_break(),
+                style.vertical_align(),
+                style.word_spacing(),
+                style.letter_spacing(),
+            )
+        };
+        let inherited = (
+            WhiteSpaceValue::Pre,
+            Some(28),
+            TextTransformValue::Uppercase,
+            FontWeightValue::Bold,
+            FontStyleValue::Italic,
+            WordBreakValue::BreakAll,
+            VerticalAlignValue::Middle,
+            12,
+            13,
+        );
+        let initial = (
+            WhiteSpaceValue::Normal,
+            None,
+            TextTransformValue::None,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            WordBreakValue::Normal,
+            VerticalAlignValue::Baseline,
+            0,
+            0,
+        );
+
+        assert_eq!(values("parent"), inherited);
+        assert_eq!(values("inherit"), inherited);
+        assert_eq!(values("unset"), inherited);
+        assert_eq!(values("revert"), inherited);
+        assert_eq!(values("initial"), initial);
+        assert_eq!(values("terminal"), initial);
+        assert_eq!(values("invalid"), inherited);
     }
 
     #[test]

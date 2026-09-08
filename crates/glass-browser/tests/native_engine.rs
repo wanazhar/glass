@@ -18173,6 +18173,130 @@ fn native_dimension_css_wide_resets_reach_layout_and_artifacts() {
 }
 
 #[test]
+fn native_inherited_text_css_wide_resets_reach_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        #parent { display:block; width:64px; line-height:24px; white-space:pre; text-transform:uppercase; font-weight:bold; font-style:italic; word-break:break-all; vertical-align:middle; word-spacing:4px; letter-spacing:2px; }
+        .probe { display:block; width:64px; }
+        #inherit { white-space:inherit; line-height:inherit; text-transform:inherit; font-weight:inherit; font-style:inherit; word-break:inherit; vertical-align:inherit; word-spacing:inherit; letter-spacing:inherit; background-color:#ff0000; }
+        #unset { white-space:unset; line-height:unset; text-transform:unset; font-weight:unset; font-style:unset; word-break:unset; vertical-align:unset; word-spacing:unset; letter-spacing:unset; background-color:#00ff00; }
+        #revert { white-space:revert; line-height:revert; text-transform:revert; font-weight:revert; font-style:revert; word-break:revert; vertical-align:revert; word-spacing:revert; letter-spacing:revert; background-color:#0000ff; }
+        #initial { white-space:initial; line-height:initial; text-transform:initial; font-weight:initial; font-style:initial; word-break:initial; vertical-align:initial; word-spacing:initial; letter-spacing:initial; background-color:#ffff00; }
+        #terminal { white-space:pre; white-space:initial; line-height:24px; line-height:initial; text-transform:uppercase; text-transform:initial; font-weight:bold; font-weight:initial; font-style:italic; font-style:initial; word-break:break-all; word-break:initial; vertical-align:middle; vertical-align:initial; word-spacing:4px; word-spacing:initial; letter-spacing:2px; letter-spacing:initial; background-color:#ff00ff; }
+        </style>
+        <div id='parent'><button id='inherit' class='probe'>inherit</button><button id='unset' class='probe'>unset</button><button id='revert' class='probe'>revert</button><button id='initial' class='probe'>initial</button><button id='terminal' class='probe'>terminal</button></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 192,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let unset = document.resolve_target("id=unset").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let initial = document.resolve_target("id=initial").unwrap();
+    let terminal = document.resolve_target("id=terminal").unwrap();
+    let targets = [inherit, unset, revert, initial, terminal];
+
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "white-space"
+                    | "line-height"
+                    | "text-transform"
+                    | "font-weight"
+                    | "font-style"
+                    | "word-break"
+                    | "vertical-align"
+                    | "word-spacing"
+                    | "letter-spacing"
+            ))
+    }));
+
+    let layout = document.layout(viewport).unwrap();
+    assert!(layout.box_for(parent).is_some());
+    for target in targets {
+        assert!(layout.box_for(target).is_some());
+        assert!(layout.text_runs.iter().any(|run| run.node_id == target));
+    }
+    let text_for = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .filter(|run| run.node_id == node_id)
+            .map(|run| run.text.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(text_for(inherit), vec!["INHERIT"]);
+    assert_eq!(text_for(unset), vec!["UNSET"]);
+    assert_eq!(text_for(revert), vec!["REVERT"]);
+    assert_eq!(text_for(initial), vec!["initial"]);
+    assert_eq!(text_for(terminal), vec!["terminal"]);
+    assert_eq!(layout.box_for(inherit).unwrap().height, 24);
+    assert_eq!(layout.box_for(unset).unwrap().height, 24);
+    assert_eq!(layout.box_for(revert).unwrap().height, 24);
+    assert_eq!(layout.box_for(initial).unwrap().height, 20);
+    assert_eq!(layout.box_for(terminal).unwrap().height, 20);
+
+    let list = document.display_list(viewport).unwrap();
+    let text_style_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                bold,
+                italic,
+                word_spacing,
+                letter_spacing,
+                ..
+            } if *command_node == node_id => Some((*bold, *italic, *word_spacing, *letter_spacing)),
+            _ => None,
+        })
+    };
+    assert_eq!(text_style_for(inherit), Some((true, true, 4, 2)));
+    assert_eq!(text_style_for(unset), Some((true, true, 4, 2)));
+    assert_eq!(text_style_for(revert), Some((true, true, 4, 2)));
+    assert_eq!(text_style_for(initial), Some((false, false, 0, 0)));
+    assert_eq!(text_style_for(terminal), Some((false, false, 0, 0)));
+
+    let surface = list.rasterize().unwrap();
+    for (target, color) in [
+        (inherit, [255, 0, 0, 255]),
+        (unset, [0, 255, 0, 255]),
+        (revert, [0, 0, 255, 255]),
+        (initial, [255, 255, 0, 255]),
+        (terminal, [255, 0, 255, 255]),
+    ] {
+        let rect = layout.box_for(target).unwrap();
+        assert_eq!(
+            layout
+                .hit_test(i64::from(rect.x + 1), i64::from(rect.y + 1))
+                .unwrap(),
+            Some(target)
+        );
+        assert_eq!(surface.pixel(rect.x + 1, rect.y + 1), Some(color));
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id, .. } if *node_id == target
+            )
+        }));
+    }
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(
+        document
+            .semantic_nodes()
+            .iter()
+            .filter(|semantic_node| targets.contains(&semantic_node.node_id))
+            .count()
+            >= targets.len()
+    );
+}
+
+#[test]
 fn native_box_model_revert_layer_preserves_geometry_and_artifacts() {
     let document = NativeDocument::parse(
         "<style>@layer base { #box { display:block; width:32px; height:20px; padding:2px; border:1px solid red; box-sizing:content-box; margin:1px 2px 3px 4px; background-color:red; } } @layer theme { #box { padding:4px 5px 6px 7px; box-sizing:border-box; margin:5px 6px 7px 8px; } } #box { padding:ReVeRt-LaYeR; box-sizing:revert-layer; margin:revert-layer; }</style><button id='box'>Box</button>",

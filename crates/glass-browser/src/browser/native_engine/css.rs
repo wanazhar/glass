@@ -5549,7 +5549,7 @@ fn parse_declarations_with_diagnostics(
                             | LocalCascadeDeclaration::Reset
                             | LocalCascadeDeclaration::RevertLayer
                             | LocalCascadeDeclaration::Value(
-                                OverflowValue::Hidden | OverflowValue::Clip
+                                OverflowValue::Hidden | OverflowValue::Clip | OverflowValue::Other
                             )
                     )
                 }),
@@ -12429,6 +12429,55 @@ mod tests {
     }
 
     #[test]
+    fn overflow_no_clip_keywords_are_supported_without_diagnostics() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#visible { overflow: ViSiBlE; } #auto { overflow-x: AUTO; overflow-y: hidden; } #scroll { overflow-x: clip; overflow-y: ScRoLl; }"
+                .into(),
+        ])
+        .unwrap();
+        let visible = node("<div id='visible'>Visible</div>");
+        let auto = node("<div id='auto'>Auto</div>");
+        let scroll = node("<div id='scroll'>Scroll</div>");
+        let clips = |element: &NativeNode| {
+            let style = stylesheet.computed_for(element);
+            (style.overflow_clip_x(), style.overflow_clip_y())
+        };
+
+        assert_eq!(clips(&visible), (false, false));
+        assert_eq!(clips(&auto), (false, true));
+        assert_eq!(clips(&scroll), (true, false));
+        for keyword in ["visible", "AUTO", "ScRoLl"] {
+            assert_eq!(
+                parse_overflow_declaration(keyword),
+                Some(LocalCascadeDeclaration::Value(OverflowValue::Other)),
+                "overflow {keyword}"
+            );
+        }
+        assert_eq!(parse_overflow_declaration("visible hidden"), None);
+
+        let mut diagnostics = NativeDiagnosticSink::default();
+        NativeStylesheet::from_sources_with_diagnostics(
+            vec![
+                "#visible { overflow: visible; } #auto { overflow-x: auto; } #scroll { overflow-y: scroll; }".into(),
+            ],
+            &mut diagnostics,
+        )
+        .unwrap();
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.code,
+                NativeDiagnosticCode::UnsupportedCssProperty
+                    | NativeDiagnosticCode::UnsupportedCssValue
+            ) && matches!(
+                diagnostic.detail.as_str(),
+                "overflow" | "overflow-x" | "overflow-y"
+            )
+        }));
+    }
+
+    #[test]
     fn overflow_revert_layer_rolls_back_independent_axes_and_shorthand() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "@layer base { #named { overflow: hidden; } #axis { overflow-x: hidden; overflow-y: clip; } #repeat { overflow: hidden; } #fallback { overflow: revert-layer; } #inline { overflow: hidden; } #unsupported { overflow: visible; } } @layer theme { #named { overflow-x: clip; overflow-y: revert-layer; } #axis { overflow-x: revert-layer; overflow-y: hidden; } #repeat { overflow: revert-layer; } } @layer top { #named { overflow: revert-layer; } #repeat { overflow: revert-layer; } } #named { overflow: revert-layer; } #repeat { overflow: revert-layer; }"
@@ -12479,9 +12528,15 @@ mod tests {
             diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
                 && matches!(diagnostic.detail.as_str(), "overflow" | "overflow-y")
         }));
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
-                && diagnostic.detail == "overflow-x"
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.code,
+                NativeDiagnosticCode::UnsupportedCssProperty
+                    | NativeDiagnosticCode::UnsupportedCssValue
+            ) && matches!(
+                diagnostic.detail.as_str(),
+                "overflow" | "overflow-x" | "overflow-y"
+            )
         }));
     }
 

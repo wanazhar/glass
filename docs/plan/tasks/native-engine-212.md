@@ -1,7 +1,7 @@
 ---
 id: native-engine-212
 scope: glass-browser/native-engine/local-align-self-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-211]
 ---
 
@@ -81,7 +81,22 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Implementation and validation evidence will be recorded here after the
-bounded implementation and documentation closeout. Remote CI, push, release,
-tag, registry publication, browser-parity, security-boundary certification,
-and promotion remain outside this local task.
+Implementation is `0a624642`; the design checkpoint is `68f42ebe`. The locked
+native-feature check passed in an isolated task target. Focused flex parser and
+cascade coverage passed 30 tests plus a dedicated align-self cascade test, the
+public reset fixture passed, full native integration passed 250/250, and the
+serial native-feature library passed 1,033 tests with one ignored. Workspace
+all-target/all-feature checking, strict Clippy, paired browser/dev builds,
+warning-denied rustdoc for both crates, formatting, and diff checks passed
+locally. The fixture covers parent `align-items` delegation, finite item
+overrides, important/source order, invalid-later preservation, complete-subtree
+movement, flex sizing, display-list, fixed-cell raster/PNG, point-hit,
+semantics, and unsupported-value diagnostics. No public schema, dependency,
+feature default, or crate-boundary change was made.
+
+The preceding task's six-target nightly fuzz certification remains current
+because this slice changes only CSS flex parsing/cascade. Package and security
+evidence is retained from the preceding dependency-stable task until the next
+issue-level validation boundary. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary certification, and promotion
+remain outside this local task.

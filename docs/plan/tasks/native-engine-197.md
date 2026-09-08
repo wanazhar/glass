@@ -1,7 +1,7 @@
 ---
 id: native-engine-197
 scope: glass-browser/native-engine/dimension-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-196]
 ---
 
@@ -76,6 +76,33 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-To be filled after implementation and local certification. Remote CI, push,
-release, tag, registry publication, browser parity, security-boundary
-certification, and promotion remain outside this local task.
+Implementation is `a0e102b5`; design is `7d71a50c`. The implementation adds a
+private `Reset` declaration for standalone case-insensitive dimension
+`initial`, `unset`, and one-author-origin `revert`. Winning reset candidates
+resolve to the existing optional `None`/auto fallback without falling through;
+`revert-layer` remains the separate lower-layer rollback candidate. Omission,
+explicit `inherit`, important/source-order, invalid-later, min/max, and all
+existing artifact owners remain bounded.
+
+Local evidence:
+
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- Locked native-feature check passed in `/tmp/glass-197-focused`.
+- Focused parser/cascade reset unit passed: `1 passed; 0 failed`.
+- Focused public reset integration passed: `1 passed; 0 failed`.
+- Full native integration passed: `235 passed; 0 failed; 0 ignored`.
+- Strict native-feature Clippy passed with `-D warnings`.
+- Warning-denied native-feature rustdoc passed.
+
+Static release truth and documentation gates passed: 611 Markdown documents
+(83 current, 57 previous-version hits, 714 semantic audit hits, 0 current-claim
+failures); coverage found 611 Markdown files, 345 full-product MCP tools (100
+browser-only), 17 examples, and 22 public modules; depth found 93 current
+guides and 19 substantive contracts; feature parity found 14 capabilities
+across 4 targets (baseline 0.3.0, next and checkout 0.3.14); TUI inventory
+found 15 implementation help keys and 63 documentation markers; version sync
+confirmed 0.3.14. Paired-crate, package, workspace, security/fuzz, final
+cleanup, issue synchronization, and remote-CI gates remain deferred to the
+final issue #40 certification boundary. No remote CI, push, release, tag,
+registry publication, browser-parity, security-boundary, or promotion claim is
+made.

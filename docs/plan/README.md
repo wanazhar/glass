@@ -1995,6 +1995,30 @@ feature parity, TUI shortcut, and version-sync gates pass locally; paired-crate,
 package, workspace, security/fuzz, cleanup, issue-level, and remote-CI gates
 remain pending until issue #40 reaches its final validation boundary.
 
+The completed dependency-ordered [native-engine-197](tasks/native-engine-197.md)
+slice is implemented at `a0e102b5` (design `7d71a50c`). It adds bounded
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`
+to `width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`.
+Winning reset candidates resolve to the existing optional `None`/auto fallback
+without falling through; `revert-layer` remains the separate lower-layer
+rollback candidate. Omission, explicit `inherit`, important/source-order,
+invalid-later, min/max, content-box/border-box, normal-flow/flex, display-list,
+raster, PNG-capture, point-hit, and semantic/source-order owners remain bounded.
+Percentages, negative lengths, intrinsic sizing, aspect ratio, margin collapsing,
+positioning, vertical writing modes, additional origins, transitions, animations,
+and browser-wide sizing conformance remain outside this slice. Scoped check,
+focused unit/integration, full native integration (235/235), strict Clippy,
+warning-denied rustdoc, formatting, and static documentation gates pass locally:
+release truth reports 611 Markdown documents (83 current, 57 previous-version
+hits, 714 semantic audit hits, 0 current-claim failures); coverage reports 611
+Markdown files, 345 full-product MCP tools (100 browser-only), 17 examples, and
+22 public modules; depth reports 93 current guides and 19 substantive contracts;
+feature parity reports 14 capabilities across 4 targets; TUI reports 15
+implementation help keys and 63 documentation markers; version sync reports
+0.3.14. Paired-crate, package, workspace, security/fuzz, cleanup, issue-level,
+and remote-CI gates remain pending until issue #40 reaches its final validation
+boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

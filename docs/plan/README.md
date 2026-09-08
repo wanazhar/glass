@@ -2172,6 +2172,18 @@ Full native integration (245/245) and the feature library (1,027 passed, 1
 ignored) pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed.
 
+The completed dependency-ordered [native-engine-208](tasks/native-engine-208.md)
+slice is implemented at `fcadc99c` (design `e91a358b`). It adds bounded
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`
+to local `flex-direction`, `flex-wrap`, and `flex-flow`, retaining finite
+row/column direction values, finite wrap modes, shorthand component projection,
+and `revert-layer` rollback. Reset forms resolve through the existing private
+component streams to `row`/`nowrap` while important/source order, invalid-later
+preservation, row/column mapping, wrapping, display-list, raster/PNG, point-hit,
+diagnostics, and the two-crate boundary remain bounded. Full native integration
+(246/246) and the feature library (1,029 passed, 1 ignored) pass locally.
+Remote CI, push, release, tag, and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

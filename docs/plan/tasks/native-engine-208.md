@@ -1,7 +1,7 @@
 ---
 id: native-engine-208
 scope: glass-browser/native-engine/local-flex-flow-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-207]
 ---
 
@@ -89,7 +89,44 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Implementation and validation evidence will be recorded here after the
-bounded implementation and documentation closeout. Remote CI, push, release,
-tag, registry publication, browser-parity, security-boundary certification,
-and promotion remain outside this local task.
+Implementation is `fcadc99c`; the docs-first design checkpoint is `e91a358b`.
+The locked native-feature test-target check passed, focused flex parser/cascade
+coverage passed 27 tests, and the public reset fixture passed. Full native
+integration passed 246/246; the native-feature library passed 1,029 tests with
+one ignored under `RUST_MIN_STACK=8388608` and one test thread. The default
+parallel library run exposed a transient `Text file busy` temporary-script race
+in the unrelated extension-host test; the named test passed in isolation and
+the serial library passed. The workspace all-target/all-feature check, strict
+Clippy, warning-denied rustdoc, both crate builds, workspace doctests, and
+formatting/diff checks passed for both crates. The serial workspace
+all-target/all-feature matrix passed with browser library 1,030 passed plus one
+ignored, native integration 246, browser smoke 18, daemon recovery 1,
+`glass-dev` 365, development runtime 4, and PTY 15; remaining targets reported
+no failures.
+
+The fixture covers case-insensitive reset parsing, finite `row`/`nowrap`
+fallbacks, shorthand/component projection, important/source order,
+invalid-later preservation, row/column mapping, wrapping, point-hit,
+semantic/source order, display-list, fixed-cell raster/PNG, and typed
+unsupported-value diagnostics for excluded `inherit`. No public schema,
+dependency, feature default, or crate boundary changed. The six-target
+nightly fuzz certification at 512 runs remains current from task 207 because
+this slice changes only CSS flex parsing/cascade. Static documentation audits
+passed: release truth reported 622 Markdown documents, 83 current-version
+documents, 59 previous-version hits, 746 semantic hits, and zero current-claim
+failures; coverage reported 345 full-product MCP tools (100 browser-only), 17
+examples, and 22 public modules; depth reported 93 current guides and 19
+substantive contracts; parity reported 14 capabilities across 4 targets; TUI
+reported 15 implementation help keys and 63 documentation markers; reliability
+reported 6 scenarios across 4 targets; read-only adapters reported 5; Web IR
+reported 8 fixtures, 8 scenarios, and 11 categories; knowledge migration
+certified the v1 round-trip/v2 rejection over 6 records; version remained
+synchronized at `0.3.14`. Package and security evidence is retained from the
+preceding dependency-stable task until the next issue-level validation
+boundary.
+
+The direct registry-backed dev verification remains blocked by the immutable
+public `glass-browser 0.3.14` API surface; the canonical local patched/no-
+verify package route passes. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary certification, and promotion
+remain outside this local task.

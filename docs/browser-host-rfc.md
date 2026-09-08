@@ -177,14 +177,18 @@ origin `revert`: padding and margin reset to zero and `box-sizing` resets to
 physical values copy the parent's effective edges, `box-sizing`, and private
 margin `auto` provenance, while logical values read the parent in its
 resolved `ltr`/`rtl` direction before projecting into the child; root
-fallbacks and omitted-property non-inheritance remain explicit. Vertical
-dimension declarations `width`, `height`, `min-width`, `max-width`,
+fallbacks and omitted-property non-inheritance remain explicit. The dimension
+declarations `width`, `height`, `min-width`, `max-width`,
 `min-height`, and `max-height` also accept standalone case-insensitive
 `inherit`: explicit values copy the parent's computed optional pixel value,
 including a parent `None`/auto result, while omitted dimensions remain local
 and do not inherit. Percentages, negative lengths, intrinsic sizing, aspect
-ratio, and new used-value state remain outside this bounded extension.
-writing modes, additional logical properties, and remaining properties retain
+ratio, and new used-value state remain outside this bounded extension. These six
+local dimension declarations also accept standalone case-insensitive `initial`,
+`unset`, and one-author-origin `revert`, each resolving to the existing
+`None`/auto fallback; `revert-layer` remains a separate lower-layer rollback
+and mixed reset tokens remain unsupported. Vertical writing modes, additional
+logical properties, and remaining properties retain
 their existing bounded behavior.
 owner also accepts exact case-insensitive CSS-wide `inherit`, `unset`,
 `initial`, and one-author-origin `revert`: explicit `inherit` copies the

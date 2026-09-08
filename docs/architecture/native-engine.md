@@ -40,6 +40,7 @@ bounded-flex-gap-important/bounded-dimension-important/bounded-box-model-importa
 bounded-logical-box-model-edges/
 bounded-box-model-css-wide-resets/
 bounded-box-model-explicit-inheritance/bounded-dimension-explicit-inheritance/
+bounded-dimension-css-wide-resets/
 bounded-overflow-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
@@ -188,7 +189,11 @@ case-insensitive `inherit`: explicit values copy the parent's computed
 optional pixel value, including a parent `None`/auto result, while omitted
 dimensions remain local and do not inherit. Percentages, negative lengths,
 intrinsic sizing, aspect ratio, and new used-value state remain outside this
-bounded extension. The normal-only `overflow`, `overflow-x`, and
+bounded extension. The same six dimension owners also accept standalone
+case-insensitive `initial`, `unset`, and one-author-origin `revert`, each
+resolving to the existing `None`/auto fallback; `revert-layer` remains a
+separate lower-layer rollback and mixed reset tokens remain unsupported. The
+normal-only `overflow`, `overflow-x`, and
 `overflow-y` declarations also accept that bounded priority through private
 doubled x/y candidate streams and shorthand/x/y importance bits, preserving
 important-over-normal ordering, reversed named-layer priority, inline
@@ -1749,6 +1754,29 @@ warning-denied rustdoc, formatting, static documentation truth/coverage/depth,
 feature parity, TUI shortcut, and version-sync pass locally; paired-crate,
 package, workspace, security/fuzz, cleanup, issue-level, and remote-CI gates
 remain pending.
+
+The completed dependency-ordered `native-engine-197` slice is recorded in
+`docs/plan/tasks/native-engine-197.md` and implemented at `a0e102b5` (design
+`7d71a50c`). It adds standalone case-insensitive `initial`, `unset`, and
+one-author-origin `revert` to the six local dimension declarations. Winning
+reset candidates resolve to the existing optional `None`/auto fallback without
+falling through; `revert-layer` remains the separate lower-layer rollback
+candidate. Omission, explicit `inherit`, important/source-order behavior,
+invalid-later preservation, min/max, content-box/border-box, normal-flow/flex,
+display-list, raster, PNG capture, point-hit, and semantic/source-order owners
+remain bounded. Percentages, negative lengths, intrinsic sizing, aspect ratio,
+margin collapsing, positioning, vertical writing modes, additional origins,
+transitions, animations, and browser-wide sizing conformance remain outside
+this slice. Scoped check, focused unit/integration, full native integration
+(235/235), strict Clippy, warning-denied rustdoc, formatting, and static
+documentation gates pass locally: release truth reports 611 Markdown documents
+(83 current, 57 previous-version hits, 714 semantic audit hits, 0 current-claim
+failures); coverage reports 611 Markdown files, 345 full-product MCP tools (100
+browser-only), 17 examples, and 22 public modules; depth reports 93 current
+guides and 19 substantive contracts; parity reports 14 capabilities across 4
+targets; TUI reports 15 implementation help keys and 63 documentation markers;
+version sync reports 0.3.14. Paired-crate, package, workspace, security/fuzz,
+cleanup, issue-level, and remote-CI gates remain pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

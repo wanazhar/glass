@@ -68,6 +68,7 @@ bounded-text-decoration-combinations,
 bounded-text-alignment-revert-layer,
 bounded-inherited-alignment-css-wide-resets,
 bounded-inherited-text-decoration-style-css-wide-resets,
+bounded-inherited-text-decoration-thickness-css-wide-resets,
 bounded-text-decoration-skip-spaces-line-edges,
 bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit/
 bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-revert,
@@ -1839,6 +1840,21 @@ registry-backed dev package verification remains blocked by the immutable
 public `glass-browser 0.3.14` API surface; the documented local patched/
 no-verify route passes. Remote CI, push, release, tag, and registry
 publication remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-201` slice is recorded in
+`docs/plan/tasks/native-engine-201.md` and implemented at `ee7dae83` (design
+`d9a763db`). It extends the inherited `text-decoration-thickness` owner with
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert`, retaining `revert-layer` as the named-layer rollback. Parent/root
+fallbacks, `1px` initial behavior, terminal reset semantics, invalid-later
+preservation, and the existing finite `1px|2px|3px|4px` geometry remain
+bounded; resolved thickness continues through the existing text command,
+display-list, capture, and fixed-cell raster owners without public-schema or
+crate-boundary changes. Full native integration (239/239), the feature library
+(1,021 passed, 1 ignored), paired binaries, strict Clippy, warning-denied
+rustdoc, workspace tests/doctests, fuzz, package, security, and formatting
+gates pass locally. Remote CI, push, release, tag, and registry publication
+remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

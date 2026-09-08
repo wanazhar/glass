@@ -353,7 +353,11 @@ uses the current one-author-origin parent fallback; `revert-layer` remains the
 named-layer rollback and mixed reset tokens remain unsupported,
 bounded inherited
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
-thickness-scaled integer dash/dot periods, bounded inherited
+thickness-scaled integer dash/dot periods, and the inherited thickness owner
+accepts standalone case-insensitive `inherit`, `initial`, `unset`, and
+one-author-origin `revert`: inherited forms use the computed parent, `initial`
+uses the finite `1px` root default, and `revert-layer` remains the named-layer
+rollback, bounded inherited
 `text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
 underline and overline while preserving line-through, bounded inherited signed
 `text-decoration-skip-spaces:none|all` same-run ASCII-space interval skipping
@@ -670,6 +674,8 @@ projection, and point hit-testing,
   one-author-origin `revert` on the inherited style owner; `initial` resolves
   to `solid`, inherited forms use the parent, and `revert-layer` remains the
   named-layer rollback,
+  with the inherited thickness owner also accepting the same standalone reset
+  family, with `initial` resolving to `1px`,
   bounded inherited `text-decoration-skip-ink:auto|none` same-run glyph
   intersection skipping for underline and overline with unchanged line-through,
   bounded inherited `text-decoration-skip-spaces:none|all` same-run ASCII-space

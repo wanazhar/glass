@@ -2078,6 +2078,21 @@ dev verification remains blocked by the immutable public `glass-browser
 0.3.14` API surface; the documented local patched/no-verify route passes.
 Remote CI, push, release, tag, and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-201](tasks/native-engine-201.md)
+slice is implemented at `ee7dae83` (design `d9a763db`). It adds bounded
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert` to inherited `text-decoration-thickness`, retaining the finite
+`1px|2px|3px|4px` values and `revert-layer` rollback. Parent/root fallback,
+`1px` initial behavior, terminal reset semantics, invalid-later preservation,
+shared decoration geometry, and the two-crate boundary remain bounded. Full
+native integration (239/239), the feature library (1,021 passed, 1 ignored),
+paired binaries, strict Clippy, warning-denied rustdoc, workspace
+all-target/all-feature tests and doctests, fuzz, package, security, and
+formatting gates pass locally. Direct registry-backed dev verification remains
+blocked by the immutable public `glass-browser 0.3.14` API surface; the
+documented local patched/no-verify route passes. Remote CI, push, release, tag,
+and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

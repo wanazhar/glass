@@ -690,6 +690,7 @@ enum FlexItemOrderDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexGrowDeclaration {
     Value(u32),
+    Inherit,
     Reset,
     RevertLayer,
 }
@@ -697,6 +698,7 @@ enum FlexGrowDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexShrinkDeclaration {
     Value(u32),
+    Inherit,
     Reset,
     RevertLayer,
 }
@@ -704,6 +706,7 @@ enum FlexShrinkDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexBasisDeclaration {
     Value(FlexBasisValue),
+    Inherit,
     Reset,
     RevertLayer,
 }
@@ -903,6 +906,9 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) flex_direction: FlexDirectionValue,
     pub(crate) flex_wrap: FlexWrapValue,
     pub(crate) direction: DirectionValue,
+    pub(crate) flex_grow: u32,
+    pub(crate) flex_shrink: u32,
+    pub(crate) flex_basis: FlexBasisValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
     pub(crate) text_align: TextAlignValue,
@@ -949,6 +955,9 @@ impl Default for NativeInheritedStyle {
             flex_direction: FlexDirectionValue::Row,
             flex_wrap: FlexWrapValue::NoWrap,
             direction: DirectionValue::Ltr,
+            flex_grow: 0,
+            flex_shrink: 1,
+            flex_basis: FlexBasisValue::Auto,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
             text_align: TextAlignValue::Left,
@@ -2664,9 +2673,9 @@ impl NativeStylesheet {
             direction: resolved_direction,
             flex_wrap: resolve_flex_wrap(flex_wrap, inherited.flex_wrap),
             flex_item_order: resolve_flex_item_order(flex_item_order),
-            flex_grow: resolve_flex_grow(flex_grow),
-            flex_shrink: resolve_flex_shrink(flex_shrink),
-            flex_basis: resolve_flex_basis(flex_basis),
+            flex_grow: resolve_flex_grow(flex_grow, inherited.flex_grow),
+            flex_shrink: resolve_flex_shrink(flex_shrink, inherited.flex_shrink),
+            flex_basis: resolve_flex_basis(flex_basis, inherited.flex_basis),
             text_decoration: resolve_text_decoration(text_decoration, inherited.text_decoration),
             text_decoration_style: resolve_text_decoration_style(
                 text_decoration_style,
@@ -3012,9 +3021,11 @@ fn resolve_flex_item_order(
 
 fn resolve_flex_grow(
     candidates: [Option<CascadeValue<FlexGrowDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: u32,
 ) -> u32 {
     resolve_alignment_candidates(candidates, 0, |declaration| match declaration {
         FlexGrowDeclaration::Value(value) => Some(value),
+        FlexGrowDeclaration::Inherit => Some(inherited),
         FlexGrowDeclaration::Reset => Some(0),
         FlexGrowDeclaration::RevertLayer => None,
     })
@@ -3022,9 +3033,11 @@ fn resolve_flex_grow(
 
 fn resolve_flex_shrink(
     candidates: [Option<CascadeValue<FlexShrinkDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: u32,
 ) -> u32 {
     resolve_alignment_candidates(candidates, 1, |declaration| match declaration {
         FlexShrinkDeclaration::Value(value) => Some(value),
+        FlexShrinkDeclaration::Inherit => Some(inherited),
         FlexShrinkDeclaration::Reset => Some(1),
         FlexShrinkDeclaration::RevertLayer => None,
     })
@@ -3032,12 +3045,14 @@ fn resolve_flex_shrink(
 
 fn resolve_flex_basis(
     candidates: [Option<CascadeValue<FlexBasisDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: FlexBasisValue,
 ) -> FlexBasisValue {
     resolve_alignment_candidates(
         candidates,
         FlexBasisValue::Auto,
         |declaration| match declaration {
             FlexBasisDeclaration::Value(value) => Some(value),
+            FlexBasisDeclaration::Inherit => Some(inherited),
             FlexBasisDeclaration::Reset => Some(FlexBasisValue::Auto),
             FlexBasisDeclaration::RevertLayer => None,
         },
@@ -8415,6 +8430,13 @@ fn parse_flex_shorthand_declaration(
             FlexBasisDeclaration::Reset,
         ));
     }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some((
+            FlexGrowDeclaration::Inherit,
+            FlexShrinkDeclaration::Inherit,
+            FlexBasisDeclaration::Inherit,
+        ));
+    }
     let (grow, shrink, basis) = parse_flex_shorthand(value)?;
     Some((
         FlexGrowDeclaration::Value(grow),
@@ -12711,6 +12733,16 @@ mod tests {
             ))
         );
         assert_eq!(
+            parse_flex_shorthand_declaration(" InHeRiT "),
+            Some((
+                FlexGrowDeclaration::Inherit,
+                FlexShrinkDeclaration::Inherit,
+                FlexBasisDeclaration::Inherit,
+            ))
+        );
+        assert_eq!(parse_flex_shorthand_declaration("inherit 1 auto"), None);
+        assert_eq!(parse_flex_shorthand_declaration("1 inherit auto"), None);
+        assert_eq!(
             parse_declarations("flex: 2 3 12px; flex-grow: 4; flex-basis: auto"),
             NativeDeclarations {
                 flex_grow: Some(FlexGrowDeclaration::Value(4)),
@@ -14096,7 +14128,7 @@ mod tests {
     #[test]
     fn stylesheet_flex_sizing_css_wide_resets_use_initial_fallbacks_and_preserve_cascade() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "@layer base { #layer { flex: 3 4 9px; } } @layer theme { #layer { flex: revert-layer; } } #shorthand { flex: 4 5 12px; } #shorthand { flex: InItIaL; } #longhands { flex-grow: 4; } #longhands { flex-grow: unset; flex-shrink: 5; } #longhands { flex-shrink: revert; flex-basis: 12px; } #longhands { flex-basis: INITIAL; } #invalid { flex: 2 3 8px; } #invalid { flex: inherit; } #important { flex: 5 6 10px !important; } #important { flex: initial; }"
+            "@layer base { #layer { flex: 3 4 9px; } } @layer theme { #layer { flex: revert-layer; } } #shorthand { flex: 4 5 12px; } #shorthand { flex: InItIaL; } #longhands { flex-grow: 4; } #longhands { flex-grow: unset; flex-shrink: 5; } #longhands { flex-shrink: revert; flex-basis: 12px; } #longhands { flex-basis: INITIAL; } #invalid { flex: 2 3 8px; } #invalid { flex: inherit 1 auto; } #important { flex: 5 6 10px !important; } #important { flex: initial; }"
                 .into(),
         ])
         .unwrap();
@@ -14119,6 +14151,55 @@ mod tests {
         assert_values(&longhands, 0, 1, FlexBasisValue::Auto);
         assert_values(&invalid, 2, 3, FlexBasisValue::Length(8));
         assert_values(&important, 5, 6, FlexBasisValue::Length(10));
+    }
+
+    #[test]
+    fn stylesheet_flex_inherit_projects_parent_components() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { flex: InHeRiT; } #invalid { flex: 1 1 4px; flex: inherit 1 auto; } #important { flex: 2 3 12px !important; } #important { flex: inherit; } #longhands { flex: 1 1 4px; flex-grow: 4; flex-shrink: 5; flex-basis: 12px; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited_grow = 2;
+        let inherited_shrink = 3;
+        let inherited_basis = FlexBasisValue::Length(12);
+        let computed = |element: &NativeNode| {
+            stylesheet.computed_for_with_matcher(
+                element,
+                NativeInheritedStyle {
+                    flex_grow: inherited_grow,
+                    flex_shrink: inherited_shrink,
+                    flex_basis: inherited_basis,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(element),
+            )
+        };
+
+        let inherited = computed(&node("<div id='inherit'>Inherit</div>"));
+        assert_eq!(inherited.flex_grow(), inherited_grow);
+        assert_eq!(inherited.flex_shrink(), inherited_shrink);
+        assert_eq!(inherited.flex_basis(), inherited_basis);
+        let omitted = computed(&node("<div id='omitted'>Omitted</div>"));
+        assert_eq!(omitted.flex_grow(), 0);
+        assert_eq!(omitted.flex_shrink(), 1);
+        assert_eq!(omitted.flex_basis(), FlexBasisValue::Auto);
+        let invalid = computed(&node("<div id='invalid'>Invalid</div>"));
+        assert_eq!(invalid.flex_grow(), 1);
+        assert_eq!(invalid.flex_shrink(), 1);
+        assert_eq!(invalid.flex_basis(), FlexBasisValue::Length(4));
+        let important = computed(&node("<div id='important'>Important</div>"));
+        assert_eq!(important.flex_grow(), 2);
+        assert_eq!(important.flex_shrink(), 3);
+        assert_eq!(important.flex_basis(), FlexBasisValue::Length(12));
+        let longhands = computed(&node("<div id='longhands'>Longhands</div>"));
+        assert_eq!(longhands.flex_grow(), 4);
+        assert_eq!(longhands.flex_shrink(), 5);
+        assert_eq!(longhands.flex_basis(), FlexBasisValue::Length(12));
+        let root = stylesheet.computed_for(&node("<div id='root'>Root</div>"));
+        assert_eq!(root.flex_grow(), 0);
+        assert_eq!(root.flex_shrink(), 1);
+        assert_eq!(root.flex_basis(), FlexBasisValue::Auto);
     }
 
     #[test]

@@ -931,6 +931,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_style: FontStyleValue,
     pub(crate) word_break: WordBreakValue,
     pub(crate) vertical_align: VerticalAlignValue,
+    pub(crate) text_indent: u32,
     pub(crate) word_spacing: u32,
     pub(crate) letter_spacing: u32,
 }
@@ -983,6 +984,7 @@ impl Default for NativeInheritedStyle {
             font_style: FontStyleValue::Normal,
             word_break: WordBreakValue::Normal,
             vertical_align: VerticalAlignValue::Baseline,
+            text_indent: 0,
             word_spacing: 0,
             letter_spacing: 0,
         }
@@ -2740,7 +2742,7 @@ impl NativeStylesheet {
                 inherited.vertical_align,
                 VerticalAlignValue::Baseline,
             ),
-            text_indent: resolve_local_cascade_declaration(text_indent, 0),
+            text_indent: resolve_text_indent(text_indent, inherited.text_indent),
             word_spacing: resolve_inherited_text_declaration(
                 word_spacing,
                 inherited.word_spacing,
@@ -3117,6 +3119,19 @@ fn resolve_local_cascade_declaration<T: Copy, const N: usize>(
         LocalCascadeDeclaration::Value(value) => Some(value),
         LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::Reset => None,
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_text_indent(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
+    inherited: u32,
+) -> u32 {
+    resolve_alignment_candidates(candidates, 0, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => Some(value),
+        LocalCascadeDeclaration::Inherit => Some(inherited),
+        LocalCascadeDeclaration::Reset => Some(0),
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -8652,6 +8667,9 @@ fn parse_text_overflow_declaration(
 }
 
 fn parse_text_indent_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
     parse_local_reset_cascade_declaration(value, parse_dimension)
 }
 
@@ -18046,7 +18064,14 @@ mod tests {
             );
         }
         assert_eq!(parse_text_overflow_declaration("inherit"), None);
-        assert_eq!(parse_text_indent_declaration("inherit"), None);
+        for keyword in ["inherit", "InHeRiT"] {
+            assert_eq!(
+                parse_text_indent_declaration(keyword),
+                Some(LocalCascadeDeclaration::Inherit),
+                "text-indent {keyword}"
+            );
+        }
+        assert_eq!(parse_text_indent_declaration("inherit 1px"), None);
         assert_eq!(
             parse_text_overflow_declaration("revert-layer ellipsis"),
             None
@@ -18972,6 +18997,28 @@ mod tests {
             24
         );
         assert_eq!(document.computed_style_for_layout(invalid).text_indent(), 0);
+    }
+
+    #[test]
+    fn text_indent_explicit_inherit_uses_parent_and_respects_cascade() {
+        let document = NativeDocument::parse(
+            "<style>#parent { text-indent: 24px; } #inherit { text-indent: InHeRiT; } #omitted { text-indent: 8px; text-indent: inherit; } #invalid { text-indent: 16px; text-indent: inherit 1px; } #important { text-indent: 8px !important; } #important { text-indent: inherit; } #important-inherit { text-indent: 8px; } #important-inherit { text-indent: inherit !important; } #reset { text-indent: inherit; text-indent: initial; } #revert { text-indent: inherit; text-indent: revert; }</style><div id='parent'><span id='inherit'>Inherit</span><span id='omitted'>Omitted</span><span id='invalid'>Invalid</span><span id='important'>Important</span><span id='important-inherit'>Important inherit</span><span id='reset'>Reset</span><span id='revert'>Revert</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(style("parent").text_indent(), 24);
+        assert_eq!(style("inherit").text_indent(), 24);
+        assert_eq!(style("omitted").text_indent(), 24);
+        assert_eq!(style("invalid").text_indent(), 16);
+        assert_eq!(style("important").text_indent(), 8);
+        assert_eq!(style("important-inherit").text_indent(), 24);
+        assert_eq!(style("reset").text_indent(), 0);
+        assert_eq!(style("revert").text_indent(), 0);
     }
 
     #[test]

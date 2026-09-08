@@ -2242,6 +2242,19 @@ Full native integration (251/251) and the feature library (1,034 passed, 1
 ignored) pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed.
 
+The completed dependency-ordered [native-engine-214](tasks/native-engine-214.md)
+slice is implemented at `24ae15a7` (design `9f26239d`). It adds bounded
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`
+to the local `place-content` shorthand projection, retaining finite one-/two-
+value expansion and `revert-layer` rollback. Reset forms project through the
+existing bounded `flex-start` fallbacks for both `align-content` and
+`justify-content`; terminal reset, invalid-later preservation, important/source
+order, wrapped-line distribution, main-axis placement, item alignment, flex
+sizing, display-list, raster/PNG, point-hit, diagnostics, and the two-crate
+boundary remain bounded. Full native integration (252/252) and the feature
+library (1,035 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
+and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

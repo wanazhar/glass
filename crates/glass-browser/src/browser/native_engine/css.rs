@@ -622,6 +622,7 @@ pub(crate) enum AlignContentValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlignContentDeclaration {
     Value(AlignContentValue),
+    Inherit,
     Reset,
     RevertLayer,
 }
@@ -890,6 +891,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) max_width: Option<u32>,
     pub(crate) min_height: Option<u32>,
     pub(crate) max_height: Option<u32>,
+    pub(crate) align_content: AlignContentValue,
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
@@ -930,6 +932,7 @@ impl Default for NativeInheritedStyle {
             max_width: None,
             min_height: None,
             max_height: None,
+            align_content: AlignContentValue::FlexStart,
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
@@ -2641,7 +2644,7 @@ impl NativeStylesheet {
             justify_content: resolve_justify_content(justify_content),
             align_items: resolve_align_items(align_items),
             align_self: resolve_align_self(align_self),
-            align_content: resolve_align_content(align_content),
+            align_content: resolve_align_content(align_content, inherited.align_content),
             flex_direction: resolve_flex_direction(flex_direction),
             direction: resolved_direction,
             flex_wrap: resolve_flex_wrap(flex_wrap),
@@ -2912,14 +2915,32 @@ fn resolve_align_self(
 
 fn resolve_align_content(
     candidates: [Option<CascadeValue<AlignContentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: AlignContentValue,
 ) -> AlignContentValue {
-    resolve_alignment_candidates(candidates, AlignContentValue::FlexStart, |declaration| {
-        match declaration {
-            AlignContentDeclaration::Value(value) => Some(value),
-            AlignContentDeclaration::Reset => Some(AlignContentValue::FlexStart),
-            AlignContentDeclaration::RevertLayer => None,
+    let mut blocked = [false; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
+    loop {
+        let Some((layer, candidate)) =
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(layer, candidate)| {
+                    if blocked[layer] {
+                        None
+                    } else {
+                        candidate.map(|candidate| (layer, candidate))
+                    }
+                })
+        else {
+            return AlignContentValue::FlexStart;
+        };
+        match candidate.value {
+            AlignContentDeclaration::Value(value) => return value,
+            AlignContentDeclaration::Inherit => return inherited,
+            AlignContentDeclaration::Reset => return AlignContentValue::FlexStart,
+            AlignContentDeclaration::RevertLayer => blocked[layer] = true,
         }
-    })
+    }
 }
 
 fn resolve_flex_wrap(
@@ -8098,6 +8119,9 @@ fn parse_align_content_declaration(value: &str) -> Option<AlignContentDeclaratio
     }
     if is_local_reset_keyword(value) {
         return Some(AlignContentDeclaration::Reset);
+    }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some(AlignContentDeclaration::Inherit);
     }
     parse_align_content(value).map(AlignContentDeclaration::Value)
 }
@@ -13381,9 +13405,13 @@ mod tests {
         assert_eq!(parse_align_self_declaration("center flex-end"), None);
         assert_eq!(parse_align_self_declaration("inherit"), None);
         assert_eq!(parse_align_self_declaration("revert-layer center"), None);
-        assert_eq!(parse_align_content_declaration("inherit"), None);
+        assert_eq!(
+            parse_align_content_declaration("InHeRiT"),
+            Some(AlignContentDeclaration::Inherit)
+        );
         assert_eq!(parse_align_content_declaration("revert-layer center"), None);
         assert_eq!(parse_align_content_declaration("initial center"), None);
+        assert_eq!(parse_align_content_declaration("inherit center"), None);
         assert_eq!(parse_flex_wrap_declaration("wrap reverse"), None);
     }
 
@@ -13623,7 +13651,7 @@ mod tests {
     #[test]
     fn stylesheet_align_content_css_wide_resets_use_flex_start_and_preserve_cascade() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "@layer base { #layer { align-content: center; } } @layer theme { #layer { align-content: revert-layer; } } #reset { align-content: flex-end; } #reset { align-content: INITIAL; } #unset { align-content: center; } #unset { align-content: UnSeT; } #revert { align-content: flex-end; } #revert { align-content: ReVeRt; } #invalid { align-content: center; } #invalid { align-content: inherit; } #important { align-content: flex-end !important; } #important { align-content: initial; }"
+            "@layer base { #layer { align-content: center; } } @layer theme { #layer { align-content: revert-layer; } } #reset { align-content: flex-end; } #reset { align-content: INITIAL; } #unset { align-content: center; } #unset { align-content: UnSeT; } #revert { align-content: flex-end; } #revert { align-content: ReVeRt; } #invalid { align-content: center; } #invalid { align-content: initial center; } #important { align-content: flex-end !important; } #important { align-content: initial; }"
                 .into(),
         ])
         .unwrap();
@@ -13644,6 +13672,55 @@ mod tests {
         assert_align(&revert, AlignContentValue::FlexStart);
         assert_align(&invalid, AlignContentValue::Center);
         assert_align(&important, AlignContentValue::FlexEnd);
+    }
+
+    #[test]
+    fn stylesheet_align_content_explicit_inherit_uses_parent_without_implicit_inheritance() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { align-content: inherit; } #default { color: red; } #invalid { align-content: flex-end; align-content: inherit center; } #terminal { align-content: inherit; align-content: space-between; } #important { align-content: flex-end !important; } #important { align-content: inherit; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited = AlignContentValue::SpaceAround;
+        let computed = |element: &NativeNode| {
+            stylesheet
+                .computed_for_with_matcher(
+                    element,
+                    NativeInheritedStyle {
+                        align_content: inherited,
+                        ..NativeInheritedStyle::default()
+                    },
+                    |selector| selector.matches(element),
+                )
+                .align_content()
+        };
+
+        assert_eq!(
+            computed(&node("<div id='inherit'>Inherit</div>")),
+            inherited
+        );
+        assert_eq!(
+            computed(&node("<div id='default'>Default</div>")),
+            AlignContentValue::FlexStart
+        );
+        assert_eq!(
+            computed(&node("<div id='invalid'>Invalid</div>")),
+            AlignContentValue::FlexEnd
+        );
+        assert_eq!(
+            computed(&node("<div id='terminal'>Terminal</div>")),
+            AlignContentValue::SpaceBetween
+        );
+        assert_eq!(
+            computed(&node("<div id='important'>Important</div>")),
+            AlignContentValue::FlexEnd
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for(&node("<div id='inherit'>Root default</div>"))
+                .align_content(),
+            AlignContentValue::FlexStart
+        );
     }
 
     #[test]

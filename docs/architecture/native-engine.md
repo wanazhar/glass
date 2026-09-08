@@ -25,7 +25,8 @@ bounded-flex-column-wrap/bounded-flex-column-wrap-reverse,
 bounded-flex-cross-line-alignment/bounded-flex-cross-line-space-around/
 bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
 bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
-bounded-flex-gap-family/bounded-flex-gap-family-revert-layer,
+bounded-flex-gap-family/bounded-flex-gap-family-revert-layer/
+bounded-flex-gap-family-css-wide-resets,
 bounded-inherited-text-presentation-revert-layer,
 bounded-inherited-text-spacing-revert-layer,
 bounded-inherited-vertical-align-revert-layer,
@@ -1913,6 +1914,20 @@ machinery remain outside the contract. Full native integration (242/242) and
 the feature library (1,024 passed, 1 ignored) pass locally. Remote CI, push,
 release, tag, and registry publication remain unclaimed for this local-only
 checkout.
+
+The completed dependency-ordered `native-engine-205` slice is recorded in
+`docs/plan/tasks/native-engine-205.md` and implemented at `46128c2e` (design
+`8852adee`). It extends the local `gap`, `row-gap`, and `column-gap` owners
+with standalone case-insensitive `initial`, `unset`, and one-author-origin
+`revert`, retaining finite non-negative pixel values and `revert-layer`
+rollback. Zero-gap reset fallback, shorthand/longhand axis projection,
+important/source order, invalid-later preservation, flex placement,
+point-hit, fixed-cell raster, PNG capture, diagnostics, and the two-crate
+boundary remain bounded; parent-gap propagation, `inherit`, percentages,
+fractional/intrinsic values, and generic CSS-wide machinery remain outside the
+contract. Full native integration (243/243) and the feature library (1,025
+passed, 1 ignored) pass locally. Remote CI, push, release, tag, and registry
+publication remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

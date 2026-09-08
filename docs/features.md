@@ -418,7 +418,10 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   and `place-content:revert-layer` shorthand rollback with native fallbacks
   and finite shorthand expansion, plus bounded case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
-  independent finite-pixel components,
+  independent finite-pixel components, plus standalone case-insensitive
+  `initial|unset|revert` reset forms for all three gap declarations that
+  resolve to zero; `inherit`, parent-gap propagation, percentages, and
+  fractional/intrinsic values remain bounded diagnostics,
   bounded case-insensitive 15-layer/unlayered inherited `revert-layer` rollback
   for `text-transform`, `font-weight`, `font-style`, and `word-break` with
   finite parent/root fallbacks,
@@ -743,7 +746,10 @@ projection, and point hit-testing,
   and `place-content:revert-layer` shorthand rollback with native fallbacks
   and finite shorthand expansion, plus bounded case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
-  independent finite-pixel components,
+  independent finite-pixel components, plus standalone case-insensitive
+  `initial|unset|revert` reset forms for all three gap declarations that
+  resolve to zero; `inherit`, parent-gap propagation, percentages, and
+  fractional/intrinsic values remain bounded diagnostics,
   bounded case-insensitive 15-layer/unlayered inherited `revert-layer` rollback
   for `text-transform`, `font-weight`, `font-style`, and `word-break` with
   finite parent/root fallbacks,

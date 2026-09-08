@@ -1,7 +1,7 @@
 ---
 id: native-engine-200
 scope: glass-browser/native-engine/inherited-text-decoration-style-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-199]
 ---
 
@@ -79,6 +79,44 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-To be filled after implementation and local certification. Remote CI, push,
-release, tag, registry publication, browser parity, security-boundary
-certification, and promotion remain outside this local task.
+Implementation is committed locally as `62525ec4` (`feat(native-engine):
+support decoration style resets`); the task design is recorded in `9eafebc9`.
+The locked native-feature check passed in the isolated task target
+`/tmp/glass-200-focused`. Focused parser/cascade coverage passed for the
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert` forms, and the public integration fixture passed through inherited
+style resolution, display-list commands, fixed-cell raster output, and the
+unsupported-value diagnostic path. Full native integration passed with 238/238
+tests; the full native-feature library passed with 1,020 tests and one ignored
+test under the configured large test-thread stack.
+
+The paired browser and dev binaries built successfully. Strict two-crate
+Clippy with `-D warnings`, warning-denied rustdoc, workspace all-target/all-
+feature checking and tests, workspace doctests, fuzz-manifest fetch and
+offline all-target checking,
+formatting, `cargo-deny`, and `cargo-audit` passed. `cargo-deny` reported only
+the existing duplicate `winnow` warning; `cargo-audit` reported the four
+previously allowed dependency warnings (two unmaintained crates, the current
+`lru` advisory, and the yanked `chacha20` release).
+
+Static documentation gates passed with 614 Markdown documents (83 current,
+59 previous-version hits, 722 semantic audit hits, and 0 current-claim
+failures), 345 full-product MCP tools (100 browser-only), 17 examples, 22
+public modules, 93 current guides, 19 substantive contracts, 14 capabilities
+across 4 targets, 15 implementation help keys, 63 documentation markers,
+Web IR 8/8/11 corpus coverage, and version `0.3.14`.
+
+The locked no-verify package path produced the 196-file, 6.0 MiB
+`glass-browser 0.3.14` archive and the 69-file, 2.6 MiB `glass-dev 0.3.14`
+archive. The dev archive's dependency was checked at exactly
+`glass-browser 0.3.14` using the documented local crates.io patch. Direct
+registry-backed verification remains blocked by the immutable public
+`glass-browser 0.3.14` archive lacking the current runtime API; no upload was
+attempted. The prior task's clean-install transition gate remains the latest
+install evidence because this slice changed only native CSS parsing/cascade
+and did not change package metadata or dependencies.
+
+Remote CI, push, release, tag, registry publication, browser parity,
+security-boundary certification, and promotion remain outside this local
+task. Exact temporary-target cleanup and issue synchronization follow the
+documentation and final-gate pass.

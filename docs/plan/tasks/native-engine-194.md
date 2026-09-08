@@ -1,7 +1,7 @@
 ---
 id: native-engine-194
 scope: glass-browser/native-engine/box-model-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-193]
 ---
 
@@ -76,6 +76,31 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-To be filled after implementation and local certification. Remote CI, push,
-release, tag, registry publication, browser parity, security-boundary
-certification, and promotion remain outside this local task.
+- Design checkpoint: `e643a64c`.
+- Implementation checkpoint: `5477fb79`.
+- Locked native-feature check passed in an isolated task target.
+- The focused reset parser/cascade unit and box-model artifact integration
+  regression passed.
+- The complete native integration target passed: `232 passed; 0 failed; 0
+  ignored`.
+- Strict native-feature Clippy and warnings-denied rustdoc passed, as did
+  formatting and `git diff --check`.
+- The integration fixture covered physical and logical reset fallbacks,
+  ltr/rtl projection, important precedence, content-box/border-box geometry,
+  normal-flow/flex margin consumers, display-list/raster/PNG capture, point-hit,
+  and semantic/source-order outputs.
+- Static gates passed: release-documentation truth reported 608 Markdown
+  documents, 83 current documents, 57 previous-version hits, 706 semantic
+  audit hits, and 0 current-claim failures; documentation depth reported 93
+  current guides and 19 substantive contracts; the TUI inventory reported 15
+  implementation help keys and 63 documentation markers.
+- After confirming no Cargo/Rust process and no open handle referenced them,
+  the exact `/tmp/glass-194-focused` target (3,400,133,033 bytes; 6,584
+  files; 842 directories) and exact
+  `/tmp/glass-release-documentation-194.json` report (194,106 bytes) were
+  removed with bounded `find -P -xdev -depth -delete`; both paths were
+  verified absent. Observed filesystem free space rose from 74G to 77G in
+  `df -h` output (rounded).
+
+Remote CI, push, release, tag, registry publication, browser parity,
+security-boundary certification, and promotion remain outside this local task.

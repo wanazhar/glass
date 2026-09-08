@@ -170,8 +170,11 @@ projection, and `revert-layer !important` rollback. The horizontal-tb logical
 plus their block/inline start/end longhands project through resolved `ltr`/`rtl`
 direction into the same physical edge owners and honor the same bounded
 important-over-normal, reversed-layer, inline-important, invalid-later, and
-`revert-layer` behavior; logical `box-sizing`, vertical writing modes, and
-remaining properties retain their existing bounded behavior.
+`revert-layer` behavior. The same physical and horizontal-tb logical box-model
+owners accept standalone case-insensitive `initial`, `unset`, and one-author-
+origin `revert`: padding and margin reset to zero and `box-sizing` resets to
+`content-box`; `inherit`, vertical writing modes, and remaining properties
+retain their existing bounded behavior.
 owner also accepts exact case-insensitive CSS-wide `inherit`, `unset`,
 `initial`, and one-author-origin `revert`: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width

@@ -124,8 +124,11 @@ source-behavior reference.
   longhands also project through resolved `ltr`/`rtl` direction into the same
   physical edge owners and honor the same bounded important-over-normal,
   reversed-layer, inline-important, invalid-later, and `revert-layer`
-  behavior; logical `box-sizing`, vertical writing modes, and remaining
-  properties remain outside generic `!important` semantics,
+  behavior. The same physical and horizontal-tb logical box-model owners accept
+  standalone case-insensitive `initial`, `unset`, and one-author-origin
+  `revert`: padding and margin reset to zero and `box-sizing` resets to
+  `content-box`; `inherit`, vertical writing modes, and remaining properties
+  remain outside this bounded reset family and generic `!important` semantics,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or

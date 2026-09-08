@@ -9,9 +9,9 @@ use super::raster::NativeSurface;
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
-        AlignContentValue, AlignItemsValue, DirectionValue, FontStyleValue, FontWeightValue,
-        JustifyContentValue, NativeBorderRadius, NativeBorderStyleValue, NativeBoxSizing,
-        NativeColor, NativeComputedStyle, NativeInheritedStyle, NativeMarginValue,
+        AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, FontStyleValue,
+        FontWeightValue, JustifyContentValue, NativeBorderRadius, NativeBorderStyleValue,
+        NativeBoxSizing, NativeColor, NativeComputedStyle, NativeInheritedStyle, NativeMarginValue,
         NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
         TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
         TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
@@ -868,6 +868,7 @@ impl NativeDocument {
         let mut inherited_max_height = None;
         let mut inherited_justify_content = JustifyContentValue::FlexStart;
         let mut inherited_align_items = AlignItemsValue::FlexStart;
+        let mut inherited_align_self = AlignSelfValue::Auto;
         let mut inherited_align_content = AlignContentValue::FlexStart;
         let mut inherited_direction = DirectionValue::Ltr;
         let mut inherited_white_space = WhiteSpaceValue::Normal;
@@ -914,6 +915,7 @@ impl NativeDocument {
                     max_height: inherited_max_height,
                     justify_content: inherited_justify_content,
                     align_items: inherited_align_items,
+                    align_self: inherited_align_self,
                     align_content: inherited_align_content,
                     direction: inherited_direction,
                     white_space: inherited_white_space,
@@ -961,6 +963,7 @@ impl NativeDocument {
             inherited_max_height = style.max_height();
             inherited_justify_content = style.justify_content();
             inherited_align_items = style.align_items();
+            inherited_align_self = style.align_self();
             inherited_align_content = style.align_content();
             inherited_direction = style.direction();
             inherited_white_space = style.white_space();

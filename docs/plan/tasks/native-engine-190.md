@@ -1,7 +1,7 @@
 ---
 id: native-engine-190
 scope: glass-browser/native-engine/cascade-dimension-important-priority
-status: planned
+status: complete
 depends-on: [native-engine-189]
 ---
 
@@ -85,7 +85,39 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-To be filled after the implementation, documentation, local certification,
-and exact cleanup pass. Issue-level final gates, remote CI, push, release,
-tag, registry publication, browser parity, security-boundary certification,
-and promotion remain deferred until the epic's final validation boundary.
+- Implementation and tests: `d5cc6e6b` (`feat(native-engine): honor dimension
+  importance`). The private doubled candidate arrays and per-property
+  importance bits cover all six dimensions without changing dependencies,
+  default features, public values, artifact schemas, or the two-crate boundary.
+- Scoped locked check passed:
+  `RUST_MIN_STACK=8388608 CARGO_TARGET_DIR=/tmp/glass-190-focused cargo check
+  -q -p glass-browser --features native-engine --tests --locked`.
+- Focused parser/cascade unit coverage passed: 2/2. The focused native
+  integration regression passed: 1/1.
+- Full native integration passed: `228/228`.
+- Strict native-feature all-target Clippy passed with `-D warnings`; native
+  feature library rustdoc passed with `RUSTDOCFLAGS='-D warnings'`.
+- `cargo fmt --all` and `git diff --check` passed.
+- Synchronized architecture, plan, analysis, feature, SDK, host-RFC,
+  capability, and issue records describe dimensions as covered by the bounded
+  `!important` contract and retain the explicit box-model/overflow boundary.
+- Final static release truth passed over 604 Markdown documents with 83 current
+  documents, 57 previous-version hits, 701 semantic-audit hits, and 0 current
+  claim failures. Documentation coverage passed with 604 Markdown files, 345
+  full-product MCP tools, 100 browser-only tools, 17 examples, and 22 public
+  modules. Documentation depth passed with 93 current guides and 19
+  substantive contracts; feature parity passed for 14 capabilities across 4
+  targets; the TUI shortcut inventory passed with 15 implementation help keys
+  and 63 documentation markers; version sync passed at 0.3.14.
+- Exact cleanup removed only the regenerable task target
+  `/tmp/glass-190-focused` (5,584,840,013 bytes across 9,317 files and 1,192
+  directories) and report `/tmp/glass-release-documentation-190.json` (192,849
+  bytes). No Cargo, rustc, rustdoc, or Clippy process and no open-handle
+  consumer was present; both paths were verified absent. Available `/tmp`
+  bytes increased from 76,429,242,368 to 82,043,752,448.
+- The post-evidence release-truth audit report
+  `/tmp/glass-release-documentation-190-final.json` (192,853 bytes) was also
+  removed with the same exact-path bounded deletion and verified absent.
+- Issue-level final gates, remote CI, push, release, tag, registry publication,
+  browser parity, security-boundary certification, and promotion remain
+  deferred until the epic's final validation boundary.

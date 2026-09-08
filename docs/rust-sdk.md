@@ -151,9 +151,13 @@ terminal priority; the normal-only flex and gap declarations (`justify-content`,
 `align-items`, `align-self`, `align-content`, `place-content`,
 `flex-direction`, `flex-wrap`, `flex-flow`, `order`, `flex-grow`,
 `flex-shrink`, `flex-basis`, `flex`, `gap`, `row-gap`, and `column-gap`) honor
-the same priority through their existing shorthand/component owners;
-dimensions, box-model declarations, overflow, and remaining properties remain
-outside generic `!important` semantics. The bounded
+the same priority through their existing shorthand/component owners; the six
+normal-only dimension declarations (`width`, `height`, `min-width`,
+`max-width`, `min-height`, and `max-height`) also honor the same priority
+through private doubled candidate streams with important-over-normal ordering,
+reversed named-layer priority, inline precedence, invalid-later preservation,
+and `revert-layer` rollback; box-model declarations, overflow, and remaining
+properties remain outside generic `!important` semantics. The bounded
 `background-color`, inherited `color`, and `text-decoration-color` owners
 also honor terminal case-insensitive `!important` with the same
 important-over-normal and reversed named-layer ordering. The standalone

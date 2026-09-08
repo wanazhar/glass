@@ -101,8 +101,13 @@ source-behavior reference.
   `flex-direction`, `flex-wrap`, `flex-flow`, `order`, `flex-grow`,
   `flex-shrink`, `flex-basis`, `flex`, `gap`, `row-gap`, and `column-gap`) also
   honor the same terminal priority through their existing shorthand/component
-  owners; dimensions, box-model declarations, overflow, and remaining
-  properties remain outside generic `!important` semantics,
+  owners; the six normal-only dimension declarations (`width`, `height`,
+  `min-width`, `max-width`, `min-height`, and `max-height`) also honor the same
+  terminal priority through private doubled candidate streams with important-
+  over-normal ordering, reversed named-layer priority, inline precedence,
+  invalid-later preservation, and `revert-layer` rollback; box-model
+  declarations, overflow, and remaining properties remain outside generic
+  `!important` semantics,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or

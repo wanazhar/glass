@@ -2376,6 +2376,19 @@ integration (262/262) and the feature library (1,044 passed, 1 ignored) pass
 locally. Remote CI, push, release, tag, and registry publication remain
 unclaimed.
 
+The completed dependency-ordered [native-engine-225](tasks/native-engine-225.md)
+slice is implemented at `b4f465db` (design `7064801b`). It adds bounded
+standalone case-insensitive `flex-shrink: inherit` through the existing private
+shrink component and ancestor-style chain, copying the computed parent shrink
+value while keeping omitted `flex-shrink` local with the bounded `1` fallback.
+Mixed invalid forms, source order, important priority, finite
+shorthand/longhand precedence, reset semantics, `revert-layer`, row/column
+and wrapped sizing, display-list, raster/PNG, point-hit, semantics,
+diagnostics, and the two-crate boundary remain bounded. Full native
+integration (263/263) and the feature library (1,044 passed, 1 ignored) pass
+locally. Remote CI, push, release, tag, and registry publication remain
+unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

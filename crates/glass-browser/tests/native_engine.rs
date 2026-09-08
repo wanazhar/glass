@@ -16953,6 +16953,105 @@ fn native_flex_place_content_reuses_axis_distribution_and_artifacts() {
 }
 
 #[test]
+fn native_flex_place_content_inherit_projects_both_axes_and_artifacts() {
+    let document = NativeDocument::parse(
+        concat!(
+            "<style>",
+            "#parent{width:48px;height:100px;align-content:space-around;justify-content:flex-end;}",
+            ".row{display:flex;width:32px;height:24px;gap:2px;flex-wrap:wrap;}",
+            "#inherited{place-content:InHeRiT;}",
+            "#invalid{place-content:center;place-content:inherit center;}",
+            ".item{width:10px;height:4px;flex-shrink:0;}",
+            "</style>",
+            "<div id='parent'>",
+            "<div id='inherited' class='row'><button id='inherited-first' class='item' style='background-color:red'>A</button><button id='inherited-second' class='item'>B</button><button id='inherited-third' class='item'>C</button></div>",
+            "<div id='omitted' class='row'><button id='omitted-first' class='item'>D</button><button id='omitted-second' class='item'>E</button><button id='omitted-third' class='item'>F</button></div>",
+            "<div id='invalid' class='row'><button id='invalid-first' class='item'>G</button><button id='invalid-second' class='item'>H</button><button id='invalid-third' class='item'>I</button></div>",
+            "</div>"
+        ),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 52,
+        height: 100,
+        device_scale_factor_milli: 1000,
+    };
+    let target = |id: &str| document.resolve_target(&format!("id={id}")).unwrap();
+    let inherited = target("inherited");
+    let inherited_first = target("inherited-first");
+    let omitted = target("omitted");
+    let omitted_first = target("omitted-first");
+    let invalid = target("invalid");
+    let invalid_first = target("invalid-first");
+
+    let layout = document.layout(viewport).unwrap();
+    let inherited_box = layout.box_for(inherited).unwrap();
+    let inherited_first_box = layout.box_for(inherited_first).unwrap();
+    let omitted_box = layout.box_for(omitted).unwrap();
+    let omitted_first_box = layout.box_for(omitted_first).unwrap();
+    let invalid_box = layout.box_for(invalid).unwrap();
+    let invalid_first_box = layout.box_for(invalid_first).unwrap();
+    assert!(inherited_first_box.x > inherited_box.x);
+    assert!(inherited_first_box.y > inherited_box.y);
+    assert_eq!(omitted_first_box.x, omitted_box.x);
+    assert_eq!(omitted_first_box.y, omitted_box.y);
+    assert!(invalid_first_box.x > invalid_box.x);
+    assert!(invalid_first_box.y > invalid_box.y);
+    assert_ne!(inherited_first_box.x, invalid_first_box.x);
+    assert_ne!(inherited_first_box.y, invalid_first_box.y);
+
+    let semantic_nodes = document.semantic_nodes();
+    for pair in [
+        [inherited_first, target("inherited-second")],
+        [omitted_first, target("omitted-second")],
+        [invalid_first, target("invalid-second")],
+    ] {
+        assert!(
+            semantic_nodes
+                .iter()
+                .position(|node| node.node_id == pair[0])
+                .unwrap()
+                < semantic_nodes
+                    .iter()
+                    .position(|node| node.node_id == pair[1])
+                    .unwrap()
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == inherited_first
+                    && rect.x == inherited_first_box.x
+                    && rect.y == inherited_first_box.y
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(
+        layout
+            .hit_test(
+                i64::from(inherited_first_box.x + 1),
+                i64::from(inherited_first_box.y + 1),
+            )
+            .unwrap(),
+        Some(inherited_first)
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(inherited_first_box.x + 1, inherited_first_box.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "place-content"
+    }));
+}
+
+#[test]
 fn native_flex_align_self_stretch_fills_auto_height_and_preserves_explicit_size() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:30px;height:32px;gap:2px;align-items:center'><div id='stretched' style='width:8px;align-self:stretch;background-color:red'><span id='nested' style='display:block;height:2px'>F</span></div><div id='explicit' style='width:8px;height:8px;align-self:stretch;background-color:green'>E</div><div id='inset' style='width:8px;box-sizing:border-box;padding:1px;border:1px solid blue;max-height:24px;align-self:stretch;background-color:blue'>I</div></div>",

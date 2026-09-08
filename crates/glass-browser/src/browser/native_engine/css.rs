@@ -634,6 +634,7 @@ pub(crate) enum FlexDirectionValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexDirectionDeclaration {
     Value(FlexDirectionValue),
+    Reset,
     RevertLayer,
 }
 
@@ -655,6 +656,7 @@ pub(crate) enum FlexWrapValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexWrapDeclaration {
     Value(FlexWrapValue),
+    Reset,
     RevertLayer,
 }
 
@@ -2859,6 +2861,7 @@ fn resolve_flex_direction(
     resolve_alignment_candidates(candidates, FlexDirectionValue::Row, |declaration| {
         match declaration {
             FlexDirectionDeclaration::Value(value) => Some(value),
+            FlexDirectionDeclaration::Reset => Some(FlexDirectionValue::Row),
             FlexDirectionDeclaration::RevertLayer => None,
         }
     })
@@ -2918,6 +2921,7 @@ fn resolve_flex_wrap(
         FlexWrapValue::NoWrap,
         |declaration| match declaration {
             FlexWrapDeclaration::Value(value) => Some(value),
+            FlexWrapDeclaration::Reset => Some(FlexWrapValue::NoWrap),
             FlexWrapDeclaration::RevertLayer => None,
         },
     )
@@ -8086,10 +8090,12 @@ fn parse_flex_direction(value: &str) -> Option<FlexDirectionValue> {
 
 fn parse_flex_direction_declaration(value: &str) -> Option<FlexDirectionDeclaration> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(FlexDirectionDeclaration::RevertLayer)
-    } else {
-        parse_flex_direction(value).map(FlexDirectionDeclaration::Value)
+        return Some(FlexDirectionDeclaration::RevertLayer);
     }
+    if is_local_reset_keyword(value) {
+        return Some(FlexDirectionDeclaration::Reset);
+    }
+    parse_flex_direction(value).map(FlexDirectionDeclaration::Value)
 }
 
 fn parse_direction(value: &str) -> Option<DirectionValue> {
@@ -8115,10 +8121,12 @@ fn parse_flex_wrap(value: &str) -> Option<FlexWrapValue> {
 
 fn parse_flex_wrap_declaration(value: &str) -> Option<FlexWrapDeclaration> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(FlexWrapDeclaration::RevertLayer)
-    } else {
-        parse_flex_wrap(value).map(FlexWrapDeclaration::Value)
+        return Some(FlexWrapDeclaration::RevertLayer);
     }
+    if is_local_reset_keyword(value) {
+        return Some(FlexWrapDeclaration::Reset);
+    }
+    parse_flex_wrap(value).map(FlexWrapDeclaration::Value)
 }
 
 fn parse_flex_flow(value: &str) -> Option<(FlexDirectionValue, FlexWrapValue)> {
@@ -8151,6 +8159,9 @@ fn parse_flex_flow_declaration(
             FlexDirectionDeclaration::RevertLayer,
             FlexWrapDeclaration::RevertLayer,
         ));
+    }
+    if is_local_reset_keyword(value) {
+        return Some((FlexDirectionDeclaration::Reset, FlexWrapDeclaration::Reset));
     }
     let (direction, wrap) = parse_flex_flow(value)?;
     Some((
@@ -13158,7 +13169,7 @@ mod tests {
     }
 
     #[test]
-    fn flex_direction_declaration_parser_accepts_only_standalone_case_insensitive_revert_layer() {
+    fn flex_direction_declaration_parser_accepts_css_wide_resets_and_revert_layer() {
         assert_eq!(
             parse_flex_direction_declaration("ReVeRt-LaYeR"),
             Some(FlexDirectionDeclaration::RevertLayer)
@@ -13173,8 +13184,21 @@ mod tests {
             parse_flex_direction_declaration(" REVERT-LAYER "),
             Some(FlexDirectionDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_flex_direction_declaration("InItIaL"),
+            Some(FlexDirectionDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_flex_direction_declaration("UNSET"),
+            Some(FlexDirectionDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_flex_direction_declaration(" ReVeRt "),
+            Some(FlexDirectionDeclaration::Reset)
+        );
         assert_eq!(parse_flex_direction_declaration("inherit"), None);
         assert_eq!(parse_flex_direction_declaration("revert-layer row"), None);
+        assert_eq!(parse_flex_direction_declaration("initial row"), None);
         assert_eq!(parse_flex_direction_declaration("row reverse"), None);
     }
 
@@ -13188,6 +13212,40 @@ mod tests {
         );
         assert_eq!(parse_flex_wrap("row"), None);
         assert_eq!(parse_flex_wrap("normal"), None);
+    }
+
+    #[test]
+    fn flex_flow_declaration_parser_accepts_css_wide_resets_and_revert_layer() {
+        for reset in ["initial", "UNSET", "ReVeRt"] {
+            assert_eq!(
+                parse_flex_wrap_declaration(reset),
+                Some(FlexWrapDeclaration::Reset),
+                "{reset}"
+            );
+            assert_eq!(
+                parse_flex_flow_declaration(reset),
+                Some((FlexDirectionDeclaration::Reset, FlexWrapDeclaration::Reset,)),
+                "{reset}"
+            );
+        }
+        assert_eq!(parse_flex_flow("initial"), None);
+        assert_eq!(
+            parse_flex_flow_declaration("ReVeRt-LaYeR"),
+            Some((
+                FlexDirectionDeclaration::RevertLayer,
+                FlexWrapDeclaration::RevertLayer,
+            ))
+        );
+        assert_eq!(parse_flex_flow_declaration("initial row"), None);
+        assert_eq!(parse_flex_flow_declaration("inherit"), None);
+        assert_eq!(
+            parse_declarations("flex-flow: UnSeT"),
+            NativeDeclarations {
+                flex_direction: Some(FlexDirectionDeclaration::Reset),
+                flex_wrap: Some(FlexWrapDeclaration::Reset),
+                ..NativeDeclarations::default()
+            }
+        );
     }
 
     #[test]
@@ -13211,6 +13269,10 @@ mod tests {
         assert_eq!(
             parse_flex_wrap_declaration("REVERT-LAYER"),
             Some(FlexWrapDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_flex_wrap_declaration("INITIAL"),
+            Some(FlexWrapDeclaration::Reset)
         );
         assert_eq!(parse_justify_content_declaration("safe center"), None);
         assert_eq!(parse_align_items_declaration("inherit"), None);
@@ -13392,6 +13454,39 @@ mod tests {
         assert_values(&longhands, 0, 1, FlexBasisValue::Auto);
         assert_values(&invalid, 2, 3, FlexBasisValue::Length(8));
         assert_values(&important, 5, 6, FlexBasisValue::Length(10));
+    }
+
+    #[test]
+    fn stylesheet_flex_flow_css_wide_resets_use_initial_fallbacks_and_preserve_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #layer { flex-flow: column wrap; } } @layer theme { #layer { flex-flow: revert-layer; } } #shorthand { flex-flow: column wrap; } #shorthand { flex-flow: InItIaL; } #direction { flex-direction: column; } #direction { flex-direction: unset; } #wrap { flex-wrap: wrap; } #wrap { flex-wrap: ReVeRt; } #invalid { flex-flow: row-reverse wrap; } #invalid { flex-flow: inherit; } #important { flex-flow: column wrap !important; } #important { flex-flow: initial; }"
+                .into(),
+        ])
+        .unwrap();
+        let layer = node("<div id='layer'>Layer</div>");
+        let shorthand = node("<div id='shorthand'>Shorthand</div>");
+        let direction = node("<div id='direction'>Direction</div>");
+        let wrap = node("<div id='wrap'>Wrap</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let important = node("<div id='important'>Important</div>");
+
+        let assert_values =
+            |element: &NativeNode, direction: FlexDirectionValue, wrap: FlexWrapValue| {
+                let style = stylesheet.computed_for(element);
+                assert_eq!(style.flex_direction(), direction);
+                assert_eq!(style.flex_wrap(), wrap);
+            };
+
+        assert_values(&layer, FlexDirectionValue::Column, FlexWrapValue::Wrap);
+        assert_values(&shorthand, FlexDirectionValue::Row, FlexWrapValue::NoWrap);
+        assert_values(&direction, FlexDirectionValue::Row, FlexWrapValue::NoWrap);
+        assert_values(&wrap, FlexDirectionValue::Row, FlexWrapValue::NoWrap);
+        assert_values(
+            &invalid,
+            FlexDirectionValue::RowReverse,
+            FlexWrapValue::Wrap,
+        );
+        assert_values(&important, FlexDirectionValue::Column, FlexWrapValue::Wrap);
     }
 
     #[test]

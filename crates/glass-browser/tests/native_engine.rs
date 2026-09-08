@@ -20779,6 +20779,118 @@ fn native_flex_sizing_css_wide_resets_reach_layout_and_raster() {
 }
 
 #[test]
+fn native_flex_flow_css_wide_resets_reach_layout_and_raster() {
+    let document = NativeDocument::parse(
+        "<style>.flex { display:flex; width:8px; height:8px; gap:2px; align-items:flex-start; } .item { width:4px; height:4px; flex-shrink:0; } #direction { flex-direction:column; } #direction { flex-direction:INITIAL; } #wrap { flex-wrap:wrap; } #wrap { flex-wrap:UNSET; } #flow { flex-flow:column wrap; } #flow { flex-flow:ReVeRt; } #invalid { flex-flow:row-reverse wrap; } #invalid { flex-flow:inherit; } #important { flex-flow:column wrap !important; } #important { flex-flow:initial; }</style><div id='direction' class='flex'><button id='direction-first' class='item' style='background-color:red'>A</button><button id='direction-second' class='item' style='background-color:blue'>B</button></div><div id='wrap' class='flex'><div id='wrap-first' class='item' style='background-color:red'>A</div><div id='wrap-second' class='item' style='background-color:blue'>B</div></div><div id='flow' class='flex'><div id='flow-first' class='item' style='background-color:red'>A</div><div id='flow-second' class='item' style='background-color:blue'>B</div></div><div id='invalid' class='flex'><div id='invalid-first' class='item' style='background-color:green'>A</div><div id='invalid-second' class='item' style='background-color:black'>B</div></div><div id='important' class='flex'><div id='important-first' class='item' style='background-color:red'>A</div><div id='important-second' class='item' style='background-color:blue'>B</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 48,
+        device_scale_factor_milli: 1000,
+    };
+    let direction = document.resolve_target("id=direction").unwrap();
+    let direction_first = document.resolve_target("id=direction-first").unwrap();
+    let direction_second = document.resolve_target("id=direction-second").unwrap();
+    let wrap = document.resolve_target("id=wrap").unwrap();
+    let wrap_first = document.resolve_target("id=wrap-first").unwrap();
+    let wrap_second = document.resolve_target("id=wrap-second").unwrap();
+    let flow = document.resolve_target("id=flow").unwrap();
+    let flow_first = document.resolve_target("id=flow-first").unwrap();
+    let flow_second = document.resolve_target("id=flow-second").unwrap();
+    let invalid_first = document.resolve_target("id=invalid-first").unwrap();
+    let invalid_second = document.resolve_target("id=invalid-second").unwrap();
+    let important = document.resolve_target("id=important").unwrap();
+    let important_first = document.resolve_target("id=important-first").unwrap();
+    let important_second = document.resolve_target("id=important-second").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    let rect = |node_id| layout.box_for(node_id).expect("layout rectangle");
+    let direction_rect = rect(direction);
+    let direction_first_rect = rect(direction_first);
+    let direction_second_rect = rect(direction_second);
+    assert_eq!(direction_rect.width, 8);
+    assert_eq!(direction_rect.height, 8);
+    assert_eq!(direction_first_rect.x, direction_rect.x);
+    assert_eq!(direction_second_rect.x, direction_rect.x + 6);
+    assert_eq!(direction_second_rect.y, direction_first_rect.y);
+
+    let wrap_rect = rect(wrap);
+    let wrap_first_rect = rect(wrap_first);
+    let wrap_second_rect = rect(wrap_second);
+    assert_eq!(wrap_second_rect.x, wrap_rect.x + 6);
+    assert_eq!(wrap_second_rect.y, wrap_first_rect.y);
+
+    let flow_rect = rect(flow);
+    let flow_first_rect = rect(flow_first);
+    let flow_second_rect = rect(flow_second);
+    assert_eq!(flow_second_rect.x, flow_rect.x + 6);
+    assert_eq!(flow_second_rect.y, flow_first_rect.y);
+
+    let invalid_first_rect = rect(invalid_first);
+    let invalid_second_rect = rect(invalid_second);
+    assert!(invalid_second_rect.y > invalid_first_rect.y);
+
+    let important_rect = rect(important);
+    let important_first_rect = rect(important_first);
+    let important_second_rect = rect(important_second);
+    assert_eq!(important_second_rect.x, important_rect.x + 6);
+    assert_eq!(important_second_rect.y, important_first_rect.y);
+
+    let semantic_nodes = document.semantic_nodes();
+    assert!(
+        semantic_nodes
+            .iter()
+            .position(|semantic_node| semantic_node.node_id == direction_first)
+            < semantic_nodes
+                .iter()
+                .position(|semantic_node| semantic_node.node_id == direction_second)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    let surface = list.rasterize().unwrap();
+    for (node_id, node_rect, color) in [
+        (direction_first, direction_first_rect, [255, 0, 0, 255]),
+        (direction_second, direction_second_rect, [0, 0, 255, 255]),
+        (invalid_first, invalid_first_rect, [0, 128, 0, 255]),
+        (invalid_second, invalid_second_rect, [0, 0, 0, 255]),
+    ] {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id: command_node, rect: command_rect, .. }
+                    if *command_node == node_id && *command_rect == node_rect
+            )
+        }));
+        assert_eq!(surface.pixel(node_rect.x + 1, node_rect.y + 1), Some(color));
+    }
+    assert_eq!(
+        layout
+            .hit_test(
+                i64::from(direction_first_rect.x + 1),
+                i64::from(direction_first_rect.y + 1),
+            )
+            .unwrap(),
+        Some(direction_first)
+    );
+    assert_eq!(
+        layout
+            .hit_test(
+                i64::from(important_second_rect.x + 1),
+                i64::from(important_second_rect.y + 1),
+            )
+            .unwrap(),
+        Some(important_second)
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "flex-flow"
+    }));
+}
+
+#[test]
 fn native_flex_flow_shorthand_reuses_reverse_and_wrap_consumers() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:12px;gap:2px;flex-flow:row-reverse wrap'><div id='first' style='width:8px;height:6px;margin:1px;flex-shrink:0;background-color:red'>A</div><div id='second' style='width:4px;height:6px;margin:1px;flex-shrink:0;background-color:blue'>B</div></div>",

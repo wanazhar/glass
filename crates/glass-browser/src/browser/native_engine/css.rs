@@ -604,6 +604,7 @@ pub(crate) enum AlignSelfValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlignSelfDeclaration {
     Value(AlignSelfValue),
+    Inherit,
     Reset,
     RevertLayer,
 }
@@ -895,6 +896,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) max_height: Option<u32>,
     pub(crate) justify_content: JustifyContentValue,
     pub(crate) align_items: AlignItemsValue,
+    pub(crate) align_self: AlignSelfValue,
     pub(crate) align_content: AlignContentValue,
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
@@ -938,6 +940,7 @@ impl Default for NativeInheritedStyle {
             max_height: None,
             justify_content: JustifyContentValue::FlexStart,
             align_items: AlignItemsValue::FlexStart,
+            align_self: AlignSelfValue::Auto,
             align_content: AlignContentValue::FlexStart,
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
@@ -2649,7 +2652,7 @@ impl NativeStylesheet {
             text_justify: resolve_text_justify(text_justify, inherited.text_justify),
             justify_content: resolve_justify_content(justify_content, inherited.justify_content),
             align_items: resolve_align_items(align_items, inherited.align_items),
-            align_self: resolve_align_self(align_self),
+            align_self: resolve_align_self(align_self, inherited.align_self),
             align_content: resolve_align_content(align_content, inherited.align_content),
             flex_direction: resolve_flex_direction(flex_direction),
             direction: resolved_direction,
@@ -2927,12 +2930,14 @@ fn resolve_align_items(
 
 fn resolve_align_self(
     candidates: [Option<CascadeValue<AlignSelfDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: AlignSelfValue,
 ) -> AlignSelfValue {
     resolve_alignment_candidates(
         candidates,
         AlignSelfValue::Auto,
         |declaration| match declaration {
             AlignSelfDeclaration::Value(value) => Some(value),
+            AlignSelfDeclaration::Inherit => Some(inherited),
             AlignSelfDeclaration::Reset => Some(AlignSelfValue::Auto),
             AlignSelfDeclaration::RevertLayer => None,
         },
@@ -8127,6 +8132,9 @@ fn parse_align_self_declaration(value: &str) -> Option<AlignSelfDeclaration> {
     }
     if is_local_reset_keyword(value) {
         return Some(AlignSelfDeclaration::Reset);
+    }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some(AlignSelfDeclaration::Inherit);
     }
     parse_align_self(value).map(AlignSelfDeclaration::Value)
 }
@@ -13442,7 +13450,11 @@ mod tests {
         assert_eq!(parse_align_items_declaration("inherit center"), None);
         assert_eq!(parse_align_items_declaration("revert-layer center"), None);
         assert_eq!(parse_align_self_declaration("center flex-end"), None);
-        assert_eq!(parse_align_self_declaration("inherit"), None);
+        assert_eq!(
+            parse_align_self_declaration("InHeRiT"),
+            Some(AlignSelfDeclaration::Inherit)
+        );
+        assert_eq!(parse_align_self_declaration("inherit center"), None);
         assert_eq!(parse_align_self_declaration("revert-layer center"), None);
         assert_eq!(
             parse_align_content_declaration("InHeRiT"),
@@ -13762,7 +13774,7 @@ mod tests {
     #[test]
     fn stylesheet_align_self_css_wide_resets_use_auto_and_preserve_cascade() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "@layer base { #layer { align-self: center; } } @layer theme { #layer { align-self: revert-layer; } } #reset { align-self: flex-end; } #reset { align-self: INITIAL; } #unset { align-self: center; } #unset { align-self: UnSeT; } #revert { align-self: flex-end; } #revert { align-self: ReVeRt; } #invalid { align-self: center; } #invalid { align-self: inherit; } #important { align-self: flex-end !important; } #important { align-self: initial; }"
+            "@layer base { #layer { align-self: center; } } @layer theme { #layer { align-self: revert-layer; } } #reset { align-self: flex-end; } #reset { align-self: INITIAL; } #unset { align-self: center; } #unset { align-self: UnSeT; } #revert { align-self: flex-end; } #revert { align-self: ReVeRt; } #invalid { align-self: center; } #invalid { align-self: inherit center; } #important { align-self: flex-end !important; } #important { align-self: initial; }"
                 .into(),
         ])
         .unwrap();
@@ -13783,6 +13795,59 @@ mod tests {
         assert_align(&revert, AlignSelfValue::Auto);
         assert_align(&invalid, AlignSelfValue::Center);
         assert_align(&important, AlignSelfValue::FlexEnd);
+    }
+
+    #[test]
+    fn stylesheet_align_self_explicit_inherit_uses_parent_without_implicit_inheritance() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { align-self: inherit; } #default { color: red; } #invalid { align-self: flex-end; align-self: inherit center; } #terminal { align-self: inherit; align-self: stretch; } #important { align-self: flex-end !important; } #important { align-self: inherit; } #auto { align-self: auto; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited = AlignSelfValue::Center;
+        let computed = |element: &NativeNode| {
+            stylesheet
+                .computed_for_with_matcher(
+                    element,
+                    NativeInheritedStyle {
+                        align_self: inherited,
+                        ..NativeInheritedStyle::default()
+                    },
+                    |selector| selector.matches(element),
+                )
+                .align_self()
+        };
+
+        assert_eq!(
+            computed(&node("<div id='inherit'>Inherit</div>")),
+            inherited
+        );
+        assert_eq!(
+            computed(&node("<div id='default'>Default</div>")),
+            AlignSelfValue::Auto
+        );
+        assert_eq!(
+            computed(&node("<div id='auto'>Auto</div>")),
+            AlignSelfValue::Auto
+        );
+        assert_eq!(
+            computed(&node("<div id='invalid'>Invalid</div>")),
+            AlignSelfValue::FlexEnd
+        );
+        assert_eq!(
+            computed(&node("<div id='terminal'>Terminal</div>")),
+            AlignSelfValue::Stretch
+        );
+        assert_eq!(
+            computed(&node("<div id='important'>Important</div>")),
+            AlignSelfValue::FlexEnd
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for(&node("<div id='inherit'>Root default</div>"))
+                .align_self(),
+            AlignSelfValue::Auto
+        );
     }
 
     #[test]

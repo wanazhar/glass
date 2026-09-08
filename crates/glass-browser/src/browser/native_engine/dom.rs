@@ -14,7 +14,7 @@ use super::{
         NativeBorderRadius, NativeBorderStyleValue, NativeBoxSizing, NativeColor,
         NativeComputedStyle, NativeInheritedStyle, NativeMarginValue, NativeOrderValue,
         NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
-        TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
+        OverflowValue, TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
         TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
@@ -896,6 +896,8 @@ impl NativeDocument {
         let mut inherited_font_style = FontStyleValue::Normal;
         let mut inherited_word_break = WordBreakValue::Normal;
         let mut inherited_text_overflow = TextOverflowValue::Clip;
+        let mut inherited_overflow_x = OverflowValue::Other;
+        let mut inherited_overflow_y = OverflowValue::Other;
         let mut inherited_vertical_align = VerticalAlignValue::Baseline;
         let mut inherited_text_indent = 0;
         let mut inherited_word_spacing = 0;
@@ -953,6 +955,8 @@ impl NativeDocument {
                     font_style: inherited_font_style,
                     word_break: inherited_word_break,
                     text_overflow: inherited_text_overflow,
+                    overflow_x: inherited_overflow_x,
+                    overflow_y: inherited_overflow_y,
                     vertical_align: inherited_vertical_align,
                     text_indent: inherited_text_indent,
                     word_spacing: inherited_word_spacing,
@@ -1011,6 +1015,16 @@ impl NativeDocument {
             inherited_font_style = style.font_style();
             inherited_word_break = style.word_break();
             inherited_text_overflow = style.text_overflow();
+            inherited_overflow_x = if style.overflow_clip_x() {
+                OverflowValue::Clip
+            } else {
+                OverflowValue::Other
+            };
+            inherited_overflow_y = if style.overflow_clip_y() {
+                OverflowValue::Clip
+            } else {
+                OverflowValue::Other
+            };
             inherited_vertical_align = style.vertical_align();
             inherited_text_indent = style.text_indent();
             inherited_word_spacing = style.word_spacing();

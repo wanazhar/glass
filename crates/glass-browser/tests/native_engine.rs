@@ -19646,6 +19646,161 @@ fn native_axis_specific_overflow_clips_only_selected_axis_across_consumers() {
 }
 
 #[test]
+fn native_overflow_inherit_reaches_axis_clips_scroll_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>#clip-parent{display:block;width:32px;height:20px;overflow-x:hidden;overflow-y:visible;}#visible-parent{display:block;width:32px;height:10px;overflow:visible;}#inherit,#axis,#omitted,#invalid{display:block;width:16px;height:10px;margin:0;padding:0;border:0;}#inherit{overflow:inherit;background-color:red;}#axis{overflow-x:inherit;overflow-y:visible;background-color:green;}#omitted{background-color:green;}#invalid{overflow:hidden;overflow:inherit hidden;background-color:blue;}.wide{display:block;width:56px;min-width:56px;height:10px;background-color:blue;}</style><div id='clip-parent'><button id='inherit'><span id='inherit-child' class='wide'></span></button><button id='axis'><span id='axis-child' class='wide'></span></button></div><div id='visible-parent'><button id='omitted'><span id='omitted-child' class='wide'></span></button></div><button id='invalid'><span id='invalid-child' class='wide'></span></button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let inherit_child = document.resolve_target("id=inherit-child").unwrap();
+    let axis = document.resolve_target("id=axis").unwrap();
+    let axis_child = document.resolve_target("id=axis-child").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let omitted_child = document.resolve_target("id=omitted-child").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let invalid_child = document.resolve_target("id=invalid-child").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(layout.box_for(inherit_child).unwrap().width, 56);
+    assert_eq!(layout.box_for(axis_child).unwrap().width, 56);
+    assert_eq!(layout.box_for(omitted_child).unwrap().width, 56);
+    assert_eq!(layout.box_for(invalid_child).unwrap().width, 56);
+    assert_eq!(
+        layout.viewport_rect_for(inherit_child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(axis_child),
+        Some(NativeRect {
+            x: 0,
+            y: 10,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(omitted_child),
+        Some(NativeRect {
+            x: 0,
+            y: 20,
+            width: 32,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(invalid_child),
+        Some(NativeRect {
+            x: 0,
+            y: 30,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(layout.content_width, 56);
+    assert_eq!(layout.max_scroll_offset().x, 24);
+    assert_eq!(layout.hit_test(8, 5).unwrap(), Some(inherit_child));
+    assert_ne!(layout.hit_test(20, 5).unwrap(), Some(inherit_child));
+    assert_eq!(layout.hit_test(20, 25).unwrap(), Some(omitted_child));
+    assert_ne!(layout.hit_test(20, 35).unwrap(), Some(invalid_child));
+
+    let semantic_nodes = document.semantic_nodes();
+    let source_position = |node_id| {
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .unwrap()
+    };
+    assert!(source_position(inherit) < source_position(axis));
+    assert!(source_position(axis) < source_position(omitted));
+    assert!(source_position(omitted) < source_position(invalid));
+
+    let list = document.display_list(viewport).unwrap();
+    let fill = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                rect,
+                clip,
+                ..
+            } if *command_node_id == node_id => Some((*rect, *clip)),
+            _ => None,
+        })
+    };
+    let (inherit_fill_rect, inherit_fill_clip) = fill(inherit_child).unwrap();
+    assert_eq!(
+        inherit_fill_rect,
+        NativeRect {
+            x: 0,
+            y: 0,
+            width: 56,
+            height: 10,
+        }
+    );
+    assert_eq!(
+        inherit_fill_clip.map(|clip| (clip.x, clip.y, clip.width, clip.height)),
+        Some((0, 0, 16, u32::MAX))
+    );
+    let (axis_fill_rect, axis_fill_clip) = fill(axis_child).unwrap();
+    assert_eq!(
+        axis_fill_rect,
+        NativeRect {
+            x: 0,
+            y: 10,
+            width: 56,
+            height: 10,
+        }
+    );
+    assert_eq!(
+        axis_fill_clip.map(|clip| (clip.x, clip.y, clip.width, clip.height)),
+        Some((0, 0, 16, u32::MAX))
+    );
+    assert_eq!(
+        fill(omitted_child),
+        Some((layout.box_for(omitted_child).unwrap(), None))
+    );
+    let (invalid_fill_rect, invalid_fill_clip) = fill(invalid_child).unwrap();
+    assert_eq!(
+        invalid_fill_rect,
+        NativeRect {
+            x: 0,
+            y: 30,
+            width: 56,
+            height: 10,
+        }
+    );
+    assert_eq!(
+        invalid_fill_clip,
+        Some(NativeRect {
+            x: 0,
+            y: 30,
+            width: 16,
+            height: 10,
+        })
+    );
+
+    let surface = list.rasterize().unwrap();
+    assert_ne!(surface.pixel(20, 5), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(20, 25), Some([0, 0, 255, 255]));
+    assert_ne!(surface.pixel(20, 35), Some([0, 0, 255, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "overflow"
+    }));
+}
+
+#[test]
 fn native_overflow_revert_layer_preserves_axis_clips_across_consumers() {
     let document = NativeDocument::parse(
         "<style>@layer base { #named { overflow: hidden; width: 16px; height: 10px; white-space: nowrap; } #inline { overflow: hidden; width: 16px; height: 10px; white-space: nowrap; } #axis { overflow-y: clip; width: 16px; height: 10px; white-space: nowrap; } } @layer theme { #named { overflow-x: clip; overflow-y: revert-layer; } #axis { overflow-x: hidden; } } @layer top { #named { overflow: revert-layer; } #axis { overflow-x: revert-layer; } } #named { overflow: revert-layer; } #fallback { overflow: revert-layer; width: 16px; height: 10px; white-space: nowrap; }</style><div id='named'><div id='named-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Named</div></div><div id='fallback'><div id='fallback-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Fallback</div></div><div id='inline' style='overflow:ReVeRt-LaYeR'><div id='inline-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Inline</div></div><div id='axis'><div id='axis-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Axis</div></div>",

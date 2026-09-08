@@ -490,7 +490,9 @@ existing bounded `flex-start` fallback; standalone
  while omitted `align-items` remains non-inherited; `inherit`, percentages,
 negative/fractional/intrinsic basis values; standalone
 `initial|unset|revert` reset forms for local `align-self` reuse the existing
-bounded `auto` fallback and continue through parent `align-items`;
+ bounded `auto` fallback and continue through parent `align-items`; standalone
+ case-insensitive `align-self:inherit` copies the computed parent only when
+ explicitly authored while omitted `align-self` remains local `auto`;
 standalone `initial|unset|revert` reset forms for local `align-content` reuse
 the existing bounded `flex-start` fallback; standalone case-insensitive
 `align-content:inherit` copies the computed parent only when explicitly

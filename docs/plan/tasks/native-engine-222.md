@@ -1,7 +1,7 @@
 ---
 id: native-engine-222
 scope: glass-browser/native-engine/flex-flow-inherit
-status: planned
+status: complete
 depends-on: [native-engine-221]
 ---
 
@@ -97,6 +97,33 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
-registry publication, browser-parity, security-boundary certification, and
-promotion remain outside this local task.
+Implementation is `87465d23` and the design checkpoint is `cae84efb`.
+The locked scoped native-feature check passed before tests. Focused `flex-flow`
+parser/cascade coverage passed 6/6, the public two-component inheritance
+fixture passed 1/1, full native integration passed 260/260, and the
+feature-enabled `glass-browser` library passed 1,043 tests with 1 ignored
+(including the isolated subprocess test). Formatting, workspace all-target/
+all-feature check, strict Clippy, paired `glass-browser` / `glass-dev` builds,
+and warning-denied rustdoc all passed locally.
+
+The fixture covers standalone shorthand inheritance for direction and wrap,
+column main-axis mapping, wrap-reverse line formation, local/root fallbacks,
+invalid mixed-form preservation, longhand/component precedence, complete
+source/semantic ordering, display-list, fixed-cell raster/PNG, point-hit, and
+typed diagnostics. The pre-existing invalid-later fixtures were updated from
+standalone `flex-flow: inherit` to the still-invalid mixed form `inherit row`
+because standalone inheritance is now supported. No public schema, dependency,
+feature default, or crate-boundary change was made.
+
+Static closeout audits also passed: release truth `636 Markdown / 83 current /
+59 previous-version / 793 semantic / 0 current-claim failures`, documentation
+coverage `636 Markdown / 345 full-product MCP tools / 100 browser-only / 17
+examples / 22 public modules`, documentation depth `93 current guides / 19
+substantive contracts`, feature parity `14 capabilities across 4 targets`, TUI
+inventory `15 implementation keys / 63 documentation markers`, synchronized
+version `0.3.14`, reliability `6 scenarios across 4 targets`, public read-only
+adapters `5`, Web IR `8 fixtures / 8 scenarios / 11 categories`, and knowledge
+migration v1 round-trip/v2 rejection over 6 records.
+
+Remote CI, push, release, tag, registry publication, browser-parity,
+security-boundary certification, and promotion remain outside this local task.

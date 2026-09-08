@@ -1,7 +1,7 @@
 ---
 id: native-engine-223
 scope: glass-browser/native-engine/flex-shorthand-inherit
-status: planned
+status: complete
 depends-on: [native-engine-222]
 ---
 
@@ -96,6 +96,12 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
+Implementation is `c94b6006` (design `f97ac088`). The locked native-feature
+check passed before testing. Focused flex-shorthand parser coverage passed (3
+tests), focused inheritance cascade coverage passed (1 test), and the public
+flex-inheritance fixture passed (1 test). Full native integration passed
+(261/261), and the feature library passed (1,044 passed, 1 ignored). Formatting,
+workspace check, strict Clippy, paired package builds, and warning-denied
+rustdoc for both crates also passed locally. Remote CI, push, release, tag,
 registry publication, browser-parity, security-boundary certification, and
 promotion remain outside this local task.

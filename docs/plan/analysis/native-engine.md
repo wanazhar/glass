@@ -2465,11 +2465,13 @@ visual stacking.
 | `native-engine-220` | completed bounded standalone case-insensitive `flex-direction:inherit` through the existing private parent-style chain; the computed parent direction copies only when explicitly authored while omitted `flex-direction` remains local with the bounded `row` fallback, preserving finite row/column mapping, `flex-flow`/longhand component precedence, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, wrapping eligibility, gap and margin mapping, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `1f64f232`; locked scoped check, focused flex-direction parser/cascade (4 tests), public inheritance integration (1 test), full-native integration (258/258), feature library (1,041 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-219` | percentages, `flex-wrap:inherit`, `flex-flow:inherit`, `place-items`, grid, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 | `native-engine-221` | completed bounded standalone case-insensitive `flex-wrap:inherit` through the existing private parent-style chain; the computed parent wrap mode copies only when explicitly authored while omitted `flex-wrap` remains local with the bounded `nowrap` fallback, preserving finite wrap modes, `flex-flow`/longhand component precedence, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, row/column wrapping eligibility, line formation and reverse stacking, line sizing, gap and margin mapping, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `ebeb8443`; locked scoped check, focused flex-wrap parser/cascade (3 tests), public inheritance integration (1 test), full-native integration (259/259), feature library (1,042 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-220` | `flex-flow:inherit`, percentages, `place-items`, grid, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 | `native-engine-222` | completed bounded standalone case-insensitive `flex-flow:inherit` by projecting to the existing private `flex-direction` and `flex-wrap` inheritance owners; both computed parent components copy only when the shorthand is explicitly authored while omitted `flex-flow` remains local with bounded `row`/`nowrap` fallbacks, preserving finite one-/two-value expansion, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, longhand/component precedence, row/column mapping, wrapping eligibility, line formation and reverse stacking, gap and margin mapping, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `87465d23`; locked scoped check, focused flex-flow parser/cascade (6 tests), public inheritance integration (1 test), full-native integration (260/260), feature library (1,043 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-221` | percentages, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
+| `native-engine-223` | completed bounded standalone case-insensitive `flex:inherit` by projecting to the existing private `flex-grow`, `flex-shrink`, and `flex-basis` inheritance owners; all three computed parent components copy only when the shorthand is explicitly authored while omitted `flex` remains local with the bounded `0 1 auto` fallbacks, preserving finite shorthand expansion, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, longhand/component precedence, row/column and wrapped sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `c94b6006`; locked scoped check, focused flex-shorthand parser (3 tests) and inheritance cascade (1 test), public inheritance integration (1 test), full-native integration (261/261), feature library (1,044 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-222` | percentages, intrinsic sizing, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-222.md` is the latest completed task;
+`docs/plan/tasks/native-engine-223.md` is the latest completed task;
+`docs/plan/tasks/native-engine-222.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-221.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-220.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-219.md` is the preceding completed task;
@@ -2628,6 +2630,19 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-223.md`: implementation is `c94b6006` (design
+`f97ac088`). It adds standalone, case-insensitive `flex: inherit` by
+projecting to the existing private `flex-grow`, `flex-shrink`, and `flex-basis`
+inheritance owners, copying all three computed parent components only when
+explicitly authored while omitted `flex` remains local with bounded `0 1 auto`
+fallbacks. The locked scoped native check, focused flex-shorthand parser (3
+tests) and inheritance cascade (1 test), public inheritance integration (1
+test), full-native integration (261/261), feature library (1,044 passed, 1
+ignored), workspace all-target/all-feature check, strict Clippy, paired
+binaries, warning-denied rustdoc, and formatting/diff checks passed. Remote CI,
+push, release, tag, registry publication, browser-parity, security-boundary,
+and promotion claims are not made.
+The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-222.md`: implementation is `87465d23` (design
 `cae84efb`). It adds standalone, case-insensitive `flex-flow: inherit` by
 projecting to the existing private `flex-direction` and `flex-wrap` inheritance

@@ -828,12 +828,18 @@ struct NativeGapValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GapShorthandDeclaration {
     Value(NativeGapValue),
+    Initial,
+    Unset,
+    Revert,
     RevertLayer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GapComponentDeclaration {
     Value(u32),
+    Initial,
+    Unset,
+    Revert,
     RevertLayer,
 }
 
@@ -3520,6 +3526,9 @@ fn resolve_gap_axis(
         };
         match candidate.value {
             GapComponentDeclaration::Value(value) => return value,
+            GapComponentDeclaration::Initial
+            | GapComponentDeclaration::Unset
+            | GapComponentDeclaration::Revert => return 0,
             GapComponentDeclaration::RevertLayer => blocked[layer] = true,
         }
     }
@@ -3538,6 +3547,18 @@ fn apply_gap_declarations(
             GapShorthandDeclaration::Value(value) => (
                 GapComponentDeclaration::Value(value.row),
                 GapComponentDeclaration::Value(value.column),
+            ),
+            GapShorthandDeclaration::Initial => (
+                GapComponentDeclaration::Initial,
+                GapComponentDeclaration::Initial,
+            ),
+            GapShorthandDeclaration::Unset => (
+                GapComponentDeclaration::Unset,
+                GapComponentDeclaration::Unset,
+            ),
+            GapShorthandDeclaration::Revert => (
+                GapComponentDeclaration::Revert,
+                GapComponentDeclaration::Revert,
             ),
             GapShorthandDeclaration::RevertLayer => (
                 GapComponentDeclaration::RevertLayer,
@@ -7788,18 +7809,22 @@ fn parse_gap(value: &str) -> Option<NativeGapValue> {
 }
 
 fn parse_gap_declaration(value: &str) -> Option<GapShorthandDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(GapShorthandDeclaration::RevertLayer)
-    } else {
-        parse_gap(value).map(GapShorthandDeclaration::Value)
+    match value.trim().to_ascii_lowercase().as_str() {
+        "initial" => Some(GapShorthandDeclaration::Initial),
+        "unset" => Some(GapShorthandDeclaration::Unset),
+        "revert" => Some(GapShorthandDeclaration::Revert),
+        "revert-layer" => Some(GapShorthandDeclaration::RevertLayer),
+        _ => parse_gap(value).map(GapShorthandDeclaration::Value),
     }
 }
 
 fn parse_gap_component_declaration(value: &str) -> Option<GapComponentDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(GapComponentDeclaration::RevertLayer)
-    } else {
-        parse_dimension(value).map(GapComponentDeclaration::Value)
+    match value.trim().to_ascii_lowercase().as_str() {
+        "initial" => Some(GapComponentDeclaration::Initial),
+        "unset" => Some(GapComponentDeclaration::Unset),
+        "revert" => Some(GapComponentDeclaration::Revert),
+        "revert-layer" => Some(GapComponentDeclaration::RevertLayer),
+        _ => parse_dimension(value).map(GapComponentDeclaration::Value),
     }
 }
 
@@ -12291,7 +12316,7 @@ mod tests {
     }
 
     #[test]
-    fn gap_parser_accepts_one_or_two_bounded_non_negative_pixels() {
+    fn gap_parser_accepts_css_wide_resets_and_bounded_non_negative_pixels() {
         assert_eq!(
             parse_declarations("gap: 16px").gap,
             Some(GapShorthandDeclaration::Value(NativeGapValue {
@@ -12317,6 +12342,19 @@ mod tests {
             parse_declarations("gap: REVERT-LAYER").gap,
             Some(GapShorthandDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_declarations("gap: INITIAL").gap,
+            Some(GapShorthandDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_declarations("gap: UnSeT").gap,
+            Some(GapShorthandDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_declarations("gap: ReVeRt").gap,
+            Some(GapShorthandDeclaration::Revert)
+        );
+        assert_eq!(parse_declarations("gap: inherit").gap, None);
         assert_eq!(parse_declarations("gap: -1px").gap, None);
         assert_eq!(parse_declarations("gap: 1px 2px 3px").gap, None);
         assert_eq!(parse_declarations("gap: revert-layer 1px").gap, None);
@@ -12327,7 +12365,7 @@ mod tests {
     }
 
     #[test]
-    fn row_gap_parser_accepts_only_bounded_non_negative_single_pixels() {
+    fn row_gap_parser_accepts_css_wide_resets_and_bounded_non_negative_pixels() {
         assert_eq!(
             parse_declarations("row-gap: 16px").row_gap,
             Some(GapComponentDeclaration::Value(16))
@@ -12340,6 +12378,19 @@ mod tests {
             parse_declarations("row-gap: revert-LAYER").row_gap,
             Some(GapComponentDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_declarations("row-gap: INITIAL").row_gap,
+            Some(GapComponentDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_declarations("row-gap: UnSeT").row_gap,
+            Some(GapComponentDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_declarations("row-gap: ReVeRt").row_gap,
+            Some(GapComponentDeclaration::Revert)
+        );
+        assert_eq!(parse_declarations("row-gap: inherit").row_gap, None);
         assert_eq!(parse_declarations("row-gap: -1px").row_gap, None);
         assert_eq!(parse_declarations("row-gap: 1px 2px").row_gap, None);
         assert_eq!(
@@ -12353,7 +12404,7 @@ mod tests {
     }
 
     #[test]
-    fn column_gap_parser_accepts_only_bounded_non_negative_single_pixels() {
+    fn column_gap_parser_accepts_css_wide_resets_and_bounded_non_negative_pixels() {
         assert_eq!(
             parse_declarations("column-gap: 16px").column_gap,
             Some(GapComponentDeclaration::Value(16))
@@ -12366,6 +12417,19 @@ mod tests {
             parse_declarations("column-gap: REVERT-layer").column_gap,
             Some(GapComponentDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_declarations("column-gap: INITIAL").column_gap,
+            Some(GapComponentDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_declarations("column-gap: UnSeT").column_gap,
+            Some(GapComponentDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_declarations("column-gap: ReVeRt").column_gap,
+            Some(GapComponentDeclaration::Revert)
+        );
+        assert_eq!(parse_declarations("column-gap: inherit").column_gap, None);
         assert_eq!(parse_declarations("column-gap: -1px").column_gap, None);
         assert_eq!(parse_declarations("column-gap: 1px 2px").column_gap, None);
         assert_eq!(
@@ -17883,6 +17947,30 @@ mod tests {
         assert_eq!(document.computed_style_for_layout(explicit).row_gap(), 32);
         assert_eq!(document.computed_style_for_layout(invalid).column_gap(), 0);
         assert_eq!(document.computed_style_for_layout(invalid).row_gap(), 0);
+    }
+
+    #[test]
+    fn gap_css_wide_resets_use_zero_and_preserve_invalid_later() {
+        let document = NativeDocument::parse(
+            "<style>#shorthand { gap: 4px 5px; gap: initial; } #unset { gap: 4px 5px; gap: unset; } #revert { gap: 4px 5px; gap: revert; } #longhand { gap: 4px 5px; row-gap: initial; column-gap: unset; } #invalid { gap: 3px 4px; gap: inherit; }</style><div id='shorthand'>Shorthand</div><div id='unset'>Unset</div><div id='revert'>Revert</div><div id='longhand'>Longhand</div><div id='invalid'>Invalid</div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        for id in ["shorthand", "unset", "revert", "longhand"] {
+            assert_eq!(style(id).row_gap(), 0, "row gap for {id}");
+            assert_eq!(style(id).column_gap(), 0, "column gap for {id}");
+        }
+        assert_eq!(style("invalid").row_gap(), 3);
+        assert_eq!(style("invalid").column_gap(), 4);
+        assert!(document.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "gap"
+        }));
     }
 
     #[test]

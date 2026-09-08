@@ -7817,6 +7817,59 @@ fn native_text_decoration_skip_ink_cascades_to_display_commands() {
 }
 
 #[test]
+fn native_text_decoration_skip_ink_css_wide_resets_reach_intersection_raster() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration-color:red; text-decoration:underline; text-decoration-style:wavy; text-underline-offset:-1px; font-weight:bold; font-style:italic; } #parent { text-decoration-skip-ink:none; } #initial { text-decoration-skip-ink:initial; } #inherit { text-decoration-skip-ink:inherit; } #unset { text-decoration-skip-ink:unset; } #revert { text-decoration-skip-ink:revert; } #invalid { text-decoration-skip-ink:none; text-decoration-skip-ink:all; } #important { text-decoration-skip-ink:none !important; } #important { text-decoration-skip-ink:initial; }</style><div id='parent' class='line'><span id='initial' class='line'>A</span><span id='inherit' class='line'>B</span><span id='unset' class='line'>C</span><span id='revert' class='line'>D</span><span id='invalid' class='line'>E</span><span id='important' class='line'>F</span></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 160,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let command_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                decoration_skip_ink,
+                ..
+            } if *command_node_id == node_id => Some((*origin, *decoration_skip_ink)),
+            _ => None,
+        })
+    };
+    let initial = command_for("initial").expect("initial skip-ink command");
+    let inherited = command_for("inherit").expect("inherit skip-ink command");
+    let unset = command_for("unset").expect("unset skip-ink command");
+    let revert = command_for("revert").expect("revert skip-ink command");
+    let invalid = command_for("invalid").expect("invalid skip-ink command");
+    let important = command_for("important").expect("important skip-ink command");
+    assert_eq!(initial.1, NativeTextDecorationSkipInk::Auto);
+    assert_eq!(inherited.1, NativeTextDecorationSkipInk::None);
+    assert_eq!(unset.1, NativeTextDecorationSkipInk::None);
+    assert_eq!(revert.1, NativeTextDecorationSkipInk::None);
+    assert_eq!(invalid.1, NativeTextDecorationSkipInk::None);
+    assert_eq!(important.1, NativeTextDecorationSkipInk::None);
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(initial.0.x + 4, initial.0.y + 6),
+        Some([0, 0, 0, 255])
+    );
+    assert_eq!(
+        surface.pixel(inherited.0.x + 4, inherited.0.y + 6),
+        Some([255, 0, 0, 255])
+    );
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-skip-ink"
+    }));
+}
+
+#[test]
 fn native_text_decoration_skip_ink_revert_layer_reuses_layers_and_reaches_raster() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration-color:red; text-decoration:underline; text-decoration-style:wavy; text-underline-offset:-1px; font-weight:bold; font-style:italic; } @layer base { #named { text-decoration-skip-ink:none; } #rollback { text-decoration-skip-ink:auto; } #inline { text-decoration-skip-ink:auto; } } @layer theme { .named { text-decoration-skip-ink:auto; } #rollback { text-decoration-skip-ink:none; } #inline { text-decoration-skip-ink:none; } } #named { text-decoration-skip-ink:revert-layer; } #rollback { text-decoration-skip-ink:revert-layer; }</style><div id='named' class='line named'>A</div><div id='rollback' class='line'>A</div><div id='inline' class='line' style='text-decoration-skip-ink:revert-layer'>A</div><div id='fallback' class='line'>A</div>",

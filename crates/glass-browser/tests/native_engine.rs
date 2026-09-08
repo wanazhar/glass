@@ -7511,6 +7511,84 @@ fn native_text_decoration_line_revert_layer_preserves_shared_line_owner() {
 }
 
 #[test]
+fn native_text_decoration_line_css_wide_resets_reach_raster() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:72px; height:20px; line-height:20px; color:black; text-decoration-style:solid; text-decoration-thickness:1px; } #parent { text-decoration-line:underline overline line-through; } #initial { text-decoration-line:initial; } #inherit { text-decoration-line:inherit; } #unset { text-decoration-line:unset; } #revert { text-decoration-line:revert; } #invalid { text-decoration-line:overline; text-decoration-line:invalid; } #important { text-decoration-line:underline !important; } #important { text-decoration-line:none; } #shorthand-inherit { text-decoration:inherit; } #shorthand-initial { text-decoration:initial; }</style><div id='parent' class='line'>P<span id='initial' class='line'>A</span><span id='inherit' class='line'>B</span><span id='unset' class='line'>C</span><span id='revert' class='line'>D</span><span id='invalid' class='line'>E</span><span id='important' class='line'>F</span><span id='shorthand-inherit' class='line'>G</span><span id='shorthand-initial' class='line'>H</span></div><div id='root-initial' class='line' style='text-decoration-line:initial'>Root</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 96,
+        height: 240,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let command_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        list.commands
+            .iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::TextRun {
+                    node_id: command_node_id,
+                    origin,
+                    underline,
+                    overline,
+                    line_through,
+                    ..
+                } if *command_node_id == node_id => {
+                    Some((*origin, *underline, *overline, *line_through))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text command for {id}"))
+    };
+    let parent = command_for("parent");
+    assert_eq!((parent.1, parent.2, parent.3), (true, true, true));
+    for id in ["inherit", "unset", "revert", "shorthand-inherit"] {
+        assert_eq!(
+            (command_for(id).1, command_for(id).2, command_for(id).3),
+            (true, true, true),
+            "inherited line flags for {id}"
+        );
+    }
+    for id in ["initial", "shorthand-initial", "root-initial"] {
+        assert_eq!(
+            (command_for(id).1, command_for(id).2, command_for(id).3),
+            (false, false, false),
+            "initial line flags for {id}"
+        );
+    }
+    assert_eq!(
+        (
+            command_for("invalid").1,
+            command_for("invalid").2,
+            command_for("invalid").3
+        ),
+        (false, true, false)
+    );
+    assert_eq!(
+        (
+            command_for("important").1,
+            command_for("important").2,
+            command_for("important").3
+        ),
+        (true, false, false)
+    );
+
+    let surface = list.rasterize().unwrap();
+    assert!(
+        surface
+            .pixel(parent.0.x, parent.0.y.saturating_add(7))
+            .is_some()
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-decoration-line"
+    }));
+}
+
+#[test]
 fn native_text_decoration_line_longhand_reuses_color_and_geometry() {
     let document = NativeDocument::parse(
         "<style>#target { display:block; width:24px; height:20px; line-height:20px; color:red; text-decoration-line:overline line-through; text-decoration-color:blue; }</style><div id='target'>A</div>",

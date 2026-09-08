@@ -1856,6 +1856,23 @@ check, focused/full-native integration, strict Clippy, warning-denied rustdoc,
 and formatting pass locally; issue-level final gates and remote CI remain
 pending until issue #40 reaches its final validation boundary.
 
+The completed dependency-ordered [native-engine-189](tasks/native-engine-189.md)
+slice is implemented at `94724ab0`. It extends bounded author-origin
+`!important` priority to the normal-only flex and gap declarations through
+private doubled flex candidate arrays and important-aware gap partitions.
+`place-content`, `flex-flow`, and `flex` carry one declaration's priority to
+their bounded component expansions; important-over-normal ordering, reversed
+named-layer priority, inline precedence in the unlayered important bucket,
+invalid-later preservation, independent gap-axis source order, and
+`revert-layer` rollback flow through the existing layout and artifact owners.
+Dimensions/box model, overflow priority, other properties, dependencies,
+multiple origins, transitions, animations, vertical writing modes, and
+browser-wide CSS conformance remain outside this slice. Scoped check, focused
+units/integration, full native integration (227/227), strict Clippy,
+warning-denied rustdoc, and formatting pass locally; final issue-level gates
+and remote CI remain pending until issue #40 reaches its final validation
+boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

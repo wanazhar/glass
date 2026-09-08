@@ -147,8 +147,13 @@ thickness/underline-offset, `text-transform`, `font-weight`, `font-style`,
 `word-break`, `text-overflow`, `vertical-align`, `text-indent`, `word-spacing`,
 `letter-spacing`, and `line-height`) also honors the same terminal priority;
 local `display`, `visibility`, and `opacity` declarations honor the same
-terminal priority; remaining properties remain outside generic `!important`
-semantics. The bounded
+terminal priority; the normal-only flex and gap declarations (`justify-content`,
+`align-items`, `align-self`, `align-content`, `place-content`,
+`flex-direction`, `flex-wrap`, `flex-flow`, `order`, `flex-grow`,
+`flex-shrink`, `flex-basis`, `flex`, `gap`, `row-gap`, and `column-gap`) honor
+the same priority through their existing shorthand/component owners;
+dimensions, box-model declarations, overflow, and remaining properties remain
+outside generic `!important` semantics. The bounded
 `background-color`, inherited `color`, and `text-decoration-color` owners
 also honor terminal case-insensitive `!important` with the same
 important-over-normal and reversed named-layer ordering. The standalone

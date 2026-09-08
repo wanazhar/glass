@@ -36,6 +36,7 @@ bounded-paint-color-revert-layer,
 bounded-paint-color-important/bounded-physical-border-color-important,
 bounded-logical-border-color-important/bounded-text-presentation-important/
 bounded-local-presentation-important,
+bounded-flex-gap-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
 bounded-inherited-color-current-color,
@@ -164,9 +165,12 @@ text-presentation declarations also accept a terminal case-insensitive
 reversed named-layer order, inline important precedence, invalid-later
 preservation, and `revert-layer` rollback. The local `display`, `visibility`,
 and `opacity` declarations also accept that bounded priority through a private
-doubled local partition; remaining properties retain their existing bounded
-priority behavior. The inherited/local value owners and artifact consumers
-remain unchanged, and
+doubled local partition. The normal-only flex and gap declarations also accept
+that bounded priority through a private doubled flex/gap partition; shorthand
+expansions carry one declaration's priority to each supported component, while
+the existing computed-value and layout/artifact owners remain unchanged.
+Dimensions, box-model declarations, overflow, and remaining properties retain
+their existing bounded behavior, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
@@ -1574,6 +1578,23 @@ overflow, other properties, dependencies, defaults, and the two-crate boundary
 remain unchanged. Scoped check, focused units/integration, full native
 integration (226/226), strict Clippy, warning-denied rustdoc, and formatting
 gates pass locally; final issue-level gates and remote CI remain pending.
+
+The completed dependency-ordered `native-engine-189` slice is recorded in
+`docs/plan/tasks/native-engine-189.md` and implemented at `94724ab0`. It extends
+the bounded author-origin `!important` partition to the normal-only flex and
+gap declarations through private doubled flex candidate arrays and important-
+aware gap partitions. `place-content`, `flex-flow`, and `flex` carry their
+priority through bounded shorthand expansion; important-over-normal ordering,
+reversed named-layer priority, inline precedence in the unlayered important
+bucket, invalid-later preservation, independent gap-axis source order, and
+`revert-layer` rollback are preserved through the existing row/column/wrap,
+overflow, layout, display-list, raster, capture, and point-hit consumers.
+Dimensions/box model, overflow priority, other properties, dependencies,
+defaults, multiple origins, and browser-wide CSS conformance remain outside
+this slice. Scoped check, focused units/integration, full native integration
+(227/227), strict Clippy, warning-denied rustdoc, and formatting pass locally;
+final static, paired-crate, package, workspace, security/fuzz, cleanup,
+issue-level, and remote-CI gates remain pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

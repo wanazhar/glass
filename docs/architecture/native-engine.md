@@ -243,8 +243,10 @@ space-around|space-evenly|stretch` free-space placement for eligible fixed-width
 rows,
 bounded explicit case-insensitive `gap:inherit` propagation through the private
 parent-style chain, copying computed row and column gap components while omitted
-`gap` remains local with the bounded `0` fallback; direct `row-gap:inherit` and
-`column-gap:inherit` remain outside this shorthand-only boundary,
+`gap` remains local with the bounded `0` fallback; bounded explicit
+case-insensitive `row-gap:inherit` and `column-gap:inherit` copy their
+corresponding parent components while omitted longhands remain local with the
+bounded `0` fallback,
 bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
 source-order ties,
 bounded explicit case-insensitive `order:inherit` propagation through the
@@ -2249,6 +2251,20 @@ Full native integration (266/266) and the feature library (1,045 passed, 1
 ignored) pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed for this local-only checkout.
 
+The completed dependency-ordered `native-engine-229` slice is recorded in
+`docs/plan/tasks/native-engine-229.md` and implemented at `6c4116e4` (design
+`0e2916c9`). It adds standalone, case-insensitive `row-gap: inherit` and
+`column-gap: inherit` through the existing private parent-style chain, copying
+the corresponding computed parent gap component only when explicitly authored
+while omitted longhands remain local with the bounded `0` fallback. Independent
+axis cascade, layer/importance/source-order precedence, shorthand/longhand
+interaction, reset and `revert-layer` behavior, invalid mixed forms, wrapped/
+column placement, display-list, raster/PNG, point-hit, semantics, diagnostics,
+and the two-crate boundary remain bounded. Full native integration (267/267)
+and the feature library (1,046 passed, 1 ignored) pass locally. Remote CI,
+push, release, tag, and registry publication remain unclaimed for this
+local-only checkout.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -3264,6 +3280,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded explicit case-insensitive `flex-basis:inherit` propagation through
   the existing private basis owner, while omitted `flex-basis` remains local
   with the bounded `auto` fallback.
+- bounded explicit case-insensitive `row-gap:inherit` and
+  `column-gap:inherit` propagation through the existing private row/column gap
+  owners, while omitted longhands remain local with the bounded `0` fallback
+  and shorthand/longhand precedence remains bounded.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

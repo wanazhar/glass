@@ -442,6 +442,11 @@ one-author-origin `revert` for inherited `white-space`, positive-pixel
 `line-height`, `text-transform`, `font-weight`, `font-style`, `word-break`,
 `vertical-align`, `word-spacing`, and `letter-spacing`, with parent/root
 fallbacks and the existing fixed-cell artifact owners preserved,
+bounded standalone case-insensitive CSS-wide `inherit`, `initial`, `unset`, and
+one-author-origin `revert` for inherited `text-align`, `text-align-last`,
+`text-justify`, and `direction`, with left/auto/auto/`ltr` root defaults,
+parent fallback for inherited forms, the existing `revert-layer` distinction,
+and logical `ltr`/`rtl` projection preserved through the same artifact owners,
 bounded case-insensitive 15-layer/unlayered rollback for non-inherited
 `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
 and `flex-direction` owners with their native fallbacks,

@@ -2440,11 +2440,13 @@ visual stacking.
 
 | `native-engine-197` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for `width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`; winning reset candidates resolve to the existing optional `None`/auto fallback without falling through, while `revert-layer` remains the separate lower-layer rollback candidate; omission, explicit `inherit`, important/source-order behavior, invalid-later preservation, min/max, content-box/border-box, normal-flow/flex, display-list, raster, PNG capture, point-hit, semantic consumers, public schemas, and the two-crate boundary remain bounded; implementation `a0e102b5`; scoped check, focused unit/integration, full-native integration (235/235), strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-196` | percentages, negative lengths, intrinsic sizing, aspect ratio, margin collapsing, positioning, vertical writing modes, additional origins, transitions, animations, and browser-wide CSS sizing conformance |
 | `native-engine-198` | completed bounded standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin `revert` for inherited `white-space`, positive-pixel `line-height`, `text-transform`, `font-weight`, `font-style`, `word-break`, `vertical-align`, `word-spacing`, and `letter-spacing`; parent/root fallback, terminal reset behavior, invalid-later preservation, existing cascade priority, `revert-layer` distinction, layout, display-list, raster, PNG capture, point-hit, semantic, diagnostics, public schemas, and the two-crate boundary remain bounded; implementation `95a988d0`; locked scoped check, focused unit/integration, full-native integration (236/236), feature-library, strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-197` | unitless/relative/percentage line-height, font metrics/shaping, Unicode/bidi/writing modes, additional origins, transitions, animations, generic CSS-wide machinery, and browser-wide text conformance |
+| `native-engine-199` | completed bounded standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin `revert` for inherited `text-align`, `text-align-last`, `text-justify`, and `direction`; parent/root fallback, terminal reset behavior, invalid-later preservation, logical `ltr`/`rtl` projection, `revert-layer` distinction, layout, display-list, raster, PNG capture, point-hit, semantic, diagnostics, public schemas, and the two-crate boundary remain bounded; implementation `4771f352`; locked scoped check, focused cascade/parser/integration, full-native integration (237/237), feature library (1,020 passed, 1 ignored), paired binaries, strict Clippy, warning-denied rustdoc, workspace all-target/all-feature tests, doctests, fuzz, package/install, security, static audits, and formatting passed locally | `native-engine-198` | bidi/shaping, vertical writing modes, additional origins, transitions, animations, generic CSS-wide machinery, other logical properties, and browser-wide alignment/direction conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-198.md` is the latest completed task;
+`docs/plan/tasks/native-engine-199.md` is the latest completed task;
+`docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-195.md` is the preceding completed task;
@@ -2579,22 +2581,24 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
-`docs/plan/tasks/native-engine-198.md`: implementation is `95a988d0` (design
-`927cccca`). It adds standalone case-insensitive `inherit`, `initial`, `unset`,
-and one-author-origin `revert` to the nine inherited text declarations. Parent
-and root fallback, terminal reset behavior, invalid-later preservation,
-important/source-order, `revert-layer`, layout, display-list, raster, PNG
+`docs/plan/tasks/native-engine-199.md`: implementation is `4771f352` (design
+`4b02b41b`). It adds standalone case-insensitive `inherit`, `initial`, `unset`,
+and one-author-origin `revert` to inherited `text-align`, `text-align-last`,
+`text-justify`, and `direction`. Parent and root fallback, terminal reset
+behavior, invalid-later preservation, important/source-order, logical
+`ltr`/`rtl` projection, `revert-layer`, layout, display-list, raster, PNG
 capture, point-hit, semantic/source-order, diagnostics, schema, and two-crate
-owners remain bounded. The locked scoped native check, focused parser/cascade
-unit test, focused integration regression, full native integration (236/236),
-feature-library test run (1019 passed, 1 ignored with `RUST_MIN_STACK=8388608`),
-strict Clippy, warning-denied rustdoc, and formatting gates passed. The
-default-stack feature-library run reproduces the pre-existing large-Clap
-parser-test overflow. Paired-crate, package, workspace, security/fuzz, static
-documentation, final cleanup, issue synchronization, and remote-CI gates
-remain deferred to the final issue #40 certification boundary. No remote CI,
-push, release, tag, registry publication, browser-parity, security-boundary,
-or promotion claim is made.
+owners remain bounded. The locked scoped native check, focused cascade/parser
+unit coverage, focused public integration regression, full native integration
+(237/237), feature library (1,020 passed, 1 ignored), paired binaries,
+strict Clippy, warning-denied rustdoc, workspace all-target/all-feature tests,
+doctests, fuzz, package/install, security audits, static documentation gates,
+and formatting/diff checks passed. The direct registry-backed dev package
+verification remains blocked by the immutable public `glass-browser 0.3.14`
+API surface; the canonical local patched/no-verify route and clean-install
+transition gate passed. Exact temporary-target cleanup and issue
+synchronization remain. No remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, or promotion claim is made.
 The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-197.md`: implementation is `a0e102b5` (design
 `7d71a50c`). It adds standalone case-insensitive `initial`, `unset`, and

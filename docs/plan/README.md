@@ -2044,6 +2044,24 @@ workspace, security/fuzz, static documentation, cleanup, issue-level, and
 remote-CI gates remain pending until issue #40 reaches its final validation
 boundary.
 
+The completed dependency-ordered [native-engine-199](tasks/native-engine-199.md)
+slice is implemented at `4771f352` (design `4b02b41b`). It adds bounded
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert` to inherited `text-align`, `text-align-last`, `text-justify`, and
+`direction`, retaining `revert-layer` as the named-layer rollback. Parent/root
+fallbacks, terminal reset behavior, invalid-later preservation, logical
+`ltr`/`rtl` projection, and the existing layout, display-list, raster, PNG,
+point-hit, semantic, and diagnostic owners remain bounded. Focused
+cascade/parser/integration coverage and full native integration (237/237),
+the feature library (1,020 passed, 1 ignored), paired binaries, strict
+Clippy, warning-denied rustdoc, workspace all-target/all-feature tests,
+doctests, fuzz, package/install, security, static documentation, and formatting
+gates pass locally. Direct registry-backed verification of the dev archive is
+blocked by the immutable public `glass-browser 0.3.14` API surface, while the
+canonical local patched/no-verify route and clean-install transition gate
+pass. Exact temporary-target cleanup and issue synchronization remain; remote
+CI, push, release, tag, and registry publication are not claimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

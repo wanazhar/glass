@@ -8832,6 +8832,109 @@ fn native_text_decoration_thickness_css_wide_resets_reach_raster() {
 }
 
 #[test]
+fn native_text_underline_offset_css_wide_resets_reach_raster() {
+    let document = NativeDocument::parse(
+        "<style>.line { display:block; width:40px; height:20px; line-height:20px; color:black; text-decoration:underline overline line-through; text-decoration-style:solid; text-decoration-thickness:1px; } #parent { text-underline-offset:-3px; } #initial { text-underline-offset:InItIaL; } #inherit { text-underline-offset:InHeRiT; } #unset { text-underline-offset:UnSeT; } #revert { text-underline-offset:ReVeRt; } #invalid { text-underline-offset:2px; text-underline-offset:5px; } #important { text-underline-offset:-2px !important; } #important { text-underline-offset:0px; }</style><div id='parent' class='line'>P<span id='initial' class='line'>A</span><span id='inherit' class='line'>B</span><span id='unset' class='line'>C</span><span id='revert' class='line'>D</span><span id='invalid' class='line'>E</span><span id='important' class='line'>F</span></div><div id='root-initial' class='line' style='text-underline-offset:initial'>Root</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 240,
+        device_scale_factor_milli: 1000,
+    };
+    let list = document.display_list(viewport).unwrap();
+    let command_for = |id| {
+        let node_id = document.resolve_target(&format!("id={id}")).unwrap();
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::TextRun {
+                node_id: command_node_id,
+                origin,
+                underline_offset,
+                underline,
+                overline,
+                line_through,
+                ..
+            } if *command_node_id == node_id => Some((
+                *origin,
+                *underline_offset,
+                *underline,
+                *overline,
+                *line_through,
+            )),
+            _ => None,
+        })
+    };
+    let parent = command_for("parent").expect("parent offset command");
+    let initial = command_for("initial").expect("initial offset command");
+    let inherited = command_for("inherit").expect("inherit offset command");
+    let unset = command_for("unset").expect("unset offset command");
+    let revert = command_for("revert").expect("revert offset command");
+    let invalid = command_for("invalid").expect("invalid offset command");
+    let important = command_for("important").expect("important offset command");
+    let root_initial = command_for("root-initial").expect("root initial offset command");
+    assert_eq!(parent.1, -3);
+    assert_eq!(initial.1, 0);
+    assert_eq!(inherited.1, -3);
+    assert_eq!(unset.1, -3);
+    assert_eq!(revert.1, -3);
+    assert_eq!(invalid.1, 2);
+    assert_eq!(important.1, -2);
+    assert_eq!(root_initial.1, 0);
+    for command in [
+        parent,
+        initial,
+        inherited,
+        unset,
+        revert,
+        invalid,
+        important,
+        root_initial,
+    ] {
+        assert!(command.2 && command.3 && command.4);
+    }
+
+    let surface = list.rasterize().unwrap();
+    let underline_y = |command: (NativePoint, i32, bool, bool, bool)| {
+        u32::try_from(i64::from(command.0.y) + 7 + i64::from(command.1))
+            .expect("bounded underline coordinate")
+    };
+    for command in [
+        parent,
+        initial,
+        inherited,
+        unset,
+        revert,
+        invalid,
+        important,
+        root_initial,
+    ] {
+        assert_eq!(
+            surface.pixel(command.0.x.saturating_add(2), underline_y(command)),
+            Some([0, 0, 0, 255]),
+            "underline raster for offset {}",
+            command.1
+        );
+        assert_eq!(
+            surface.pixel(command.0.x.saturating_add(2), command.0.y.saturating_add(3)),
+            Some([0, 0, 0, 255]),
+            "line-through raster for offset {}",
+            command.1
+        );
+    }
+    assert!(initial.0.y > 0);
+    assert_eq!(
+        surface.pixel(initial.0.x.saturating_add(2), initial.0.y - 1),
+        Some([0, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-underline-offset"
+    }));
+}
+
+#[test]
 fn native_text_underline_offset_moves_only_underlines_through_shared_artifacts() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:24px; height:20px; line-height:20px; color:black; text-decoration:underline overline line-through; text-decoration-style:dashed; text-decoration-thickness:2px; } #negative { text-underline-offset:-2px; } #zero { text-underline-offset:0px; } #positive { text-underline-offset:3px; } #parent { text-decoration-style:dotted; text-underline-offset:-3px; }</style><div id='negative' class='line'>AB</div><div id='zero' class='line'>AB</div><div id='positive' class='line'>AB</div><div id='parent' class='line'><span id='inherited'>A</span><span id='override' style='text-underline-offset:2px'>B</span></div>",

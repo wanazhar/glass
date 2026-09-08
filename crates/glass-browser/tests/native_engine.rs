@@ -18107,6 +18107,72 @@ fn native_explicit_dimension_inheritance_reaches_layout_and_artifacts() {
 }
 
 #[test]
+fn native_dimension_css_wide_resets_reach_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        #parent { width:24px; height:12px; background-color:blue; }
+        #reset-child { display:block; width:4px; height:4px; min-width:20px; max-width:22px; min-height:6px; max-height:8px; background-color:red; }
+        #reset-child { width:initial; height:unset; min-width:revert; max-width:initial; min-height:unset; max-height:revert; }
+        </style>
+        <div id='parent'><button id='reset-child'>Reset</button></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let child = document.resolve_target("id=reset-child").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(parent),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 12,
+        })
+    );
+    assert_eq!(
+        layout.box_for(child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 40,
+        })
+    );
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(child));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, .. } if *node_id == child
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(
+        document
+            .semantic_nodes()
+            .iter()
+            .any(|semantic_node| semantic_node.node_id == child)
+    );
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height"
+            )
+    }));
+}
+
+#[test]
 fn native_box_model_revert_layer_preserves_geometry_and_artifacts() {
     let document = NativeDocument::parse(
         "<style>@layer base { #box { display:block; width:32px; height:20px; padding:2px; border:1px solid red; box-sizing:content-box; margin:1px 2px 3px 4px; background-color:red; } } @layer theme { #box { padding:4px 5px 6px 7px; box-sizing:border-box; margin:5px 6px 7px 8px; } } #box { padding:ReVeRt-LaYeR; box-sizing:revert-layer; margin:revert-layer; }</style><button id='box'>Box</button>",

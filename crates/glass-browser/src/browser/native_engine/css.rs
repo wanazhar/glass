@@ -8273,6 +8273,12 @@ fn parse_flex_flow_declaration(
     if is_local_reset_keyword(value) {
         return Some((FlexDirectionDeclaration::Reset, FlexWrapDeclaration::Reset));
     }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some((
+            FlexDirectionDeclaration::Inherit,
+            FlexWrapDeclaration::Inherit,
+        ));
+    }
     let (direction, wrap) = parse_flex_flow(value)?;
     Some((
         FlexDirectionDeclaration::Value(direction),
@@ -13388,7 +13394,15 @@ mod tests {
             ))
         );
         assert_eq!(parse_flex_flow_declaration("initial row"), None);
-        assert_eq!(parse_flex_flow_declaration("inherit"), None);
+        assert_eq!(
+            parse_flex_flow_declaration(" InHeRiT "),
+            Some((
+                FlexDirectionDeclaration::Inherit,
+                FlexWrapDeclaration::Inherit,
+            ))
+        );
+        assert_eq!(parse_flex_flow_declaration("inherit row"), None);
+        assert_eq!(parse_flex_flow_declaration("row inherit"), None);
         assert_eq!(
             parse_declarations("flex-flow: UnSeT"),
             NativeDeclarations {
@@ -14110,7 +14124,7 @@ mod tests {
     #[test]
     fn stylesheet_flex_flow_css_wide_resets_use_initial_fallbacks_and_preserve_cascade() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "@layer base { #layer { flex-flow: column wrap; } } @layer theme { #layer { flex-flow: revert-layer; } } #shorthand { flex-flow: column wrap; } #shorthand { flex-flow: InItIaL; } #direction { flex-direction: column; } #direction { flex-direction: unset; } #wrap { flex-wrap: wrap; } #wrap { flex-wrap: ReVeRt; } #invalid { flex-flow: row-reverse wrap; } #invalid { flex-flow: inherit; } #important { flex-flow: column wrap !important; } #important { flex-flow: initial; }"
+            "@layer base { #layer { flex-flow: column wrap; } } @layer theme { #layer { flex-flow: revert-layer; } } #shorthand { flex-flow: column wrap; } #shorthand { flex-flow: InItIaL; } #direction { flex-direction: column; } #direction { flex-direction: unset; } #wrap { flex-wrap: wrap; } #wrap { flex-wrap: ReVeRt; } #invalid { flex-flow: row-reverse wrap; } #invalid { flex-flow: inherit row; } #important { flex-flow: column wrap !important; } #important { flex-flow: initial; }"
                 .into(),
         ])
         .unwrap();
@@ -14138,6 +14152,52 @@ mod tests {
             FlexWrapValue::Wrap,
         );
         assert_values(&important, FlexDirectionValue::Column, FlexWrapValue::Wrap);
+    }
+
+    #[test]
+    fn stylesheet_flex_flow_inherit_projects_both_parent_components() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { flex-flow: InHeRiT; } #invalid { flex-flow: row wrap; flex-flow: inherit row; } #important { flex-flow: column wrap !important; } #important { flex-flow: inherit; } #longhands { flex-flow: row wrap; flex-direction: column; flex-wrap: wrap-reverse; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited_direction = FlexDirectionValue::ColumnReverse;
+        let inherited_wrap = FlexWrapValue::WrapReverse;
+        let computed = |element: &NativeNode| {
+            stylesheet.computed_for_with_matcher(
+                element,
+                NativeInheritedStyle {
+                    flex_direction: inherited_direction,
+                    flex_wrap: inherited_wrap,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(element),
+            )
+        };
+
+        assert_eq!(
+            computed(&node("<div id='inherit'>Inherit</div>")).flex_direction(),
+            inherited_direction
+        );
+        assert_eq!(
+            computed(&node("<div id='inherit'>Inherit</div>")).flex_wrap(),
+            inherited_wrap
+        );
+        let omitted = computed(&node("<div id='omitted'>Omitted</div>"));
+        assert_eq!(omitted.flex_direction(), FlexDirectionValue::Row);
+        assert_eq!(omitted.flex_wrap(), FlexWrapValue::NoWrap);
+        let invalid = computed(&node("<div id='invalid'>Invalid</div>"));
+        assert_eq!(invalid.flex_direction(), FlexDirectionValue::Row);
+        assert_eq!(invalid.flex_wrap(), FlexWrapValue::Wrap);
+        let important = computed(&node("<div id='important'>Important</div>"));
+        assert_eq!(important.flex_direction(), FlexDirectionValue::Column);
+        assert_eq!(important.flex_wrap(), FlexWrapValue::Wrap);
+        let longhands = computed(&node("<div id='longhands'>Longhands</div>"));
+        assert_eq!(longhands.flex_direction(), FlexDirectionValue::Column);
+        assert_eq!(longhands.flex_wrap(), FlexWrapValue::WrapReverse);
+        let root = stylesheet.computed_for(&node("<div id='root'>Root</div>"));
+        assert_eq!(root.flex_direction(), FlexDirectionValue::Row);
+        assert_eq!(root.flex_wrap(), FlexWrapValue::NoWrap);
     }
 
     #[test]

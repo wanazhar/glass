@@ -155,7 +155,12 @@ with line-edge provenance assigned during block-owned flow flush, and bounded
 inherited signed
 fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
-decreasing or increasing y, bounded
+decreasing or increasing y; its inherited owner also accepts standalone
+case-insensitive `inherit|initial|unset|revert`, using the computed parent for
+inherited forms, finite `0px` at the root for `initial`, and the current
+one-author-origin parent fallback for `revert`, while `revert-layer` remains
+the named-layer rollback and mixed/unsupported forms remain bounded
+diagnostics, bounded
 local `text-decoration-color` literal/alpha values and case-insensitive
 `currentColor` resolution through the 15-layer registry with a separate
 glyph/decoration paint color and the existing `Option<NativeColor>` fallback,
@@ -1893,6 +1898,21 @@ bounded; full shorthand expansion and generic CSS-wide machinery remain
 outside the contract. Full native integration (241/241) and the feature
 library (1,023 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
 and registry publication remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-204` slice is recorded in
+`docs/plan/tasks/native-engine-204.md` and implemented at `c82773e2` (design
+`9473832f`). It extends the inherited signed `text-underline-offset` owner
+with standalone case-insensitive `inherit`, `initial`, `unset`, and
+one-author-origin `revert`, retaining finite `-4px..=4px` values and
+`revert-layer` rollback. Parent/root fallback, zero-pixel initial behavior,
+terminal-reset semantics, invalid-later preservation, important/source order,
+underline-only movement, overline/line-through preservation, display-list,
+fixed-cell raster, PNG capture, diagnostics, and the two-crate boundary remain
+bounded; auto, percentages, font-derived values, and generic CSS-wide
+machinery remain outside the contract. Full native integration (242/242) and
+the feature library (1,024 passed, 1 ignored) pass locally. Remote CI, push,
+release, tag, and registry publication remain unclaimed for this local-only
+checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

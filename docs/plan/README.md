@@ -2402,6 +2402,18 @@ integration (264/264) and the feature library (1,044 passed, 1 ignored) pass
 locally. Remote CI, push, release, tag, and registry publication remain
 unclaimed.
 
+The completed dependency-ordered [native-engine-227](tasks/native-engine-227.md)
+slice is implemented at `6dde525a` (design `330680b6`), with compatibility
+coverage retained at `1e7663c1`. It adds bounded standalone case-insensitive
+`order: inherit` through the existing private parent-style chain, copying the
+computed parent order while keeping omitted `order` local with the bounded `0`
+fallback. Visual `(order, source_index)` sorting remains separate from
+semantic/source order; mixed invalid forms, source order, important priority,
+reset semantics, `revert-layer`, display-list, raster/PNG, point-hit,
+diagnostics, and the two-crate boundary remain bounded. Full native integration
+(265/265) and the feature library (1,044 passed, 1 ignored) pass locally.
+Remote CI, push, release, tag, and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

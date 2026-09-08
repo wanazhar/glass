@@ -534,6 +534,10 @@ remains local with the bounded `1` fallback,
 standalone case-insensitive `flex-basis:inherit` copies the computed parent
 basis component only when explicitly authored while omitted `flex-basis` remains
 local with the bounded `auto` fallback,
+standalone case-insensitive `order:inherit` copies the computed parent order
+only when explicitly authored while omitted `order` remains local with the
+bounded `0` fallback; visual `(order, source_index)` sorting preserves
+semantic/source order,
 bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
 placement using explicit content height or the auto row's maximum item outer
 height,

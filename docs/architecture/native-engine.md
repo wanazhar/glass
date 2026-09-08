@@ -243,6 +243,10 @@ space-around|space-evenly|stretch` free-space placement for eligible fixed-width
 rows,
 bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
 source-order ties,
+bounded explicit case-insensitive `order:inherit` propagation through the
+private parent-style chain, while omitted `order` remains local with the
+bounded `0` fallback; visual order remains separate from semantic/source
+order,
 bounded non-inherited `flex-grow:0..=1024`, `flex-shrink:0..=1024`, and
 `flex-basis:auto|Npx` sizing with native fallbacks, finite `flex` shorthand
 expansion, bounded grow/shrink allocation, base-size selection, and existing
@@ -2213,6 +2217,19 @@ point-hit, semantics, diagnostics, and the two-crate boundary remain bounded.
 Full native integration (264/264) and the feature library (1,044 passed, 1
 ignored) pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-227` slice is recorded in
+`docs/plan/tasks/native-engine-227.md` and implemented at `6dde525a` (design
+`330680b6`), with compatibility coverage retained at `1e7663c1`. It adds
+standalone, case-insensitive `order: inherit` through the existing private
+parent-style chain, copying the computed parent order while keeping omitted
+`order` local with the bounded `0` fallback. Visual `(order, source_index)`
+sorting continues to leave semantic/source order unchanged; mixed-invalid
+forms, source order, important priority, reset semantics, `revert-layer`,
+display-list, raster/PNG, point-hit, diagnostics, and the two-crate boundary
+remain bounded. Full native integration (265/265) and the feature library
+(1,044 passed, 1 ignored) pass locally. Remote CI, push, release, tag, and
+registry publication remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

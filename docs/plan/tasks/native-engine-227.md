@@ -1,7 +1,7 @@
 ---
 id: native-engine-227
 scope: glass-browser/native-engine/order-inherit
-status: planned
+status: complete
 depends-on: [native-engine-226]
 ---
 
@@ -89,6 +89,12 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
-registry publication, browser-parity, security-boundary certification, and
-promotion remain outside this local task.
+Implementation is committed at `6dde525a`, with the compatibility fixture
+follow-up at `1e7663c1`. The focused flex parser/cascade group passed 35/35;
+the public order-inheritance integration passed 1/1; the full native
+integration passed 265/265; and the feature library passed 1,044 tests with 1
+ignored. Formatting, the scoped workspace check, strict Clippy, paired crate
+builds, and warnings-as-errors rustdoc passed locally. Static documentation
+and release audits are recorded by the issue-40 synchronization checkpoint.
+Remote CI, push, release, tag, registry publication, browser-parity,
+security-boundary certification, and promotion remain outside this local task.

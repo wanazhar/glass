@@ -1,7 +1,7 @@
 ---
 id: native-engine-225
 scope: glass-browser/native-engine/flex-shrink-inherit
-status: planned
+status: complete
 depends-on: [native-engine-224]
 ---
 
@@ -92,6 +92,12 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
+Implementation is `b4f465db` (design `7064801b`). The locked native-feature
+check passed before tests. Focused flex parser/cascade coverage passed (35
+tests), and the public direct-shrink sizing/artifact fixture passed (1 test).
+Full native integration passed (263/263), and the feature library passed
+(1,044 passed, 1 ignored). Formatting, workspace check, strict Clippy, paired
+package builds, and warning-denied rustdoc for both crates also passed locally.
+Remote CI, push, release, tag,
 registry publication, browser-parity, security-boundary certification, and
 promotion remain outside this local task.

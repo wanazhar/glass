@@ -585,6 +585,7 @@ pub(crate) enum AlignItemsValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlignItemsDeclaration {
     Value(AlignItemsValue),
+    Inherit,
     Reset,
     RevertLayer,
 }
@@ -893,6 +894,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) min_height: Option<u32>,
     pub(crate) max_height: Option<u32>,
     pub(crate) justify_content: JustifyContentValue,
+    pub(crate) align_items: AlignItemsValue,
     pub(crate) align_content: AlignContentValue,
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
@@ -935,6 +937,7 @@ impl Default for NativeInheritedStyle {
             min_height: None,
             max_height: None,
             justify_content: JustifyContentValue::FlexStart,
+            align_items: AlignItemsValue::FlexStart,
             align_content: AlignContentValue::FlexStart,
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
@@ -2645,7 +2648,7 @@ impl NativeStylesheet {
             text_align_last: resolve_text_align_last(text_align_last, inherited.text_align_last),
             text_justify: resolve_text_justify(text_justify, inherited.text_justify),
             justify_content: resolve_justify_content(justify_content, inherited.justify_content),
-            align_items: resolve_align_items(align_items),
+            align_items: resolve_align_items(align_items, inherited.align_items),
             align_self: resolve_align_self(align_self),
             align_content: resolve_align_content(align_content, inherited.align_content),
             flex_direction: resolve_flex_direction(flex_direction),
@@ -2910,10 +2913,12 @@ fn resolve_justify_content(
 
 fn resolve_align_items(
     candidates: [Option<CascadeValue<AlignItemsDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: AlignItemsValue,
 ) -> AlignItemsValue {
     resolve_alignment_candidates(candidates, AlignItemsValue::FlexStart, |declaration| {
         match declaration {
             AlignItemsDeclaration::Value(value) => Some(value),
+            AlignItemsDeclaration::Inherit => Some(inherited),
             AlignItemsDeclaration::Reset => Some(AlignItemsValue::FlexStart),
             AlignItemsDeclaration::RevertLayer => None,
         }
@@ -8097,6 +8102,9 @@ fn parse_align_items_declaration(value: &str) -> Option<AlignItemsDeclaration> {
     }
     if is_local_reset_keyword(value) {
         return Some(AlignItemsDeclaration::Reset);
+    }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some(AlignItemsDeclaration::Inherit);
     }
     parse_align_items(value).map(AlignItemsDeclaration::Value)
 }
@@ -13427,7 +13435,11 @@ mod tests {
             parse_justify_content_declaration("revert-layer center"),
             None
         );
-        assert_eq!(parse_align_items_declaration("inherit"), None);
+        assert_eq!(
+            parse_align_items_declaration("InHeRiT"),
+            Some(AlignItemsDeclaration::Inherit)
+        );
+        assert_eq!(parse_align_items_declaration("inherit center"), None);
         assert_eq!(parse_align_items_declaration("revert-layer center"), None);
         assert_eq!(parse_align_self_declaration("center flex-end"), None);
         assert_eq!(parse_align_self_declaration("inherit"), None);
@@ -13675,7 +13687,7 @@ mod tests {
     #[test]
     fn stylesheet_align_items_css_wide_resets_use_flex_start_and_preserve_cascade() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "@layer base { #layer { align-items: center; } } @layer theme { #layer { align-items: revert-layer; } } #reset { align-items: flex-end; } #reset { align-items: INITIAL; } #unset { align-items: center; } #unset { align-items: UnSeT; } #revert { align-items: flex-end; } #revert { align-items: ReVeRt; } #invalid { align-items: center; } #invalid { align-items: inherit; } #important { align-items: flex-end !important; } #important { align-items: initial; }"
+            "@layer base { #layer { align-items: center; } } @layer theme { #layer { align-items: revert-layer; } } #reset { align-items: flex-end; } #reset { align-items: INITIAL; } #unset { align-items: center; } #unset { align-items: UnSeT; } #revert { align-items: flex-end; } #revert { align-items: ReVeRt; } #invalid { align-items: center; } #invalid { align-items: inherit center; } #important { align-items: flex-end !important; } #important { align-items: initial; }"
                 .into(),
         ])
         .unwrap();
@@ -13696,6 +13708,55 @@ mod tests {
         assert_align(&revert, AlignItemsValue::FlexStart);
         assert_align(&invalid, AlignItemsValue::Center);
         assert_align(&important, AlignItemsValue::FlexEnd);
+    }
+
+    #[test]
+    fn stylesheet_align_items_explicit_inherit_uses_parent_without_implicit_inheritance() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { align-items: inherit; } #default { color: red; } #invalid { align-items: flex-end; align-items: inherit center; } #terminal { align-items: inherit; align-items: stretch; } #important { align-items: flex-end !important; } #important { align-items: inherit; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited = AlignItemsValue::Center;
+        let computed = |element: &NativeNode| {
+            stylesheet
+                .computed_for_with_matcher(
+                    element,
+                    NativeInheritedStyle {
+                        align_items: inherited,
+                        ..NativeInheritedStyle::default()
+                    },
+                    |selector| selector.matches(element),
+                )
+                .align_items()
+        };
+
+        assert_eq!(
+            computed(&node("<div id='inherit'>Inherit</div>")),
+            inherited
+        );
+        assert_eq!(
+            computed(&node("<div id='default'>Default</div>")),
+            AlignItemsValue::FlexStart
+        );
+        assert_eq!(
+            computed(&node("<div id='invalid'>Invalid</div>")),
+            AlignItemsValue::FlexEnd
+        );
+        assert_eq!(
+            computed(&node("<div id='terminal'>Terminal</div>")),
+            AlignItemsValue::Stretch
+        );
+        assert_eq!(
+            computed(&node("<div id='important'>Important</div>")),
+            AlignItemsValue::FlexEnd
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for(&node("<div id='inherit'>Root default</div>"))
+                .align_items(),
+            AlignItemsValue::FlexStart
+        );
     }
 
     #[test]

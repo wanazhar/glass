@@ -15754,7 +15754,7 @@ fn native_flex_justify_content_inherit_reaches_nested_layout_and_raster() {
 #[test]
 fn native_flex_align_items_css_wide_resets_reach_layout_and_raster() {
     let document = NativeDocument::parse(
-        "<style>.row { display:flex; width:12px; height:32px; gap:2px; } #initial { align-items:center; } #initial { align-items:INITIAL; } #unset { align-items:flex-end; } #unset { align-items:UNSET; } #revert { align-items:center; } #revert { align-items:ReVeRt; } #invalid { align-items:center; } #invalid { align-items:inherit; } #important { align-items:flex-end !important; } #important { align-items:initial; } #layered { align-items:flex-start; } @layer theme { #layered { align-items:flex-end; } } #layered { align-items:revert-layer; } .item { width:4px; height:4px; flex-shrink:0; }</style><div id='initial' class='row'><button id='initial-first' class='item' style='background-color:red'>A</button><button id='initial-second' class='item' style='background-color:blue'>B</button></div><div id='unset' class='row'><button id='unset-first' class='item' style='background-color:red'>C</button><button id='unset-second' class='item' style='background-color:blue'>D</button></div><div id='revert' class='row'><button id='revert-first' class='item' style='background-color:red'>E</button><button id='revert-second' class='item' style='background-color:blue'>F</button></div><div id='invalid' class='row'><button id='invalid-first' class='item' style='background-color:red'>G</button><button id='invalid-second' class='item' style='background-color:blue'>H</button></div><div id='important' class='row'><button id='important-first' class='item' style='background-color:red'>I</button><button id='important-second' class='item' style='background-color:blue'>J</button></div><div id='layered' class='row'><button id='layered-first' class='item' style='background-color:red'>K</button><button id='layered-second' class='item' style='background-color:blue'>L</button></div>",
+        "<style>.row { display:flex; width:12px; height:32px; gap:2px; } #initial { align-items:center; } #initial { align-items:INITIAL; } #unset { align-items:flex-end; } #unset { align-items:UNSET; } #revert { align-items:center; } #revert { align-items:ReVeRt; } #invalid { align-items:center; } #invalid { align-items:inherit center; } #important { align-items:flex-end !important; } #important { align-items:initial; } #layered { align-items:flex-start; } @layer theme { #layered { align-items:flex-end; } } #layered { align-items:revert-layer; } .item { width:4px; height:4px; flex-shrink:0; }</style><div id='initial' class='row'><button id='initial-first' class='item' style='background-color:red'>A</button><button id='initial-second' class='item' style='background-color:blue'>B</button></div><div id='unset' class='row'><button id='unset-first' class='item' style='background-color:red'>C</button><button id='unset-second' class='item' style='background-color:blue'>D</button></div><div id='revert' class='row'><button id='revert-first' class='item' style='background-color:red'>E</button><button id='revert-second' class='item' style='background-color:blue'>F</button></div><div id='invalid' class='row'><button id='invalid-first' class='item' style='background-color:red'>G</button><button id='invalid-second' class='item' style='background-color:blue'>H</button></div><div id='important' class='row'><button id='important-first' class='item' style='background-color:red'>I</button><button id='important-second' class='item' style='background-color:blue'>J</button></div><div id='layered' class='row'><button id='layered-first' class='item' style='background-color:red'>K</button><button id='layered-second' class='item' style='background-color:blue'>L</button></div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();
@@ -15820,6 +15820,99 @@ fn native_flex_align_items_css_wide_resets_reach_layout_and_raster() {
     assert_eq!(surface.pixel(1, 111), Some([255, 0, 0, 255]));
     assert!(!surface.to_png().unwrap().is_empty());
     assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "align-items"
+    }));
+}
+
+#[test]
+fn native_flex_align_items_inherit_reaches_nested_layout_and_raster() {
+    let document = NativeDocument::parse(
+        concat!(
+            "<style>",
+            "#parent{display:flex;flex-direction:column;align-items:flex-end;width:40px;height:40px;}",
+            "#child{display:flex;width:32px;height:8px;gap:2px;align-items:inherit;flex-shrink:0;}",
+            "#omitted{display:flex;width:32px;height:8px;gap:2px;flex-shrink:0;}",
+            "#invalid{display:flex;width:32px;height:8px;gap:2px;align-items:flex-start;align-items:inherit center;flex-shrink:0;}",
+            ".item{width:4px;height:4px;flex-shrink:0;}",
+            "</style>",
+            "<div id='parent'>",
+            "<div id='child'><button id='child-first' class='item' style='background-color:red'>A</button><button id='child-second' class='item'>B</button></div>",
+            "<div id='omitted'><button id='omitted-first' class='item'>C</button><button id='omitted-second' class='item'>D</button></div>",
+            "<div id='invalid'><button id='invalid-first' class='item'>E</button><button id='invalid-second' class='item'>F</button></div>",
+            "</div>"
+        ),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 48,
+        device_scale_factor_milli: 1000,
+    };
+    let target = |id: &str| document.resolve_target(&format!("id={id}")).unwrap();
+    let child = target("child");
+    let child_first = target("child-first");
+    let omitted = target("omitted");
+    let omitted_first = target("omitted-first");
+    let invalid = target("invalid");
+    let invalid_first = target("invalid-first");
+
+    let layout = document.layout(viewport).unwrap();
+    let child_box = layout.box_for(child).unwrap();
+    let child_first_box = layout.box_for(child_first).unwrap();
+    let omitted_box = layout.box_for(omitted).unwrap();
+    let omitted_first_box = layout.box_for(omitted_first).unwrap();
+    let invalid_box = layout.box_for(invalid).unwrap();
+    let invalid_first_box = layout.box_for(invalid_first).unwrap();
+    assert!(child_first_box.y > child_box.y);
+    assert_eq!(omitted_first_box.y, omitted_box.y);
+    assert_eq!(invalid_first_box.y, invalid_box.y);
+    assert!(child_box.x > 0);
+
+    let semantic_nodes = document.semantic_nodes();
+    assert!(
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == child_first)
+            .unwrap()
+            < semantic_nodes
+                .iter()
+                .position(|node| node.node_id == omitted_first)
+                .unwrap()
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == child_first
+                    && rect.y == child_first_box.y
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(
+        layout
+            .hit_test(
+                i64::from(child_first_box.x + 1),
+                i64::from(child_first_box.y + 1),
+            )
+            .unwrap(),
+        Some(child_first)
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(child_first_box.x + 1, child_first_box.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    let unsupported = NativeDocument::parse(
+        "<div style='align-items:inherit center'>Unsupported</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(unsupported.diagnostics().iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "align-items"
     }));

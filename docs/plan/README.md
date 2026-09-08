@@ -2143,6 +2143,20 @@ contract. Full native integration (243/243) and the feature library (1,025
 passed, 1 ignored) pass locally. Remote CI, push, release, tag, and registry
 publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-206](tasks/native-engine-206.md)
+slice is implemented at `b7bd9ace` (design `82c31c9a`). It adds bounded
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`
+to local `text-indent` and `text-overflow`, retaining finite non-negative
+fixed-pixel indentation, `clip|ellipsis`, and `revert-layer` rollback. Reset
+forms resolve to the existing `0px` and `clip` fallbacks respectively while
+invalid-later preservation, important/source order, first-line layout,
+eligible truncation, display-list, raster/PNG, point-hit, diagnostics, and the
+two-crate boundary remain bounded. `inherit`, parent propagation,
+negative/fractional or percentage indentation, and browser-wide overflow
+conformance remain outside the contract. Full native integration (244/244) and
+the feature library (1,026 passed, 1 ignored) pass locally. Remote CI, push,
+release, tag, and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

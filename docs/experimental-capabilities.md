@@ -472,8 +472,10 @@ for `text-overflow` with a finite `clip` fallback,
 plus standalone case-insensitive `initial`, `unset`, and one-author-origin
 `revert` reset forms for both local owners: `text-indent` uses finite `0px`
 and `text-overflow` uses `clip`; `revert-layer` remains named-layer rollback,
-while `inherit`, parent propagation, negative/fractional or percentage
-indentation, and browser-wide overflow conformance remain outside the boundary,
+while standalone case-insensitive `text-indent:inherit` copies the computed
+parent only when explicitly authored and omitted `text-indent` remains local;
+negative/fractional or percentage indentation and browser-wide overflow
+conformance remain outside the boundary,
 bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
 fixed-cell inline and inline-block line items within the existing line box,
 plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`

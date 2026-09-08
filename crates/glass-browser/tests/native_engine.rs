@@ -17999,6 +17999,114 @@ fn native_min_max_dimensions_constrain_content_and_border_box_geometry() {
 }
 
 #[test]
+fn native_explicit_dimension_inheritance_reaches_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        #normal-parent { width:24px; height:12px; min-width:20px; max-width:28px; min-height:10px; max-height:14px; background-color:blue; }
+        #normal-child { display:block; width:inherit; height:inherit; min-width:inherit; max-width:inherit; min-height:inherit; max-height:inherit; box-sizing:border-box; padding:2px; border:1px solid red; background-color:red; }
+        #flex-parent { display:flex; width:40px; height:12px; background-color:green; }
+        #flex-child { display:block; width:inherit; height:inherit; flex-shrink:0; background-color:red; }
+        #flex-sibling { display:block; width:8px; height:6px; flex-shrink:0; background-color:blue; }
+        </style>
+        <div id='normal-parent'><button id='normal-child'>Normal</button></div>
+        <div id='flex-parent'><button id='flex-child'>Flex</button><button id='flex-sibling'>Sibling</button></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 32,
+        device_scale_factor_milli: 1000,
+    };
+    let normal_parent = document.resolve_target("id=normal-parent").unwrap();
+    let normal_child = document.resolve_target("id=normal-child").unwrap();
+    let flex_parent = document.resolve_target("id=flex-parent").unwrap();
+    let flex_child = document.resolve_target("id=flex-child").unwrap();
+    let flex_sibling = document.resolve_target("id=flex-sibling").unwrap();
+
+    let layout = document.layout(viewport).unwrap();
+    assert_eq!(
+        layout.box_for(normal_parent),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 12,
+        })
+    );
+    assert_eq!(
+        layout.box_for(normal_child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 12,
+        })
+    );
+    assert_eq!(
+        layout.box_for(flex_parent),
+        Some(NativeRect {
+            x: 0,
+            y: 12,
+            width: 40,
+            height: 12,
+        })
+    );
+    assert_eq!(
+        layout.box_for(flex_child),
+        Some(NativeRect {
+            x: 0,
+            y: 12,
+            width: 40,
+            height: 12,
+        })
+    );
+    assert_eq!(
+        layout.box_for(flex_sibling),
+        Some(NativeRect {
+            x: 40,
+            y: 12,
+            width: 8,
+            height: 6,
+        })
+    );
+    assert_eq!(layout.content_width, 64);
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(normal_child));
+    assert_eq!(layout.hit_test(1, 13).unwrap(), Some(flex_child));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, .. } if *node_id == normal_child
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+
+    let semantic_nodes = document.semantic_nodes();
+    for pair in [normal_child, flex_child, flex_sibling].windows(2) {
+        assert!(
+            semantic_nodes
+                .iter()
+                .position(|node| node.node_id == pair[0])
+                < semantic_nodes
+                    .iter()
+                    .position(|node| node.node_id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height"
+            )
+    }));
+}
+
+#[test]
 fn native_box_model_revert_layer_preserves_geometry_and_artifacts() {
     let document = NativeDocument::parse(
         "<style>@layer base { #box { display:block; width:32px; height:20px; padding:2px; border:1px solid red; box-sizing:content-box; margin:1px 2px 3px 4px; background-color:red; } } @layer theme { #box { padding:4px 5px 6px 7px; box-sizing:border-box; margin:5px 6px 7px 8px; } } #box { padding:ReVeRt-LaYeR; box-sizing:revert-layer; margin:revert-layer; }</style><button id='box'>Box</button>",

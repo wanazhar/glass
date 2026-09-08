@@ -860,6 +860,12 @@ impl NativeDocument {
         let mut inherited_padding = [0; 4];
         let mut inherited_margin = [NativeMarginValue::Length(0); 4];
         let mut inherited_box_sizing = NativeBoxSizing::ContentBox;
+        let mut inherited_width = None;
+        let mut inherited_height = None;
+        let mut inherited_min_width = None;
+        let mut inherited_max_width = None;
+        let mut inherited_min_height = None;
+        let mut inherited_max_height = None;
         let mut inherited_direction = DirectionValue::Ltr;
         let mut inherited_white_space = WhiteSpaceValue::Normal;
         let mut inherited_line_height = None;
@@ -897,6 +903,12 @@ impl NativeDocument {
                     padding: inherited_padding,
                     margin: inherited_margin,
                     box_sizing: inherited_box_sizing,
+                    width: inherited_width,
+                    height: inherited_height,
+                    min_width: inherited_min_width,
+                    max_width: inherited_max_width,
+                    min_height: inherited_min_height,
+                    max_height: inherited_max_height,
                     direction: inherited_direction,
                     white_space: inherited_white_space,
                     line_height: inherited_line_height,
@@ -935,6 +947,12 @@ impl NativeDocument {
             ];
             inherited_margin = style.margin_values();
             inherited_box_sizing = style.box_sizing();
+            inherited_width = style.width();
+            inherited_height = style.height();
+            inherited_min_width = style.min_width();
+            inherited_max_width = style.max_width();
+            inherited_min_height = style.min_height();
+            inherited_max_height = style.max_height();
             inherited_direction = style.direction();
             inherited_white_space = style.white_space();
             inherited_line_height = style.line_height().or(inherited_line_height);

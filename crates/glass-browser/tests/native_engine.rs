@@ -5457,6 +5457,162 @@ fn native_dimension_important_priority_reaches_geometry_and_artifact_consumers()
 }
 
 #[test]
+fn native_box_model_important_priority_reaches_geometry_and_artifact_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        .box { display:block; margin:0px; padding:0px; }
+        @layer base {
+          #named { width:12px; height:6px; box-sizing:content-box !important; padding:1px 2px 3px 4px !important; margin:1px 2px 3px 4px !important; background-color:red; }
+          #border { width:20px; height:12px; box-sizing:border-box !important; padding:2px 3px 4px 5px !important; border:1px solid blue; background-color:green; }
+          #rollback { width:12px; height:8px; box-sizing:content-box !important; padding:1px !important; margin:1px !important; background-color:blue; }
+          #rollback { box-sizing:revert-layer !important; padding:revert-layer !important; margin:revert-layer !important; }
+          #flex { display:flex; width:40px; height:12px; }
+          #first { width:8px; height:6px; background-color:blue; }
+          #auto { width:8px; height:6px; margin:1px 1px 2px auto !important; background-color:red; }
+          #clip { width:10px; height:8px; overflow:hidden; background-color:green; }
+          #clip-child { width:24px; height:4px; background-color:blue; }
+        }
+        @layer theme {
+          #rollback { box-sizing:border-box !important; padding:2px 3px 4px 5px !important; margin:2px 3px 4px 5px !important; }
+          #auto { margin-left:4px !important; margin-top:4px !important; }
+        }
+        #named { box-sizing:border-box; padding:9px; margin:9px; }
+        #border { box-sizing:content-box; padding:9px; margin:9px; }
+        #rollback { box-sizing:content-box; padding:9px; margin:9px; }
+        #auto { margin-left:0px; margin-top:0px; }
+        </style>
+        <button id='named' class='box'>Named</button>
+        <button id='border' class='box'>Border</button>
+        <button id='rollback' class='box'>Rollback</button>
+        <div id='flex'><button id='first'>First</button><button id='auto'>Auto</button></div>
+        <div id='clip'><div id='clip-child'>Child</div></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty
+            || (diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && matches!(
+                    diagnostic.detail.as_str(),
+                    "box-sizing" | "padding" | "padding-left" | "margin" | "margin-left"
+                ))
+    }));
+
+    let named = document.resolve_target("id=named").unwrap();
+    let border = document.resolve_target("id=border").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let flex = document.resolve_target("id=flex").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let auto = document.resolve_target("id=auto").unwrap();
+    let clip = document.resolve_target("id=clip").unwrap();
+    let clip_child = document.resolve_target("id=clip-child").unwrap();
+
+    let viewport = Viewport {
+        width: 64,
+        height: 128,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let named_rect = layout.box_for(named).unwrap();
+    assert_eq!((named_rect.width, named_rect.height), (18, 10));
+    let border_rect = layout.box_for(border).unwrap();
+    assert_eq!((border_rect.width, border_rect.height), (20, 12));
+    let border_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == border)
+        .unwrap();
+    assert_eq!(
+        border_box.content_rect,
+        NativeRect {
+            x: border_rect.x + 6,
+            y: border_rect.y + 3,
+            width: 10,
+            height: 4,
+        }
+    );
+    let rollback_rect = layout.box_for(rollback).unwrap();
+    assert_eq!((rollback_rect.width, rollback_rect.height), (12, 8));
+    let rollback_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == rollback)
+        .unwrap();
+    assert_eq!(
+        rollback_box.content_rect,
+        NativeRect {
+            x: rollback_rect.x + 5,
+            y: rollback_rect.y + 2,
+            width: 4,
+            height: 2,
+        }
+    );
+
+    let flex_rect = layout.box_for(flex).unwrap();
+    let first_rect = layout.box_for(first).unwrap();
+    let auto_rect = layout.box_for(auto).unwrap();
+    assert_eq!((flex_rect.width, flex_rect.height), (40, 12));
+    assert_eq!(
+        (first_rect.x - flex_rect.x, first_rect.y - flex_rect.y),
+        (0, 0)
+    );
+    assert_eq!(
+        (auto_rect.x - flex_rect.x, auto_rect.y - flex_rect.y),
+        (31, 1)
+    );
+    assert_eq!(
+        layout.hit_test((auto_rect.x + 1).into(), (auto_rect.y + 1).into()),
+        Ok(Some(auto))
+    );
+
+    let clip_rect = layout.box_for(clip).unwrap();
+    assert_eq!((clip_rect.width, clip_rect.height), (10, 8));
+    assert_eq!(layout.box_for(clip_child).unwrap().width, 10);
+    assert_eq!(layout.max_scroll_offset().x, 0);
+
+    let semantic_nodes = document.semantic_nodes();
+    assert!(
+        semantic_nodes
+            .iter()
+            .position(|semantic_node| semantic_node.node_id == named)
+            < semantic_nodes
+                .iter()
+                .position(|semantic_node| semantic_node.node_id == auto)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == named
+                    && *rect == named_rect
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == auto
+                    && *rect == auto_rect
+                    && *color == NativeColor::RED
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(auto_rect.x + 1, auto_rect.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (64, 128));
+}
+
+#[test]
 fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:45px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",

@@ -212,6 +212,10 @@ pub enum NativeTextDecorationStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationStyleDeclaration {
     Value(NativeTextDecorationStyle),
+    Inherit,
+    Initial,
+    Unset,
+    Revert,
     RevertLayer,
 }
 
@@ -219,6 +223,8 @@ impl NativeTextDecorationStyleDeclaration {
     const fn resolve(self, inherited: NativeTextDecorationStyle) -> NativeTextDecorationStyle {
         match self {
             Self::Value(value) => value,
+            Self::Inherit | Self::Unset | Self::Revert => inherited,
+            Self::Initial => NativeTextDecorationStyle::Solid,
             Self::RevertLayer => inherited,
         }
     }
@@ -7185,6 +7191,10 @@ fn parse_text_decoration_style(value: &str) -> Option<NativeTextDecorationStyleD
         "wavy" => Some(NativeTextDecorationStyleDeclaration::Value(
             NativeTextDecorationStyle::Wavy,
         )),
+        "inherit" => Some(NativeTextDecorationStyleDeclaration::Inherit),
+        "initial" => Some(NativeTextDecorationStyleDeclaration::Initial),
+        "unset" => Some(NativeTextDecorationStyleDeclaration::Unset),
+        "revert" => Some(NativeTextDecorationStyleDeclaration::Revert),
         "revert-layer" => Some(NativeTextDecorationStyleDeclaration::RevertLayer),
         _ => None,
     }
@@ -13516,10 +13526,25 @@ mod tests {
             parse_text_decoration_style("ReVeRt-LaYeR"),
             Some(NativeTextDecorationStyleDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_text_decoration_style("InHeRiT"),
+            Some(NativeTextDecorationStyleDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_text_decoration_style("InItIaL"),
+            Some(NativeTextDecorationStyleDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_text_decoration_style("UnSeT"),
+            Some(NativeTextDecorationStyleDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_text_decoration_style("ReVeRt"),
+            Some(NativeTextDecorationStyleDeclaration::Revert)
+        );
         assert_eq!(parse_text_decoration_style("zigzag"), None);
         assert_eq!(parse_text_decoration_style("solid double"), None);
-        assert_eq!(parse_text_decoration_style("revert"), None);
-        assert_eq!(parse_text_decoration_style("inherit"), None);
+        assert_eq!(parse_text_decoration_style("inherit initial"), None);
         assert_eq!(parse_text_decoration_style(""), None);
     }
 

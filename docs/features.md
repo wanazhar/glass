@@ -425,9 +425,11 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   and finite shorthand expansion, plus standalone case-insensitive
   `initial|unset|revert` reset forms for
   `flex`, `flex-grow`, `flex-shrink`, and `flex-basis` that resolve through
-  existing components to the finite `0 1 auto` initial tuple; `inherit`,
-  percentages, negative/fractional/intrinsic basis values, and
-  direction/wrap/alignment/order remain outside the boundary, plus bounded
+  existing components to the finite `0 1 auto` initial tuple; standalone
+  `initial|unset|revert` reset forms for `flex-direction`, `flex-wrap`, and
+  `flex-flow` resolve through existing components to finite `row`/`nowrap`
+  initial defaults; `inherit`, percentages, negative/fractional/intrinsic
+  basis values, and alignment/order remain outside the boundary, plus bounded
   case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive
@@ -765,9 +767,11 @@ projection, and point hit-testing,
   and finite shorthand expansion, plus standalone case-insensitive
   `initial|unset|revert` reset forms for
   `flex`, `flex-grow`, `flex-shrink`, and `flex-basis` that resolve through
-  existing components to the finite `0 1 auto` initial tuple; `inherit`,
-  percentages, negative/fractional/intrinsic basis values, and
-  direction/wrap/alignment/order remain outside the boundary, plus bounded
+  existing components to the finite `0 1 auto` initial tuple; standalone
+  `initial|unset|revert` reset forms for `flex-direction`, `flex-wrap`, and
+  `flex-flow` resolve through existing components to finite `row`/`nowrap`
+  initial defaults; `inherit`, percentages, negative/fractional/intrinsic
+  basis values, and alignment/order remain outside the boundary, plus bounded
   case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive

@@ -28,6 +28,7 @@ bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
 bounded-flex-gap-family/bounded-flex-gap-family-revert-layer/
 bounded-flex-gap-family-css-wide-resets,
 bounded-flex-sizing-css-wide-resets,
+bounded-flex-flow-css-wide-resets,
 bounded-inherited-text-presentation-revert-layer,
 bounded-inherited-text-spacing-revert-layer,
 bounded-inherited-vertical-align-revert-layer,
@@ -1959,6 +1960,20 @@ point-hit, diagnostics, and the two-crate boundary remain bounded. `inherit`,
 percentages, negative/fractional/intrinsic basis values, direction/wrap/
 alignment/order, and generic CSS-wide machinery remain outside the contract.
 Full native integration (245/245) and the feature library (1,027 passed, 1
+ignored) pass locally. Remote CI, push, release, tag, and registry publication
+remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-208` slice is recorded in
+`docs/plan/tasks/native-engine-208.md` and implemented at `fcadc99c` (design
+`e91a358b`). It extends the local `flex-direction`, `flex-wrap`, and
+`flex-flow` owners with standalone case-insensitive `initial`, `unset`, and
+one-author-origin `revert`, retaining finite row/column direction values,
+finite wrap modes, shorthand component projection, and `revert-layer` rollback.
+Reset forms resolve through the existing private component streams to the
+finite `row`/`nowrap` initial defaults; important/source order, invalid-later
+preservation, row/column mapping, wrapping, display-list, fixed-cell raster,
+PNG capture, point-hit, diagnostics, and the two-crate boundary remain bounded.
+Full native integration (246/246) and the feature library (1,029 passed, 1
 ignored) pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed for this local-only checkout.
 

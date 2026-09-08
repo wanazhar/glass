@@ -478,9 +478,11 @@ initial tuple; standalone `initial|unset|revert` reset forms for
 `flex-direction`, `flex-wrap`, and `flex-flow` resolve through existing
 components to finite `row`/`nowrap` initial defaults; standalone
 `initial|unset|revert` reset forms for local flex-item `order` resolve through
-the existing local resolver to finite `0`; `inherit`, percentages,
-negative/fractional/intrinsic basis values, and alignment remain outside the
-boundary, plus
+the existing local resolver to finite `0`; standalone
+`initial|unset|revert` reset forms for local `justify-content` reuse the
+existing bounded `flex-start` fallback; `inherit`, percentages,
+negative/fractional/intrinsic basis values, and other alignment owners remain
+outside the boundary, plus
 bounded case-insensitive gap-family
 `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
 independent finite-pixel components, plus standalone case-insensitive

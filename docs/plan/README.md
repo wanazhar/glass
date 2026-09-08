@@ -2196,6 +2196,18 @@ native integration (247/247) and the feature library (1,030 passed, 1 ignored)
 pass locally. Remote CI, push, release, tag, and registry publication remain
 unclaimed.
 
+The completed dependency-ordered [native-engine-210](tasks/native-engine-210.md)
+slice is implemented at `e9ac0b1c` (design `e44ce4ec`). It adds bounded
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`
+to local `justify-content`, retaining finite distribution values and
+`revert-layer` rollback. Reset forms reuse the existing bounded `flex-start`
+fallback while important/source order, invalid-later preservation, free-space
+distribution, row/column mapping, flex sizing, display-list, raster/PNG,
+point-hit, diagnostics, and the two-crate boundary remain bounded. Full native
+integration (248/248) and the feature library (1,031 passed, 1 ignored) pass
+locally. Remote CI, push, release, tag, and registry publication remain
+unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

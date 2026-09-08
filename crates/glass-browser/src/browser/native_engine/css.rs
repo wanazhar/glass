@@ -8083,6 +8083,12 @@ fn parse_place_content_declaration(
             JustifyContentDeclaration::Reset,
         ));
     }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some((
+            AlignContentDeclaration::Inherit,
+            JustifyContentDeclaration::Inherit,
+        ));
+    }
     let (align_content, justify_content) = parse_place_content(value)?;
     Some((
         AlignContentDeclaration::Value(align_content),
@@ -13175,8 +13181,16 @@ mod tests {
                 JustifyContentDeclaration::RevertLayer,
             ))
         );
+        assert_eq!(
+            parse_place_content_declaration(" InHeRiT "),
+            Some((
+                AlignContentDeclaration::Inherit,
+                JustifyContentDeclaration::Inherit,
+            ))
+        );
         assert_eq!(parse_place_content_declaration("revert-layer center"), None);
         assert_eq!(parse_place_content_declaration("initial center"), None);
+        assert_eq!(parse_place_content_declaration("inherit center"), None);
         assert_eq!(
             parse_declarations("place-content: revert-layer; justify-content: flex-end"),
             NativeDeclarations {
@@ -13976,6 +13990,40 @@ mod tests {
             AlignContentValue::FlexEnd,
             JustifyContentValue::Center,
         );
+    }
+
+    #[test]
+    fn stylesheet_place_content_inherit_projects_both_parent_components() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { place-content: InHeRiT; } #omitted { place-content: center; } #omitted { place-content: inherit center; } #important { place-content: center !important; } #important { place-content: inherit; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited_align = AlignContentValue::SpaceAround;
+        let inherited_justify = JustifyContentValue::FlexEnd;
+        let computed = |element: &NativeNode| {
+            stylesheet.computed_for_with_matcher(
+                element,
+                NativeInheritedStyle {
+                    align_content: inherited_align,
+                    justify_content: inherited_justify,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(element),
+            )
+        };
+
+        let inherited = computed(&node("<div id='inherit'>Inherit</div>"));
+        assert_eq!(inherited.align_content(), inherited_align);
+        assert_eq!(inherited.justify_content(), inherited_justify);
+
+        let omitted = computed(&node("<div id='omitted'>Omitted</div>"));
+        assert_eq!(omitted.align_content(), AlignContentValue::Center);
+        assert_eq!(omitted.justify_content(), JustifyContentValue::Center);
+
+        let important = computed(&node("<div id='important'>Important</div>"));
+        assert_eq!(important.align_content(), AlignContentValue::Center);
+        assert_eq!(important.justify_content(), JustifyContentValue::Center);
     }
 
     #[test]

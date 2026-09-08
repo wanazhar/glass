@@ -39,7 +39,7 @@ bounded-local-presentation-important,
 bounded-flex-gap-important/bounded-dimension-important/bounded-box-model-important/
 bounded-logical-box-model-edges/
 bounded-box-model-css-wide-resets/
-bounded-box-model-explicit-inheritance/
+bounded-box-model-explicit-inheritance/bounded-dimension-explicit-inheritance/
 bounded-overflow-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
@@ -183,7 +183,12 @@ The normal-only physical box-model declarations (`box-sizing`, `padding`, and
 `margin` with their four physical longhands) also accept that bounded priority
 through private doubled candidate streams with per-edge importance, preserving
 content-box/border-box conversion, auto-margin provenance, and the existing
-geometry/artifact owners. The normal-only `overflow`, `overflow-x`, and
+geometry/artifact owners. The same six dimension owners also accept standalone
+case-insensitive `inherit`: explicit values copy the parent's computed
+optional pixel value, including a parent `None`/auto result, while omitted
+dimensions remain local and do not inherit. Percentages, negative lengths,
+intrinsic sizing, aspect ratio, and new used-value state remain outside this
+bounded extension. The normal-only `overflow`, `overflow-x`, and
 `overflow-y` declarations also accept that bounded priority through private
 doubled x/y candidate streams and shorthand/x/y importance bits, preserving
 important-over-normal ordering, reversed named-layer priority, inline
@@ -1726,6 +1731,24 @@ tests, full native integration (233/233), strict Clippy, warning-denied
 rustdoc, and formatting pass locally; final static, paired-crate, package,
 workspace, security/fuzz, cleanup, issue-level, and remote-CI gates remain
 pending.
+
+The completed dependency-ordered `native-engine-196` slice is recorded in
+`docs/plan/tasks/native-engine-196.md` and implemented at `fd6ee415` (design
+`9231d17f`). It adds standalone case-insensitive `inherit` to the six local
+dimension declarations, copying the parent's computed optional pixel value
+through the existing private DOM style walk while keeping omitted dimensions
+local and preserving explicit parent `None`/auto fallbacks. Important/source-
+order behavior, invalid-later preservation, `revert-layer`, min/max,
+content-box/border-box, normal-flow/flex, display-list, raster, PNG capture,
+point-hit, and semantic/source-order owners remain bounded. Percentages,
+negative lengths, intrinsic sizing, aspect ratio, margin collapsing, positioning,
+vertical writing modes, additional origins, transitions, animations, and
+browser-wide sizing conformance remain outside this slice. Scoped check,
+focused unit/integration, full native integration (234/234), strict Clippy,
+warning-denied rustdoc, formatting, static documentation truth/coverage/depth,
+feature parity, TUI shortcut, and version-sync pass locally; paired-crate,
+package, workspace, security/fuzz, cleanup, issue-level, and remote-CI gates
+remain pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

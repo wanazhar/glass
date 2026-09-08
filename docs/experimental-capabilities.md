@@ -203,6 +203,12 @@ resets to `content-box`. They also accept standalone case-insensitive
 and private margin `auto` provenance, while logical values read the parent in
 its resolved `ltr`/`rtl` direction before projecting into the child; root
 fallbacks and omitted-property non-inheritance remain explicit. Vertical
+dimension declarations `width`, `height`, `min-width`, `max-width`,
+`min-height`, and `max-height` also accept standalone case-insensitive
+`inherit`: explicit values copy the parent's computed optional pixel value,
+including a parent `None`/auto result, while omitted dimensions remain local
+and do not inherit. Percentages, negative lengths, intrinsic sizing, aspect
+ratio, and new used-value state remain outside this bounded extension.
 writing modes, additional logical properties, and remaining properties do not
 claim generic `!important` semantics or this bounded inheritance/reset family.
 CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert`: explicit

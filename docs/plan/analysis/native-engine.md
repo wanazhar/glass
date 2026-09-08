@@ -1557,8 +1557,19 @@ workspace all-target/all-feature, security/fuzz, and formatting gates pass
 locally; exact evidence and bounded cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
 The completed dependency-ordered `native-engine-177` through
-`native-engine-195` slices are recorded in their task files. This run's latest
-slice, `native-engine-195`, adds standalone case-insensitive `inherit` to
+`native-engine-196` slices are recorded in their task files. This run's latest
+slice, `native-engine-196`, adds standalone case-insensitive `inherit` to the
+six local dimension declarations (`width`, `height`, `min-width`, `max-width`,
+`min-height`, and `max-height`). Explicit values copy the parent's computed
+optional pixel value through the existing private DOM style walk, including a
+parent `None`/auto result; omitted dimensions remain local and do not inherit.
+The existing important/source-order, invalid-later, `revert-layer`, min/max,
+content-box/border-box, normal-flow/flex, display-list, raster, PNG-capture,
+point-hit, and semantic/source-order owners remain bounded. Percentages,
+negative lengths, intrinsic sizing, aspect ratio, margin collapsing, positioning,
+vertical writing modes, additional origins, transitions, animations, and
+browser-wide sizing conformance remain outside this slice. The preceding
+`native-engine-195` slice adds standalone case-insensitive `inherit` to
 `box-sizing`, physical padding/margin shorthands and longhands, and the
 supported horizontal-tb logical padding/margin family. Physical values copy the
 parent's effective edges, box-sizing, and private margin `auto` provenance;
@@ -2390,10 +2401,13 @@ visual stacking.
 
 | `native-engine-195` | completed bounded standalone case-insensitive `inherit` for `box-sizing`, physical padding/margin shorthands and longhands, and the supported horizontal-tb logical padding/margin family; physical values copy parent effective edges, box-sizing, and private margin `auto` provenance, while logical values read the parent in its resolved `ltr`/`rtl` direction before projecting into the child; root fallbacks, omitted-property non-inheritance, important/source-order behavior, `revert-layer` rollback, geometry, normal-flow/flex, display-list, raster, PNG-capture, point-hit, semantic consumers, public schemas, and the two-crate boundary remain bounded; implementation `0caad64b`; scoped check, focused/full-native integration (233/233), strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-194` | percentages, negative lengths, margin collapsing, positioning, vertical writing modes, additional logical properties, multiple origins, transitions, animations, and browser-wide CSS conformance |
 
+| `native-engine-196` | completed bounded standalone case-insensitive `inherit` for `width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`; explicit values copy the parent's computed optional pixel value, including a parent `None`/auto result, while omitted dimensions remain local and do not inherit; important/source-order behavior, invalid-later preservation, `revert-layer`, min/max, content-box/border-box, normal-flow/flex, display-list, raster, PNG-capture, point-hit, semantic consumers, public schemas, and the two-crate boundary remain bounded; implementation `fd6ee415`; scoped check, focused unit/integration, full-native integration (234/234), strict Clippy, warning-denied rustdoc, formatting, static documentation truth/coverage/depth, feature parity, TUI shortcut, and version-sync passed locally | `native-engine-195` | percentages, negative lengths, intrinsic sizing, aspect ratio, margin collapsing, positioning, vertical writing modes, additional origins, transitions, animations, and browser-wide CSS sizing conformance |
+
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-195.md` is the latest completed task;
+`docs/plan/tasks/native-engine-196.md` is the latest completed task;
+`docs/plan/tasks/native-engine-195.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-194.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-193.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-192.md` is the preceding completed task;
@@ -2525,24 +2539,24 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
-`docs/plan/tasks/native-engine-195.md`: implementation is `0caad64b` (design
-`a61b9c5f`). It adds standalone case-insensitive `inherit` to
-`box-sizing`, physical padding/margin shorthands and longhands, and the
-supported horizontal-tb logical padding/margin family. Physical values copy the
-parent's effective edges, box-sizing, and private margin `auto` provenance;
-logical values read the parent side in its resolved `ltr`/`rtl` direction
-before projecting into the child. Root fallbacks, omitted-property
-non-inheritance, important/source-order behavior, `revert-layer` rollback, and
-the existing geometry, normal-flow/flex, display-list, raster, PNG capture,
+`docs/plan/tasks/native-engine-196.md`: implementation is `fd6ee415` (design
+`9231d17f`). It adds standalone case-insensitive `inherit` to the six local
+dimension declarations, copying the parent's computed optional pixel value
+through the existing private DOM style walk while keeping omitted dimensions
+local and preserving explicit parent `None`/auto fallbacks. The existing
+important/source-order, invalid-later, `revert-layer`, min/max,
+content-box/border-box, normal-flow/flex, display-list, raster, PNG capture,
 point-hit, semantic/source-order, diagnostics, schema, and two-crate owners
 remain bounded. The scoped native check, focused parser/cascade unit test,
-focused integration regression, full native integration (233/233), strict
-Clippy, warning-denied rustdoc, and formatting gates passed. Static release
-truth, documentation coverage/depth, feature parity, TUI shortcut,
-version-sync, paired-crate, package, workspace, security/fuzz, final cleanup,
-and remote-CI gates remain deferred to the final issue #40 certification
-boundary. No remote CI, push, release, tag, registry publication,
+focused integration regression, full native integration (234/234), strict
+Clippy, warning-denied rustdoc, formatting, static documentation
+truth/coverage/depth, feature parity, TUI shortcut, and version-sync gates
+passed. Paired-crate, package, workspace, security/fuzz, final cleanup, issue
+synchronization, and remote-CI gates remain deferred to the final issue #40
+certification boundary. No remote CI, push, release, tag, registry publication,
 browser-parity, security-boundary, or promotion claim is made.
+The preceding checkpoint remains recorded for
+`docs/plan/tasks/native-engine-195.md` at `0caad64b`.
 The preceding checkpoint remains recorded for
 `docs/plan/tasks/native-engine-194.md` at `5477fb79`.
 The preceding checkpoint remains recorded for

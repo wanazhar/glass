@@ -22395,6 +22395,108 @@ fn native_gap_inherit_reaches_row_column_layout_and_artifacts() {
 }
 
 #[test]
+fn native_gap_longhand_inherit_reaches_independent_axes_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>#outer{display:flex;width:32px;height:18px;gap:3px 4px;align-items:flex-start;}#row{display:flex;width:14px;height:14px;flex-wrap:wrap;row-gap:inherit;column-gap:0;align-items:flex-start;align-content:flex-start;}#column{display:flex;width:14px;height:14px;flex-wrap:wrap;row-gap:0;column-gap:inherit;align-items:flex-start;align-content:flex-start;}#row-first,#row-second,#row-third,#column-first,#column-second,#column-third{width:5px;height:4px;flex-shrink:0;}#row-first{background-color:green;}#row-second{background-color:red;}#row-third{background-color:blue;}#column-first,#column-second,#column-third{background-color:#804000;}#invalid{display:none;row-gap:inherit 1px;column-gap:1px inherit;}</style><div id='outer'><div id='row'><button id='row-first'>A</button><button id='row-second'>B</button><button id='row-third'>C</button></div><div id='column'><button id='column-first'>D</button><button id='column-second'>E</button><button id='column-third'>F</button></div><div id='invalid'>Invalid</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let outer = document.resolve_target("id=outer").unwrap();
+    let row = document.resolve_target("id=row").unwrap();
+    let row_first = document.resolve_target("id=row-first").unwrap();
+    let row_second = document.resolve_target("id=row-second").unwrap();
+    let row_third = document.resolve_target("id=row-third").unwrap();
+    let column = document.resolve_target("id=column").unwrap();
+    let column_first = document.resolve_target("id=column-first").unwrap();
+    let column_second = document.resolve_target("id=column-second").unwrap();
+    let column_third = document.resolve_target("id=column-third").unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let rect = |node_id| layout.box_for(node_id).expect("layout rectangle");
+    let outer_rect = rect(outer);
+    let row_rect = rect(row);
+    let row_first_rect = rect(row_first);
+    let row_second_rect = rect(row_second);
+    let row_third_rect = rect(row_third);
+    let column_rect = rect(column);
+    let column_first_rect = rect(column_first);
+    let column_second_rect = rect(column_second);
+    let column_third_rect = rect(column_third);
+
+    assert_eq!(outer_rect.width, 32);
+    assert_eq!(row_rect.x, outer_rect.x);
+    assert_eq!(column_rect.x, row_rect.x + row_rect.width + 4);
+    assert_eq!(row_first_rect.x, row_rect.x);
+    assert_eq!(row_first_rect.y, row_rect.y);
+    assert_eq!(row_second_rect.x, row_first_rect.x + row_first_rect.width);
+    assert_eq!(row_second_rect.y, row_first_rect.y);
+    assert_eq!(row_third_rect.x, row_first_rect.x);
+    assert_eq!(
+        row_third_rect.y,
+        row_first_rect.y + row_first_rect.height + 3
+    );
+    assert_eq!(column_first_rect.x, column_rect.x);
+    assert_eq!(column_first_rect.y, column_rect.y);
+    assert_eq!(
+        column_second_rect.x,
+        column_first_rect.x + column_first_rect.width + 4
+    );
+    assert_eq!(column_second_rect.y, column_first_rect.y);
+    assert_eq!(column_third_rect.x, column_first_rect.x);
+    assert_eq!(
+        column_third_rect.y,
+        column_first_rect.y + column_first_rect.height
+    );
+
+    let semantic_nodes = document.semantic_nodes();
+    let source_position = |node_id| {
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .unwrap()
+    };
+    assert!(source_position(row_first) < source_position(row_second));
+    assert!(source_position(row_second) < source_position(row_third));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == row_third
+                    && *rect == row_third_rect
+                    && *color == NativeColor {
+                        red: 0,
+                        green: 0,
+                        blue: 255,
+                        alpha: 255,
+                    }
+        )
+    }));
+    assert_eq!(
+        layout.hit_test(
+            i64::from(row_third_rect.x + 1),
+            i64::from(row_third_rect.y + 1),
+        ),
+        Ok(Some(row_third))
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(row_third_rect.x + 1, row_third_rect.y + 1),
+        Some([0, 0, 255, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && (diagnostic.detail == "row-gap" || diagnostic.detail == "column-gap")
+    }));
+}
+
+#[test]
 fn native_flex_shorthand_expands_zero_basis_and_preserves_shared_consumers() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:20px;gap:2px'><div id='first' style='width:100px;height:8px;flex:1;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></div><div id='second' style='width:100px;height:8px;flex:1;background-color:blue'>B</div></div>",

@@ -7935,6 +7935,7 @@ fn parse_gap_declaration(value: &str) -> Option<GapShorthandDeclaration> {
 
 fn parse_gap_component_declaration(value: &str) -> Option<GapComponentDeclaration> {
     match value.trim().to_ascii_lowercase().as_str() {
+        "inherit" => Some(GapComponentDeclaration::Inherit),
         "initial" => Some(GapComponentDeclaration::Initial),
         "unset" => Some(GapComponentDeclaration::Unset),
         "revert" => Some(GapComponentDeclaration::Revert),
@@ -12609,7 +12610,11 @@ mod tests {
             parse_declarations("row-gap: ReVeRt").row_gap,
             Some(GapComponentDeclaration::Revert)
         );
-        assert_eq!(parse_declarations("row-gap: inherit").row_gap, None);
+        assert_eq!(
+            parse_declarations("row-gap: InHeRiT").row_gap,
+            Some(GapComponentDeclaration::Inherit)
+        );
+        assert_eq!(parse_declarations("row-gap: inherit 1px").row_gap, None);
         assert_eq!(parse_declarations("row-gap: -1px").row_gap, None);
         assert_eq!(parse_declarations("row-gap: 1px 2px").row_gap, None);
         assert_eq!(
@@ -12648,7 +12653,14 @@ mod tests {
             parse_declarations("column-gap: ReVeRt").column_gap,
             Some(GapComponentDeclaration::Revert)
         );
-        assert_eq!(parse_declarations("column-gap: inherit").column_gap, None);
+        assert_eq!(
+            parse_declarations("column-gap: InHeRiT").column_gap,
+            Some(GapComponentDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_declarations("column-gap: 1px inherit").column_gap,
+            None
+        );
         assert_eq!(parse_declarations("column-gap: -1px").column_gap, None);
         assert_eq!(parse_declarations("column-gap: 1px 2px").column_gap, None);
         assert_eq!(
@@ -14562,6 +14574,61 @@ mod tests {
                 .row_gap(),
             0
         );
+    }
+
+    #[test]
+    fn stylesheet_gap_longhand_inherit_projects_independent_axes() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #layered { row-gap: 7px; column-gap: 9px; } #important { row-gap: 8px !important; column-gap: 10px !important; } #shorthand { gap: 1px 2px; } } @layer theme { #layered { row-gap: inherit; column-gap: InHeRiT; } #important { row-gap: inherit; column-gap: inherit; } #shorthand { row-gap: inherit; } } #row { row-gap: InHeRiT; } #column { column-gap: inherit; } #order { row-gap: 1px; row-gap: inherit; column-gap: 2px; column-gap: inherit; } #invalid { row-gap: 4px; row-gap: inherit 1px; column-gap: 5px; column-gap: 1px inherit; } #important-inherit { row-gap: 1px; row-gap: inherit !important; column-gap: 2px; column-gap: inherit !important; } #reset { row-gap: inherit; row-gap: initial; column-gap: inherit; column-gap: unset; } #revert { row-gap: inherit; row-gap: revert; column-gap: inherit; column-gap: revert-layer; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited_row = 12;
+        let inherited_column = 14;
+        let computed = |element: &NativeNode| {
+            stylesheet.computed_for_with_matcher(
+                element,
+                NativeInheritedStyle {
+                    row_gap: inherited_row,
+                    column_gap: inherited_column,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(element),
+            )
+        };
+        let assert_values = |element: &NativeNode, row: u32, column: u32| {
+            let style = computed(element);
+            assert_eq!(style.row_gap(), row);
+            assert_eq!(style.column_gap(), column);
+        };
+
+        assert_values(
+            &node("<div id='layered'>Layered</div>"),
+            inherited_row,
+            inherited_column,
+        );
+        assert_values(&node("<div id='important'>Important</div>"), 8, 10);
+        assert_values(
+            &node("<div id='shorthand'>Shorthand</div>"),
+            inherited_row,
+            2,
+        );
+        assert_values(&node("<div id='row'>Row</div>"), inherited_row, 0);
+        assert_values(&node("<div id='column'>Column</div>"), 0, inherited_column);
+        assert_values(
+            &node("<div id='order'>Order</div>"),
+            inherited_row,
+            inherited_column,
+        );
+        assert_values(&node("<div id='invalid'>Invalid</div>"), 4, 5);
+        assert_values(
+            &node("<div id='important-inherit'>Important inherit</div>"),
+            inherited_row,
+            inherited_column,
+        );
+        assert_values(&node("<div id='reset'>Reset</div>"), 0, 0);
+        assert_values(&node("<div id='revert'>Revert</div>"), 0, 0);
+        assert_values(&node("<div id='omitted'>Omitted</div>"), 0, 0);
     }
 
     #[test]

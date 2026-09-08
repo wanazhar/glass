@@ -412,7 +412,12 @@ including adjacent letter, word, and final-line justification spacing across
 underline, overline, and line-through, and bounded inherited
 signed fixed-pixel
 `text-underline-offset:-4px..=4px` that moves only the underline toward
-decreasing or increasing y, and bounded inherited ASCII
+decreasing or increasing y, whose inherited owner also accepts standalone
+case-insensitive `inherit|initial|unset|revert`: inherited forms use the
+computed parent, `initial` uses finite `0px` at the root, and `revert` uses the
+current one-author-origin parent fallback; `revert-layer` remains the
+named-layer rollback and mixed/unsupported forms remain bounded, and bounded
+inherited ASCII
 `text-transform:none|uppercase|lowercase` layout, bounded non-negative
 fixed-pixel first-line `text-indent` for block flow,
 plus bounded case-insensitive 15-layer/unlayered local `revert-layer` rollback

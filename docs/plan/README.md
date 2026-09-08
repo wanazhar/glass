@@ -2118,6 +2118,18 @@ boundary remain bounded. Full native integration (241/241) and the feature
 library (1,023 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
 and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-204](tasks/native-engine-204.md)
+slice is implemented at `c82773e2` (design `9473832f`). It adds bounded
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert` to inherited signed `text-underline-offset`, retaining finite
+`-4px..=4px` values and `revert-layer` rollback. Parent/root fallback,
+zero-pixel initial behavior, terminal-reset semantics, invalid-later
+preservation, important/source order, underline-only movement,
+overline/line-through preservation, display-list, fixed-cell raster, and
+diagnostics remain bounded. Full native integration (242/242) and the feature
+library (1,024 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
+and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

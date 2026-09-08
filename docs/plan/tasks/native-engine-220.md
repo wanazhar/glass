@@ -1,7 +1,7 @@
 ---
 id: native-engine-220
 scope: glass-browser/native-engine/local-flex-direction-inherit
-status: planned
+status: complete
 depends-on: [native-engine-219]
 ---
 
@@ -95,6 +95,18 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release,
-tag, registry publication, browser-parity, security-boundary certification,
-and promotion remain outside this local task.
+Implementation is `1f64f232` and the design checkpoint is `8ffe1f17`.
+The locked scoped native-feature check passed before testing. Focused
+`flex-direction` parser/cascade coverage passed 4/4, the public nested-flex
+inheritance fixture passed 1/1, full native integration passed 258/258, and
+the feature-enabled `glass-browser` library passed 1,041 tests with 1
+ignored (including the isolated subprocess test). Formatting, workspace
+all-target/all-feature check, strict Clippy, paired `glass-browser` /
+`glass-dev` builds, and warning-denied rustdoc all passed locally.
+
+The fixture covers parent-to-child `column-reverse` propagation, omitted local
+row fallback, invalid mixed-form preservation, `flex-flow` component
+precedence, nested geometry, complete-subtree movement, display-list,
+fixed-cell raster/PNG, point-hit, semantic/source order, and typed diagnostics.
+Remote CI, push, release, tag, registry publication, browser-parity,
+security-boundary certification, and promotion remain outside this local task.

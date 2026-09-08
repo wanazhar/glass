@@ -2120,6 +2120,19 @@ Full native integration (257/257) and the feature library (1,040 passed, 1
 ignored) pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed for this local-only checkout.
 
+The completed dependency-ordered `native-engine-220` slice is recorded in
+`docs/plan/tasks/native-engine-220.md` and implemented at `1f64f232` (design
+`8ffe1f17`). It adds standalone, case-insensitive `flex-direction: inherit`
+through the existing private parent-style chain, copying the computed parent
+direction while keeping omitted `flex-direction` local with the bounded `row`
+fallback. Mixed forms, source order, important priority, finite
+`flex-flow`/longhand component precedence, `revert-layer`, row/column main-axis
+mapping, wrapping eligibility, gap and margin mapping, flex sizing,
+display-list, raster/PNG, point-hit, semantics, diagnostics, and the two-crate
+boundary remain bounded. Full native integration (258/258) and the feature
+library (1,041 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
+and registry publication remain unclaimed for this local-only checkout.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -3112,6 +3125,10 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded explicit case-insensitive `align-self:inherit` propagation through
   the private parent-style chain, while omitted `align-self` remains local
   `auto` and explicit `auto` delegates to the containing `align-items` owner.
+- bounded explicit case-insensitive `flex-direction:inherit` propagation
+  through the private parent-style chain, while omitted `flex-direction`
+  remains local with the bounded `row` fallback and finite `flex-flow`/
+  longhand component precedence remains intact.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

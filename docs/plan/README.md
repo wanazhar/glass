@@ -2311,6 +2311,18 @@ diagnostics, and the two-crate boundary remain bounded. Full native integration
 (257/257) and the feature library (1,040 passed, 1 ignored) pass locally.
 Remote CI, push, release, tag, and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-220](tasks/native-engine-220.md)
+slice is implemented at `1f64f232` (design `8ffe1f17`). It adds bounded
+standalone case-insensitive `flex-direction: inherit` through the existing
+private parent-style chain, copying the computed parent direction while keeping
+omitted `flex-direction` local with the bounded `row` fallback. Mixed invalid
+forms, source order, important priority, finite `flex-flow`/longhand component
+precedence, `revert-layer`, row/column mapping, wrapping eligibility, gap and
+margin mapping, flex sizing, display-list, raster/PNG, point-hit, semantics,
+diagnostics, and the two-crate boundary remain bounded. Full native integration
+(258/258) and the feature library (1,041 passed, 1 ignored) pass locally.
+Remote CI, push, release, tag, and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

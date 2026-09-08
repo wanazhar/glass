@@ -2147,6 +2147,21 @@ diagnostics, and the two-crate boundary remain bounded. Full native integration
 Remote CI, push, release, tag, and registry publication remain unclaimed for
 this local-only checkout.
 
+The completed dependency-ordered `native-engine-222` slice is recorded in
+`docs/plan/tasks/native-engine-222.md` and implemented at `87465d23` (design
+`cae84efb`). It adds standalone, case-insensitive `flex-flow: inherit` by
+projecting to the existing private `flex-direction` and `flex-wrap`
+inheritance owners, copying both computed parent components while keeping
+omitted `flex-flow` local with the bounded `row`/`nowrap` fallbacks. Mixed
+forms, source order, important priority, finite one-/two-value expansion,
+longhand/component precedence, `revert-layer`, row/column mapping, wrapping
+eligibility, line formation and reverse stacking, gap and margin mapping, flex
+sizing, display-list, raster/PNG, point-hit, semantics, diagnostics, and the
+two-crate boundary remain bounded. Full native integration (260/260) and the
+feature library (1,043 passed, 1 ignored) pass locally. Remote CI, push,
+release, tag, and registry publication remain unclaimed for this local-only
+checkout.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -3147,6 +3162,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
   the private parent-style chain, while omitted `flex-wrap` remains local with
   the bounded `nowrap` fallback and finite `flex-flow`/longhand component
   precedence remains intact.
+- bounded explicit case-insensitive `flex-flow:inherit` projection through
+  the existing private direction and wrap owners, while omitted `flex-flow`
+  remains local with the bounded `row`/`nowrap` component fallbacks.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

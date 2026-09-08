@@ -438,7 +438,9 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   `initial|unset|revert` reset forms for local `align-self` reuse the existing
   bounded `auto` fallback and continue through parent `align-items`;
   standalone `initial|unset|revert` reset forms for local `align-content` reuse
-  the existing bounded `flex-start` fallback; standalone
+  the existing bounded `flex-start` fallback; standalone case-insensitive
+  `align-content:inherit` copies the computed parent only when explicitly
+  authored, while omitted `align-content` remains non-inherited; standalone
   `initial|unset|revert` reset forms for local `place-content` project through
   the existing bounded `flex-start` fallbacks for both `align-content` and
   `justify-content`; mixed reset/finite tokens remain bounded diagnostics,
@@ -465,7 +467,7 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   current one-author-origin parent fallback, and `revert-layer` remains the
   named-layer rollback form. The existing logical `ltr`/`rtl` projection and
   fixed-cell layout/display-list/raster consumers remain bounded,
-  bounded case-insensitive 15-layer/unlayered rollback for non-inherited
+  bounded case-insensitive 15-layer/unlayered rollback for local
   `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
   and `flex-direction` owners with their native fallbacks,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
@@ -792,7 +794,9 @@ projection, and point hit-testing,
   `initial|unset|revert` reset forms for local `align-self` reuse the existing
   bounded `auto` fallback and continue through parent `align-items`;
   standalone `initial|unset|revert` reset forms for local `align-content` reuse
-  the existing bounded `flex-start` fallback; standalone
+  the existing bounded `flex-start` fallback; standalone case-insensitive
+  `align-content:inherit` copies the computed parent only when explicitly
+  authored, while omitted `align-content` remains non-inherited; standalone
   `initial|unset|revert` reset forms for local `place-content` project through
   the existing bounded `flex-start` fallbacks for both `align-content` and
   `justify-content`; mixed reset/finite tokens remain bounded diagnostics,
@@ -805,7 +809,7 @@ projection, and point hit-testing,
   bounded case-insensitive 15-layer/unlayered inherited `revert-layer` rollback
   for `text-transform`, `font-weight`, `font-style`, and `word-break` with
   finite parent/root fallbacks,
-  bounded case-insensitive 15-layer/unlayered rollback for non-inherited
+  bounded case-insensitive 15-layer/unlayered rollback for local
   `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
   and `flex-direction` owners with their native fallbacks,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis

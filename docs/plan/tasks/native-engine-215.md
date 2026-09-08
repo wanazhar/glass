@@ -1,7 +1,7 @@
 ---
 id: native-engine-215
 scope: glass-browser/native-engine/local-align-content-inherit
-status: planned
+status: complete
 depends-on: [native-engine-214]
 ---
 
@@ -89,8 +89,25 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-This design checkpoint is intentionally incomplete until implementation,
-focused tests, full native integration, and the issue-level documentation
-closeout are recorded. Remote CI, push, release, tag, registry publication,
-browser-parity, security-boundary certification, and promotion remain outside
-this local task.
+Implementation is `a66f474b`; the design checkpoint is `0cd2040d`. The locked
+native-feature test-target check passed before tests. Focused `align-content`
+parser/cascade coverage passed 4 tests, the established flex-focused library
+slice passed 31 tests, and the public nested-flex inheritance fixture passed
+through parent-value propagation, omitted-property fallback, mixed invalid
+preservation, wrapped-line placement, display-list, fixed-cell raster/PNG,
+point-hit, semantic ordering, and typed unsupported-value diagnostics. Full
+native integration passed `253/253`, and the serial native-feature library
+passed `1,036` tests with 1 ignored. No public schema, dependency, feature
+default, or crate-boundary change was made.
+
+The workspace all-target/all-feature check, strict two-crate Clippy,
+warning-denied rustdoc for both crates, paired browser/dev builds, formatting,
+and diff checks passed locally. Static audits also passed: release truth
+`629/83/59/768/0`; coverage `629/345/100/17/22`; depth `93/19`; feature parity
+`14` capabilities across 4 targets; TUI inventory `15/63`; synchronized
+version `0.3.14`; reliability `6/4`; read-only adapters `5`; Web IR
+`8/8/11` fixtures/scenarios/categories; and knowledge migration v1
+round-trip/v2 rejection over 6 records. Issue synchronization is the remaining
+closeout action for this checkpoint. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary certification, and promotion
+remain outside this local task.

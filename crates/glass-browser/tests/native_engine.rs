@@ -19925,6 +19925,99 @@ fn native_overflow_css_wide_resets_reach_axis_clips_and_artifacts() {
 }
 
 #[test]
+fn native_overflow_no_clip_keywords_share_existing_projection_and_scroll_owner() {
+    let document = NativeDocument::parse(
+        "<style>#visible,#auto,#scroll,#hidden{display:block;width:16px;height:10px;margin:0;padding:0;border:0;}#visible{overflow:visible;}#auto{overflow-x:AUTO;overflow-y:hidden;}#scroll{overflow-x:clip;overflow-y:ScRoLl;}#hidden{overflow:hidden;}.wide{display:block;width:56px;min-width:56px;height:10px;background-color:blue;}</style><button id='visible'><span id='visible-child' class='wide'></span></button><button id='auto'><span id='auto-child' class='wide'></span></button><button id='scroll'><span id='scroll-child' class='wide'></span></button><button id='hidden'><span id='hidden-child' class='wide'></span></button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let visible = document.resolve_target("id=visible").unwrap();
+    let visible_child = document.resolve_target("id=visible-child").unwrap();
+    let auto = document.resolve_target("id=auto").unwrap();
+    let auto_child = document.resolve_target("id=auto-child").unwrap();
+    let scroll = document.resolve_target("id=scroll").unwrap();
+    let scroll_child = document.resolve_target("id=scroll-child").unwrap();
+    let hidden = document.resolve_target("id=hidden").unwrap();
+    let hidden_child = document.resolve_target("id=hidden-child").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 48,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let expected_visible = |y| {
+        Some(NativeRect {
+            x: 0,
+            y,
+            width: 32,
+            height: 10,
+        })
+    };
+    let expected_x_clip = |y| {
+        Some(NativeRect {
+            x: 0,
+            y,
+            width: 16,
+            height: 10,
+        })
+    };
+    assert_eq!(layout.viewport_rect_for(visible_child), expected_visible(0));
+    assert_eq!(layout.viewport_rect_for(auto_child), expected_visible(10));
+    assert_eq!(layout.viewport_rect_for(scroll_child), expected_x_clip(20));
+    assert_eq!(layout.viewport_rect_for(hidden_child), expected_x_clip(30));
+    assert_eq!(layout.content_width, 56);
+    assert_eq!(layout.max_scroll_offset().x, 24);
+    assert_eq!(layout.hit_test(20, 5).unwrap(), Some(visible_child));
+    assert_eq!(layout.hit_test(20, 15).unwrap(), Some(auto_child));
+    assert_ne!(layout.hit_test(20, 25).unwrap(), Some(scroll_child));
+    assert_ne!(layout.hit_test(20, 35).unwrap(), Some(hidden_child));
+
+    let semantic_nodes = document.semantic_nodes();
+    let source_position = |node_id| {
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .unwrap()
+    };
+    assert!(source_position(visible) < source_position(auto));
+    assert!(source_position(auto) < source_position(scroll));
+    assert!(source_position(scroll) < source_position(hidden));
+
+    let list = document.display_list(viewport).unwrap();
+    let fill = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                clip,
+                ..
+            } if *command_node_id == node_id => Some(*clip),
+            _ => None,
+        })
+    };
+    assert_eq!(fill(visible_child), Some(None));
+    assert!(fill(auto_child).is_some_and(|clip| clip.is_some()));
+    assert!(fill(scroll_child).is_some_and(|clip| clip.is_some()));
+    assert!(fill(hidden_child).is_some_and(|clip| clip.is_some()));
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(20, 5), Some([0, 0, 255, 255]));
+    assert_eq!(surface.pixel(20, 15), Some([0, 0, 255, 255]));
+    assert_ne!(surface.pixel(20, 25), Some([0, 0, 255, 255]));
+    assert_ne!(surface.pixel(20, 35), Some([0, 0, 255, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code,
+            NativeDiagnosticCode::UnsupportedCssProperty
+                | NativeDiagnosticCode::UnsupportedCssValue
+        ) && matches!(
+            diagnostic.detail.as_str(),
+            "overflow" | "overflow-x" | "overflow-y"
+        )
+    }));
+}
+
+#[test]
 fn native_overflow_revert_layer_preserves_axis_clips_across_consumers() {
     let document = NativeDocument::parse(
         "<style>@layer base { #named { overflow: hidden; width: 16px; height: 10px; white-space: nowrap; } #inline { overflow: hidden; width: 16px; height: 10px; white-space: nowrap; } #axis { overflow-y: clip; width: 16px; height: 10px; white-space: nowrap; } } @layer theme { #named { overflow-x: clip; overflow-y: revert-layer; } #axis { overflow-x: hidden; } } @layer top { #named { overflow: revert-layer; } #axis { overflow-x: revert-layer; } } #named { overflow: revert-layer; } #fallback { overflow: revert-layer; width: 16px; height: 10px; white-space: nowrap; }</style><div id='named'><div id='named-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Named</div></div><div id='fallback'><div id='fallback-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Fallback</div></div><div id='inline' style='overflow:ReVeRt-LaYeR'><div id='inline-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Inline</div></div><div id='axis'><div id='axis-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Axis</div></div>",

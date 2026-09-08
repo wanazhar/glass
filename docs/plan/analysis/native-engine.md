@@ -1556,9 +1556,9 @@ Clippy, warning-denied rustdoc, paired-crate, packaging, static documentation,
 workspace all-target/all-feature, security/fuzz, and formatting gates pass
 locally; exact evidence and bounded cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
-The completed dependency-ordered `native-engine-177` through
-`native-engine-197` slices are recorded in their task files. This run's latest
-slice, `native-engine-197`, adds standalone case-insensitive `initial`, `unset`,
+The preceding dependency-ordered `native-engine-177` through
+`native-engine-197` slices are recorded in their task files. The preceding
+chain's latest slice, `native-engine-197`, adds standalone case-insensitive `initial`, `unset`,
 and one-author-origin `revert` to the six local dimension declarations
 (`width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`).
 Winning reset candidates resolve to the existing optional `None`/auto fallback
@@ -1613,6 +1613,30 @@ multiple origins, transitions, animations, and browser-wide CSS conformance
 remain outside the bounded contract.
 Local certification for the latest slice is recorded below; the checkout
 remains local-only.
+
+The completed dependency-ordered `native-engine-198` slice is recorded in
+`docs/plan/tasks/native-engine-198.md` and implemented at `95a988d0` (design
+`927cccca`). It adds standalone case-insensitive `inherit`, `initial`, `unset`,
+and one-author-origin `revert` to inherited `white-space`, positive-pixel
+`line-height`, `text-transform`, `font-weight`, `font-style`, `word-break`,
+`vertical-align`, `word-spacing`, and `letter-spacing`. Parent/root fallback,
+terminal reset behavior, invalid-later preservation, existing cascade priority,
+and `revert-layer` distinction reuse the existing private cascade and
+computed-style/artifact owners. The fixed-cell public schemas and two-crate
+boundary remain unchanged. Focused and full native integration (236/236), the
+feature library (1019 passed, 1 ignored with `RUST_MIN_STACK=8388608`), strict
+Clippy, warning-denied rustdoc, locked scoped check, and formatting pass
+locally. Static release truth passes with 612 Markdown documents (83 current,
+57 previous-version hits, 715 semantic audit hits, 0 current-claim failures);
+coverage, depth, parity, TUI, and version-sync also pass with 612 Markdown
+files, 345 full-product MCP tools (100 browser-only), 17 examples, 22 public
+modules, 93 current guides, 19 substantive contracts, 14 capabilities across
+4 targets, 15 implementation help keys, 63 documentation markers, and version
+`0.3.14`. The default-stack library run reproduces the pre-existing large-Clap
+parser-test overflow. Paired-crate, package, workspace, security/fuzz,
+cleanup, issue-level, and remote-CI gates remain pending until issue #40
+reaches its final validation boundary.
+
 The dependency-ordered `native-engine-122` implementation is complete at
 `1291fc2c`, with the strict-Clippy parser-context follow-up at `efb5bdfc`, and
 is recorded in `docs/plan/tasks/native-engine-122.md`. It adds bounded
@@ -2415,11 +2439,13 @@ visual stacking.
 | `native-engine-196` | completed bounded standalone case-insensitive `inherit` for `width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`; explicit values copy the parent's computed optional pixel value, including a parent `None`/auto result, while omitted dimensions remain local and do not inherit; important/source-order behavior, invalid-later preservation, `revert-layer`, min/max, content-box/border-box, normal-flow/flex, display-list, raster, PNG-capture, point-hit, semantic consumers, public schemas, and the two-crate boundary remain bounded; implementation `fd6ee415`; scoped check, focused unit/integration, full-native integration (234/234), strict Clippy, warning-denied rustdoc, formatting, static documentation truth/coverage/depth, feature parity, TUI shortcut, and version-sync passed locally | `native-engine-195` | percentages, negative lengths, intrinsic sizing, aspect ratio, margin collapsing, positioning, vertical writing modes, additional origins, transitions, animations, and browser-wide CSS sizing conformance |
 
 | `native-engine-197` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for `width`, `height`, `min-width`, `max-width`, `min-height`, and `max-height`; winning reset candidates resolve to the existing optional `None`/auto fallback without falling through, while `revert-layer` remains the separate lower-layer rollback candidate; omission, explicit `inherit`, important/source-order behavior, invalid-later preservation, min/max, content-box/border-box, normal-flow/flex, display-list, raster, PNG capture, point-hit, semantic consumers, public schemas, and the two-crate boundary remain bounded; implementation `a0e102b5`; scoped check, focused unit/integration, full-native integration (235/235), strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-196` | percentages, negative lengths, intrinsic sizing, aspect ratio, margin collapsing, positioning, vertical writing modes, additional origins, transitions, animations, and browser-wide CSS sizing conformance |
+| `native-engine-198` | completed bounded standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin `revert` for inherited `white-space`, positive-pixel `line-height`, `text-transform`, `font-weight`, `font-style`, `word-break`, `vertical-align`, `word-spacing`, and `letter-spacing`; parent/root fallback, terminal reset behavior, invalid-later preservation, existing cascade priority, `revert-layer` distinction, layout, display-list, raster, PNG capture, point-hit, semantic, diagnostics, public schemas, and the two-crate boundary remain bounded; implementation `95a988d0`; locked scoped check, focused unit/integration, full-native integration (236/236), feature-library, strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-197` | unitless/relative/percentage line-height, font metrics/shaping, Unicode/bidi/writing modes, additional origins, transitions, animations, generic CSS-wide machinery, and browser-wide text conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-197.md` is the latest completed task;
+`docs/plan/tasks/native-engine-198.md` is the latest completed task;
+`docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-195.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-194.md` is the preceding completed task;
@@ -2553,22 +2579,29 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-198.md`: implementation is `95a988d0` (design
+`927cccca`). It adds standalone case-insensitive `inherit`, `initial`, `unset`,
+and one-author-origin `revert` to the nine inherited text declarations. Parent
+and root fallback, terminal reset behavior, invalid-later preservation,
+important/source-order, `revert-layer`, layout, display-list, raster, PNG
+capture, point-hit, semantic/source-order, diagnostics, schema, and two-crate
+owners remain bounded. The locked scoped native check, focused parser/cascade
+unit test, focused integration regression, full native integration (236/236),
+feature-library test run (1019 passed, 1 ignored with `RUST_MIN_STACK=8388608`),
+strict Clippy, warning-denied rustdoc, and formatting gates passed. The
+default-stack feature-library run reproduces the pre-existing large-Clap
+parser-test overflow. Paired-crate, package, workspace, security/fuzz, static
+documentation, final cleanup, issue synchronization, and remote-CI gates
+remain deferred to the final issue #40 certification boundary. No remote CI,
+push, release, tag, registry publication, browser-parity, security-boundary,
+or promotion claim is made.
+The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-197.md`: implementation is `a0e102b5` (design
 `7d71a50c`). It adds standalone case-insensitive `initial`, `unset`, and
 one-author-origin `revert` to the six local dimension declarations. Winning
 reset candidates resolve to the existing optional `None`/auto fallback without
 falling through; `revert-layer` remains the separate lower-layer rollback
-candidate. Omission, explicit `inherit`, important/source-order, invalid-later,
-min/max, content-box/border-box, normal-flow/flex, display-list, raster, PNG
-capture, point-hit, semantic/source-order, diagnostics, schema, and two-crate
-owners remain bounded. The scoped native check, focused parser/cascade unit
-test, focused integration regression, full native integration (235/235), strict
-Clippy, warning-denied rustdoc, formatting, static documentation
-truth/coverage/depth, feature parity, TUI shortcut, and version-sync gates
-passed. Paired-crate, package, workspace, security/fuzz, final cleanup, issue
-synchronization, and remote-CI gates remain deferred to the final issue #40
-certification boundary. No remote CI, push, release, tag, registry publication,
-browser-parity, security-boundary, or promotion claim is made.
+candidate.
 The preceding checkpoint remains recorded for
 `docs/plan/tasks/native-engine-196.md` at `fd6ee415` (design `9231d17f`).
 It adds standalone case-insensitive `inherit` to the six local dimension

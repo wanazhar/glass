@@ -450,6 +450,12 @@ independent finite-pixel components,
 bounded case-insensitive 15-layer/unlayered inherited `revert-layer` rollback
 for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite
 parent/root fallbacks,
+bounded standalone case-insensitive CSS-wide `inherit`, `initial`, `unset`, and
+one-author-origin `revert` for inherited `white-space`, positive-pixel
+`line-height`, `text-transform`, `font-weight`, `font-style`, `word-break`,
+`vertical-align`, `word-spacing`, and `letter-spacing`, with the existing
+computed-style, layout, display-list, raster, PNG, point-hit, semantic, and
+diagnostic owners reused unchanged,
 bounded case-insensitive 15-layer/unlayered rollback for non-inherited
 `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
 and `flex-direction` owners with their native fallbacks,

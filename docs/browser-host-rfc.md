@@ -165,8 +165,13 @@ margin provenance, and existing geometry/artifact owners. The normal-only
 priority through private doubled x/y candidate streams with shorthand/x/y
 importance, preserving important-over-normal ordering, reversed named-layer
 priority, inline precedence, invalid-later preservation, independent axis
-projection, and `revert-layer !important` rollback; logical edges and remaining
-properties retain their existing bounded behavior.
+projection, and `revert-layer !important` rollback. The horizontal-tb logical
+`padding-block`/`padding-inline` and `margin-block`/`margin-inline` shorthands
+plus their block/inline start/end longhands project through resolved `ltr`/`rtl`
+direction into the same physical edge owners and honor the same bounded
+important-over-normal, reversed-layer, inline-important, invalid-later, and
+`revert-layer` behavior; logical `box-sizing`, vertical writing modes, and
+remaining properties retain their existing bounded behavior.
 owner also accepts exact case-insensitive CSS-wide `inherit`, `unset`,
 `initial`, and one-author-origin `revert`: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width

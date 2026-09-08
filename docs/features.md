@@ -119,8 +119,13 @@ source-behavior reference.
   `overflow-x`, and `overflow-y` declarations also honor the same priority
   through private doubled x/y candidate streams with shorthand/x/y importance,
   preserving independent clip projection and visible/no-clip fallback;
-  logical edges and remaining properties remain outside generic `!important`
-  semantics,
+  the horizontal-tb logical `padding-block`/`padding-inline` and
+  `margin-block`/`margin-inline` shorthands plus their block/inline start/end
+  longhands also project through resolved `ltr`/`rtl` direction into the same
+  physical edge owners and honor the same bounded important-over-normal,
+  reversed-layer, inline-important, invalid-later, and `revert-layer`
+  behavior; logical `box-sizing`, vertical writing modes, and remaining
+  properties remain outside generic `!important` semantics,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or

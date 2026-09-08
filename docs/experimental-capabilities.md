@@ -190,7 +190,12 @@ named-layer priority, inline precedence, invalid-later preservation, and
 (`box-sizing`, physical padding, and physical margin shorthand/longhand edges)
 also honor the same priority through private doubled candidate streams with
 per-edge importance, preserving content-box/border-box conversion, `auto`
-margin provenance, and existing geometry/artifact owners. Logical edges and
+margin provenance, and existing geometry/artifact owners. The horizontal-tb
+logical `padding-block`/`padding-inline` and `margin-block`/`margin-inline`
+shorthands plus their block/inline start/end longhands project through resolved
+`ltr`/`rtl` direction into the same physical edge owners and honor the same
+bounded important-over-normal, reversed-layer, inline-important, invalid-later,
+and `revert-layer` behavior; logical `box-sizing`, vertical writing modes, and
 remaining properties do not claim generic `!important` semantics.
 CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert`: explicit
 `inherit` copies the parent's effective four-corner radius, including from

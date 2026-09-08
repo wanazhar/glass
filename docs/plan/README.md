@@ -1922,6 +1922,24 @@ pass locally; final static, paired-crate, package, workspace, security/fuzz,
 cleanup, issue-level, and remote-CI gates remain pending until issue #40 reaches
 its final validation boundary.
 
+The completed dependency-ordered [native-engine-193](tasks/native-engine-193.md)
+slice is implemented at `3e78c246` (design `03bcf403`). It adds bounded
+horizontal-tb logical `padding-block`, `padding-inline`, `margin-block`, and
+`margin-inline` shorthands plus their block/inline start/end longhands. Resolved
+`ltr`/`rtl` direction projects those declarations into the existing physical
+per-edge candidate streams while preserving important-over-normal ordering,
+reversed named-layer priority, inline-important precedence, invalid-later
+behavior, same-rule physical/logical source order, `auto` margin provenance,
+and `revert-layer` rollback through the existing geometry, normal-flow/flex,
+overflow, display-list, raster, capture, point-hit, and semantic/source-order
+owners. Logical `box-sizing`, vertical writing modes, percentages, negative
+lengths, margin collapsing, positioning, CSS-wide reset keywords, and
+browser-wide conformance remain outside this slice. Scoped check, focused
+units/integration, full native integration (231/231), strict Clippy,
+warning-denied rustdoc, and formatting pass locally; final static, paired-crate,
+package, workspace, security/fuzz, cleanup, issue-level, and remote-CI gates
+remain pending until issue #40 reaches its final validation boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

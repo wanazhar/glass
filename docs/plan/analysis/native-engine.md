@@ -1557,18 +1557,26 @@ workspace all-target/all-feature, security/fuzz, and formatting gates pass
 locally; exact evidence and bounded cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
 The completed dependency-ordered `native-engine-177` through
-`native-engine-194` slices are recorded in their task files. This run's latest
-slice, `native-engine-194`, adds standalone case-insensitive `initial`, `unset`,
-and one-author-origin `revert` to `box-sizing`, physical padding/margin
-shorthands and longhands, and the horizontal-tb logical padding/margin family.
+`native-engine-195` slices are recorded in their task files. This run's latest
+slice, `native-engine-195`, adds standalone case-insensitive `inherit` to
+`box-sizing`, physical padding/margin shorthands and longhands, and the
+supported horizontal-tb logical padding/margin family. Physical values copy the
+parent's effective edges, box-sizing, and private margin `auto` provenance;
+logical values read the parent side in its resolved `ltr`/`rtl` direction
+before projecting into the child. Root fallbacks, omitted-property
+non-inheritance, important/source-order behavior, and `revert-layer` rollback
+remain bounded by the existing private cascade. Percentages, negative lengths,
+margin collapsing, positioning, vertical writing modes, additional logical
+properties, multiple origins, transitions, animations, and browser-wide CSS
+conformance remain outside the bounded contract. The preceding
+`native-engine-194` slice added standalone case-insensitive `initial`,
+`unset`, and one-author-origin `revert` to the same box-model families.
 These forms normalize to the existing content-box and zero-edge fallbacks;
-`revert-layer` remains a separate rollback candidate and terminal `!important`
-behavior remains unchanged. Explicit `inherit`, percentages, negative lengths,
-margin collapsing, positioning, vertical writing modes, multiple origins, and
-browser-wide CSS-wide conformance remain outside the bounded contract. The
-preceding `native-engine-193` slice added horizontal-tb logical padding/margin
-shorthands and block/inline start/end longhands through resolved `ltr`/`rtl`
-direction and existing physical per-edge candidate streams. The preceding
+`revert-layer` remains a separate rollback candidate and terminal
+`!important` behavior remains unchanged. The preceding `native-engine-193`
+slice added horizontal-tb logical padding/margin shorthands and block/inline
+start/end longhands through resolved `ltr`/`rtl` direction and existing
+physical per-edge candidate streams. The preceding
 `native-engine-192` slice extended the bounded author-origin `!important`
 partition from the radius, paint-color, border, text, local-presentation,
 flex/gap, dimension, and physical box-model families to the normal-only
@@ -2380,10 +2388,13 @@ visual stacking.
 
 | `native-engine-194` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for `box-sizing`, physical padding/margin shorthands and longhands, and the horizontal-tb logical padding/margin family, normalizing to existing content-box and zero-edge fallbacks while preserving separate `revert-layer` rollback, important-over-normal ordering, reversed named-layer priority, inline-important precedence, invalid-later behavior, ltr/rtl projection, geometry, normal-flow/flex, overflow, display-list, raster, PNG-capture, point-hit, semantic consumers, public schemas, and the two-crate boundary; implementation `5477fb79`; scoped check, focused/full-native integration (232/232), strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-193` | `inherit`, percentages, negative lengths, margin collapsing, positioning, vertical writing modes, additional logical properties, multiple origins, transitions, animations, and browser-wide CSS-wide conformance |
 
+| `native-engine-195` | completed bounded standalone case-insensitive `inherit` for `box-sizing`, physical padding/margin shorthands and longhands, and the supported horizontal-tb logical padding/margin family; physical values copy parent effective edges, box-sizing, and private margin `auto` provenance, while logical values read the parent in its resolved `ltr`/`rtl` direction before projecting into the child; root fallbacks, omitted-property non-inheritance, important/source-order behavior, `revert-layer` rollback, geometry, normal-flow/flex, display-list, raster, PNG-capture, point-hit, semantic consumers, public schemas, and the two-crate boundary remain bounded; implementation `0caad64b`; scoped check, focused/full-native integration (233/233), strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-194` | percentages, negative lengths, margin collapsing, positioning, vertical writing modes, additional logical properties, multiple origins, transitions, animations, and browser-wide CSS conformance |
+
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-194.md` is the latest completed task;
+`docs/plan/tasks/native-engine-195.md` is the latest completed task;
+`docs/plan/tasks/native-engine-194.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-193.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-192.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-191.md` is the preceding completed task;
@@ -2514,23 +2525,26 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
-`docs/plan/tasks/native-engine-194.md`: implementation is `5477fb79` (design
-`e643a64c`). It adds standalone case-insensitive `initial`, `unset`, and
-one-author-origin `revert` to `box-sizing`, physical padding/margin shorthands
-and longhands, and the horizontal-tb logical padding/margin family. These
-forms normalize to the existing content-box and zero-edge fallbacks while
-preserving separate `revert-layer` rollback, important-over-normal ordering,
-reversed named-layer priority, inline-important precedence, invalid-later
-behavior, ltr/rtl projection, and the existing geometry, normal-flow/flex,
-overflow, display-list, raster, PNG capture, point-hit, semantic/source-order,
-diagnostics, schema, and two-crate owners. The scoped native check, focused
-parser/cascade unit test, focused integration regression, full native
-integration (232/232), strict Clippy, warning-denied rustdoc, and formatting
-gates passed. Static release truth, documentation coverage/depth, feature
-parity, TUI shortcut, version-sync, paired-crate, package, workspace,
-security/fuzz, final cleanup, and remote-CI gates remain deferred to the final
-issue #40 certification boundary. No remote CI, push, release, tag, registry
-publication, browser-parity, security-boundary, or promotion claim is made.
+`docs/plan/tasks/native-engine-195.md`: implementation is `0caad64b` (design
+`a61b9c5f`). It adds standalone case-insensitive `inherit` to
+`box-sizing`, physical padding/margin shorthands and longhands, and the
+supported horizontal-tb logical padding/margin family. Physical values copy the
+parent's effective edges, box-sizing, and private margin `auto` provenance;
+logical values read the parent side in its resolved `ltr`/`rtl` direction
+before projecting into the child. Root fallbacks, omitted-property
+non-inheritance, important/source-order behavior, `revert-layer` rollback, and
+the existing geometry, normal-flow/flex, display-list, raster, PNG capture,
+point-hit, semantic/source-order, diagnostics, schema, and two-crate owners
+remain bounded. The scoped native check, focused parser/cascade unit test,
+focused integration regression, full native integration (233/233), strict
+Clippy, warning-denied rustdoc, and formatting gates passed. Static release
+truth, documentation coverage/depth, feature parity, TUI shortcut,
+version-sync, paired-crate, package, workspace, security/fuzz, final cleanup,
+and remote-CI gates remain deferred to the final issue #40 certification
+boundary. No remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary, or promotion claim is made.
+The preceding checkpoint remains recorded for
+`docs/plan/tasks/native-engine-194.md` at `5477fb79`.
 The preceding checkpoint remains recorded for
 `docs/plan/tasks/native-engine-193.md` at `3e78c246`.
 The preceding checkpoint remains recorded for

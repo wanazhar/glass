@@ -1959,6 +1959,24 @@ final static, paired-crate, package, workspace, security/fuzz, cleanup,
 issue-level, and remote-CI gates remain pending until issue #40 reaches its
 final validation boundary.
 
+The completed dependency-ordered [native-engine-195](tasks/native-engine-195.md)
+slice is implemented at `0caad64b` (design `a61b9c5f`). It adds bounded
+standalone case-insensitive `inherit` to `box-sizing`, physical
+padding/margin shorthands and longhands, and the supported horizontal-tb
+logical padding/margin family. Physical values copy the parent's effective
+edges, box-sizing, and private margin `auto` provenance; logical values read
+the parent side in its resolved `ltr`/`rtl` direction before projecting into
+the child. Root fallbacks, omitted-property non-inheritance, important/source-
+order behavior, and `revert-layer` rollback remain bounded by the existing
+private cascade. Percentages, negative lengths, margin collapsing, positioning,
+vertical writing modes, additional logical properties, multiple origins,
+transitions, animations, and browser-wide CSS conformance remain outside this
+slice. Scoped check, focused units/integration, full native integration
+(233/233), strict Clippy, warning-denied rustdoc, and formatting pass locally;
+final static, paired-crate, package, workspace, security/fuzz, cleanup,
+issue-level, and remote-CI gates remain pending until issue #40 reaches its
+final validation boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

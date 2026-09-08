@@ -173,8 +173,14 @@ important-over-normal, reversed-layer, inline-important, invalid-later, and
 `revert-layer` behavior. The same physical and horizontal-tb logical box-model
 owners accept standalone case-insensitive `initial`, `unset`, and one-author-
 origin `revert`: padding and margin reset to zero and `box-sizing` resets to
-`content-box`; `inherit`, vertical writing modes, and remaining properties
-remain outside this bounded reset family and generic `!important` semantics.
+`content-box`. They also accept standalone case-insensitive `inherit`:
+physical values copy the parent's effective edges, `box-sizing`, and private
+margin `auto` provenance, while logical values read the parent in its
+resolved `ltr`/`rtl` direction before projecting into the child; root
+fallbacks and omitted-property non-inheritance remain explicit. Vertical
+writing modes, additional logical properties, and remaining properties remain
+outside this bounded inheritance/reset family and generic `!important`
+semantics.
 The bounded
 `background-color`, inherited `color`, and `text-decoration-color` owners
 also honor terminal case-insensitive `!important` with the same

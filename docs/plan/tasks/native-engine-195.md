@@ -1,7 +1,7 @@
 ---
 id: native-engine-195
 scope: glass-browser/native-engine/box-model-inheritance
-status: planned
+status: complete
 depends-on: [native-engine-194]
 ---
 
@@ -81,7 +81,38 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-To be filled after implementation and the scoped verification gates pass.
+- Design checkpoint: `a61b9c5f`.
+- Implementation checkpoint: `0caad64b`.
+- The locked native-feature test-target check passed in the isolated
+  `/tmp/glass-195-focused` target before test execution.
+- The focused inheritance parser/cascade unit and public integration regression
+  passed.
+- The complete native integration target passed: `233 passed; 0 failed; 0
+  ignored`.
+- Strict native-feature Clippy and warnings-denied rustdoc passed, as did
+  formatting and `git diff --check`.
+- The integration fixture covered physical and logical parent/child inheritance,
+  ltr/rtl direction projection, inherited margin `auto` provenance,
+  content-box/border-box sizing, display-list/raster/PNG capture, point-hit,
+  and semantic/source-order outputs. The reset fixture also records the
+  correct 15px logical reset geometry and expresses important-vs-normal
+  precedence across separate cascade rules.
+- Static gates passed: release-documentation truth reported 609 Markdown
+  documents, 83 current documents, 57 previous-version hits, 707 semantic
+  audit hits, and 0 current-claim failures; documentation coverage reported
+  609 Markdown files, 345 full-product MCP tools (100 browser-only), 17
+  examples, and 22 public modules; documentation depth reported 93 current
+  guides and 19 substantive contracts; feature parity, version sync, and TUI
+  shortcut inventory also passed with 14 capabilities across 4 targets,
+  synchronized 0.3.14 package versions, and 15 implementation help keys with
+  63 documentation markers.
+- After confirming no Cargo/Rust process and no open handle referenced them,
+  the exact `/tmp/glass-195-focused` target (5,581,929,120 bytes; 8,892
+  files; 1,071 directories) and exact
+  `/tmp/glass-release-documentation-195.json` report (194,347 bytes) were
+  removed with bounded `find -P -xdev -depth -delete`; both paths were
+  verified absent. Observed filesystem free space rose from 72G to 77G in
+  `df -h` output (rounded).
 
 Remote CI, push, release, tag, registry publication, browser parity,
 security-boundary certification, and promotion remain outside this local task.

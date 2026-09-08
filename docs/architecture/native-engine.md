@@ -27,6 +27,7 @@ bounded-flex-cross-line-space-evenly/bounded-flex-cross-line-stretch/
 bounded-flex-cross-line-normal/bounded-flex-cross-line-gap,
 bounded-flex-gap-family/bounded-flex-gap-family-revert-layer/
 bounded-flex-gap-family-css-wide-resets,
+bounded-flex-sizing-css-wide-resets,
 bounded-inherited-text-presentation-revert-layer,
 bounded-inherited-text-spacing-revert-layer,
 bounded-inherited-vertical-align-revert-layer,
@@ -1944,6 +1945,22 @@ percentage indentation, and browser-wide overflow conformance remain outside
 the contract. Full native integration (244/244) and the feature library (1,026
 passed, 1 ignored) pass locally. Remote CI, push, release, tag, and registry
 publication remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-207` slice is recorded in
+`docs/plan/tasks/native-engine-207.md` and implemented at `1a43c150` (design
+`6d98fb3f`). It extends the local `flex`, `flex-grow`, `flex-shrink`, and
+`flex-basis` owners with standalone case-insensitive `initial`, `unset`, and
+one-author-origin `revert`, retaining finite shorthand expansion,
+non-negative fixed-pixel basis values, `auto`, and `revert-layer` rollback.
+Reset forms resolve through the existing private component streams to the
+finite `0 1 auto` initial tuple; important/source order, invalid-later
+preservation, flex placement, display-list, fixed-cell raster, PNG capture,
+point-hit, diagnostics, and the two-crate boundary remain bounded. `inherit`,
+percentages, negative/fractional/intrinsic basis values, direction/wrap/
+alignment/order, and generic CSS-wide machinery remain outside the contract.
+Full native integration (245/245) and the feature library (1,027 passed, 1
+ignored) pass locally. Remote CI, push, release, tag, and registry publication
+remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

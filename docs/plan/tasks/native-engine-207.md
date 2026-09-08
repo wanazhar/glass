@@ -1,7 +1,7 @@
 ---
 id: native-engine-207
 scope: glass-browser/native-engine/flex-sizing-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-206]
 ---
 
@@ -82,7 +82,34 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Implementation and validation evidence will be recorded here after the
-bounded implementation and documentation closeout. Remote CI, push, release,
-tag, registry publication, browser-parity, security-boundary certification,
-and promotion remain outside this local task.
+Implementation is `1a43c150`; the docs-first design checkpoint is `6d98fb3f`.
+The locked native-feature check passed, focused flex parser/cascade coverage
+passed 25 tests, and the public reset fixture passed. Full native integration
+passed 245/245; the native-feature library passed 1,027 tests with one ignored.
+The default-stack library run reproduced the known pre-existing
+`cli::args::tests::agent_readiness_commands_are_explicit` large-Clap stack
+overflow; rerunning the same library suite with
+`RUST_MIN_STACK=8388608` passed. Paired browser/dev builds, strict Clippy,
+warning-denied rustdoc, the workspace all-target/all-feature check, and the
+serial workspace all-target/all-feature matrix passed. The matrix reported
+browser library 1,028 passed plus one ignored, native integration 245, smoke
+18, daemon recovery 1, glass-dev 365, development runtime 4, and PTY 15.
+Workspace doctests passed (4 browser, 1 dev). Package assembly produced the
+196-file 6.0 MiB `glass-browser` archive and 69-file 2.6 MiB `glass-dev`
+archive; the exact packaged dependency check passed. `cargo deny check`,
+`cargo audit`, formatting, and diff checks passed. Audit output retained the
+known allowed warnings for unmaintained `bincode` and `yaml-rust`, the current
+`lru` advisory, and yanked `chacha20`; no new task-specific finding was
+introduced. The six-target nightly fuzz certification at 512 runs remains
+current from task 206 because this slice changes only CSS flex
+parsing/cascade and does not touch fuzz harnesses. Static documentation and
+knowledge-migration gates were rerun during the closeout.
+
+The existing parallel workspace test teardown collision in an unrelated
+`glass-dev` temporary-directory test remains documented; the serial matrix
+passed and the isolated test passed independently. The direct registry-backed
+dev verification remains blocked by the immutable public `glass-browser
+0.3.14` API surface; the canonical local patched/no-verify package route
+passes. Remote CI, push, release, tag, registry publication, browser-parity,
+security-boundary certification, and promotion remain outside this local
+task.

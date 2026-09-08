@@ -422,7 +422,13 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   case-insensitive 15-layer/unlayered `revert-layer` rollback for the
   components and standalone `flex:revert-layer`, `flex-flow:revert-layer`,
   and `place-content:revert-layer` shorthand rollback with native fallbacks
-  and finite shorthand expansion, plus bounded case-insensitive gap-family
+  and finite shorthand expansion, plus standalone case-insensitive
+  `initial|unset|revert` reset forms for
+  `flex`, `flex-grow`, `flex-shrink`, and `flex-basis` that resolve through
+  existing components to the finite `0 1 auto` initial tuple; `inherit`,
+  percentages, negative/fractional/intrinsic basis values, and
+  direction/wrap/alignment/order remain outside the boundary, plus bounded
+  case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive
   `initial|unset|revert` reset forms for all three gap declarations that
@@ -756,7 +762,13 @@ projection, and point hit-testing,
   case-insensitive 15-layer/unlayered `revert-layer` rollback for the
   components and standalone `flex:revert-layer`, `flex-flow:revert-layer`,
   and `place-content:revert-layer` shorthand rollback with native fallbacks
-  and finite shorthand expansion, plus bounded case-insensitive gap-family
+  and finite shorthand expansion, plus standalone case-insensitive
+  `initial|unset|revert` reset forms for
+  `flex`, `flex-grow`, `flex-shrink`, and `flex-basis` that resolve through
+  existing components to the finite `0 1 auto` initial tuple; `inherit`,
+  percentages, negative/fractional/intrinsic basis values, and
+  direction/wrap/alignment/order remain outside the boundary, plus bounded
+  case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive
   `initial|unset|revert` reset forms for all three gap declarations that

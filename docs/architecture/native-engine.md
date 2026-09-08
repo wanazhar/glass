@@ -53,6 +53,7 @@ bounded-box-model-css-wide-resets/
 bounded-box-model-explicit-inheritance/bounded-dimension-explicit-inheritance/
 bounded-dimension-css-wide-resets/bounded-inherited-text-css-wide-resets/
 bounded-overflow-important,
+bounded-overflow-inherit,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
 bounded-inherited-color-current-color,
@@ -2296,6 +2297,21 @@ public truncation/artifact integration (1 test), full-native integration
 checks pass locally. Remote CI, push, release, tag, registry publication,
 browser-parity, security-boundary certification, and promotion remain
 unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-232` slice is recorded in
+`docs/plan/tasks/native-engine-232.md` and implemented at `1a7df31b` (design
+`0a617b8c`, contract clarification `2e8bcf9a`). It adds standalone,
+case-insensitive `overflow: inherit`, `overflow-x: inherit`, and
+`overflow-y: inherit` through the existing private ancestor-style chain,
+copying the parent's effective bounded clip/no-clip axis projections while
+omitted declarations remain local with the visible/no-clip fallback. It
+preserves shorthand/longhand and important precedence, mixed-invalid
+preservation, axis-specific paint clips, viewport/root-scroll projection,
+display-list, fixed-cell raster/PNG, point-hit, semantics, diagnostics, and the
+two-crate boundary. The focused batch passed 9 library-target tests and 19
+overflow-matching native integration tests; formatting and diff checks pass.
+Full issue-level gates and remote CI remain unclaimed for this local-only
+checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

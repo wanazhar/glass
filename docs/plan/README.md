@@ -2184,6 +2184,18 @@ diagnostics, and the two-crate boundary remain bounded. Full native integration
 (246/246) and the feature library (1,029 passed, 1 ignored) pass locally.
 Remote CI, push, release, tag, and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-209](tasks/native-engine-209.md)
+slice is implemented at `0bfbc8f9` (design `89373bb1`). It adds bounded
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`
+to local flex-item `order`, retaining the signed finite range and
+`revert-layer` rollback. Reset forms resolve through the existing local order
+resolver to finite `0` while important/source order, invalid-later
+preservation, stable visual/source order, flex sizing, display-list, raster/
+PNG, point-hit, diagnostics, and the two-crate boundary remain bounded. Full
+native integration (247/247) and the feature library (1,030 passed, 1 ignored)
+pass locally. Remote CI, push, release, tag, and registry publication remain
+unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

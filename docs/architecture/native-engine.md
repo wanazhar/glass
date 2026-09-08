@@ -29,6 +29,7 @@ bounded-flex-gap-family/bounded-flex-gap-family-revert-layer/
 bounded-flex-gap-family-css-wide-resets,
 bounded-flex-sizing-css-wide-resets,
 bounded-flex-flow-css-wide-resets,
+bounded-flex-order-css-wide-resets,
 bounded-inherited-text-presentation-revert-layer,
 bounded-inherited-text-spacing-revert-layer,
 bounded-inherited-vertical-align-revert-layer,
@@ -1976,6 +1977,19 @@ PNG capture, point-hit, diagnostics, and the two-crate boundary remain bounded.
 Full native integration (246/246) and the feature library (1,029 passed, 1
 ignored) pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-209` slice is recorded in
+`docs/plan/tasks/native-engine-209.md` and implemented at `0bfbc8f9` (design
+`89373bb1`). It extends the local flex-item `order` owner with standalone,
+case-insensitive `initial`, `unset`, and one-author-origin `revert`, retaining
+the signed finite range and named-layer `revert-layer`. Reset forms resolve
+through the existing local order resolver to the finite `0` initial fallback;
+important/source order, invalid-later preservation, stable visual/source order,
+flex sizing, display-list, fixed-cell raster, PNG capture, point-hit,
+diagnostics, and the two-crate boundary remain bounded. Full native integration
+(247/247) and the feature library (1,030 passed, 1 ignored) pass locally.
+Remote CI, push, release, tag, and registry publication remain unclaimed for
+this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

@@ -1,7 +1,7 @@
 ---
 id: native-engine-209
 scope: glass-browser/native-engine/local-flex-order-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-208]
 ---
 
@@ -80,7 +80,20 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Implementation and validation evidence will be recorded here after the
-bounded implementation and documentation closeout. Remote CI, push, release,
-tag, registry publication, browser-parity, security-boundary certification,
-and promotion remain outside this local task.
+Implementation is `0bfbc8f9`; the design checkpoint is `89373bb1`. The locked
+native-feature check passed in an isolated task target. Focused flex parser and
+cascade coverage passed 28 tests, the public reset fixture passed, full native
+integration passed 247/247, and the serial native-feature library passed 1,030
+tests with one ignored. Workspace all-target/all-feature checking, strict
+Clippy, formatting, and diff checks passed locally. The fixture covers
+important/source order, invalid-later preservation, stable visual/source order,
+flex sizing, display-list, fixed-cell raster/PNG, point-hit, semantics, and
+unsupported-value diagnostics. No public schema, dependency, feature default,
+or crate-boundary change was made.
+
+The preceding task's six-target nightly fuzz certification remains current
+because this slice changes only CSS flex parsing/cascade. Package and security
+evidence is retained from the preceding dependency-stable task until the next
+issue-level validation boundary. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary certification, and promotion
+remain outside this local task.

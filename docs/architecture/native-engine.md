@@ -2281,6 +2281,22 @@ test), full-native integration (268/268), the feature library (1,047 passed,
 tag, registry publication, browser-parity, security-boundary certification,
 and promotion remain unclaimed for this local-only checkout.
 
+The completed dependency-ordered `native-engine-231` slice is recorded in
+`docs/plan/tasks/native-engine-231.md` and implemented at `9a9ef2c7` (design
+`57e37dfe`). It adds standalone, case-insensitive `text-overflow: inherit`
+through the existing private parent-style chain, copying the computed parent
+`clip|ellipsis` value only when explicitly authored while omitted
+`text-overflow` remains local with the bounded `clip` fallback. Finite values,
+CSS-wide resets, `revert-layer`, mixed-invalid preservation, source-order/
+important precedence, eligible clipped-nowrap truncation, text fragments,
+display-list, raster/PNG, overflow, point-hit, semantics, diagnostics, and the
+two-crate boundary remain bounded. Focused parser/cascade coverage (3 tests),
+public truncation/artifact integration (1 test), full-native integration
+(269/269), the feature library (1,048 passed, 1 ignored), and formatting/diff
+checks pass locally. Remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary certification, and promotion remain
+unclaimed for this local-only checkout.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded

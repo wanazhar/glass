@@ -2454,6 +2454,21 @@ public inheritance/artifact integration (1 test), full-native integration
 scoped check pass locally. Remote CI, push, release, tag, registry publication,
 browser-parity, security-boundary, and promotion remain unclaimed.
 
+The completed dependency-ordered [native-engine-231](tasks/native-engine-231.md)
+slice is implemented at `9a9ef2c7` (design `57e37dfe`). It adds bounded
+standalone case-insensitive `text-overflow: inherit` through the existing
+private parent-style chain, copying the computed parent `clip|ellipsis` value
+only when explicitly authored while omitted `text-overflow` remains local with
+the bounded `clip` fallback. Finite values, CSS-wide resets, `revert-layer`,
+mixed-invalid preservation, source-order/important precedence, eligible
+clipped-nowrap truncation, text fragments, display-list, raster/PNG, overflow,
+point-hit, semantics, diagnostics, and the two-crate boundary remain bounded.
+Focused parser/cascade coverage (3 tests), public truncation/artifact
+integration (1 test), full-native integration (269/269), the feature library
+(1,048 passed, 1 ignored), and the locked scoped check pass locally. Remote CI,
+push, release, tag, registry publication, browser-parity, security-boundary,
+and promotion remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

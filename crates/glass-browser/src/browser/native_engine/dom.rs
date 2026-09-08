@@ -874,6 +874,8 @@ impl NativeDocument {
         let mut inherited_flex_direction = FlexDirectionValue::Row;
         let mut inherited_flex_wrap = FlexWrapValue::NoWrap;
         let mut inherited_flex_item_order = NativeOrderValue::default();
+        let mut inherited_row_gap = 0;
+        let mut inherited_column_gap = 0;
         let mut inherited_direction = DirectionValue::Ltr;
         let mut inherited_flex_grow = 0;
         let mut inherited_flex_shrink = 1;
@@ -927,6 +929,8 @@ impl NativeDocument {
                     flex_direction: inherited_flex_direction,
                     flex_wrap: inherited_flex_wrap,
                     flex_item_order: inherited_flex_item_order,
+                    row_gap: inherited_row_gap,
+                    column_gap: inherited_column_gap,
                     direction: inherited_direction,
                     flex_grow: inherited_flex_grow,
                     flex_shrink: inherited_flex_shrink,
@@ -981,6 +985,8 @@ impl NativeDocument {
             inherited_flex_direction = style.flex_direction();
             inherited_flex_wrap = style.flex_wrap();
             inherited_flex_item_order = style.flex_item_order();
+            inherited_row_gap = style.row_gap();
+            inherited_column_gap = style.column_gap();
             inherited_direction = style.direction();
             inherited_flex_grow = style.flex_grow();
             inherited_flex_shrink = style.flex_shrink();

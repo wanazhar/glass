@@ -848,6 +848,7 @@ struct NativeGapValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GapShorthandDeclaration {
     Value(NativeGapValue),
+    Inherit,
     Initial,
     Unset,
     Revert,
@@ -857,6 +858,7 @@ enum GapShorthandDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GapComponentDeclaration {
     Value(u32),
+    Inherit,
     Initial,
     Unset,
     Revert,
@@ -907,6 +909,8 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) flex_direction: FlexDirectionValue,
     pub(crate) flex_wrap: FlexWrapValue,
     pub(crate) flex_item_order: NativeOrderValue,
+    pub(crate) row_gap: u32,
+    pub(crate) column_gap: u32,
     pub(crate) direction: DirectionValue,
     pub(crate) flex_grow: u32,
     pub(crate) flex_shrink: u32,
@@ -957,6 +961,8 @@ impl Default for NativeInheritedStyle {
             flex_direction: FlexDirectionValue::Row,
             flex_wrap: FlexWrapValue::NoWrap,
             flex_item_order: NativeOrderValue::default(),
+            row_gap: 0,
+            column_gap: 0,
             direction: DirectionValue::Ltr,
             flex_grow: 0,
             flex_shrink: 1,
@@ -2745,8 +2751,8 @@ impl NativeStylesheet {
                 inherited.letter_spacing,
                 0,
             ),
-            gap: resolve_gap_axis(gap.shorthand_column, gap.column_gap),
-            row_gap: resolve_gap_axis(gap.shorthand_row, gap.row_gap),
+            gap: resolve_gap_axis(gap.shorthand_column, gap.column_gap, inherited.column_gap),
+            row_gap: resolve_gap_axis(gap.shorthand_row, gap.row_gap, inherited.row_gap),
             width: resolve_local_inherited_nullable_cascade_declaration(width, inherited.width),
             height: resolve_local_inherited_nullable_cascade_declaration(height, inherited.height),
             min_width: resolve_local_inherited_nullable_cascade_declaration(
@@ -3609,6 +3615,7 @@ fn select_gap_candidate(
 fn resolve_gap_axis(
     shorthand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     longhand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: u32,
 ) -> u32 {
     let mut blocked = [false; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
     loop {
@@ -3628,6 +3635,7 @@ fn resolve_gap_axis(
         };
         match candidate.value {
             GapComponentDeclaration::Value(value) => return value,
+            GapComponentDeclaration::Inherit => return inherited,
             GapComponentDeclaration::Initial
             | GapComponentDeclaration::Unset
             | GapComponentDeclaration::Revert => return 0,
@@ -3649,6 +3657,10 @@ fn apply_gap_declarations(
             GapShorthandDeclaration::Value(value) => (
                 GapComponentDeclaration::Value(value.row),
                 GapComponentDeclaration::Value(value.column),
+            ),
+            GapShorthandDeclaration::Inherit => (
+                GapComponentDeclaration::Inherit,
+                GapComponentDeclaration::Inherit,
             ),
             GapShorthandDeclaration::Initial => (
                 GapComponentDeclaration::Initial,
@@ -7912,6 +7924,7 @@ fn parse_gap(value: &str) -> Option<NativeGapValue> {
 
 fn parse_gap_declaration(value: &str) -> Option<GapShorthandDeclaration> {
     match value.trim().to_ascii_lowercase().as_str() {
+        "inherit" => Some(GapShorthandDeclaration::Inherit),
         "initial" => Some(GapShorthandDeclaration::Initial),
         "unset" => Some(GapShorthandDeclaration::Unset),
         "revert" => Some(GapShorthandDeclaration::Revert),
@@ -12555,7 +12568,12 @@ mod tests {
             parse_declarations("gap: ReVeRt").gap,
             Some(GapShorthandDeclaration::Revert)
         );
-        assert_eq!(parse_declarations("gap: inherit").gap, None);
+        assert_eq!(
+            parse_declarations("gap: InHeRiT").gap,
+            Some(GapShorthandDeclaration::Inherit)
+        );
+        assert_eq!(parse_declarations("gap: inherit 1px").gap, None);
+        assert_eq!(parse_declarations("gap: 1px inherit").gap, None);
         assert_eq!(parse_declarations("gap: -1px").gap, None);
         assert_eq!(parse_declarations("gap: 1px 2px 3px").gap, None);
         assert_eq!(parse_declarations("gap: revert-layer 1px").gap, None);
@@ -14484,6 +14502,66 @@ mod tests {
         assert_values(&invalid, 26, 25);
         assert_values(&longhand, 4, 5);
         assert_values(&mixed, 40, 42);
+    }
+
+    #[test]
+    fn stylesheet_gap_inherit_projects_parent_components() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #layered { gap: 7px 9px; } #important { gap: 8px 10px !important; } } @layer theme { #layered { gap: inherit; } } #direct { gap: InHeRiT; } #order { gap: 1px 2px; } #order { gap: inherit; } #invalid { gap: 4px 5px; gap: inherit 1px; } #important-inherit { gap: 1px 2px; gap: inherit !important; } #reset { gap: inherit; gap: initial; } #revert { gap: inherit; gap: revert; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited_row = 12;
+        let inherited_column = 14;
+        let computed = |element: &NativeNode| {
+            stylesheet.computed_for_with_matcher(
+                element,
+                NativeInheritedStyle {
+                    row_gap: inherited_row,
+                    column_gap: inherited_column,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(element),
+            )
+        };
+        let assert_values = |element: &NativeNode, row: u32, column: u32| {
+            let style = computed(element);
+            assert_eq!(style.row_gap(), row);
+            assert_eq!(style.column_gap(), column);
+        };
+
+        assert_values(
+            &node("<div id='layered'>Layered</div>"),
+            inherited_row,
+            inherited_column,
+        );
+        assert_values(
+            &node("<div id='direct'>Direct</div>"),
+            inherited_row,
+            inherited_column,
+        );
+        assert_values(
+            &node("<div id='order'>Order</div>"),
+            inherited_row,
+            inherited_column,
+        );
+        assert_values(&node("<div id='invalid'>Invalid</div>"), 4, 5);
+        assert_values(
+            &node("<div id='important-inherit'>Important inherit</div>"),
+            inherited_row,
+            inherited_column,
+        );
+        assert_values(&node("<div id='reset'>Reset</div>"), 0, 0);
+        assert_values(&node("<div id='revert'>Revert</div>"), 0, 0);
+        assert_values(&node("<div id='omitted'>Omitted</div>"), 0, 0);
+
+        assert_values(&node("<div id='root'>Root</div>"), 0, 0);
+        assert_eq!(
+            stylesheet
+                .computed_for(&node("<div id='direct'>Root default</div>"))
+                .row_gap(),
+            0
+        );
     }
 
     #[test]
@@ -19050,13 +19128,14 @@ mod tests {
     #[test]
     fn gap_is_cascaded_without_inheriting_to_children() {
         let document = NativeDocument::parse(
-            "<style>#parent { gap: 16px 20px; } #explicit { gap: 24px; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='gap: 32px'>Explicit</span><span id='invalid' style='gap: -1px'>Invalid</span></div>",
+            "<style>#parent { gap: 16px 20px; } #explicit { gap: 24px; } #inherit { gap: InHeRiT; }</style><div id='parent'><span id='child'>Child</span><span id='explicit' style='gap: 32px'>Explicit</span><span id='inherit'>Inherit</span><span id='invalid' style='gap: -1px'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let child = document.resolve_target("id=child").unwrap();
         let explicit = document.resolve_target("id=explicit").unwrap();
+        let inherit = document.resolve_target("id=inherit").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
         assert_eq!(document.computed_style_for_layout(parent).column_gap(), 20);
@@ -19068,6 +19147,8 @@ mod tests {
             32
         );
         assert_eq!(document.computed_style_for_layout(explicit).row_gap(), 32);
+        assert_eq!(document.computed_style_for_layout(inherit).column_gap(), 20);
+        assert_eq!(document.computed_style_for_layout(inherit).row_gap(), 16);
         assert_eq!(document.computed_style_for_layout(invalid).column_gap(), 0);
         assert_eq!(document.computed_style_for_layout(invalid).row_gap(), 0);
     }
@@ -19075,7 +19156,7 @@ mod tests {
     #[test]
     fn gap_css_wide_resets_use_zero_and_preserve_invalid_later() {
         let document = NativeDocument::parse(
-            "<style>#shorthand { gap: 4px 5px; gap: initial; } #unset { gap: 4px 5px; gap: unset; } #revert { gap: 4px 5px; gap: revert; } #longhand { gap: 4px 5px; row-gap: initial; column-gap: unset; } #invalid { gap: 3px 4px; gap: inherit; }</style><div id='shorthand'>Shorthand</div><div id='unset'>Unset</div><div id='revert'>Revert</div><div id='longhand'>Longhand</div><div id='invalid'>Invalid</div>",
+            "<style>#shorthand { gap: 4px 5px; gap: initial; } #unset { gap: 4px 5px; gap: unset; } #revert { gap: 4px 5px; gap: revert; } #longhand { gap: 4px 5px; row-gap: initial; column-gap: unset; } #invalid { gap: 3px 4px; gap: inherit 1px; }</style><div id='shorthand'>Shorthand</div><div id='unset'>Unset</div><div id='revert'>Revert</div><div id='longhand'>Longhand</div><div id='invalid'>Invalid</div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();

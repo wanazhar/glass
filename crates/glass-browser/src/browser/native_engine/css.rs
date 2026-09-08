@@ -1466,17 +1466,17 @@ impl NativeStylesheet {
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut gap = GapCascade::default();
         let mut width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut min_width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut max_width: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut min_height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut max_height: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-            MAX_NATIVE_CASCADE_LAYERS] = [None; MAX_NATIVE_CASCADE_LAYERS];
+            MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut line_height: [Option<CascadeValue<LineHeightDeclaration>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut background_color: [Option<
@@ -1820,46 +1820,52 @@ impl NativeStylesheet {
                 rule.declarations.flex_importance.flex_wrap,
                 &mut flex_wrap,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.width,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.dimension_importance.width,
                 &mut width,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.height,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.dimension_importance.height,
                 &mut height,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.min_width,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.dimension_importance.min_width,
                 &mut min_width,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.max_width,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.dimension_importance.max_width,
                 &mut max_width,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.min_height,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.dimension_importance.min_height,
                 &mut min_height,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 rule.declarations.max_height,
                 rule.selector.specificity,
                 rule.order,
                 false,
+                rule.declarations.dimension_importance.max_height,
                 &mut max_height,
             );
             apply_text_cascade_declaration(
@@ -2252,46 +2258,52 @@ impl NativeStylesheet {
                 declarations.flex_importance.flex_wrap,
                 &mut flex_wrap,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.width,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.dimension_importance.width,
                 &mut width,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.height,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.dimension_importance.height,
                 &mut height,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.min_width,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.dimension_importance.min_width,
                 &mut min_width,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.max_width,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.dimension_importance.max_width,
                 &mut max_width,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.min_height,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.dimension_importance.min_height,
                 &mut min_height,
             );
-            apply_local_cascade_declaration(
+            apply_local_important_cascade_declaration(
                 declarations.max_height,
                 u16::MAX,
                 usize::MAX,
                 true,
+                declarations.dimension_importance.max_height,
                 &mut max_height,
             );
             apply_text_cascade_declaration(
@@ -4320,6 +4332,16 @@ struct NativeLocalDeclarationImportance {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeDimensionDeclarationImportance {
+    width: bool,
+    height: bool,
+    min_width: bool,
+    max_width: bool,
+    min_height: bool,
+    max_height: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeTextDeclarationImportance {
     white_space: bool,
     text_align: bool,
@@ -4350,6 +4372,7 @@ struct NativeDeclarations {
     visibility: Option<LocalCascadeDeclaration<VisibilityValue>>,
     opacity: Option<LocalCascadeDeclaration<u8>>,
     local_importance: NativeLocalDeclarationImportance,
+    dimension_importance: NativeDimensionDeclarationImportance,
     flex_importance: NativeFlexDeclarationImportance,
     text_importance: NativeTextDeclarationImportance,
     white_space: Option<WhiteSpaceDeclaration>,
@@ -5449,31 +5472,37 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             "width" => {
                 if let Some(parsed) = parse_local_dimension_declaration(value) {
                     declarations.width = Some(parsed);
+                    declarations.dimension_importance.width = important;
                 }
             }
             "height" => {
                 if let Some(parsed) = parse_local_dimension_declaration(value) {
                     declarations.height = Some(parsed);
+                    declarations.dimension_importance.height = important;
                 }
             }
             "min-width" => {
                 if let Some(parsed) = parse_local_dimension_declaration(value) {
                     declarations.min_width = Some(parsed);
+                    declarations.dimension_importance.min_width = important;
                 }
             }
             "max-width" => {
                 if let Some(parsed) = parse_local_dimension_declaration(value) {
                     declarations.max_width = Some(parsed);
+                    declarations.dimension_importance.max_width = important;
                 }
             }
             "min-height" => {
                 if let Some(parsed) = parse_local_dimension_declaration(value) {
                     declarations.min_height = Some(parsed);
+                    declarations.dimension_importance.min_height = important;
                 }
             }
             "max-height" => {
                 if let Some(parsed) = parse_local_dimension_declaration(value) {
                     declarations.max_height = Some(parsed);
+                    declarations.dimension_importance.max_height = important;
                 }
             }
             "line-height" => {
@@ -14985,6 +15014,144 @@ mod tests {
             FlexBasisValue::Length(18),
             11,
             12,
+        );
+    }
+
+    #[test]
+    fn dimension_important_parser_tracks_markers_and_invalid_preservation() {
+        let declarations = parse_declarations(
+            "width: 24px !IMPORTANT; height: 30px !important; min-width: 8px !important; max-width: 64px !important; min-height: 10px !important; max-height: 80px !important",
+        );
+        assert_eq!(declarations.width, Some(LocalCascadeDeclaration::Value(24)));
+        assert_eq!(
+            declarations.height,
+            Some(LocalCascadeDeclaration::Value(30))
+        );
+        assert_eq!(
+            declarations.min_width,
+            Some(LocalCascadeDeclaration::Value(8))
+        );
+        assert_eq!(
+            declarations.max_width,
+            Some(LocalCascadeDeclaration::Value(64))
+        );
+        assert_eq!(
+            declarations.min_height,
+            Some(LocalCascadeDeclaration::Value(10))
+        );
+        assert_eq!(
+            declarations.max_height,
+            Some(LocalCascadeDeclaration::Value(80))
+        );
+        assert_eq!(
+            declarations.dimension_importance,
+            NativeDimensionDeclarationImportance {
+                width: true,
+                height: true,
+                min_width: true,
+                max_width: true,
+                min_height: true,
+                max_height: true,
+            }
+        );
+
+        let preserved = parse_declarations(
+            "width:24px !important;width:bad !important;height:30px !important;height:1px 2px !important;min-width:8px !important;min-width:-1px !important;max-width:64px !important;max-width:50% !important;min-height:10px !important;min-height:auto !important;max-height:80px !important;max-height:revert-layer 1px !important",
+        );
+        assert_eq!(preserved.width, Some(LocalCascadeDeclaration::Value(24)));
+        assert_eq!(preserved.height, Some(LocalCascadeDeclaration::Value(30)));
+        assert_eq!(preserved.min_width, Some(LocalCascadeDeclaration::Value(8)));
+        assert_eq!(
+            preserved.max_width,
+            Some(LocalCascadeDeclaration::Value(64))
+        );
+        assert_eq!(
+            preserved.min_height,
+            Some(LocalCascadeDeclaration::Value(10))
+        );
+        assert_eq!(
+            preserved.max_height,
+            Some(LocalCascadeDeclaration::Value(80))
+        );
+        assert_eq!(
+            preserved.dimension_importance,
+            NativeDimensionDeclarationImportance {
+                width: true,
+                height: true,
+                min_width: true,
+                max_width: true,
+                min_height: true,
+                max_height: true,
+            }
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_dimension_important_priority_and_rollback() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            r#"@layer base {
+                #important { width:24px !important; height:12px !important; min-width:4px !important; max-width:80px !important; min-height:6px !important; max-height:90px !important; }
+                #rollback { width:30px !important; height:18px !important; min-width:8px !important; max-width:70px !important; min-height:10px !important; max-height:60px !important; }
+                #rollback { width:revert-layer !important; height:revert-layer !important; min-width:revert-layer !important; max-width:revert-layer !important; min-height:revert-layer !important; max-height:revert-layer !important; }
+                #invalid { width:40px !important; width:bad !important; height:20px !important; height:1px 2px !important; min-width:12px !important; min-width:-1px !important; max-width:60px !important; max-width:50% !important; min-height:14px !important; min-height:auto !important; max-height:50px !important; max-height:revert-layer 1px !important; }
+                #normal { width:10px; height:10px; min-width:2px; max-width:20px; min-height:2px; max-height:20px; }
+            }
+            @layer theme {
+                #important { width:48px !important; height:20px !important; min-width:16px !important; max-width:100px !important; min-height:10px !important; max-height:110px !important; }
+                #rollback { width:36px !important; height:22px !important; min-width:12px !important; max-width:90px !important; min-height:8px !important; max-height:80px !important; }
+                #normal { width:20px; height:20px; min-width:4px; max-width:40px; min-height:4px; max-height:40px; }
+            }
+            #important { width:64px !important; height:28px !important; min-width:24px !important; max-width:120px !important; min-height:14px !important; max-height:130px !important; }
+            #rollback { width:72px !important; height:32px !important; min-width:28px !important; max-width:140px !important; min-height:16px !important; max-height:150px !important; }
+            #invalid { width:80px; height:40px; min-width:32px; max-width:160px; min-height:18px; max-height:170px; }
+            #normal { width:32px; height:32px; min-width:6px; max-width:60px; min-height:6px; max-height:60px; }
+            #inline { width:64px !important; height:28px !important; min-width:24px !important; max-width:120px !important; min-height:14px !important; max-height:130px !important; }
+        "#
+        .into(),
+        ])
+        .unwrap();
+        let important = node("<div id='important'>Important</div>");
+        let rollback = node("<div id='rollback'>Rollback</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let normal = node("<div id='normal'>Normal</div>");
+        let inline = node(
+            "<div id='inline' style='width:91px !important;height:33px !important;min-width:31px !important;max-width:141px !important;min-height:17px !important;max-height:151px !important'>Inline</div>",
+        );
+
+        let assert_dimensions = |element: &NativeNode, expected: [Option<u32>; 6]| {
+            let style = stylesheet.computed_for(element);
+            assert_eq!(
+                [
+                    style.width(),
+                    style.height(),
+                    style.min_width(),
+                    style.max_width(),
+                    style.min_height(),
+                    style.max_height(),
+                ],
+                expected
+            );
+        };
+
+        assert_dimensions(
+            &important,
+            [Some(24), Some(12), Some(4), Some(80), Some(6), Some(90)],
+        );
+        assert_dimensions(
+            &rollback,
+            [Some(36), Some(22), Some(12), Some(90), Some(8), Some(80)],
+        );
+        assert_dimensions(
+            &invalid,
+            [Some(40), Some(20), Some(12), Some(60), Some(14), Some(50)],
+        );
+        assert_dimensions(
+            &normal,
+            [Some(32), Some(32), Some(6), Some(60), Some(6), Some(60)],
+        );
+        assert_dimensions(
+            &inline,
+            [Some(91), Some(33), Some(31), Some(141), Some(17), Some(151)],
         );
     }
 

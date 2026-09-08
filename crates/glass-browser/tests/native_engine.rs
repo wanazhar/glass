@@ -5239,6 +5239,224 @@ fn native_flex_gap_important_priority_reaches_layout_and_artifact_consumers() {
 }
 
 #[test]
+fn native_dimension_important_priority_reaches_geometry_and_artifact_consumers() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        .box { display:block; margin:0; padding:0; }
+        @layer base {
+          #named { width:24px !important; height:12px !important; min-width:4px !important; max-width:80px !important; min-height:6px !important; max-height:90px !important; background-color:red; }
+          #rollback { width:30px !important; height:18px !important; min-width:8px !important; max-width:70px !important; min-height:10px !important; max-height:60px !important; background-color:green; }
+          #rollback { width:revert-layer !important; height:revert-layer !important; min-width:revert-layer !important; max-width:revert-layer !important; min-height:revert-layer !important; max-height:revert-layer !important; }
+          #invalid { width:40px !important; width:bad !important; height:20px !important; height:1px 2px !important; min-width:12px !important; min-width:-1px !important; max-width:60px !important; max-width:50% !important; min-height:14px !important; min-height:auto !important; max-height:50px !important; max-height:revert-layer 1px !important; background-color:blue; }
+          #clamped { width:80px !important; height:60px !important; min-width:24px !important; max-width:40px !important; min-height:18px !important; max-height:30px !important; background-color:green; }
+          #scroll { width:16px !important; height:12px !important; background-color:red; overflow:hidden; }
+          #scroll-child { width:40px !important; height:4px !important; background-color:blue; }
+          #normal { width:10px; height:10px; min-width:2px; max-width:20px; min-height:2px; max-height:20px; }
+        }
+        @layer theme {
+          #named { width:48px !important; height:20px !important; min-width:16px !important; max-width:100px !important; min-height:10px !important; max-height:110px !important; }
+          #rollback { width:36px !important; height:22px !important; min-width:12px !important; max-width:90px !important; min-height:8px !important; max-height:80px !important; }
+          #clamped { width:100px !important; height:70px !important; min-width:32px !important; max-width:50px !important; min-height:20px !important; max-height:40px !important; }
+          #scroll { width:30px !important; height:20px !important; }
+          #scroll-child { width:50px !important; height:6px !important; }
+          #normal { width:20px; height:20px; min-width:4px; max-width:40px; min-height:4px; max-height:40px; }
+        }
+        #named { width:64px !important; height:28px !important; min-width:24px !important; max-width:120px !important; min-height:14px !important; max-height:130px !important; }
+        #rollback { width:72px !important; height:32px !important; min-width:28px !important; max-width:140px !important; min-height:16px !important; max-height:150px !important; }
+        #normal { width:32px; height:32px; min-width:6px; max-width:60px; min-height:6px; max-height:60px; background-color:blue; }
+        #inline { width:64px !important; height:28px !important; min-width:24px !important; max-width:120px !important; min-height:14px !important; max-height:130px !important; background-color:red; }
+        </style>
+        <div id='named' class='box'>Named</div>
+        <div id='rollback' class='box'>Rollback</div>
+        <div id='invalid' class='box'>Invalid</div>
+        <div id='normal' class='box'>Normal</div>
+        <div id='clamped' class='box'>Clamped</div>
+        <div id='inline' class='box' style='width:91px !important;height:33px !important;min-width:31px !important;max-width:141px !important;min-height:17px !important;max-height:151px !important'>Inline</div>
+        <div id='scroll' class='box'><div id='scroll-child' class='box'>Child</div></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(
+        !document
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == NativeDiagnosticCode::UnsupportedCssProperty)
+    );
+    for property in [
+        "width",
+        "height",
+        "min-width",
+        "max-width",
+        "min-height",
+        "max-height",
+    ] {
+        assert!(document.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == property
+        }));
+    }
+
+    let viewport = Viewport {
+        width: 120,
+        height: 180,
+        device_scale_factor_milli: 1000,
+    };
+    let named = document.resolve_target("id=named").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let clamped = document.resolve_target("id=clamped").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let scroll = document.resolve_target("id=scroll").unwrap();
+    let scroll_child = document.resolve_target("id=scroll-child").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.box_for(named),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 12,
+        })
+    );
+    assert_eq!(
+        layout.box_for(rollback),
+        Some(NativeRect {
+            x: 0,
+            y: 12,
+            width: 36,
+            height: 22,
+        })
+    );
+    assert_eq!(
+        layout.box_for(invalid),
+        Some(NativeRect {
+            x: 0,
+            y: 34,
+            width: 40,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout.box_for(normal),
+        Some(NativeRect {
+            x: 0,
+            y: 54,
+            width: 32,
+            height: 32,
+        })
+    );
+    assert_eq!(
+        layout.box_for(clamped),
+        Some(NativeRect {
+            x: 0,
+            y: 86,
+            width: 40,
+            height: 30,
+        })
+    );
+    assert_eq!(
+        layout.box_for(inline),
+        Some(NativeRect {
+            x: 0,
+            y: 116,
+            width: 91,
+            height: 33,
+        })
+    );
+    assert_eq!(
+        layout.box_for(scroll),
+        Some(NativeRect {
+            x: 0,
+            y: 149,
+            width: 16,
+            height: 12,
+        })
+    );
+    assert_eq!(
+        layout.box_for(scroll_child),
+        Some(NativeRect {
+            x: 0,
+            y: 149,
+            width: 16,
+            height: 4,
+        })
+    );
+    assert_eq!(layout.hit_test(23, 1), Ok(Some(named)));
+    assert_eq!(layout.hit_test(35, 13), Ok(Some(rollback)));
+    assert_eq!(layout.hit_test(20, 150), Ok(None));
+
+    let list = document.display_list(viewport).unwrap();
+    for (node_id, rect, color) in [
+        (
+            named,
+            NativeRect {
+                x: 0,
+                y: 0,
+                width: 24,
+                height: 12,
+            },
+            NativeColor::RED,
+        ),
+        (
+            rollback,
+            NativeRect {
+                x: 0,
+                y: 12,
+                width: 36,
+                height: 22,
+            },
+            NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: 255,
+            },
+        ),
+        (
+            clamped,
+            NativeRect {
+                x: 0,
+                y: 86,
+                width: 40,
+                height: 30,
+            },
+            NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: 255,
+            },
+        ),
+    ] {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect {
+                    node_id: painted_node,
+                    rect: painted_rect,
+                    color: painted_color,
+                    ..
+                } if *painted_node == node_id
+                    && *painted_rect == rect
+                    && *painted_color == color
+            )
+        }));
+    }
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(23, 11), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(35, 33), Some([0, 128, 0, 255]));
+    assert_eq!(surface.pixel(39, 115), Some([0, 128, 0, 255]));
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (120, 180));
+}
+
+#[test]
 fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:45px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",

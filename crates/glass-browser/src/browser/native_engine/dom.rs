@@ -9,12 +9,13 @@ use super::raster::NativeSurface;
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
-        AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, FontStyleValue,
-        FontWeightValue, JustifyContentValue, NativeBorderRadius, NativeBorderStyleValue,
-        NativeBoxSizing, NativeColor, NativeComputedStyle, NativeInheritedStyle, NativeMarginValue,
-        NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
-        TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
-        TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, FlexDirectionValue,
+        FontStyleValue, FontWeightValue, JustifyContentValue, NativeBorderRadius,
+        NativeBorderStyleValue, NativeBoxSizing, NativeColor, NativeComputedStyle,
+        NativeInheritedStyle, NativeMarginValue, NativeTextDecorationSkipInk,
+        NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, TextAlignLastValue,
+        TextAlignValue, TextDecorationValue, TextJustifyValue, TextTransformValue,
+        VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use std::collections::BTreeMap;
@@ -870,6 +871,7 @@ impl NativeDocument {
         let mut inherited_align_items = AlignItemsValue::FlexStart;
         let mut inherited_align_self = AlignSelfValue::Auto;
         let mut inherited_align_content = AlignContentValue::FlexStart;
+        let mut inherited_flex_direction = FlexDirectionValue::Row;
         let mut inherited_direction = DirectionValue::Ltr;
         let mut inherited_white_space = WhiteSpaceValue::Normal;
         let mut inherited_line_height = None;
@@ -917,6 +919,7 @@ impl NativeDocument {
                     align_items: inherited_align_items,
                     align_self: inherited_align_self,
                     align_content: inherited_align_content,
+                    flex_direction: inherited_flex_direction,
                     direction: inherited_direction,
                     white_space: inherited_white_space,
                     line_height: inherited_line_height,
@@ -965,6 +968,7 @@ impl NativeDocument {
             inherited_align_items = style.align_items();
             inherited_align_self = style.align_self();
             inherited_align_content = style.align_content();
+            inherited_flex_direction = style.flex_direction();
             inherited_direction = style.direction();
             inherited_white_space = style.white_space();
             inherited_line_height = style.line_height().or(inherited_line_height);

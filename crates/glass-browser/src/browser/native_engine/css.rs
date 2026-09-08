@@ -642,6 +642,7 @@ pub(crate) enum FlexDirectionValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexDirectionDeclaration {
     Value(FlexDirectionValue),
+    Inherit,
     Reset,
     RevertLayer,
 }
@@ -898,6 +899,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) align_items: AlignItemsValue,
     pub(crate) align_self: AlignSelfValue,
     pub(crate) align_content: AlignContentValue,
+    pub(crate) flex_direction: FlexDirectionValue,
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
@@ -942,6 +944,7 @@ impl Default for NativeInheritedStyle {
             align_items: AlignItemsValue::FlexStart,
             align_self: AlignSelfValue::Auto,
             align_content: AlignContentValue::FlexStart,
+            flex_direction: FlexDirectionValue::Row,
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
@@ -2654,7 +2657,7 @@ impl NativeStylesheet {
             align_items: resolve_align_items(align_items, inherited.align_items),
             align_self: resolve_align_self(align_self, inherited.align_self),
             align_content: resolve_align_content(align_content, inherited.align_content),
-            flex_direction: resolve_flex_direction(flex_direction),
+            flex_direction: resolve_flex_direction(flex_direction, inherited.flex_direction),
             direction: resolved_direction,
             flex_wrap: resolve_flex_wrap(flex_wrap),
             flex_item_order: resolve_flex_item_order(flex_item_order),
@@ -2874,10 +2877,12 @@ fn resolve_direction(
 
 fn resolve_flex_direction(
     candidates: [Option<CascadeValue<FlexDirectionDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: FlexDirectionValue,
 ) -> FlexDirectionValue {
     resolve_alignment_candidates(candidates, FlexDirectionValue::Row, |declaration| {
         match declaration {
             FlexDirectionDeclaration::Value(value) => Some(value),
+            FlexDirectionDeclaration::Inherit => Some(inherited),
             FlexDirectionDeclaration::Reset => Some(FlexDirectionValue::Row),
             FlexDirectionDeclaration::RevertLayer => None,
         }
@@ -8189,6 +8194,9 @@ fn parse_flex_direction_declaration(value: &str) -> Option<FlexDirectionDeclarat
     if is_local_reset_keyword(value) {
         return Some(FlexDirectionDeclaration::Reset);
     }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some(FlexDirectionDeclaration::Inherit);
+    }
     parse_flex_direction(value).map(FlexDirectionDeclaration::Value)
 }
 
@@ -13322,7 +13330,11 @@ mod tests {
             parse_flex_direction_declaration(" ReVeRt "),
             Some(FlexDirectionDeclaration::Reset)
         );
-        assert_eq!(parse_flex_direction_declaration("inherit"), None);
+        assert_eq!(
+            parse_flex_direction_declaration(" InHeRiT "),
+            Some(FlexDirectionDeclaration::Inherit)
+        );
+        assert_eq!(parse_flex_direction_declaration("inherit column"), None);
         assert_eq!(parse_flex_direction_declaration("revert-layer row"), None);
         assert_eq!(parse_flex_direction_declaration("initial row"), None);
         assert_eq!(parse_flex_direction_declaration("row reverse"), None);
@@ -19297,6 +19309,49 @@ mod tests {
         );
         assert_eq!(
             document.computed_style_for_layout(invalid).flex_direction(),
+            FlexDirectionValue::Row
+        );
+    }
+
+    #[test]
+    fn flex_direction_explicit_inherit_uses_parent_without_implicit_inheritance() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { flex-direction: InHeRiT; } #invalid { flex-direction: column; flex-direction: inherit column; } #important { flex-direction: column !important; } #important { flex-direction: inherit; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited = FlexDirectionValue::ColumnReverse;
+        let computed = |element: &NativeNode| {
+            stylesheet.computed_for_with_matcher(
+                element,
+                NativeInheritedStyle {
+                    flex_direction: inherited,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(element),
+            )
+        };
+
+        assert_eq!(
+            computed(&node("<div id='inherit'>Inherit</div>")).flex_direction(),
+            inherited
+        );
+        assert_eq!(
+            computed(&node("<div id='omitted'>Omitted</div>")).flex_direction(),
+            FlexDirectionValue::Row
+        );
+        assert_eq!(
+            computed(&node("<div id='invalid'>Invalid</div>")).flex_direction(),
+            FlexDirectionValue::Column
+        );
+        assert_eq!(
+            computed(&node("<div id='important'>Important</div>")).flex_direction(),
+            FlexDirectionValue::Column
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for(&node("<div id='root'>Root</div>"))
+                .flex_direction(),
             FlexDirectionValue::Row
         );
     }

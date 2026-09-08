@@ -2473,11 +2473,13 @@ visual stacking.
 | `native-engine-228` | completed bounded standalone case-insensitive `gap:inherit` through the existing private parent-style chain; computed parent row and column gap components copy only when explicitly authored while omitted `gap` remains local with the bounded `0` fallback, preserving finite one-/two-value shorthand forms, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, shorthand/longhand precedence, wrapped/column placement, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; direct `row-gap:inherit` and `column-gap:inherit` remain outside the shorthand-only boundary; implementation `978ae3b5` with compatibility fixture follow-up `b645585b`; locked scoped check, focused gap parser/cascade (11 tests), public inheritance integration (1 test), full-native integration (266/266), feature library (1,045 passed, 1 ignored), workspace check, strict Clippy, paired crate builds, warning-denied rustdoc, and formatting passed locally | `native-engine-227` | percentages, intrinsic values, direct row/column-gap inheritance, additional origins, transitions, animations, grid track sizing, generic CSS-wide machinery, browser parity, and browser-wide gap conformance |
 | `native-engine-229` | completed bounded standalone case-insensitive `row-gap:inherit` and `column-gap:inherit` through the existing private parent-style chain; each computed parent gap component copies only when explicitly authored while omitted longhands remain local with the bounded `0` fallback, preserving independent-axis cascade, layer/importance/source-order precedence, shorthand/longhand interaction, finite values, CSS-wide resets, `revert-layer`, mixed-invalid preservation, wrapped/column placement, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `6c4116e4` (design `0e2916c9`); locked scoped check, focused gap parser/cascade (12 tests), public independent-axis integration (1 test), full-native integration (267/267), feature library (1,046 passed, 1 ignored), workspace check, strict Clippy, paired crate builds, warning-denied rustdoc, and formatting passed locally | `native-engine-228` | percentages, intrinsic values, additional origins, transitions, animations, grid track sizing, generic CSS-wide machinery, browser parity, and browser-wide gap conformance |
 | `native-engine-230` | completed bounded standalone case-insensitive `text-indent:inherit` through the existing private parent-style chain; an explicit declaration copies the computed parent first-line indent while omitted `text-indent` remains local with the bounded `0` fallback, preserving finite values, CSS-wide resets, `revert-layer`, mixed-invalid preservation, source-order/important precedence, first-line wrapping, text fragments, display-list, fixed-cell raster, PNG capture, point-hit, semantic/source order, diagnostics, and the two-crate boundary; implementation `5d214fee` (design `3782eb4b`); locked scoped check, focused parser/cascade (3 tests), public inheritance/artifact integration (1 test), full-native integration (268/268), feature library (1,047 passed, 1 ignored), and formatting/diff checks passed locally | `native-engine-229` | `text-overflow:inherit`, negative or hanging indentation, percentages, font-relative units, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide text conformance |
+| `native-engine-231` | completed bounded standalone case-insensitive `text-overflow:inherit` through the existing private parent-style chain; an explicit declaration copies the computed parent `clip|ellipsis` value while omitted `text-overflow` remains local with the bounded `clip` fallback, preserving finite values, CSS-wide resets, `revert-layer`, mixed-invalid preservation, source-order/important precedence, eligible clipped-nowrap truncation, text fragments, display-list, fixed-cell raster, PNG capture, overflow, point-hit, semantic/source order, diagnostics, and the two-crate boundary; implementation `9a9ef2c7` (design `57e37dfe`); locked scoped check, focused parser/cascade (3 tests), public truncation/artifact integration (1 test), full-native integration (269/269), feature library (1,048 passed, 1 ignored), and formatting/diff checks passed locally | `native-engine-230` | `overflow:inherit`, custom ellipsis/fade, multi-line or nested-inline truncation, percentages, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide overflow conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-230.md` is the latest completed task;
+`docs/plan/tasks/native-engine-231.md` is the latest completed task;
+`docs/plan/tasks/native-engine-230.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-229.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-228.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-226.md` is the preceding completed task;
@@ -2643,6 +2645,20 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-231.md`: implementation is `9a9ef2c7` (design
+`57e37dfe`). It adds standalone, case-insensitive `text-overflow: inherit`
+through the existing private parent-style chain, copying the computed parent
+`clip|ellipsis` value only when explicitly authored while omitted
+`text-overflow` remains local with bounded `clip` fallback. Finite values,
+CSS-wide resets, `revert-layer`, mixed-invalid preservation, source-order/
+important precedence, eligible clipped-nowrap truncation, text fragments,
+display-list, raster/PNG, overflow, point-hit, semantics, diagnostics, and the
+two-crate boundary remain bounded. Focused parser/cascade coverage (3 tests),
+public truncation/artifact integration (1 test), full-native integration
+(269/269), feature library (1,048 passed, 1 ignored), and the locked scoped
+check pass locally. Remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary, and promotion claims are not made.
+The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-230.md`: implementation is `5d214fee` (design
 `3782eb4b`). It adds standalone, case-insensitive `text-indent: inherit`
 through the existing private parent-style chain, copying the computed parent

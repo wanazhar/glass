@@ -1,7 +1,7 @@
 ---
 id: native-engine-231
 scope: glass-browser/native-engine/text-overflow-inherit
-status: planned
+status: complete
 depends-on: [native-engine-230]
 ---
 
@@ -92,6 +92,26 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
+Implementation and local certification are complete at `9a9ef2c7` (design
+`57e37dfe`). The focused parser/cascade group passes 3/3 tests, including
+case-insensitive standalone inheritance, omitted-property non-inheritance,
+mixed-invalid preservation, source order, important priority, and reset
+fallbacks. The public inheritance fixture passes 1/1 and verifies inherited
+clipped-nowrap truncation, non-truncating omission/invalid controls,
+text-fragment output, display-list projection, fixed-cell raster/PNG, point
+hit testing, semantic/source order, bounded overflow, and the typed diagnostic
+for the excluded mixed form. Full native integration passes 269/269, and the
+feature-enabled `glass-browser` library passes 1,048 tests with 1 ignored.
+Static documentation checks also pass: release truth reports 645 Markdown
+documents (83 current, 59 previous-version hits, 829 semantic audit hits, 0
+current-claim failures); coverage reports 645 Markdown files, 345 full-product
+MCP tools (100 browser-only), 17 examples, and 22 public modules; depth reports
+93 current guides and 19 substantive contracts; feature parity reports 14
+capabilities across 4 targets; TUI reports 15 implementation help keys and 63
+documentation markers; and version sync reports `0.3.14`. Formatting and diff
+checks pass. Issue-level strict lint, rustdoc, paired
+two-crate, package, security/fuzz, static-documentation, workspace,
+clean-install, remote-CI, issue-sync, and bounded-cleanup gates remain for
+the broader issue completion boundary; remote CI, push, release, tag,
 registry publication, browser-parity, security-boundary certification, and
 promotion remain outside this local task.

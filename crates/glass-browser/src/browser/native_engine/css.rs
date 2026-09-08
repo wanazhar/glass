@@ -602,6 +602,7 @@ pub(crate) enum AlignSelfValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlignSelfDeclaration {
     Value(AlignSelfValue),
+    Reset,
     RevertLayer,
 }
 
@@ -2902,6 +2903,7 @@ fn resolve_align_self(
         AlignSelfValue::Auto,
         |declaration| match declaration {
             AlignSelfDeclaration::Value(value) => Some(value),
+            AlignSelfDeclaration::Reset => Some(AlignSelfValue::Auto),
             AlignSelfDeclaration::RevertLayer => None,
         },
     )
@@ -8060,10 +8062,12 @@ fn parse_align_self(value: &str) -> Option<AlignSelfValue> {
 
 fn parse_align_self_declaration(value: &str) -> Option<AlignSelfDeclaration> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(AlignSelfDeclaration::RevertLayer)
-    } else {
-        parse_align_self(value).map(AlignSelfDeclaration::Value)
+        return Some(AlignSelfDeclaration::RevertLayer);
     }
+    if is_local_reset_keyword(value) {
+        return Some(AlignSelfDeclaration::Reset);
+    }
+    parse_align_self(value).map(AlignSelfDeclaration::Value)
 }
 
 fn parse_align_content(value: &str) -> Option<AlignContentValue> {
@@ -13299,6 +13303,18 @@ mod tests {
             Some(AlignSelfDeclaration::RevertLayer)
         );
         assert_eq!(
+            parse_align_self_declaration("InItIaL"),
+            Some(AlignSelfDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_align_self_declaration("UNSET"),
+            Some(AlignSelfDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_align_self_declaration(" ReVeRt "),
+            Some(AlignSelfDeclaration::Reset)
+        );
+        assert_eq!(
             parse_align_content_declaration("ReVeRt-LaYeR"),
             Some(AlignContentDeclaration::RevertLayer)
         );
@@ -13319,6 +13335,8 @@ mod tests {
         assert_eq!(parse_align_items_declaration("inherit"), None);
         assert_eq!(parse_align_items_declaration("revert-layer center"), None);
         assert_eq!(parse_align_self_declaration("center flex-end"), None);
+        assert_eq!(parse_align_self_declaration("inherit"), None);
+        assert_eq!(parse_align_self_declaration("revert-layer center"), None);
         assert_eq!(parse_align_content_declaration("revert-layer center"), None);
         assert_eq!(parse_flex_wrap_declaration("wrap reverse"), None);
     }
@@ -13528,6 +13546,32 @@ mod tests {
         assert_align(&revert, AlignItemsValue::FlexStart);
         assert_align(&invalid, AlignItemsValue::Center);
         assert_align(&important, AlignItemsValue::FlexEnd);
+    }
+
+    #[test]
+    fn stylesheet_align_self_css_wide_resets_use_auto_and_preserve_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #layer { align-self: center; } } @layer theme { #layer { align-self: revert-layer; } } #reset { align-self: flex-end; } #reset { align-self: INITIAL; } #unset { align-self: center; } #unset { align-self: UnSeT; } #revert { align-self: flex-end; } #revert { align-self: ReVeRt; } #invalid { align-self: center; } #invalid { align-self: inherit; } #important { align-self: flex-end !important; } #important { align-self: initial; }"
+                .into(),
+        ])
+        .unwrap();
+        let layer = node("<div id='layer'>Layer</div>");
+        let reset = node("<div id='reset'>Reset</div>");
+        let unset = node("<div id='unset'>Unset</div>");
+        let revert = node("<div id='revert'>Revert</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let important = node("<div id='important'>Important</div>");
+
+        let assert_align = |element: &NativeNode, value: AlignSelfValue| {
+            assert_eq!(stylesheet.computed_for(element).align_self(), value);
+        };
+
+        assert_align(&layer, AlignSelfValue::Center);
+        assert_align(&reset, AlignSelfValue::Auto);
+        assert_align(&unset, AlignSelfValue::Auto);
+        assert_align(&revert, AlignSelfValue::Auto);
+        assert_align(&invalid, AlignSelfValue::Center);
+        assert_align(&important, AlignSelfValue::FlexEnd);
     }
 
     #[test]

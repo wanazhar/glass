@@ -15805,6 +15805,109 @@ fn native_flex_align_self_css_wide_resets_delegate_and_move_artifacts() {
 }
 
 #[test]
+fn native_flex_align_content_css_wide_resets_reach_layout_and_raster() {
+    let document = NativeDocument::parse(
+        "<style>.row { display:flex; width:12px; height:32px; gap:2px; flex-wrap:wrap; align-items:center; } #initial { align-content:center; } #initial { align-content:INITIAL; } #unset { align-content:flex-end; } #unset { align-content:UNSET; } #revert { align-content:center; } #revert { align-content:ReVeRt; } #terminal { align-content:center; align-content:initial; } #invalid { align-content:center; align-content:initial; align-content:inherit; } #important { align-content:flex-end !important; } #important { align-content:initial; } #layered { align-content:flex-start; } @layer theme { #layered { align-content:flex-end; } } #layered { align-content:revert-layer; } .item { width:4px; height:4px; flex-shrink:0; } .nested { display:block; height:2px; }</style><div id='initial' class='row'><button id='initial-first' class='item' style='background-color:red'><span id='nested' class='nested'>A</span></button><button id='initial-second' class='item' style='background-color:blue'>B</button><button id='initial-third' class='item' style='background-color:green'>C</button></div><div id='unset' class='row'><button id='unset-first' class='item' style='background-color:red'>D</button><button id='unset-second' class='item' style='background-color:blue'>E</button><button id='unset-third' class='item' style='background-color:green'>F</button></div><div id='revert' class='row'><button id='revert-first' class='item' style='background-color:red'>G</button><button id='revert-second' class='item' style='background-color:blue'>H</button><button id='revert-third' class='item' style='background-color:green'>I</button></div><div id='terminal' class='row'><button id='terminal-first' class='item' style='background-color:red'>J</button><button id='terminal-second' class='item' style='background-color:blue'>K</button><button id='terminal-third' class='item' style='background-color:green'>L</button></div><div id='invalid' class='row'><button id='invalid-first' class='item' style='background-color:red'>M</button><button id='invalid-second' class='item' style='background-color:blue'>N</button><button id='invalid-third' class='item' style='background-color:green'>O</button></div><div id='important' class='row'><button id='important-first' class='item' style='background-color:red'>P</button><button id='important-second' class='item' style='background-color:blue'>Q</button><button id='important-third' class='item' style='background-color:green'>R</button></div><div id='layered' class='row'><button id='layered-first' class='item' style='background-color:red'>S</button><button id='layered-second' class='item' style='background-color:blue'>T</button><button id='layered-third' class='item' style='background-color:green'>U</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 240,
+        device_scale_factor_milli: 1000,
+    };
+    let target = |id: &str| document.resolve_target(&format!("id={id}")).unwrap();
+    let initial_first = target("initial-first");
+    let initial_second = target("initial-second");
+    let unset_first = target("unset-first");
+    let unset_second = target("unset-second");
+    let revert_first = target("revert-first");
+    let revert_second = target("revert-second");
+    let terminal_first = target("terminal-first");
+    let terminal_second = target("terminal-second");
+    let invalid_first = target("invalid-first");
+    let invalid_second = target("invalid-second");
+    let important_first = target("important-first");
+    let important_second = target("important-second");
+    let layered_first = target("layered-first");
+    let layered_second = target("layered-second");
+    let nested = target("nested");
+
+    let layout = document.layout(viewport).unwrap();
+    let y_pair = |first, second| {
+        (
+            layout.box_for(first).unwrap().y,
+            layout.box_for(second).unwrap().y,
+        )
+    };
+    assert_eq!(y_pair(initial_first, initial_second), (0, 0));
+    assert_eq!(y_pair(unset_first, unset_second), (32, 32));
+    assert_eq!(y_pair(revert_first, revert_second), (64, 64));
+    assert_eq!(y_pair(terminal_first, terminal_second), (96, 96));
+    assert_eq!(y_pair(invalid_first, invalid_second), (128, 128));
+    assert_eq!(y_pair(important_first, important_second), (182, 182));
+    assert_eq!(y_pair(layered_first, layered_second), (214, 214));
+    assert_eq!(layout.box_for(nested).unwrap().y, 0);
+    assert_eq!(layout.box_for(initial_first).unwrap().height, 4);
+
+    let semantic_nodes = document.semantic_nodes();
+    for pair in [
+        initial_first,
+        initial_second,
+        unset_first,
+        unset_second,
+        revert_first,
+        revert_second,
+        terminal_first,
+        terminal_second,
+        invalid_first,
+        invalid_second,
+        important_first,
+        important_second,
+        layered_first,
+        layered_second,
+    ]
+    .windows(2)
+    {
+        assert!(
+            semantic_nodes
+                .iter()
+                .position(|node| node.node_id == pair[0])
+                < semantic_nodes
+                    .iter()
+                    .position(|node| node.node_id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == initial_first && rect.y == 0 && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == important_first && rect.y == 182 && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(nested));
+    assert_eq!(layout.hit_test(1, 183).unwrap(), Some(important_first));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(1, 183), Some([255, 0, 0, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "align-content"
+    }));
+}
+
+#[test]
 fn native_flex_shorthand_revert_layer_preserves_components_and_artifacts() {
     let document = NativeDocument::parse(
         "<style>@layer base { #row { display:flex;width:24px;height:8px;gap:2px; } #first { flex:0 1 4px; width:4px;height:8px;background-color:red; } #second { flex:2 3 5px; width:5px;height:8px;background-color:blue; } #inline { flex:2 3 4px; } #repeated { flex:2 3 7px; } #mixed { flex:2 3 6px; } } @layer theme { #first { flex:1 0 10px; } #second { flex:0 0 8px; } #inline { flex:5 0 9px; } #repeated { flex:4 2 9px; } #mixed { flex:revert-layer; flex-grow:5; } } @layer top { #second { flex:revert-layer; } #repeated { flex:revert-layer; } } #first { flex:revert-layer; } #second { flex:revert-layer; } #inline { flex:revert-layer; } #repeated { flex:revert-layer; } #mixed { flex:revert-layer; } #fallback { flex:revert-layer; } #same-before { flex:2 3 6px; flex-grow:4; } #same-after { flex-grow:4; flex:2 3 6px; } #invalid { flex:2 3 6px; flex:1 2 3%; }</style><div id='row'><div id='first'>A</div><div id='second'>B</div></div><div id='inline' style='flex:REVERT-LAYER'>Inline</div><div id='repeated'>Repeated</div><div id='mixed'>Mixed</div><div id='fallback'>Fallback</div><div id='same-before'>Before</div><div id='same-after'>After</div><div id='invalid'>Invalid</div>",

@@ -17390,6 +17390,173 @@ fn native_overflow_revert_layer_preserves_axis_clips_across_consumers() {
 }
 
 #[test]
+fn native_overflow_important_priority_reaches_projection_and_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        .box { display:block; width:16px; height:10px; margin:0px; background-color:blue; }
+        .child { display:block; width:56px; min-width:56px; height:20px; background-color:red; }
+        @layer base {
+          #named { overflow-x:hidden !important; }
+          #rollback { overflow:hidden !important; overflow:revert-layer !important; }
+        }
+        @layer theme {
+          #named { overflow-x:clip !important; }
+          #rollback { overflow:clip !important; }
+        }
+        #named { overflow-x:clip; }
+        #inline { overflow:revert-layer !important; }
+        </style>
+        <button id='named' class='box'><span id='named-child' class='child'></span></button>
+        <button id='rollback' class='box'><span id='rollback-child' class='child'></span></button>
+        <button id='normal' class='box'><span id='normal-child' class='child'></span></button>
+        <button id='inline' class='box' style='overflow:hidden !important'><span id='inline-child' class='child'></span></button>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let overflow_details = ["overflow", "overflow-x", "overflow-y"];
+    assert!(!document.diagnostics().iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code,
+            NativeDiagnosticCode::UnsupportedCssProperty
+                | NativeDiagnosticCode::UnsupportedCssValue
+        ) && overflow_details.contains(&diagnostic.detail.as_str())
+    }));
+
+    let named = document.resolve_target("id=named").unwrap();
+    let named_child = document.resolve_target("id=named-child").unwrap();
+    let rollback = document.resolve_target("id=rollback").unwrap();
+    let rollback_child = document.resolve_target("id=rollback-child").unwrap();
+    let normal = document.resolve_target("id=normal").unwrap();
+    let normal_child = document.resolve_target("id=normal-child").unwrap();
+    let inline = document.resolve_target("id=inline").unwrap();
+    let inline_child = document.resolve_target("id=inline-child").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+
+    assert_eq!(
+        layout.viewport_rect_for(named_child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(rollback_child),
+        Some(NativeRect {
+            x: 0,
+            y: 10,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(normal_child),
+        Some(NativeRect {
+            x: 0,
+            y: 20,
+            width: 32,
+            height: 20,
+        })
+    );
+    assert_eq!(
+        layout.viewport_rect_for(inline_child),
+        Some(NativeRect {
+            x: 0,
+            y: 30,
+            width: 16,
+            height: 10,
+        })
+    );
+    assert_eq!(layout.hit_test(5, 5).unwrap(), Some(named_child));
+    assert_eq!(layout.hit_test(16, 5).unwrap(), None);
+    assert_eq!(layout.hit_test(5, 15).unwrap(), Some(rollback_child));
+    assert_eq!(layout.hit_test(5, 25).unwrap(), Some(normal_child));
+
+    let list = document.display_list(viewport).unwrap();
+    let child_clip_for = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                clip,
+                ..
+            } if *command_node_id == node_id => Some(*clip),
+            _ => None,
+        })
+    };
+    assert!(child_clip_for(named_child).is_some());
+    assert!(child_clip_for(rollback_child).is_some());
+    assert_eq!(child_clip_for(normal_child), Some(None));
+    assert!(child_clip_for(inline_child).is_some());
+
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(5, 5), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(16, 5), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(5, 15), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 20), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(30, 25), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 35), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(5, 40), Some([255, 255, 255, 255]));
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (32, 64));
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [named, rollback, normal, inline].windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+
+    let scroll_document = NativeDocument::parse(
+        r#"<style>
+        @layer base { #scroll { overflow-x:visible !important; overflow-y:hidden !important; } }
+        @layer theme { #scroll { overflow-x:hidden !important; overflow-y:visible !important; } }
+        #scroll { overflow:clip; }
+        </style>
+        <button id='scroll' style='display:block;width:16px;height:10px;margin:0px'><span id='scroll-child' style='display:block;width:56px;min-width:56px;height:20px;background-color:red'></span></button>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let scroll_child = scroll_document.resolve_target("id=scroll-child").unwrap();
+    let scroll_layout = scroll_document
+        .layout(Viewport {
+            width: 32,
+            height: 32,
+            device_scale_factor_milli: 1000,
+        })
+        .unwrap();
+    assert_eq!(scroll_layout.content_width, 56);
+    assert_eq!(
+        scroll_layout.max_scroll_offset(),
+        NativePoint { x: 24, y: 0 }
+    );
+    assert_eq!(
+        scroll_layout.viewport_rect_for(scroll_child),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 10,
+        })
+    );
+}
+
+#[test]
 fn native_min_max_dimensions_constrain_content_and_border_box_geometry() {
     let document = NativeDocument::parse(
         "<style>#min { min-width: 40px; min-height: 30px; } #max { width: 24px; height: 20px; max-width: 16px; max-height: 10px; } #border { box-sizing: border-box; width: 20px; height: 20px; min-width: 28px; max-width: 32px; min-height: 26px; max-height: 30px; padding: 2px; border: 2px solid red; }</style><div id='min'>Min</div><div id='max'>Max</div><div id='border'>Border</div>",

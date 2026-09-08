@@ -5772,6 +5772,133 @@ fn native_logical_box_edges_map_and_feed_all_consumers() {
 }
 
 #[test]
+fn native_box_model_reset_keywords_preserve_geometry_and_artifact_owners() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        @layer base {
+          #physical { display:block; width:10px; height:6px; padding:4px; margin:3px; box-sizing:border-box; background-color:red; }
+          #logical { display:block; direction:rtl; width:10px; height:6px; padding-block:2px 3px; padding-inline:4px 5px; margin-block:1px 2px; margin-inline:3px 4px; box-sizing:border-box; background-color:blue; }
+          #important { display:block; width:30px; height:20px; padding:6px !important; padding:initial; margin:7px !important; margin:unset; box-sizing:border-box !important; box-sizing:initial; background-color:green; }
+        }
+        @layer theme {
+          #physical { padding:initial; margin:unset; box-sizing:revert; }
+          #logical { padding-inline-start:initial; margin-inline-end:revert; box-sizing:unset; }
+        }
+        </style>
+        <div id='physical' role='button'>Physical</div>
+        <div id='logical' role='button'>Logical</div>
+        <div id='important' role='button'>Important</div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !matches!(
+            diagnostic.code,
+            NativeDiagnosticCode::UnsupportedCssProperty
+                | NativeDiagnosticCode::UnsupportedCssValue
+        )
+    }));
+
+    let viewport = Viewport {
+        width: 64,
+        height: 128,
+        device_scale_factor_milli: 1000,
+    };
+    let physical = document.resolve_target("id=physical").unwrap();
+    let logical = document.resolve_target("id=logical").unwrap();
+    let important = document.resolve_target("id=important").unwrap();
+    let layout = document.layout(viewport).unwrap();
+
+    let physical_rect = layout.box_for(physical).unwrap();
+    assert_eq!((physical_rect.width, physical_rect.height), (10, 6));
+    let physical_box = layout
+        .boxes
+        .iter()
+        .find(|item| item.node_id == physical)
+        .unwrap();
+    assert_eq!(
+        physical_box.content_rect,
+        NativeRect {
+            x: physical_rect.x,
+            y: physical_rect.y,
+            width: 10,
+            height: 6,
+        }
+    );
+
+    let logical_rect = layout.box_for(logical).unwrap();
+    assert_eq!((logical_rect.width, logical_rect.height), (19, 11));
+    let logical_box = layout
+        .boxes
+        .iter()
+        .find(|item| item.node_id == logical)
+        .unwrap();
+    assert_eq!(
+        logical_box.content_rect,
+        NativeRect {
+            x: logical_rect.x + 5,
+            y: logical_rect.y + 2,
+            width: 10,
+            height: 6,
+        }
+    );
+
+    let important_rect = layout.box_for(important).unwrap();
+    assert_eq!((important_rect.width, important_rect.height), (30, 20));
+    let important_box = layout
+        .boxes
+        .iter()
+        .find(|item| item.node_id == important)
+        .unwrap();
+    assert_eq!(
+        important_box.content_rect,
+        NativeRect {
+            x: important_rect.x + 6,
+            y: important_rect.y + 6,
+            width: 18,
+            height: 8,
+        }
+    );
+    assert_eq!(
+        layout.hit_test((important_rect.x + 1).into(), (important_rect.y + 1).into()),
+        Ok(Some(important))
+    );
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [physical, logical, important].windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == physical && *rect == physical_rect && *color == NativeColor::RED
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(important_rect.x + 1, important_rect.y + 1),
+        Some([0, 128, 0, 255])
+    );
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (64, 128));
+}
+
+#[test]
 fn native_text_alignment_revert_layer_preserves_inheritance_and_owner_paths() {
     let document = NativeDocument::parse(
         "<style>.line { display:block; width:45px; } @layer base { #named { text-align:left; } #repeat { text-align:center; } #final { text-align:justify; text-align-last:right; text-justify:none; } #parent { text-align:center; } } @layer theme { #named { text-align:center; } #repeat { text-align:revert-layer; } #final { text-align-last:justify; text-justify:inter-word; } } @layer top { #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; } } #named { text-align:revert-layer; } #repeat { text-align:revert-layer; } #final { text-align-last:revert-layer; text-justify:revert-layer; }</style><div id='named' class='line'>A</div><div id='repeat' class='line'>B</div><div id='final' class='line'>A B C</div><div id='parent' class='line'><span id='child' style='text-align:revert-layer'>C</span></div><div id='fallback' class='line' style='text-align:REVERT-LAYER'>D</div>",

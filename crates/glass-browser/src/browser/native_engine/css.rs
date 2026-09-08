@@ -6895,6 +6895,9 @@ fn parse_local_box_edges(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 4
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
+    if is_box_model_reset(value) {
+        return Some([LocalCascadeDeclaration::Value(0); 4]);
+    }
     parse_box_edges(value).map(|values| values.map(LocalCascadeDeclaration::Value))
 }
 
@@ -6913,6 +6916,9 @@ fn parse_box_edge_pair(value: &str) -> Option<[u32; 2]> {
 fn parse_local_box_edge_pair(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 2]> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 2]);
+    }
+    if is_box_model_reset(value) {
+        return Some([LocalCascadeDeclaration::Value(0); 2]);
     }
     parse_box_edge_pair(value).map(|values| values.map(LocalCascadeDeclaration::Value))
 }
@@ -6939,6 +6945,9 @@ fn parse_local_margin_edges(
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
+    if is_box_model_reset(value) {
+        return Some([LocalCascadeDeclaration::Value(NativeMarginValue::Length(0)); 4]);
+    }
     parse_margin_edges(value).map(|values| values.map(LocalCascadeDeclaration::Value))
 }
 
@@ -6959,6 +6968,9 @@ fn parse_local_margin_edge_pair(
 ) -> Option<[LocalCascadeDeclaration<NativeMarginValue>; 2]> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 2]);
+    }
+    if is_box_model_reset(value) {
+        return Some([LocalCascadeDeclaration::Value(NativeMarginValue::Length(0)); 2]);
     }
     parse_margin_edge_pair(value).map(|values| values.map(LocalCascadeDeclaration::Value))
 }
@@ -8206,19 +8218,35 @@ fn parse_local_dimension_declaration(value: &str) -> Option<LocalCascadeDeclarat
 }
 
 fn parse_local_padding_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
+    if is_box_model_reset(value) {
+        return Some(LocalCascadeDeclaration::Value(0));
+    }
     parse_local_cascade_declaration(value, parse_dimension)
 }
 
 fn parse_local_margin_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeMarginValue>> {
+    if is_box_model_reset(value) {
+        return Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(0)));
+    }
     parse_local_cascade_declaration(value, parse_margin_value)
 }
 
 fn parse_local_box_sizing_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeBoxSizing>> {
+    if is_box_model_reset(value) {
+        return Some(LocalCascadeDeclaration::Value(NativeBoxSizing::ContentBox));
+    }
     parse_local_cascade_declaration(value, parse_box_sizing)
+}
+
+fn is_box_model_reset(value: &str) -> bool {
+    let value = value.trim();
+    value.eq_ignore_ascii_case("initial")
+        || value.eq_ignore_ascii_case("unset")
+        || value.eq_ignore_ascii_case("revert")
 }
 
 fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
@@ -16035,7 +16063,7 @@ mod tests {
     }
 
     #[test]
-    fn local_box_model_declaration_parsers_accept_only_standalone_revert_layer() {
+    fn local_box_model_declaration_parsers_accept_bounded_reset_and_revert_layer_forms() {
         assert_eq!(
             parse_local_box_edges(" ReVeRt-LaYeR "),
             Some([LocalCascadeDeclaration::RevertLayer; 4])
@@ -16049,6 +16077,15 @@ mod tests {
             Some(LocalCascadeDeclaration::RevertLayer)
         );
         assert_eq!(parse_local_box_edges("revert-layer 4px"), None);
+        assert_eq!(
+            parse_local_box_edges("InItIaL"),
+            Some([LocalCascadeDeclaration::Value(0); 4])
+        );
+        assert_eq!(
+            parse_local_box_edge_pair("UNSET"),
+            Some([LocalCascadeDeclaration::Value(0); 2])
+        );
+        assert_eq!(parse_local_box_edge_pair("revert 1px"), None);
         assert_eq!(parse_local_box_edges("50%"), None);
         assert_eq!(parse_local_box_edges("-1px"), None);
         assert_eq!(parse_local_box_edges("1px 2px 3px 4px 5px"), None);
@@ -16065,6 +16102,15 @@ mod tests {
             Some(LocalCascadeDeclaration::RevertLayer)
         );
         assert_eq!(parse_local_margin_edges("revert-layer auto"), None);
+        assert_eq!(
+            parse_local_margin_declaration("ReVeRt"),
+            Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(0)))
+        );
+        assert_eq!(
+            parse_local_margin_edge_pair("initial"),
+            Some([LocalCascadeDeclaration::Value(NativeMarginValue::Length(0)); 2])
+        );
+        assert_eq!(parse_local_margin_edge_pair("unset auto"), None);
         assert_eq!(parse_local_margin_edges("50%"), None);
         assert_eq!(parse_local_margin_edges("-1px"), None);
         assert_eq!(
@@ -16074,6 +16120,10 @@ mod tests {
         assert_eq!(
             parse_local_box_sizing_declaration("border-box"),
             Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
+        );
+        assert_eq!(
+            parse_local_box_sizing_declaration("UNSET"),
+            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::ContentBox))
         );
         assert_eq!(
             parse_local_box_sizing_declaration("revert-layer border-box"),

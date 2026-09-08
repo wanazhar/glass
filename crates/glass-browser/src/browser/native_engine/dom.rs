@@ -896,6 +896,7 @@ impl NativeDocument {
         let mut inherited_font_style = FontStyleValue::Normal;
         let mut inherited_word_break = WordBreakValue::Normal;
         let mut inherited_vertical_align = VerticalAlignValue::Baseline;
+        let mut inherited_text_indent = 0;
         let mut inherited_word_spacing = 0;
         let mut inherited_letter_spacing = 0;
         for current_id in chain.into_iter().rev() {
@@ -951,6 +952,7 @@ impl NativeDocument {
                     font_style: inherited_font_style,
                     word_break: inherited_word_break,
                     vertical_align: inherited_vertical_align,
+                    text_indent: inherited_text_indent,
                     word_spacing: inherited_word_spacing,
                     letter_spacing: inherited_letter_spacing,
                 },
@@ -1007,6 +1009,7 @@ impl NativeDocument {
             inherited_font_style = style.font_style();
             inherited_word_break = style.word_break();
             inherited_vertical_align = style.vertical_align();
+            inherited_text_indent = style.text_indent();
             inherited_word_spacing = style.word_spacing();
             inherited_letter_spacing = style.letter_spacing();
             if current_id == id {

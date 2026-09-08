@@ -39,6 +39,7 @@ bounded-local-presentation-important,
 bounded-flex-gap-important/bounded-dimension-important/bounded-box-model-important/
 bounded-logical-box-model-edges/
 bounded-box-model-css-wide-resets/
+bounded-box-model-explicit-inheritance/
 bounded-overflow-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
@@ -1707,6 +1708,24 @@ remain outside this slice. Scoped check, focused parser/integration tests, full
 native integration (232/232), strict Clippy, warning-denied rustdoc, and
 formatting pass locally; final static, paired-crate, package, workspace,
 security/fuzz, cleanup, issue-level, and remote-CI gates remain pending.
+
+The completed dependency-ordered `native-engine-195` slice is recorded in
+`docs/plan/tasks/native-engine-195.md` and implemented at `0caad64b` (design
+`a61b9c5f`). It adds standalone case-insensitive `inherit` to
+`box-sizing`, physical padding/margin shorthands and longhands, and the
+supported horizontal-tb logical padding/margin family. Physical inheritance
+copies the parent's effective values, including private margin `auto`
+provenance; logical inheritance reads the parent side in the parent's resolved
+`ltr`/ `rtl` direction before projecting into the child's direction. Root
+fallbacks, explicit non-inheritance, important/source-order and
+`revert-layer` behavior remain bounded by the existing private cascade.
+Percentages, negative lengths, margin collapsing, positioning, vertical writing
+modes, additional logical properties, multiple origins, and browser-wide CSS
+conformance remain outside this slice. Scoped check, focused parser/integration
+tests, full native integration (233/233), strict Clippy, warning-denied
+rustdoc, and formatting pass locally; final static, paired-crate, package,
+workspace, security/fuzz, cleanup, issue-level, and remote-CI gates remain
+pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

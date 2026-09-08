@@ -21961,6 +21961,79 @@ fn native_flex_basis_controls_wrap_constraints_and_explicit_overflow() {
 }
 
 #[test]
+fn native_flex_inherit_reaches_sizing_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>#outer{display:flex;width:30px;height:8px;gap:2px;align-items:flex-start;flex:2 3 12px;}#inherited{flex:InHeRiT;height:8px;background-color:red;}#omitted{width:4px;height:8px;background-color:green;}#invalid{width:4px;height:8px;flex:1 1 4px;flex:inherit 1 auto;background-color:blue;}</style><div id='outer'><button id='inherited'><span id='nested' style='display:block;height:4px'>A</span></button><button id='omitted'>B</button><button id='invalid'>C</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let outer = document.resolve_target("id=outer").unwrap();
+    let inherited = document.resolve_target("id=inherited").unwrap();
+    let nested = document.resolve_target("id=nested").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let viewport = Viewport {
+        width: 36,
+        height: 16,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let outer_box = layout.box_for(outer).unwrap();
+    let inherited_box = layout.box_for(inherited).unwrap();
+    let nested_box = layout.box_for(nested).unwrap();
+    let omitted_box = layout.box_for(omitted).unwrap();
+    let invalid_box = layout.box_for(invalid).unwrap();
+    assert_eq!(outer_box.width, 30);
+    assert!(inherited_box.width > 12);
+    assert_eq!(nested_box.width, inherited_box.width);
+    assert_eq!(omitted_box.width, 4);
+    assert!(invalid_box.width > 4);
+    assert_eq!(inherited_box.x, outer_box.x);
+    assert_eq!(omitted_box.x, inherited_box.x + inherited_box.width + 2);
+    assert_eq!(invalid_box.x, omitted_box.x + omitted_box.width + 2);
+
+    let semantic_nodes = document.semantic_nodes();
+    assert!(
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == inherited)
+            .unwrap()
+            < semantic_nodes
+                .iter()
+                .position(|node| node.node_id == omitted)
+                .unwrap()
+    );
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == inherited
+                    && rect.width == inherited_box.width
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(
+        layout
+            .hit_test(
+                i64::from(inherited_box.x + 1),
+                i64::from(inherited_box.y + 1),
+            )
+            .unwrap(),
+        Some(nested)
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(inherited_box.x + 1, inherited_box.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "flex"
+    }));
+}
+
+#[test]
 fn native_flex_shorthand_expands_zero_basis_and_preserves_shared_consumers() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:20px;gap:2px'><div id='first' style='width:100px;height:8px;flex:1;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></div><div id='second' style='width:100px;height:8px;flex:1;background-color:blue'>B</div></div>",
@@ -22000,7 +22073,7 @@ fn native_flex_shorthand_expands_zero_basis_and_preserves_shared_consumers() {
 #[test]
 fn native_flex_sizing_css_wide_resets_reach_layout_and_raster() {
     let document = NativeDocument::parse(
-        "<style>.row { display:flex; width:32px; height:8px; gap:2px; align-items:flex-start; } .item { width:4px; height:4px; flex-shrink:0; } #reset { flex:4 5 12px; background-color:red; } #reset { flex:InItIaL; } #longhands { flex-grow:4; flex-shrink:5; flex-basis:12px; background-color:green; } #longhands { flex-grow:UnSeT; } #longhands { flex-shrink:ReVeRt; flex-basis:INITIAL; } #invalid { flex:2 3 8px; background-color:blue; } #invalid { flex:inherit; } #important { flex:5 6 10px !important; background-color:black; } #important { flex:initial; }</style><div id='row' class='row'><div id='reset' class='item'>A</div><div id='longhands' class='item'>B</div><div id='invalid' class='item'>C</div><div id='important' class='item'>D</div></div>",
+        "<style>.row { display:flex; width:32px; height:8px; gap:2px; align-items:flex-start; } .item { width:4px; height:4px; flex-shrink:0; } #reset { flex:4 5 12px; background-color:red; } #reset { flex:InItIaL; } #longhands { flex-grow:4; flex-shrink:5; flex-basis:12px; background-color:green; } #longhands { flex-grow:UnSeT; } #longhands { flex-shrink:ReVeRt; flex-basis:INITIAL; } #invalid { flex:2 3 8px; background-color:blue; } #invalid { flex:inherit 1 auto; } #important { flex:5 6 10px !important; background-color:black; } #important { flex:initial; }</style><div id='row' class='row'><div id='reset' class='item'>A</div><div id='longhands' class='item'>B</div><div id='invalid' class='item'>C</div><div id='important' class='item'>D</div></div>",
         &NativeEngineLimits::default(),
     )
     .unwrap();

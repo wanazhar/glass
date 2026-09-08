@@ -2427,6 +2427,19 @@ diagnostics, and the two-crate boundary remain bounded. Full native integration
 (266/266) and the feature library (1,045 passed, 1 ignored) pass locally.
 Remote CI, push, release, tag, and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-229](tasks/native-engine-229.md)
+slice is implemented at `6c4116e4` (design `0e2916c9`). It adds bounded
+standalone case-insensitive `row-gap: inherit` and `column-gap: inherit`
+through the existing private parent-style chain, copying the corresponding
+computed parent gap component only when explicitly authored while omitted
+longhands remain local with the bounded `0` fallback. Independent-axis
+cascade, layer/importance/source-order precedence, shorthand/longhand
+interaction, reset and `revert-layer` behavior, mixed-invalid preservation,
+wrapped/column placement, display-list, raster/PNG, point-hit, semantics,
+diagnostics, and the two-crate boundary remain bounded. Full native integration
+(267/267) and the feature library (1,046 passed, 1 ignored) pass locally.
+Remote CI, push, release, tag, and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

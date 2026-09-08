@@ -1,7 +1,7 @@
 ---
 id: native-engine-229
 scope: glass-browser/native-engine/gap-longhand-inherit
-status: planned
+status: complete
 depends-on: [native-engine-228]
 ---
 
@@ -94,6 +94,17 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
+Implementation and local certification are complete at `6c4116e4` (design
+`0e2916c9`). The parser/cascade gap group passes 12/12 tests; the public
+independent-axis fixture passes 1/1; full native integration passes 267/267;
+and the feature-enabled `glass-browser` library passes 1,046 tests with 1
+ignored. The clean isolated release certification also passes the paired
+workspace all-feature tests (browser library 1,047 passed with 1 ignored,
+native integration 267/267, and `glass-dev` 365/365), strict Clippy,
+warning-denied rustdoc, locked package/dependency checks, offline fuzz-target
+compilation, version/parity/static documentation audits, formatting, and
+diff checks. The unisolated parallel `glass-dev` gate is known to be polluted
+by the stale `/tmp/.git` fixture parent; the isolated `TMPDIR` certification
+is the authoritative result for this task. Remote CI, push, release, tag,
 registry publication, browser-parity, security-boundary certification, and
 promotion remain outside this local task.

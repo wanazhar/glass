@@ -458,8 +458,11 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive
   `initial|unset|revert` reset forms for all three gap declarations that
-  resolve to zero; `inherit`, parent-gap propagation, percentages, and
-  fractional/intrinsic values remain bounded diagnostics,
+  resolve to zero; standalone case-insensitive `gap:inherit`, `row-gap:inherit`,
+  and `column-gap:inherit` copy their corresponding computed parent gap
+  components only when explicitly authored while omitted forms remain local
+  with the bounded `0` fallback; percentages and fractional/intrinsic values
+  remain bounded diagnostics,
   bounded case-insensitive 15-layer/unlayered inherited `revert-layer` rollback
   for `text-transform`, `font-weight`, `font-style`, and `word-break` with
   finite parent/root fallbacks,
@@ -505,10 +508,11 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   only when explicitly authored while omitted `order` remains local with the
   bounded `0` fallback; visual `(order, source_index)` sorting preserves
   semantic/source order,
-  standalone case-insensitive `gap:inherit` copies the computed parent row and
-  column gap components only when explicitly authored while omitted `gap`
-  remains local with the bounded `0` fallback; direct `row-gap:inherit` and
-  `column-gap:inherit` remain outside this shorthand-only boundary,
+  standalone case-insensitive `gap:inherit`, `row-gap:inherit`, and
+  `column-gap:inherit` copy their corresponding computed parent gap components
+  only when explicitly authored while omitted `gap`, `row-gap`, and
+  `column-gap` remain local with the bounded `0` fallbacks; shorthand/longhand
+  precedence remains bounded,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
   placement using explicit content height or the auto row's maximum item outer
   height,
@@ -850,8 +854,11 @@ projection, and point hit-testing,
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive
   `initial|unset|revert` reset forms for all three gap declarations that
-  resolve to zero; `inherit`, parent-gap propagation, percentages, and
-  fractional/intrinsic values remain bounded diagnostics,
+  resolve to zero; standalone case-insensitive `gap:inherit`, `row-gap:inherit`,
+  and `column-gap:inherit` copy their corresponding computed parent gap
+  components only when explicitly authored while omitted forms remain local
+  with the bounded `0` fallback; percentages and fractional/intrinsic values
+  remain bounded diagnostics,
   bounded case-insensitive 15-layer/unlayered inherited `revert-layer` rollback
   for `text-transform`, `font-weight`, `font-style`, and `word-break` with
   finite parent/root fallbacks,
@@ -883,10 +890,11 @@ projection, and point hit-testing,
   only when explicitly authored while omitted `order` remains local with the
   bounded `0` fallback; visual `(order, source_index)` sorting preserves
   semantic/source order,
-  standalone case-insensitive `gap:inherit` copies the computed parent row and
-  column gap components only when explicitly authored while omitted `gap`
-  remains local with the bounded `0` fallback; direct `row-gap:inherit` and
-  `column-gap:inherit` remain outside this shorthand-only boundary,
+  standalone case-insensitive `gap:inherit`, `row-gap:inherit`, and
+  `column-gap:inherit` copy their corresponding computed parent gap components
+  only when explicitly authored while omitted `gap`, `row-gap`, and
+  `column-gap` remain local with the bounded `0` fallbacks; shorthand/longhand
+  precedence remains bounded,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
   placement using explicit content height or the auto row's maximum item outer
   height,

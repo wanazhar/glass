@@ -2471,12 +2471,13 @@ visual stacking.
 | `native-engine-226` | completed bounded standalone case-insensitive `flex-basis:inherit` through the existing private basis component and ancestor-style chain; the computed parent basis value copies only when explicitly authored while omitted `flex-basis` remains local with the bounded `auto` fallback, preserving finite longhand/shorthand precedence, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, row/column and wrapped sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `4ee2e1ed`; locked scoped check, focused flex parser/cascade (35 tests), public inheritance integration (1 test), full-native integration (264/264), feature library (1,044 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-225` | `order:inherit`, percentages, intrinsic sizing, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 | `native-engine-227` | completed bounded standalone case-insensitive `order:inherit` through the existing private parent-style chain; the computed parent order copies only when explicitly authored while omitted `order` remains local with the bounded `0` fallback, preserving finite signed values, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, stable visual `(order, source_index)` sorting, semantic/source order, row/column placement, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, and the two-crate boundary; implementation `6dde525a` with compatibility fixture follow-up `1e7663c1`; locked scoped check, focused flex parser/cascade (35 tests), public inheritance integration (1 test), full-native integration (265/265), feature library (1,044 passed, 1 ignored), workspace check, strict Clippy, paired crate builds, warning-denied rustdoc, and formatting passed locally | `native-engine-226` | percentages, intrinsic sizing, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 | `native-engine-228` | completed bounded standalone case-insensitive `gap:inherit` through the existing private parent-style chain; computed parent row and column gap components copy only when explicitly authored while omitted `gap` remains local with the bounded `0` fallback, preserving finite one-/two-value shorthand forms, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, shorthand/longhand precedence, wrapped/column placement, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; direct `row-gap:inherit` and `column-gap:inherit` remain outside the shorthand-only boundary; implementation `978ae3b5` with compatibility fixture follow-up `b645585b`; locked scoped check, focused gap parser/cascade (11 tests), public inheritance integration (1 test), full-native integration (266/266), feature library (1,045 passed, 1 ignored), workspace check, strict Clippy, paired crate builds, warning-denied rustdoc, and formatting passed locally | `native-engine-227` | percentages, intrinsic values, direct row/column-gap inheritance, additional origins, transitions, animations, grid track sizing, generic CSS-wide machinery, browser parity, and browser-wide gap conformance |
+| `native-engine-229` | completed bounded standalone case-insensitive `row-gap:inherit` and `column-gap:inherit` through the existing private parent-style chain; each computed parent gap component copies only when explicitly authored while omitted longhands remain local with the bounded `0` fallback, preserving independent-axis cascade, layer/importance/source-order precedence, shorthand/longhand interaction, finite values, CSS-wide resets, `revert-layer`, mixed-invalid preservation, wrapped/column placement, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `6c4116e4` (design `0e2916c9`); locked scoped check, focused gap parser/cascade (12 tests), public independent-axis integration (1 test), full-native integration (267/267), feature library (1,046 passed, 1 ignored), workspace check, strict Clippy, paired crate builds, warning-denied rustdoc, and formatting passed locally | `native-engine-228` | percentages, intrinsic values, additional origins, transitions, animations, grid track sizing, generic CSS-wide machinery, browser parity, and browser-wide gap conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-228.md` is the latest completed task;
-`docs/plan/tasks/native-engine-227.md` is the preceding completed task;
+`docs/plan/tasks/native-engine-229.md` is the latest completed task;
+`docs/plan/tasks/native-engine-228.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-226.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-225.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-224.md` is the preceding completed task;
@@ -2640,6 +2641,21 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-229.md`: implementation is `6c4116e4` (design
+`0e2916c9`). It adds standalone, case-insensitive `row-gap: inherit` and
+`column-gap: inherit` through the existing private parent-style chain, copying
+the corresponding computed parent gap component only when explicitly authored
+while omitted longhands remain local with bounded `0` fallback. Independent
+axis cascade, layer/importance/source-order precedence, shorthand/longhand
+interaction, reset and `revert-layer` behavior, mixed-invalid preservation,
+wrapped/column placement, display-list, raster/PNG, point-hit, semantics,
+diagnostics, and the two-crate boundary remain bounded. Focused gap
+parser/cascade coverage (12 tests), public integration (1 test), full-native
+integration (267/267), feature library (1,046 passed, 1 ignored), and the
+locked scoped check pass locally. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, and promotion claims are not
+made.
+The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-228.md`: implementation is `978ae3b5` (design
 `8241ef68`), with compatibility fixture follow-up `b645585b`. It adds
 standalone, case-insensitive `gap: inherit` through the existing private

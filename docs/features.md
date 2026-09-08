@@ -96,8 +96,13 @@ source-behavior reference.
   `word-break`, `text-overflow`, `vertical-align`, `text-indent`, `word-spacing`,
   `letter-spacing`, and `line-height`) also honors the same terminal priority;
   local `display`, `visibility`, and `opacity` declarations honor the same
-  terminal priority; remaining properties remain outside generic `!important`
-  semantics,
+  terminal priority; the normal-only flex and gap declarations (`justify-content`,
+  `align-items`, `align-self`, `align-content`, `place-content`,
+  `flex-direction`, `flex-wrap`, `flex-flow`, `order`, `flex-grow`,
+  `flex-shrink`, `flex-basis`, `flex`, `gap`, `row-gap`, and `column-gap`) also
+  honor the same terminal priority through their existing shorthand/component
+  owners; dimensions, box-model declarations, overflow, and remaining
+  properties remain outside generic `!important` semantics,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or

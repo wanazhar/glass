@@ -1557,16 +1557,18 @@ workspace all-target/all-feature, security/fuzz, and formatting gates pass
 locally; exact evidence and bounded cleanup are recorded in the task. Remote CI
 remains pending because the checkout is local-only.
 The completed dependency-ordered `native-engine-177` through
-`native-engine-188` slices are recorded in their task files. This run's latest
-slice, `native-engine-188`, extends the bounded author-origin `!important`
-partition from the radius, paint-color, border, and text families to local
-`display`, `visibility`, and `opacity` through one private doubled local
-partition. Important-over-normal ordering, reversed named-layer priority,
-inline important precedence, invalid-later preservation, and `revert-layer`
-rollback are covered without changing public schemas, artifact owners,
-dependencies, defaults, or the two-crate boundary. Flex/gap, dimensions/box
-model, overflow, multiple origins, transitions, animations, vertical writing
-modes, and browser-wide CSS conformance remain outside the bounded contract.
+`native-engine-189` slices are recorded in their task files. This run's latest
+slice, `native-engine-189`, extends the bounded author-origin `!important`
+partition from the radius, paint-color, border, text, and local-presentation
+families to the normal-only flex and gap declarations through one private
+doubled flex/gap partition. Important-over-normal ordering, reversed named-layer
+priority, inline precedence in the unlayered important bucket, invalid-later
+preservation, shorthand component expansion, independent gap-axis source order,
+and `revert-layer` rollback are covered without changing public schemas,
+artifact owners, dependencies, defaults, or the two-crate boundary.
+Dimensions/box model, overflow priority, multiple origins, transitions,
+animations, vertical writing modes, and browser-wide CSS conformance remain
+outside the bounded contract.
 Local certification for the latest slice is recorded below; the checkout
 remains local-only.
 The dependency-ordered `native-engine-122` implementation is complete at
@@ -2354,10 +2356,13 @@ visual stacking.
 
 | `native-engine-188` | completed bounded author-origin `!important` priority for local `display`, `visibility`, and `opacity` through one private doubled local cascade partition, preserving important-over-normal ordering, reversed named-layer priority, inline important precedence, invalid-later preservation, and `revert-layer` rollback through existing hidden-subtree, semantic, layout, display-list, raster, capture, and point-hit owners; implementation `ca0b47bd`; scoped check, focused/full-native integration, strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-187` | flex/gap, dimensions/box model, overflow, other properties, dependencies, multiple origins, transitions, animations, vertical writing modes, and browser-wide CSS conformance |
 
+| `native-engine-189` | completed bounded author-origin `!important` priority for the normal-only flex and gap declarations through private doubled flex candidate arrays and important-aware gap partitions, carrying priority through `place-content`, `flex-flow`, and `flex` shorthand expansion while preserving important-over-normal ordering, reversed named-layer priority, inline precedence in the unlayered important bucket, invalid-later preservation, independent gap-axis source order, `revert-layer` rollback, existing layout/artifact consumers, public schemas, and the two-crate boundary; implementation `94724ab0`; scoped check, focused/full-native integration (227/227), strict Clippy, warning-denied rustdoc, and formatting passed locally | `native-engine-188` | dimensions/box model, overflow priority, other properties, dependencies, multiple origins, transitions, animations, vertical writing modes, and browser-wide CSS conformance |
+
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-188.md` is the latest completed task;
+`docs/plan/tasks/native-engine-189.md` is the latest completed task;
+`docs/plan/tasks/native-engine-188.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-187.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-186.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-185.md` is the preceding completed task;
@@ -2482,21 +2487,25 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
-`docs/plan/tasks/native-engine-188.md`: implementation is `ca0b47bd`. It
-extends bounded author-origin `!important` priority to local `display`,
-`visibility`, and `opacity` through a private doubled local partition,
-preserving important-over-normal ordering, reversed named-layer priority,
-inline important precedence, invalid-later preservation, `revert-layer`
-rollback, and the existing hidden-subtree, semantic, layout, display-list,
-raster, capture, hit, diagnostics, schema, and two-crate owners. The scoped
-native check, 2 parser/cascade unit tests, 1 integration regression, full
-native integration (226/226), strict Clippy, warning-denied rustdoc, and
-formatting gates passed. Static release truth, documentation coverage/depth,
-feature parity, TUI shortcut, version-sync, paired-crate, package,
-workspace, security/fuzz, final cleanup, and remote-CI gates remain deferred to
-the final issue #40 certification boundary. No remote CI, push, release, tag,
-registry publication, browser-parity, security-boundary, or promotion claim is
-made.
+`docs/plan/tasks/native-engine-189.md`: implementation is `94724ab0`. It
+extends bounded author-origin `!important` priority to normal-only flex and
+gap declarations through private doubled flex candidate arrays and
+important-aware gap partitions, carrying priority through the supported
+`place-content`, `flex-flow`, and `flex` expansions while preserving
+important-over-normal ordering, reversed named-layer priority, inline
+precedence in the unlayered important bucket, invalid-later preservation,
+independent gap-axis source order, `revert-layer` rollback, and the existing
+row/column/wrap, overflow, layout, display-list, raster, capture, hit,
+diagnostics, schema, and two-crate owners. The scoped native check, 2
+parser/cascade unit tests, 1 integration regression, full native integration
+(227/227), strict Clippy, warning-denied rustdoc, and formatting gates passed.
+Static release truth, documentation coverage/depth, feature parity, TUI
+shortcut, version-sync, paired-crate, package, workspace, security/fuzz, final
+cleanup, and remote-CI gates remain deferred to the final issue #40
+certification boundary. No remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, or promotion claim is made.
+The preceding checkpoint remains recorded for
+`docs/plan/tasks/native-engine-188.md` at `ca0b47bd`.
 The historical checkpoint remains recorded for
 `docs/plan/tasks/native-engine-173.md`: the implementation is `f5f53cec`. It
 adds the bounded complete physical `border` and four side-border shorthand

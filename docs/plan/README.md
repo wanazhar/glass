@@ -2039,10 +2039,10 @@ passed with 612 Markdown files, 345 full-product MCP tools (100 browser-only),
 17 examples, 22 public modules, 93 current guides, 19 substantive contracts,
 14 capabilities across 4 targets, 15 implementation help keys, 63
 documentation markers, and version `0.3.14`. The default-stack library run
-still reproduces the pre-existing large-Clap parser test overflow. Paired-crate, package,
-workspace, security/fuzz, static documentation, cleanup, issue-level, and
-remote-CI gates remain pending until issue #40 reaches its final validation
-boundary.
+still reproduces the pre-existing large-Clap parser test overflow. At that
+preceding checkpoint, paired-crate, package, workspace, security/fuzz, static
+documentation, cleanup, issue-level, and remote-CI gates remained pending;
+the current task evidence follows below.
 
 The completed dependency-ordered [native-engine-199](tasks/native-engine-199.md)
 slice is implemented at `4771f352` (design `4b02b41b`). It adds bounded
@@ -2061,6 +2061,22 @@ blocked by the immutable public `glass-browser 0.3.14` API surface, while the
 canonical local patched/no-verify route and clean-install transition gate
 pass. Exact temporary-target cleanup and issue synchronization remain; remote
 CI, push, release, tag, and registry publication are not claimed.
+
+The completed dependency-ordered [native-engine-200](tasks/native-engine-200.md)
+slice is implemented at `62525ec4` (design `9eafebc9`). It adds bounded
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert` to inherited `text-decoration-style`, retaining `revert-layer` as the
+named-layer rollback. Parent/root fallback, `solid` initial behavior,
+terminal reset semantics, invalid-later preservation, and the existing finite
+decoration styles remain bounded; the existing text display-list, fixed-cell
+raster, PNG, and diagnostic owners are reused unchanged. Full native
+integration (238/238), the feature library (1,020 passed, 1 ignored), paired
+binaries, strict Clippy, warning-denied rustdoc, workspace all-target/all-
+feature tests and doctests, fuzz, package, security, and formatting gates pass
+locally. Direct registry-backed
+dev verification remains blocked by the immutable public `glass-browser
+0.3.14` API surface; the documented local patched/no-verify route passes.
+Remote CI, push, release, tag, and registry publication remain unclaimed.
 
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive

@@ -67,6 +67,7 @@ bounded-text-justification-control/bounded-text-decoration-lines/
 bounded-text-decoration-combinations,
 bounded-text-alignment-revert-layer,
 bounded-inherited-alignment-css-wide-resets,
+bounded-inherited-text-decoration-style-css-wide-resets,
 bounded-text-decoration-skip-spaces-line-edges,
 bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit/
 bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-revert,
@@ -1820,6 +1821,24 @@ verification remains blocked by the immutable public `glass-browser 0.3.14`
 API surface; the canonical local patched/no-verify route and clean-install
 transition gate pass. Exact temporary-target cleanup and issue synchronization
 remain; remote CI is not claimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-200` slice is recorded in
+`docs/plan/tasks/native-engine-200.md` and implemented at `62525ec4` (design
+`9eafebc9`). It extends the inherited `text-decoration-style` owner with
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert`, retaining `revert-layer` as the named-layer rollback. Parent/root
+fallbacks, `solid` initial behavior, terminal reset semantics, invalid-later
+preservation, and the existing finite decoration styles remain bounded; the
+resolved value continues through the existing text display-list, fixed-cell
+raster, PNG, and diagnostic owners without public-schema or crate-boundary
+changes. Full native integration (238/238), the feature library (1,020 passed,
+1 ignored), paired binaries, strict Clippy, warning-denied rustdoc, workspace
+all-target/all-feature tests and doctests, fuzz, package, security, and
+formatting gates pass locally. The direct
+registry-backed dev package verification remains blocked by the immutable
+public `glass-browser 0.3.14` API surface; the documented local patched/
+no-verify route passes. Remote CI, push, release, tag, and registry
+publication remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

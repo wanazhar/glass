@@ -415,6 +415,11 @@ combinations sharing the same line-state owner, bounded inherited
 `text-decoration-style:solid|dashed|dotted|double|wavy` presentation, where
 `double` paints two thickness-preserving solid bands separated by one pixel and
 `wavy` repeats a fixed eight-pixel phase `[0,1,2,1,0,-1,-2,-1]`,
+and the inherited owner accepts standalone case-insensitive `inherit`,
+`initial`, `unset`, and one-author-origin `revert`: inherited forms use the
+computed parent, `initial` uses the finite `solid` root default, and `revert`
+uses the current one-author-origin parent fallback; `revert-layer` remains the
+named-layer rollback and mixed reset tokens remain unsupported,
 bounded PNG
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
 thickness-scaled integer dash/dot periods, bounded inherited

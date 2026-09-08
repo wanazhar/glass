@@ -413,6 +413,10 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   local with the visible/no-clip fallback; hidden-versus-clip spelling,
   nested scrolling, scrollbars, and browser-wide overflow conformance remain
   outside the boundary,
+  standalone case-insensitive `overflow:initial`, `overflow:unset`, and
+  one-author-origin `overflow:revert` reset each affected axis to the same
+  visible/no-clip fallback while remaining distinct from explicit `inherit` and
+  named-layer `revert-layer`; mixed token forms remain invalid,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
   plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`
@@ -821,6 +825,10 @@ projection, and point hit-testing,
   local with the visible/no-clip fallback; hidden-versus-clip spelling,
   nested scrolling, scrollbars, and browser-wide overflow conformance remain
   outside the boundary,
+  standalone case-insensitive `overflow:initial`, `overflow:unset`, and
+  one-author-origin `overflow:revert` reset each affected axis to the same
+  visible/no-clip fallback while remaining distinct from explicit `inherit` and
+  named-layer `revert-layer`; mixed token forms remain invalid,
   bounded inherited `vertical-align:baseline|top|middle|bottom` offsets for
   fixed-cell inline and inline-block line items within the existing line box,
   plus bounded case-insensitive 15-layer/unlayered inherited `revert-layer`

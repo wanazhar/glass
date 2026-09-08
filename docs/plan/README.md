@@ -2484,6 +2484,20 @@ native-feature check plus formatting/diff checks passed locally. Full issue-leve
 gates, remote CI, push, release, tag, registry publication, browser-parity,
 security-boundary, and promotion remain unclaimed.
 
+The completed dependency-ordered [native-engine-233](tasks/native-engine-233.md)
+slice is implemented at `7b31b72e` (design `70f4f924`). It adds bounded
+standalone case-insensitive `overflow: initial`, `overflow: unset`, and
+one-author-origin `overflow: revert` reset forms for the shorthand and
+longhands, resolving each affected axis to the visible/no-clip fallback while
+preserving explicit `inherit`, named-layer `revert-layer`, priority,
+axis-specific clipping, root scroll projection, display-list, fixed-cell
+raster/PNG, point-hit, semantic/source order, diagnostics, and the two-crate
+boundary. The focused reset batch passed 1 library-target test and 1 matching
+native integration test; the scoped check plus formatting/diff checks passed
+locally. Full issue-level gates, remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, and promotion remain
+unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

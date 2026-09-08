@@ -1,7 +1,7 @@
 ---
 id: native-engine-233
 scope: glass-browser/native-engine/overflow-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-232]
 ---
 
@@ -99,6 +99,27 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
-registry publication, browser-parity, security-boundary certification, and
-promotion remain outside this local task.
+Implementation and local certification are complete at `7b31b72e`; the design
+checkpoint is `70f4f924`. The scoped native-feature test-target check passed
+before tests. The focused reset-filtered batch passed 1 library-target test and
+1 native integration test, covering shorthand and longhand reset fallback,
+parent-vs-reset distinction, `!important`, invalid-later preservation,
+axis-specific clipping, root scroll projection, display-list, fixed-cell
+raster/PNG, point-hit, semantic/source order, and typed diagnostics.
+Formatting and diff checks pass. Reset candidates resolve to the existing
+visible/no-clip fallback through the private x/y streams; explicit `inherit`
+and named-layer `revert-layer` remain distinct, with no public style fields,
+dependency, feature default, layout schema, or crate-boundary change. Full
+issue-level native integration, feature-library, strict lint, rustdoc, paired
+two-crate, package, security/fuzz, static documentation, workspace,
+clean-install, remote-CI, issue-sync, and bounded-cleanup gates remain for the
+broader issue completion boundary. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary certification, and promotion
+remain outside this local task.
+Static documentation checks also pass: release truth reports 647 Markdown
+documents (83 current, 59 previous-version hits, 835 semantic audit hits, 0
+current-claim failures); coverage reports 647 Markdown files, 345 full-product
+MCP tools (100 browser-only), 17 examples, and 22 public modules; depth reports
+93 current guides and 19 substantive contracts; feature parity reports 14
+capabilities across 4 targets; TUI reports 15 implementation help keys and 63
+documentation markers; and version sync reports `0.3.14`.

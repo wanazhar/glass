@@ -683,6 +683,7 @@ pub(crate) struct NativeOrderValue(i32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexItemOrderDeclaration {
     Value(NativeOrderValue),
+    Inherit,
     Reset,
     RevertLayer,
 }
@@ -905,6 +906,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) align_content: AlignContentValue,
     pub(crate) flex_direction: FlexDirectionValue,
     pub(crate) flex_wrap: FlexWrapValue,
+    pub(crate) flex_item_order: NativeOrderValue,
     pub(crate) direction: DirectionValue,
     pub(crate) flex_grow: u32,
     pub(crate) flex_shrink: u32,
@@ -954,6 +956,7 @@ impl Default for NativeInheritedStyle {
             align_content: AlignContentValue::FlexStart,
             flex_direction: FlexDirectionValue::Row,
             flex_wrap: FlexWrapValue::NoWrap,
+            flex_item_order: NativeOrderValue::default(),
             direction: DirectionValue::Ltr,
             flex_grow: 0,
             flex_shrink: 1,
@@ -2672,7 +2675,7 @@ impl NativeStylesheet {
             flex_direction: resolve_flex_direction(flex_direction, inherited.flex_direction),
             direction: resolved_direction,
             flex_wrap: resolve_flex_wrap(flex_wrap, inherited.flex_wrap),
-            flex_item_order: resolve_flex_item_order(flex_item_order),
+            flex_item_order: resolve_flex_item_order(flex_item_order, inherited.flex_item_order),
             flex_grow: resolve_flex_grow(flex_grow, inherited.flex_grow),
             flex_shrink: resolve_flex_shrink(flex_shrink, inherited.flex_shrink),
             flex_basis: resolve_flex_basis(flex_basis, inherited.flex_basis),
@@ -3009,10 +3012,12 @@ fn resolve_flex_wrap(
 
 fn resolve_flex_item_order(
     candidates: [Option<CascadeValue<FlexItemOrderDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: NativeOrderValue,
 ) -> NativeOrderValue {
     resolve_alignment_candidates(candidates, NativeOrderValue::default(), |declaration| {
         match declaration {
             FlexItemOrderDeclaration::Value(value) => Some(value),
+            FlexItemOrderDeclaration::Inherit => Some(inherited),
             FlexItemOrderDeclaration::Reset => Some(NativeOrderValue::default()),
             FlexItemOrderDeclaration::RevertLayer => None,
         }
@@ -8323,6 +8328,9 @@ fn parse_flex_item_order_declaration(value: &str) -> Option<FlexItemOrderDeclara
     if is_local_reset_keyword(value) {
         return Some(FlexItemOrderDeclaration::Reset);
     }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some(FlexItemOrderDeclaration::Inherit);
+    }
     parse_flex_item_order(value).map(FlexItemOrderDeclaration::Value)
 }
 
@@ -13623,7 +13631,11 @@ mod tests {
                 "{reset}"
             );
         }
-        assert_eq!(parse_flex_item_order_declaration("inherit"), None);
+        assert_eq!(
+            parse_flex_item_order_declaration(" InHeRiT "),
+            Some(FlexItemOrderDeclaration::Inherit)
+        );
+        assert_eq!(parse_flex_item_order_declaration("inherit 1"), None);
         assert_eq!(
             parse_flex_grow_declaration(" InHeRiT "),
             Some(FlexGrowDeclaration::Inherit)
@@ -13702,9 +13714,9 @@ mod tests {
     }
 
     #[test]
-    fn stylesheet_flex_order_css_wide_resets_use_zero_and_preserve_cascade() {
+    fn stylesheet_flex_order_css_wide_resets_and_root_inherit_use_zero() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "@layer base { #layer { order: -3; } } @layer theme { #layer { order: revert-layer; } } #reset { order: -2; } #reset { order: INITIAL; } #unset { order: -4; } #unset { order: UnSeT; } #revert { order: -5; } #revert { order: ReVeRt; } #invalid { order: -6; } #invalid { order: inherit; } #important { order: -7 !important; } #important { order: initial; }"
+            "@layer base { #layer { order: -3; } } @layer theme { #layer { order: revert-layer; } } #reset { order: -2; } #reset { order: INITIAL; } #unset { order: -4; } #unset { order: UnSeT; } #revert { order: -5; } #revert { order: ReVeRt; } #inherit { order: -6; } #inherit { order: inherit; } #important { order: -7 !important; } #important { order: initial; }"
                 .into(),
         ])
         .unwrap();
@@ -13712,7 +13724,7 @@ mod tests {
         let reset = node("<div id='reset'>Reset</div>");
         let unset = node("<div id='unset'>Unset</div>");
         let revert = node("<div id='revert'>Revert</div>");
-        let invalid = node("<div id='invalid'>Invalid</div>");
+        let inherit = node("<div id='inherit'>Inherit</div>");
         let important = node("<div id='important'>Important</div>");
 
         let assert_order = |element: &NativeNode, order: i32| {
@@ -13726,7 +13738,7 @@ mod tests {
         assert_order(&reset, 0);
         assert_order(&unset, 0);
         assert_order(&revert, 0);
-        assert_order(&invalid, -6);
+        assert_order(&inherit, 0);
         assert_order(&important, -7);
     }
 
@@ -14180,13 +14192,14 @@ mod tests {
     #[test]
     fn stylesheet_flex_inherit_projects_parent_components() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "@layer base { #layered { flex-grow: 7; } #shrink-layered { flex-shrink: 7; } #basis-layered { flex-basis: 7px; } } @layer theme { #layered { flex-grow: inherit; } #shrink-layered { flex-shrink: inherit; } #basis-layered { flex-basis: inherit; } } #inherit { flex: InHeRiT; } #direct { flex-grow: InHeRiT; } #direct-order { flex-grow: 1; } #direct-order { flex-grow: inherit; } #direct-invalid { flex-grow: 4; flex-grow: inherit 1; } #direct-important { flex-grow: 8 !important; } #direct-important { flex-grow: inherit; } #direct-reset { flex-grow: inherit; flex-grow: initial; } #direct-longhand { flex: 1 1 4px; flex-grow: inherit; } #shrink-direct { flex-shrink: InHeRiT; } #shrink-order { flex-shrink: 1; } #shrink-order { flex-shrink: inherit; } #shrink-invalid { flex-shrink: 4; flex-shrink: inherit 1; } #shrink-important { flex-shrink: 8 !important; } #shrink-important { flex-shrink: inherit; } #shrink-reset { flex-shrink: inherit; flex-shrink: initial; } #shrink-longhand { flex: 2 3 4px; flex-shrink: inherit; } #basis-direct { flex-basis: InHeRiT; } #basis-order { flex-basis: 1px; } #basis-order { flex-basis: inherit; } #basis-invalid { flex-basis: 4px; flex-basis: inherit 1px; } #basis-important { flex-basis: 8px !important; } #basis-important { flex-basis: inherit; } #basis-reset { flex-basis: inherit; flex-basis: initial; } #basis-longhand { flex: 2 3 4px; flex-basis: inherit; } #invalid { flex: 1 1 4px; flex: inherit 1 auto; } #important { flex: 2 3 12px !important; } #important { flex: inherit; } #longhands { flex: 1 1 4px; flex-grow: 4; flex-shrink: 5; flex-basis: 12px; }"
+            "@layer base { #layered { flex-grow: 7; } #shrink-layered { flex-shrink: 7; } #basis-layered { flex-basis: 7px; } #order-layered { order: 7; } } @layer theme { #layered { flex-grow: inherit; } #shrink-layered { flex-shrink: inherit; } #basis-layered { flex-basis: inherit; } #order-layered { order: inherit; } } #inherit { flex: InHeRiT; } #direct { flex-grow: InHeRiT; } #direct-order { flex-grow: 1; } #direct-order { flex-grow: inherit; } #direct-invalid { flex-grow: 4; flex-grow: inherit 1; } #direct-important { flex-grow: 8 !important; } #direct-important { flex-grow: inherit; } #direct-reset { flex-grow: inherit; flex-grow: initial; } #direct-longhand { flex: 1 1 4px; flex-grow: inherit; } #shrink-direct { flex-shrink: InHeRiT; } #shrink-order { flex-shrink: 1; } #shrink-order { flex-shrink: inherit; } #shrink-invalid { flex-shrink: 4; flex-shrink: inherit 1; } #shrink-important { flex-shrink: 8 !important; } #shrink-important { flex-shrink: inherit; } #shrink-reset { flex-shrink: inherit; flex-shrink: initial; } #shrink-longhand { flex: 2 3 4px; flex-shrink: inherit; } #basis-direct { flex-basis: InHeRiT; } #basis-order { flex-basis: 1px; } #basis-order { flex-basis: inherit; } #basis-invalid { flex-basis: 4px; flex-basis: inherit 1px; } #basis-important { flex-basis: 8px !important; } #basis-important { flex-basis: inherit; } #basis-reset { flex-basis: inherit; flex-basis: initial; } #basis-longhand { flex: 2 3 4px; flex-basis: inherit; } #order-direct { order: InHeRiT; } #order-order { order: 1; } #order-order { order: inherit; } #order-invalid { order: 4; order: inherit 1; } #order-important { order: 8 !important; } #order-important { order: inherit; } #order-reset { order: inherit; order: initial; } #invalid { flex: 1 1 4px; flex: inherit 1 auto; } #important { flex: 2 3 12px !important; } #important { flex: inherit; } #longhands { flex: 1 1 4px; flex-grow: 4; flex-shrink: 5; flex-basis: 12px; }"
                 .into(),
         ])
         .unwrap();
         let inherited_grow = 2;
         let inherited_shrink = 3;
         let inherited_basis = FlexBasisValue::Length(12);
+        let inherited_order = NativeOrderValue(-7);
         let computed = |element: &NativeNode| {
             stylesheet.computed_for_with_matcher(
                 element,
@@ -14194,6 +14207,7 @@ mod tests {
                     flex_grow: inherited_grow,
                     flex_shrink: inherited_shrink,
                     flex_basis: inherited_basis,
+                    flex_item_order: inherited_order,
                     ..NativeInheritedStyle::default()
                 },
                 |selector| selector.matches(element),
@@ -14262,10 +14276,23 @@ mod tests {
             |selector| selector.matches(&basis_auto_element),
         );
         assert_eq!(basis_auto.flex_basis(), FlexBasisValue::Auto);
+        let order_layered = computed(&node("<div id='order-layered'>Order layered</div>"));
+        assert_eq!(order_layered.flex_item_order(), inherited_order);
+        let order_direct = computed(&node("<div id='order-direct'>Order direct</div>"));
+        assert_eq!(order_direct.flex_item_order(), inherited_order);
+        let order_order = computed(&node("<div id='order-order'>Order order</div>"));
+        assert_eq!(order_order.flex_item_order(), inherited_order);
+        let order_invalid = computed(&node("<div id='order-invalid'>Order invalid</div>"));
+        assert_eq!(order_invalid.flex_item_order(), NativeOrderValue(4));
+        let order_important = computed(&node("<div id='order-important'>Order important</div>"));
+        assert_eq!(order_important.flex_item_order(), NativeOrderValue(8));
+        let order_reset = computed(&node("<div id='order-reset'>Order reset</div>"));
+        assert_eq!(order_reset.flex_item_order(), NativeOrderValue::default());
         let omitted = computed(&node("<div id='omitted'>Omitted</div>"));
         assert_eq!(omitted.flex_grow(), 0);
         assert_eq!(omitted.flex_shrink(), 1);
         assert_eq!(omitted.flex_basis(), FlexBasisValue::Auto);
+        assert_eq!(omitted.flex_item_order(), NativeOrderValue::default());
         let invalid = computed(&node("<div id='invalid'>Invalid</div>"));
         assert_eq!(invalid.flex_grow(), 1);
         assert_eq!(invalid.flex_shrink(), 1);

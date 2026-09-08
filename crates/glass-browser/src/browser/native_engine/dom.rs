@@ -12,10 +12,10 @@ use super::{
         AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, FlexBasisValue,
         FlexDirectionValue, FlexWrapValue, FontStyleValue, FontWeightValue, JustifyContentValue,
         NativeBorderRadius, NativeBorderStyleValue, NativeBoxSizing, NativeColor,
-        NativeComputedStyle, NativeInheritedStyle, NativeMarginValue, NativeTextDecorationSkipInk,
-        NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, TextAlignLastValue,
-        TextAlignValue, TextDecorationValue, TextJustifyValue, TextTransformValue,
-        VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        NativeComputedStyle, NativeInheritedStyle, NativeMarginValue, NativeOrderValue,
+        NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
+        TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
+        TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use std::collections::BTreeMap;
@@ -873,6 +873,7 @@ impl NativeDocument {
         let mut inherited_align_content = AlignContentValue::FlexStart;
         let mut inherited_flex_direction = FlexDirectionValue::Row;
         let mut inherited_flex_wrap = FlexWrapValue::NoWrap;
+        let mut inherited_flex_item_order = NativeOrderValue::default();
         let mut inherited_direction = DirectionValue::Ltr;
         let mut inherited_flex_grow = 0;
         let mut inherited_flex_shrink = 1;
@@ -925,6 +926,7 @@ impl NativeDocument {
                     align_content: inherited_align_content,
                     flex_direction: inherited_flex_direction,
                     flex_wrap: inherited_flex_wrap,
+                    flex_item_order: inherited_flex_item_order,
                     direction: inherited_direction,
                     flex_grow: inherited_flex_grow,
                     flex_shrink: inherited_flex_shrink,
@@ -978,6 +980,7 @@ impl NativeDocument {
             inherited_align_content = style.align_content();
             inherited_flex_direction = style.flex_direction();
             inherited_flex_wrap = style.flex_wrap();
+            inherited_flex_item_order = style.flex_item_order();
             inherited_direction = style.direction();
             inherited_flex_grow = style.flex_grow();
             inherited_flex_shrink = style.flex_shrink();

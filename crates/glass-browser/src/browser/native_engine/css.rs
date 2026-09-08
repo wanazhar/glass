@@ -8389,6 +8389,9 @@ fn parse_flex_basis_declaration(value: &str) -> Option<FlexBasisDeclaration> {
     if is_local_reset_keyword(value) {
         return Some(FlexBasisDeclaration::Reset);
     }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some(FlexBasisDeclaration::Inherit);
+    }
     parse_flex_basis(value).map(FlexBasisDeclaration::Value)
 }
 
@@ -13632,6 +13635,11 @@ mod tests {
         );
         assert_eq!(parse_flex_shrink_declaration("inherit 1"), None);
         assert_eq!(
+            parse_flex_basis_declaration(" InHeRiT "),
+            Some(FlexBasisDeclaration::Inherit)
+        );
+        assert_eq!(parse_flex_basis_declaration("inherit 1px"), None);
+        assert_eq!(
             parse_flex_grow_declaration("initial"),
             Some(FlexGrowDeclaration::Reset)
         );
@@ -14172,7 +14180,7 @@ mod tests {
     #[test]
     fn stylesheet_flex_inherit_projects_parent_components() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "@layer base { #layered { flex-grow: 7; } #shrink-layered { flex-shrink: 7; } } @layer theme { #layered { flex-grow: inherit; } #shrink-layered { flex-shrink: inherit; } } #inherit { flex: InHeRiT; } #direct { flex-grow: InHeRiT; } #direct-order { flex-grow: 1; } #direct-order { flex-grow: inherit; } #direct-invalid { flex-grow: 4; flex-grow: inherit 1; } #direct-important { flex-grow: 8 !important; } #direct-important { flex-grow: inherit; } #direct-reset { flex-grow: inherit; flex-grow: initial; } #direct-longhand { flex: 1 1 4px; flex-grow: inherit; } #shrink-direct { flex-shrink: InHeRiT; } #shrink-order { flex-shrink: 1; } #shrink-order { flex-shrink: inherit; } #shrink-invalid { flex-shrink: 4; flex-shrink: inherit 1; } #shrink-important { flex-shrink: 8 !important; } #shrink-important { flex-shrink: inherit; } #shrink-reset { flex-shrink: inherit; flex-shrink: initial; } #shrink-longhand { flex: 2 3 4px; flex-shrink: inherit; } #invalid { flex: 1 1 4px; flex: inherit 1 auto; } #important { flex: 2 3 12px !important; } #important { flex: inherit; } #longhands { flex: 1 1 4px; flex-grow: 4; flex-shrink: 5; flex-basis: 12px; }"
+            "@layer base { #layered { flex-grow: 7; } #shrink-layered { flex-shrink: 7; } #basis-layered { flex-basis: 7px; } } @layer theme { #layered { flex-grow: inherit; } #shrink-layered { flex-shrink: inherit; } #basis-layered { flex-basis: inherit; } } #inherit { flex: InHeRiT; } #direct { flex-grow: InHeRiT; } #direct-order { flex-grow: 1; } #direct-order { flex-grow: inherit; } #direct-invalid { flex-grow: 4; flex-grow: inherit 1; } #direct-important { flex-grow: 8 !important; } #direct-important { flex-grow: inherit; } #direct-reset { flex-grow: inherit; flex-grow: initial; } #direct-longhand { flex: 1 1 4px; flex-grow: inherit; } #shrink-direct { flex-shrink: InHeRiT; } #shrink-order { flex-shrink: 1; } #shrink-order { flex-shrink: inherit; } #shrink-invalid { flex-shrink: 4; flex-shrink: inherit 1; } #shrink-important { flex-shrink: 8 !important; } #shrink-important { flex-shrink: inherit; } #shrink-reset { flex-shrink: inherit; flex-shrink: initial; } #shrink-longhand { flex: 2 3 4px; flex-shrink: inherit; } #basis-direct { flex-basis: InHeRiT; } #basis-order { flex-basis: 1px; } #basis-order { flex-basis: inherit; } #basis-invalid { flex-basis: 4px; flex-basis: inherit 1px; } #basis-important { flex-basis: 8px !important; } #basis-important { flex-basis: inherit; } #basis-reset { flex-basis: inherit; flex-basis: initial; } #basis-longhand { flex: 2 3 4px; flex-basis: inherit; } #invalid { flex: 1 1 4px; flex: inherit 1 auto; } #important { flex: 2 3 12px !important; } #important { flex: inherit; } #longhands { flex: 1 1 4px; flex-grow: 4; flex-shrink: 5; flex-basis: 12px; }"
                 .into(),
         ])
         .unwrap();
@@ -14228,6 +14236,32 @@ mod tests {
         assert_eq!(shrink_longhand.flex_grow(), 2);
         assert_eq!(shrink_longhand.flex_shrink(), inherited_shrink);
         assert_eq!(shrink_longhand.flex_basis(), FlexBasisValue::Length(4));
+        let basis_layered = computed(&node("<div id='basis-layered'>Basis layered</div>"));
+        assert_eq!(basis_layered.flex_basis(), inherited_basis);
+        let basis_direct = computed(&node("<div id='basis-direct'>Basis direct</div>"));
+        assert_eq!(basis_direct.flex_basis(), inherited_basis);
+        let basis_order = computed(&node("<div id='basis-order'>Basis order</div>"));
+        assert_eq!(basis_order.flex_basis(), inherited_basis);
+        let basis_invalid = computed(&node("<div id='basis-invalid'>Basis invalid</div>"));
+        assert_eq!(basis_invalid.flex_basis(), FlexBasisValue::Length(4));
+        let basis_important = computed(&node("<div id='basis-important'>Basis important</div>"));
+        assert_eq!(basis_important.flex_basis(), FlexBasisValue::Length(8));
+        let basis_reset = computed(&node("<div id='basis-reset'>Basis reset</div>"));
+        assert_eq!(basis_reset.flex_basis(), FlexBasisValue::Auto);
+        let basis_longhand = computed(&node("<div id='basis-longhand'>Basis longhand</div>"));
+        assert_eq!(basis_longhand.flex_grow(), 2);
+        assert_eq!(basis_longhand.flex_shrink(), 3);
+        assert_eq!(basis_longhand.flex_basis(), inherited_basis);
+        let basis_auto_element = node("<div id='basis-direct'>Basis auto</div>");
+        let basis_auto = stylesheet.computed_for_with_matcher(
+            &basis_auto_element,
+            NativeInheritedStyle {
+                flex_basis: FlexBasisValue::Auto,
+                ..NativeInheritedStyle::default()
+            },
+            |selector| selector.matches(&basis_auto_element),
+        );
+        assert_eq!(basis_auto.flex_basis(), FlexBasisValue::Auto);
         let omitted = computed(&node("<div id='omitted'>Omitted</div>"));
         assert_eq!(omitted.flex_grow(), 0);
         assert_eq!(omitted.flex_shrink(), 1);

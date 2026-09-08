@@ -800,6 +800,7 @@ enum InheritedTextDeclaration<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalCascadeDeclaration<T> {
     Value(T),
+    Inherit,
     RevertLayer,
 }
 
@@ -838,7 +839,7 @@ enum GapComponentDeclaration {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeMarginValue {
+pub(crate) enum NativeMarginValue {
     Length(u32),
     Auto,
 }
@@ -865,6 +866,9 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) border_width: [u32; 4],
     pub(crate) border_style: [NativeBorderStyleValue; 4],
     pub(crate) border_radius: NativeBorderRadius,
+    pub(crate) padding: [u32; 4],
+    pub(crate) margin: [NativeMarginValue; 4],
+    pub(crate) box_sizing: NativeBoxSizing,
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
@@ -896,6 +900,9 @@ impl Default for NativeInheritedStyle {
             border_width: [0; 4],
             border_style: [NativeBorderStyleValue::None; 4],
             border_radius: NativeBorderRadius::default(),
+            padding: [0; 4],
+            margin: [NativeMarginValue::Length(0); 4],
+            box_sizing: NativeBoxSizing::ContentBox,
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
@@ -1294,8 +1301,37 @@ impl NativeComputedStyle {
         self.margin
     }
 
+    pub(crate) const fn margin_values(self) -> [NativeMarginValue; 4] {
+        [
+            if self.margin_auto.top() {
+                NativeMarginValue::Auto
+            } else {
+                NativeMarginValue::Length(self.margin.top())
+            },
+            if self.margin_auto.right() {
+                NativeMarginValue::Auto
+            } else {
+                NativeMarginValue::Length(self.margin.right())
+            },
+            if self.margin_auto.bottom() {
+                NativeMarginValue::Auto
+            } else {
+                NativeMarginValue::Length(self.margin.bottom())
+            },
+            if self.margin_auto.left() {
+                NativeMarginValue::Auto
+            } else {
+                NativeMarginValue::Length(self.margin.left())
+            },
+        ]
+    }
+
     pub(crate) const fn margin_auto(self) -> NativeAutoEdges {
         self.margin_auto
+    }
+
+    pub(crate) const fn box_sizing(self) -> NativeBoxSizing {
+        self.box_sizing
     }
 
     pub(crate) const fn is_border_box(self) -> bool {
@@ -2476,11 +2512,33 @@ impl NativeStylesheet {
             resolved_direction,
             &mut border_radius,
         );
-        project_logical_box_model_candidates(&logical_padding, resolved_direction, &mut padding);
-        project_logical_box_model_candidates(&logical_margin, resolved_direction, &mut margin);
+        project_logical_box_model_candidates(
+            &logical_padding,
+            resolved_direction,
+            inherited.direction,
+            inherited.padding,
+            &mut padding,
+        );
+        project_logical_box_model_candidates(
+            &logical_margin,
+            resolved_direction,
+            inherited.direction,
+            inherited.margin,
+            &mut margin,
+        );
 
-        let resolved_padding = padding.map(resolve_local_optional_cascade_declaration);
-        let resolved_margin = margin.map(resolve_local_optional_cascade_declaration);
+        let resolved_padding = std::array::from_fn(|index| {
+            resolve_local_inherited_optional_cascade_declaration(
+                padding[index],
+                inherited.padding[index],
+            )
+        });
+        let resolved_margin = std::array::from_fn(|index| {
+            resolve_local_inherited_optional_cascade_declaration(
+                margin[index],
+                inherited.margin[index],
+            )
+        });
         let resolved_border = border.map(resolve_local_optional_cascade_declaration);
         let resolved_border_width: [Option<u32>; 4] = std::array::from_fn(|index| {
             resolve_local_border_width_declaration(
@@ -2539,6 +2597,8 @@ impl NativeStylesheet {
             }
         });
 
+        let resolved_box_sizing =
+            resolve_local_inherited_cascade_declaration(box_sizing, inherited.box_sizing);
         NativeComputedStyle {
             display: resolve_local_cascade_declaration(display, DisplayValue::Auto),
             visibility_hidden: resolve_local_cascade_declaration(
@@ -2629,7 +2689,7 @@ impl NativeStylesheet {
             padding: NativeBoxEdges::from_values(resolved_padding),
             margin: NativeBoxEdges::from_margin_values(resolved_margin),
             margin_auto: NativeAutoEdges::from_values(resolved_margin),
-            box_sizing: resolve_local_cascade_declaration(box_sizing, NativeBoxSizing::ContentBox),
+            box_sizing: resolved_box_sizing,
             color: resolved_color,
             overflow_clip_x: resolve_local_optional_cascade_declaration(overflow_x)
                 .is_some_and(|value| matches!(value, OverflowValue::Hidden | OverflowValue::Clip)),
@@ -2898,6 +2958,7 @@ fn resolve_local_cascade_declaration<T: Copy, const N: usize>(
 ) -> T {
     resolve_alignment_candidates(candidates, fallback, |declaration| match declaration {
         LocalCascadeDeclaration::Value(value) => Some(value),
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -2907,6 +2968,7 @@ fn resolve_local_optional_cascade_declaration<T: Copy, const N: usize>(
 ) -> Option<T> {
     resolve_alignment_candidates(candidates, None, |declaration| match declaration {
         LocalCascadeDeclaration::Value(value) => Some(Some(value)),
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -2918,6 +2980,7 @@ fn resolve_local_color_declaration(
 ) -> Option<NativeColor> {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         LocalCascadeDeclaration::Value(value) => Some(Some(value.resolve(inherited))),
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -2932,6 +2995,7 @@ fn resolve_local_background_color_declaration(
         LocalCascadeDeclaration::Value(value) => {
             Some(value.resolve(inherited_background, current_color))
         }
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -2946,6 +3010,7 @@ fn resolve_local_border_color_declaration(
         LocalCascadeDeclaration::Value(value) => {
             Some(Some(value.resolve(current_color, inherited_color)))
         }
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -2963,6 +3028,7 @@ fn resolve_local_border_width_declaration(
             | NativeBorderWidthValue::Initial
             | NativeBorderWidthValue::Revert => 0,
         })),
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -2982,6 +3048,7 @@ fn resolve_local_border_style_declaration(
             | NativeBorderStyleValue::Initial
             | NativeBorderStyleValue::Revert => NativeBorderStyleValue::None,
         })),
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -3001,6 +3068,7 @@ fn resolve_local_border_radius_declaration(
                 | NativeBorderRadiusValue::Initial
                 | NativeBorderRadiusValue::Revert => 0,
             })),
+            LocalCascadeDeclaration::Inherit => None,
             LocalCascadeDeclaration::RevertLayer => None,
         })
         .unwrap_or_default()
@@ -3011,6 +3079,28 @@ fn resolve_local_border_radius_declaration(
         bottom_right,
         bottom_left,
     }
+}
+
+fn resolve_local_inherited_optional_cascade_declaration<T: Copy, const N: usize>(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
+    inherited: T,
+) -> Option<T> {
+    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => Some(Some(value)),
+        LocalCascadeDeclaration::Inherit => Some(Some(inherited)),
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_inherited_cascade_declaration<T: Copy, const N: usize>(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
+    inherited: T,
+) -> T {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => Some(value),
+        LocalCascadeDeclaration::Inherit => Some(inherited),
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
 }
 
 fn resolve_alignment_candidates<T: Copy, U: Copy, const N: usize>(
@@ -3642,6 +3732,7 @@ fn project_border_width_declaration(
         ) => Some(LocalCascadeDeclaration::Value(
             NativeBorderWidthValue::Width(0),
         )),
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => Some(LocalCascadeDeclaration::RevertLayer),
     }
 }
@@ -3679,6 +3770,7 @@ fn project_border_style_declaration(
             | NativeBorderDeclaration::Initial
             | NativeBorderDeclaration::Revert,
         ) => Some(LocalCascadeDeclaration::Value(NativeBorderStyleValue::None)),
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => Some(LocalCascadeDeclaration::RevertLayer),
     }
 }
@@ -3716,6 +3808,7 @@ fn project_border_color_declaration(
         ) => Some(LocalCascadeDeclaration::Value(
             NativeBorderColorValue::CurrentColor,
         )),
+        LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::RevertLayer => Some(LocalCascadeDeclaration::RevertLayer),
     }
 }
@@ -4185,15 +4278,23 @@ fn project_logical_border_radius_candidates(
 fn project_logical_box_model_candidates<T: Copy>(
     sources: &NativeLogicalBoxModelCandidates<T>,
     direction: DirectionValue,
+    inherited_direction: DirectionValue,
+    inherited: [T; 4],
     targets: &mut [[Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
              4],
 ) {
     for (logical_side, logical_candidates) in sources.iter().enumerate() {
         let physical_side = logical_border_physical_side(logical_side, direction);
+        let inherited_physical_side =
+            logical_border_physical_side(logical_side, inherited_direction);
         for (layer, candidate) in logical_candidates.iter().copied().enumerate() {
-            let Some(candidate) = candidate else {
+            let Some(mut candidate) = candidate else {
                 continue;
             };
+            if matches!(candidate.value, LocalCascadeDeclaration::Inherit) {
+                candidate.value =
+                    LocalCascadeDeclaration::Value(inherited[inherited_physical_side]);
+            }
             if wins(
                 candidate.specificity,
                 candidate.order,
@@ -6895,6 +6996,9 @@ fn parse_local_box_edges(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 4
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
+    if is_box_model_inherit(value) {
+        return Some([LocalCascadeDeclaration::Inherit; 4]);
+    }
     if is_box_model_reset(value) {
         return Some([LocalCascadeDeclaration::Value(0); 4]);
     }
@@ -6916,6 +7020,9 @@ fn parse_box_edge_pair(value: &str) -> Option<[u32; 2]> {
 fn parse_local_box_edge_pair(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 2]> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 2]);
+    }
+    if is_box_model_inherit(value) {
+        return Some([LocalCascadeDeclaration::Inherit; 2]);
     }
     if is_box_model_reset(value) {
         return Some([LocalCascadeDeclaration::Value(0); 2]);
@@ -6945,6 +7052,9 @@ fn parse_local_margin_edges(
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
+    if is_box_model_inherit(value) {
+        return Some([LocalCascadeDeclaration::Inherit; 4]);
+    }
     if is_box_model_reset(value) {
         return Some([LocalCascadeDeclaration::Value(NativeMarginValue::Length(0)); 4]);
     }
@@ -6968,6 +7078,9 @@ fn parse_local_margin_edge_pair(
 ) -> Option<[LocalCascadeDeclaration<NativeMarginValue>; 2]> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 2]);
+    }
+    if is_box_model_inherit(value) {
+        return Some([LocalCascadeDeclaration::Inherit; 2]);
     }
     if is_box_model_reset(value) {
         return Some([LocalCascadeDeclaration::Value(NativeMarginValue::Length(0)); 2]);
@@ -8218,6 +8331,9 @@ fn parse_local_dimension_declaration(value: &str) -> Option<LocalCascadeDeclarat
 }
 
 fn parse_local_padding_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
+    if is_box_model_inherit(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
     if is_box_model_reset(value) {
         return Some(LocalCascadeDeclaration::Value(0));
     }
@@ -8227,6 +8343,9 @@ fn parse_local_padding_declaration(value: &str) -> Option<LocalCascadeDeclaratio
 fn parse_local_margin_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeMarginValue>> {
+    if is_box_model_inherit(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
     if is_box_model_reset(value) {
         return Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(0)));
     }
@@ -8236,6 +8355,9 @@ fn parse_local_margin_declaration(
 fn parse_local_box_sizing_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeBoxSizing>> {
+    if is_box_model_inherit(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
     if is_box_model_reset(value) {
         return Some(LocalCascadeDeclaration::Value(NativeBoxSizing::ContentBox));
     }
@@ -8247,6 +8369,10 @@ fn is_box_model_reset(value: &str) -> bool {
     value.eq_ignore_ascii_case("initial")
         || value.eq_ignore_ascii_case("unset")
         || value.eq_ignore_ascii_case("revert")
+}
+
+fn is_box_model_inherit(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("inherit")
 }
 
 fn parse_text_overflow(value: &str) -> Option<TextOverflowValue> {
@@ -15829,6 +15955,117 @@ mod tests {
                 left: true,
             },
         );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_box_model_inherit_for_physical_and_logical_edges() {
+        assert_eq!(
+            parse_local_box_edges("InHeRiT"),
+            Some([LocalCascadeDeclaration::Inherit; 4])
+        );
+        assert_eq!(
+            parse_local_box_edge_pair("inherit"),
+            Some([LocalCascadeDeclaration::Inherit; 2])
+        );
+        assert_eq!(
+            parse_local_padding_declaration("INHERIT"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_local_margin_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_local_box_sizing_declaration("InHeRiT"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+        assert_eq!(parse_local_box_edges("inherit 1px"), None);
+        assert_eq!(parse_local_margin_edge_pair("auto inherit"), None);
+
+        let document = NativeDocument::parse(
+            r#"<style>
+            #physical-parent { padding:2px 4px 6px 8px; margin:auto 3px 5px 7px; box-sizing:border-box; }
+            #physical-child { padding:inherit; margin:INHERIT; box-sizing:InHeRiT; }
+            #logical-parent { direction:ltr; padding-inline:11px 13px; margin-inline:auto 17px; }
+            #logical-child { direction:rtl; padding-inline-start:inherit; padding-inline-end:INHERIT; margin-inline-start:inherit; margin-inline-end:inherit; }
+            #important-parent { padding:12px 13px 14px 15px; margin:auto 16px 17px 18px; box-sizing:border-box; }
+            #important-child { padding:1px; padding:inherit !important; margin:2px; margin:inherit !important; box-sizing:content-box; box-sizing:inherit !important; }
+            #rollback-parent { padding:19px; margin:20px; box-sizing:border-box; }
+            @layer base { #rollback-child { padding:inherit; margin:inherit; box-sizing:inherit; } }
+            @layer theme { #rollback-child { padding:1px; padding:revert-layer; margin:2px; margin:revert-layer; box-sizing:content-box; box-sizing:revert-layer; } }
+            #root-inherit { padding:inherit; margin:inherit; box-sizing:inherit; }
+            </style>
+            <div id='physical-parent'><div id='physical-child'>Physical</div></div>
+            <div id='logical-parent'><div id='logical-child'>Logical</div></div>
+            <div id='important-parent'><div id='important-child'>Important</div></div>
+            <div id='rollback-parent'><div id='rollback-child'>Rollback</div></div>
+            <div id='root-inherit'>Root</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        assert!(document.diagnostics().iter().all(|diagnostic| {
+            !matches!(
+                diagnostic.code,
+                NativeDiagnosticCode::UnsupportedCssProperty
+                    | NativeDiagnosticCode::UnsupportedCssValue
+            )
+        }));
+
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        let physical_parent = style("physical-parent");
+        let physical_child = style("physical-child");
+        assert!(physical_parent.is_border_box());
+        assert_eq!(physical_child.padding(), physical_parent.padding());
+        assert_eq!(physical_child.margin(), physical_parent.margin());
+        assert_eq!(physical_child.margin_auto(), physical_parent.margin_auto());
+        assert!(physical_child.is_border_box());
+
+        let logical_child = style("logical-child");
+        assert_eq!(
+            logical_child.padding(),
+            NativeBoxEdges {
+                top: 0,
+                right: 11,
+                bottom: 0,
+                left: 13,
+            }
+        );
+        assert_eq!(
+            logical_child.margin(),
+            NativeBoxEdges {
+                top: 0,
+                right: 0,
+                bottom: 0,
+                left: 17,
+            }
+        );
+        assert!(logical_child.margin_auto().right());
+        assert!(!logical_child.margin_auto().left());
+
+        let important_parent = style("important-parent");
+        let important_child = style("important-child");
+        assert_eq!(important_child.padding(), important_parent.padding());
+        assert_eq!(important_child.margin(), important_parent.margin());
+        assert_eq!(
+            important_child.margin_auto(),
+            important_parent.margin_auto()
+        );
+        assert!(important_child.is_border_box());
+
+        let rollback_parent = style("rollback-parent");
+        let rollback_child = style("rollback-child");
+        assert_eq!(rollback_child.padding(), rollback_parent.padding());
+        assert_eq!(rollback_child.margin(), rollback_parent.margin());
+        assert!(rollback_child.is_border_box());
+
+        let root = style("root-inherit");
+        assert_eq!(root.padding(), NativeBoxEdges::default());
+        assert_eq!(root.margin(), NativeBoxEdges::default());
+        assert_eq!(root.margin_auto(), NativeAutoEdges::default());
+        assert!(!root.is_border_box());
     }
 
     #[test]

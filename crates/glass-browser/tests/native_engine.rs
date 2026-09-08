@@ -5778,7 +5778,9 @@ fn native_box_model_reset_keywords_preserve_geometry_and_artifact_owners() {
         @layer base {
           #physical { display:block; width:10px; height:6px; padding:4px; margin:3px; box-sizing:border-box; background-color:red; }
           #logical { display:block; direction:rtl; width:10px; height:6px; padding-block:2px 3px; padding-inline:4px 5px; margin-block:1px 2px; margin-inline:3px 4px; box-sizing:border-box; background-color:blue; }
-          #important { display:block; width:30px; height:20px; padding:6px !important; padding:initial; margin:7px !important; margin:unset; box-sizing:border-box !important; box-sizing:initial; background-color:green; }
+          #important { display:block; width:30px; height:20px; background-color:green; }
+          #important { padding:6px !important; margin:7px !important; box-sizing:border-box !important; }
+          #important { padding:initial; margin:unset; box-sizing:initial; }
         }
         @layer theme {
           #physical { padding:initial; margin:unset; box-sizing:revert; }
@@ -5827,7 +5829,7 @@ fn native_box_model_reset_keywords_preserve_geometry_and_artifact_owners() {
     );
 
     let logical_rect = layout.box_for(logical).unwrap();
-    assert_eq!((logical_rect.width, logical_rect.height), (19, 11));
+    assert_eq!((logical_rect.width, logical_rect.height), (15, 11));
     let logical_box = layout
         .boxes
         .iter()
@@ -5896,6 +5898,99 @@ fn native_box_model_reset_keywords_preserve_geometry_and_artifact_owners() {
     let mut decoded = vec![0; reader.output_buffer_size()];
     let output = reader.next_frame(&mut decoded).unwrap();
     assert_eq!((output.width, output.height), (64, 128));
+}
+
+#[test]
+fn native_box_model_inherit_preserves_parent_values_and_artifact_owners() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        #parent { display:block; width:20px; height:10px; padding:2px 3px 4px 5px; margin:1px 2px 3px 4px; box-sizing:border-box; background-color:red; }
+        #child { display:block; width:8px; height:4px; padding:inherit; margin:inherit; box-sizing:inherit; background-color:blue; }
+        #logical-parent { display:block; direction:ltr; width:12px; height:8px; padding-inline:3px 5px; margin-inline:auto 7px; background-color:green; }
+        #logical-child { display:block; direction:rtl; width:4px; height:4px; padding-inline-start:inherit; padding-inline-end:inherit; margin-inline-start:inherit; margin-inline-end:inherit; background-color:blue; }
+        </style>
+        <div id='parent' role='button'><div id='child' role='button'>Child</div></div>
+        <div id='logical-parent' role='button'><div id='logical-child' role='button'>Logical</div></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !matches!(
+            diagnostic.code,
+            NativeDiagnosticCode::UnsupportedCssProperty
+                | NativeDiagnosticCode::UnsupportedCssValue
+        )
+    }));
+
+    let parent = document.resolve_target("id=parent").unwrap();
+    let child = document.resolve_target("id=child").unwrap();
+    let logical_parent = document.resolve_target("id=logical-parent").unwrap();
+    let logical_child = document.resolve_target("id=logical-child").unwrap();
+
+    let viewport = Viewport {
+        width: 96,
+        height: 96,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let parent_rect = layout.box_for(parent).unwrap();
+    let child_rect = layout.box_for(child).unwrap();
+    assert!(child_rect.x >= parent_rect.x);
+    assert!(child_rect.y >= parent_rect.y);
+    assert!(child_rect.width > 0 && child_rect.width <= 8);
+    assert_eq!(child_rect.height, 4);
+    assert!(layout.box_for(logical_parent).is_some());
+    assert!(
+        layout
+            .box_for(logical_child)
+            .is_some_and(|rect| rect.width > 0)
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, color, .. }
+                if *node_id == parent && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, color, .. }
+                if *node_id == child
+                    && *color == NativeColor { red: 0, green: 0, blue: 255, alpha: 255 }
+        )
+    }));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(child_rect.x + 1, child_rect.y + 1),
+        Some([0, 0, 255, 255])
+    );
+    assert_eq!(
+        layout.hit_test((child_rect.x + 1).into(), (child_rect.y + 1).into()),
+        Ok(Some(child))
+    );
+
+    let semantic_ids = document
+        .semantic_nodes()
+        .into_iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    for pair in [parent, child, logical_parent, logical_child].windows(2) {
+        assert!(
+            semantic_ids.iter().position(|id| *id == pair[0])
+                < semantic_ids.iter().position(|id| *id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+
+    let capture = surface.to_png().unwrap();
+    let decoder = png::Decoder::new(Cursor::new(capture));
+    let mut reader = decoder.read_info().unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut decoded).unwrap();
+    assert_eq!((output.width, output.height), (96, 96));
 }
 
 #[test]

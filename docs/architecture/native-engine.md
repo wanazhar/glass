@@ -69,6 +69,7 @@ bounded-text-alignment-revert-layer,
 bounded-inherited-alignment-css-wide-resets,
 bounded-inherited-text-decoration-style-css-wide-resets,
 bounded-inherited-text-decoration-thickness-css-wide-resets,
+bounded-inherited-text-decoration-skip-ink-css-wide-resets,
 bounded-text-decoration-skip-spaces-line-edges,
 bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit/
 bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-revert,
@@ -141,7 +142,12 @@ bounded inherited
 `text-decoration-thickness:1px|2px|3px|4px` positive-y bands with
 thickness-scaled integer dash/dot periods, bounded inherited
 `text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
-underline and overline while preserving line-through, bounded inherited
+underline and overline while preserving line-through; its inherited owner also
+accepts standalone case-insensitive `inherit|initial|unset|revert`, using the
+computed parent for inherited forms, finite `auto` at the root for `initial`,
+and the current one-author-origin parent fallback for `revert`, while
+`revert-layer` remains the named-layer rollback and mixed/unsupported forms
+remain bounded diagnostics, bounded inherited
 `text-decoration-skip-spaces:none|all|start|end|start end` fixed-cell
 ASCII-space interval skipping across underline, overline, and line-through,
 with line-edge provenance assigned during block-owned flow flush, and bounded
@@ -1855,6 +1861,23 @@ crate-boundary changes. Full native integration (239/239), the feature library
 rustdoc, workspace tests/doctests, fuzz, package, security, and formatting
 gates pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-202` slice is recorded in
+`docs/plan/tasks/native-engine-202.md` and implemented at `65e3a76d` (design
+`d435032c`). It extends the inherited `text-decoration-skip-ink` owner with
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert`, retaining `revert-layer` as the named-layer rollback. Parent/root
+fallbacks, finite `auto|none` behavior, terminal reset semantics,
+invalid-later preservation, and the same-run glyph intersection raster remain
+bounded; the resolved value continues through the existing text command,
+display-list, capture, diagnostic, and fixed-cell raster owners without
+public-schema or crate-boundary changes. Full native integration (240/240),
+the feature library (1,022 passed, 1 ignored), workspace all-target/all-feature
+tests (1,023 passed, 1 ignored in the browser library; 240 native integration;
+365 dev tests; 4 development-runtime tests; 15 PTY tests), doctests (4 browser,
+1 dev), paired binaries, strict Clippy, warning-denied rustdoc, fuzz, package,
+security, and formatting gates pass locally. Remote CI, push, release, tag, and
+registry publication remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

@@ -2450,11 +2450,13 @@ visual stacking.
 | `native-engine-206` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local `text-indent` and `text-overflow`; reset forms resolve to finite `0px` and `clip` fallbacks, preserving non-negative fixed-pixel indentation, `clip|ellipsis`, `revert-layer` distinction, important/source order, invalid-later preservation, first-line layout, eligible truncation, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, public schemas, and the two-crate boundary; implementation `b7bd9ace`; locked scoped check, focused parser/cascade/integration, full-native integration (244/244), feature library (1,026 passed, 1 ignored), paired binaries, strict Clippy, warning-denied rustdoc, workspace all-target/all-feature tests, doctests, fuzz, package, security, static audits, and formatting passed locally | `native-engine-205` | `inherit`, parent propagation, negative/fractional/percentage indentation, additional origins, transitions, animations, generic CSS-wide machinery, ellipsis layout expansion, multi-line/nested-inline truncation, and browser-wide text/overflow conformance |
 | `native-engine-207` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local `flex`, `flex-grow`, `flex-shrink`, and `flex-basis`; reset forms expand through the existing private component streams to finite `0 1 auto`, preserving finite shorthand expansion, non-negative fixed-pixel basis values, `auto`, `revert-layer` distinction, important/source order, invalid-later preservation, flex placement, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, public schemas, and the two-crate boundary; implementation `1a43c150`; locked scoped check, focused flex parser/cascade (25 tests), public integration, full-native integration (245/245), feature library (1,027 passed, 1 ignored), paired binaries, strict Clippy, warning-denied rustdoc, workspace all-target/all-feature tests, doctests, package, security, static audits, and formatting passed locally; the preceding task's six-target nightly fuzz certification remains current because this slice changes only CSS flex parsing/cascade | `native-engine-206` | `inherit`, parent propagation, percentages, negative/fractional/intrinsic basis values, additional origins, transitions, animations, generic CSS-wide machinery, direction/wrap/alignment/order, and browser-wide flex conformance |
 | `native-engine-208` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local `flex-direction`, `flex-wrap`, and `flex-flow`; reset forms project through the existing private component streams to finite `row`/`nowrap`, preserving finite row/column direction values, finite wrap modes, shorthand projection, `revert-layer` distinction, important/source order, invalid-later preservation, row/column mapping, wrapping, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, public schemas, and the two-crate boundary; implementation `fcadc99c`; locked scoped check, focused flex parser/cascade (27 tests), public integration, full-native integration (246/246), feature library (1,029 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, and formatting passed locally | `native-engine-207` | `inherit`, parent propagation, additional origins, transitions, animations, generic CSS-wide machinery, justify/alignment/order, inherited `direction`, percentages, and browser-wide flex conformance |
+| `native-engine-209` | completed bounded standalone case-insensitive `initial`, `unset`, and one-author-origin `revert` for local flex-item `order`; reset forms resolve through the existing local resolver to finite `0`, preserving signed `-1024..=1024`, `revert-layer`, important/source order, invalid-later preservation, stable visual/source order, flex sizing, display-list, fixed-cell raster, PNG capture, point-hit, diagnostics, public schemas, and the two-crate boundary; implementation `0bfbc8f9`; locked scoped check, focused flex parser/cascade (28 tests), public integration, full-native integration (247/247), feature library (1,030 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, and formatting passed locally | `native-engine-208` | `inherit`, parent propagation, percentages, fractional values, additional origins, transitions, animations, generic CSS-wide machinery, and browser-wide flex conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-208.md` is the latest completed task;
+`docs/plan/tasks/native-engine-209.md` is the latest completed task;
+`docs/plan/tasks/native-engine-208.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-207.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-206.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-205.md` is the preceding completed task;
@@ -2599,35 +2601,25 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
-`docs/plan/tasks/native-engine-208.md`: implementation is `fcadc99c` (design
-`e91a358b`). It extends the local `flex-direction`, `flex-wrap`, and
-`flex-flow` owners with standalone case-insensitive `initial`, `unset`, and
-one-author-origin `revert`, retaining finite row/column direction values,
-finite wrap modes, shorthand component projection, and `revert-layer` rollback.
-Reset forms resolve through the existing private component streams to the
-finite `row`/`nowrap` initial defaults; important/source-order behavior,
-invalid-later preservation, row/column mapping, wrapping, display-list,
-fixed-cell raster, PNG capture, point-hit, diagnostics, schema, and two-crate
-owners remain bounded. The locked scoped native check, focused flex
-parser/cascade coverage, public integration, full native integration (246/246),
-feature library (1,029 passed, 1 ignored), workspace all-target/all-feature
-check, strict Clippy, warning-denied rustdoc, paired binaries, workspace
-doctests, serial workspace all-target/all-feature tests, static documentation
-gates, and formatting/diff checks passed. The serial workspace matrix reported
-browser library 1,030 passed plus one ignored, native integration 246, browser
-smoke 18, daemon recovery 1, `glass-dev` 365, development runtime 4, and PTY
-15. The default parallel feature-library run exposed a transient `Text file
-busy` temporary-script race in the unrelated extension-host test; the named
-test passed in isolation and the full feature library passed with
-`RUST_MIN_STACK=8388608` and one test thread. The preceding task's six-target
-nightly fuzz certification remains current because this slice changes only CSS
-flex parsing/cascade. Package and security evidence is retained from the
-preceding dependency-stable task until the next issue-level validation
-boundary. The direct registry-backed dev package verification
-remains blocked by the immutable public `glass-browser 0.3.14` API surface;
-the canonical local patched/no-verify route passes. Remote CI, push, release,
-tag, registry publication, browser-parity, security-boundary, or promotion
-claims are not made.
+`docs/plan/tasks/native-engine-209.md`: implementation is `0bfbc8f9` (design
+`89373bb1`). It extends local flex-item `order` with standalone,
+case-insensitive `initial`, `unset`, and one-author-origin `revert`, retaining
+signed `-1024..=1024` values and named-layer `revert-layer`. Reset forms resolve
+to the finite `0` fallback while important/source-order behavior, invalid-later
+preservation, stable visual/source order, flex sizing, display-list, fixed-cell
+raster, PNG capture, point-hit, diagnostics, schema, and two-crate owners
+remain bounded. The locked scoped native check, focused flex parser/cascade
+coverage (28 tests), public integration, full native integration (247/247),
+feature library (1,030 passed, 1 ignored), workspace all-target/all-feature
+check, strict Clippy, and formatting/diff checks passed. The preceding task's
+six-target nightly fuzz certification remains current because this slice changes
+only CSS flex parsing/cascade. Package and security evidence is retained from
+the preceding dependency-stable task until the next issue-level validation
+boundary. The direct registry-backed dev package verification remains blocked
+by the immutable public `glass-browser 0.3.14` API surface; the canonical local
+patched/no-verify route passes. Remote CI, push, release, tag, registry
+publication, browser-parity, security-boundary, or promotion claims are not
+made.
 The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-202.md`: implementation is `65e3a76d` (design
 `d435032c`); its local gate evidence is retained in the task record.

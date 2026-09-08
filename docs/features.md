@@ -428,8 +428,10 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   existing components to the finite `0 1 auto` initial tuple; standalone
   `initial|unset|revert` reset forms for `flex-direction`, `flex-wrap`, and
   `flex-flow` resolve through existing components to finite `row`/`nowrap`
-  initial defaults; `inherit`, percentages, negative/fractional/intrinsic
-  basis values, and alignment/order remain outside the boundary, plus bounded
+  initial defaults; standalone `initial|unset|revert` reset forms for local
+  flex-item `order` resolve through the existing local resolver to finite `0`;
+  `inherit`, percentages, negative/fractional/intrinsic basis values, and
+  alignment remain outside the boundary, plus bounded
   case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive
@@ -770,8 +772,10 @@ projection, and point hit-testing,
   existing components to the finite `0 1 auto` initial tuple; standalone
   `initial|unset|revert` reset forms for `flex-direction`, `flex-wrap`, and
   `flex-flow` resolve through existing components to finite `row`/`nowrap`
-  initial defaults; `inherit`, percentages, negative/fractional/intrinsic
-  basis values, and alignment/order remain outside the boundary, plus bounded
+  initial defaults; standalone `initial|unset|revert` reset forms for local
+  flex-item `order` resolve through the existing local resolver to finite `0`;
+  `inherit`, percentages, negative/fractional/intrinsic basis values, and
+  alignment remain outside the boundary, plus bounded
   case-insensitive gap-family
   `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with
   independent finite-pixel components, plus standalone case-insensitive

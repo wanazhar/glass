@@ -181,8 +181,13 @@ the six normal-only dimension declarations (`width`, `height`, `min-width`,
 `max-width`, `min-height`, and `max-height`) also honor it through private
 doubled candidate streams with important-over-normal ordering, reversed
 named-layer priority, inline precedence, invalid-later preservation, and
-`revert-layer` rollback; box-model declarations, overflow, and remaining
-properties do not claim generic `!important` semantics.
+`revert-layer` rollback; the normal-only physical box-model declarations
+(`box-sizing`, physical padding, and physical margin shorthand/longhand edges)
+also honor the same priority through private doubled candidate streams with
+per-edge importance, preserving content-box/border-box conversion, `auto`
+margin provenance, and existing geometry/artifact owners; logical edges,
+overflow, and remaining properties do not claim generic `!important`
+semantics.
 CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert`: explicit
 `inherit` copies the parent's effective four-corner radius, including from
 unpainted or zero-width parents; reset forms resolve to zero corners and

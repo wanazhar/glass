@@ -31,7 +31,7 @@ semantic consumer.
 
 - The bounded `overflow`, `overflow-x`, and `overflow-y` declarations accept
   standalone, case-insensitive `inherit` in addition to their existing
-  `hidden|clip|visible` projection and `revert-layer` forms. Existing bounded
+  `hidden|clip|visible` projection and `revert-layer` form. Existing bounded
   `auto|scroll` parsing remains the visible/no-clip projection.
 - A winning `overflow: inherit` copies both computed parent axis projections;
   a winning `overflow-x: inherit` or `overflow-y: inherit` copies only its
@@ -40,7 +40,7 @@ semantic consumer.
   fallback.
 - Omitted overflow declarations remain local and visible/no-clip. Explicit
   finite values, shorthand/longhand order, specificity, `!important`,
-  reset/revert-layer behavior, independent axes, and invalid-later
+  existing `revert-layer` behavior, independent axes, and invalid-later
   preservation remain unchanged. Mixed or token-bearing forms such as
   `inherit hidden`, `hidden inherit`, and `inherit 1px` remain invalid and do
   not replace a preceding valid candidate.
@@ -72,7 +72,7 @@ semantic consumer.
 - Focus parser/cascade coverage on case-insensitive shorthand and longhand
   inheritance, supplied parent/root fallback, omitted local fallback,
   independent-axis inheritance, shorthand/longhand precedence, `!important`,
-  reset behavior, `revert-layer`, and mixed-invalid forms.
+  `revert-layer`, and mixed-invalid forms.
 - Run one public fixture through inherited and omitted axis clips, root scroll
   projection, display-list, fixed-cell raster/PNG, point-hit, semantic/source
   order, and typed diagnostics for excluded forms.

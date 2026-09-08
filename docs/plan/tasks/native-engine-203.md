@@ -1,7 +1,7 @@
 ---
 id: native-engine-203
 scope: glass-browser/native-engine/inherited-text-decoration-line-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-202]
 ---
 
@@ -84,6 +84,40 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-To be filled after implementation and local certification. Remote CI, push,
-release, tag, registry publication, browser parity, security-boundary
-certification, and promotion remain outside this local task.
+- Implementation commit: `73c00616`; design commit: `deeedd19`.
+- Locked native-feature check passed before tests. Focused parser/cascade
+  coverage passed 22 decoration-related unit tests, and the public fixture
+  passed through shorthand/longhand routing, display-list flags, fixed-cell
+  raster/PNG, line-through preservation, and typed unsupported-value
+  diagnostics.
+- Full native integration passed: 241/241. The native-feature library passed
+  1,023 tests with 1 ignored test.
+- Paired browser/dev builds, strict Clippy, warning-denied rustdoc, fuzz
+  checks, cargo-deny, cargo-audit, formatting, package assembly, and the exact
+  packaged dependency check passed locally. Packages were 196 files / 6.0 MiB
+  for `glass-browser` and 69 files / 2.6 MiB for `glass-dev`; the packaged dev
+  archive resolves `glass-browser` exactly at `0.3.14`.
+- Workspace all-target/all-feature tests passed: browser library 1,024 passed
+  with 1 ignored; native integration 241 passed; browser smoke 18 passed;
+  daemon recovery 1 passed; glass-dev 365 passed; development runtime 4
+  passed; PTY 15 passed; remaining targets reported no failures. Workspace
+  doctests passed: 4 browser and 1 dev.
+- The direct registry-backed dev verification remains blocked by the immutable
+  public `glass-browser 0.3.14` API surface; the canonical local patched /
+  no-verify package route passes. Known non-blocking repository warnings remain
+  the duplicate `winnow` deny warning and four cargo-audit warnings allowed by
+  policy (unmaintained `bincode`/`yaml-rust`, the `lru` advisory, and yanked
+  `chacha20`).
+- Static documentation audits passed: release truth reported 617 Markdown
+  documents, 83 current-version documents, 59 previous-version hits, 731
+  semantic hits, and zero current-claim failures; coverage reported 345 full
+  product MCP tools (100 browser-only), 17 examples, and 22 public modules;
+  depth reported 93 current guides and 19 substantive contracts; parity
+  reported 14 capabilities across 4 targets; TUI reported 15 implementation
+  help keys and 63 documentation markers; reliability reported 6 scenarios
+  across 4 targets; read-only adapters reported 5; Web IR reported 8 fixtures,
+  8 scenarios, and 11 categories.
+- Bounded cleanup is performed only after Cargo/Rust processes and open handles
+  are checked. Remote CI, push, release, tag, registry publication,
+  browser-parity, security-boundary certification, and promotion remain outside
+  this local task.

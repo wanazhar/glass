@@ -2106,6 +2106,18 @@ doctests, paired binaries, strict Clippy, warning-denied rustdoc, fuzz,
 package, security, and formatting gates pass locally. Remote CI, push, release,
 tag, and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-203](tasks/native-engine-203.md)
+slice is implemented at `73c00616` (design `deeedd19`). It adds bounded
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert` to the inherited `text-decoration-line` three-bit owner and its
+existing bounded `text-decoration` shorthand route, retaining finite line sets
+and `revert-layer` rollback. Parent/root fallback, `none` initial behavior,
+terminal-reset semantics, invalid-later preservation, shorthand/longhand
+routing, display-list, fixed-cell raster, diagnostics, and the two-crate
+boundary remain bounded. Full native integration (241/241) and the feature
+library (1,023 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
+and registry publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

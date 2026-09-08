@@ -567,6 +567,7 @@ pub(crate) enum JustifyContentValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JustifyContentDeclaration {
     Value(JustifyContentValue),
+    Reset,
     RevertLayer,
 }
 
@@ -2874,6 +2875,7 @@ fn resolve_justify_content(
     resolve_alignment_candidates(candidates, JustifyContentValue::FlexStart, |declaration| {
         match declaration {
             JustifyContentDeclaration::Value(value) => Some(value),
+            JustifyContentDeclaration::Reset => Some(JustifyContentValue::FlexStart),
             JustifyContentDeclaration::RevertLayer => None,
         }
     })
@@ -7981,10 +7983,12 @@ fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
 
 fn parse_justify_content_declaration(value: &str) -> Option<JustifyContentDeclaration> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(JustifyContentDeclaration::RevertLayer)
-    } else {
-        parse_justify_content(value).map(JustifyContentDeclaration::Value)
+        return Some(JustifyContentDeclaration::RevertLayer);
     }
+    if is_local_reset_keyword(value) {
+        return Some(JustifyContentDeclaration::Reset);
+    }
+    parse_justify_content(value).map(JustifyContentDeclaration::Value)
 }
 
 fn parse_place_content(value: &str) -> Option<(AlignContentValue, JustifyContentValue)> {
@@ -13259,6 +13263,18 @@ mod tests {
             Some(JustifyContentDeclaration::RevertLayer)
         );
         assert_eq!(
+            parse_justify_content_declaration("InItIaL"),
+            Some(JustifyContentDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_justify_content_declaration("UNSET"),
+            Some(JustifyContentDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_justify_content_declaration(" ReVeRt "),
+            Some(JustifyContentDeclaration::Reset)
+        );
+        assert_eq!(
             parse_align_items_declaration(" REVERT-LAYER "),
             Some(AlignItemsDeclaration::RevertLayer)
         );
@@ -13279,6 +13295,11 @@ mod tests {
             Some(FlexWrapDeclaration::Reset)
         );
         assert_eq!(parse_justify_content_declaration("safe center"), None);
+        assert_eq!(parse_justify_content_declaration("inherit"), None);
+        assert_eq!(
+            parse_justify_content_declaration("revert-layer center"),
+            None
+        );
         assert_eq!(parse_align_items_declaration("inherit"), None);
         assert_eq!(parse_align_self_declaration("center flex-end"), None);
         assert_eq!(parse_align_content_declaration("revert-layer center"), None);
@@ -13438,6 +13459,32 @@ mod tests {
         assert_order(&revert, 0);
         assert_order(&invalid, -6);
         assert_order(&important, -7);
+    }
+
+    #[test]
+    fn stylesheet_justify_content_css_wide_resets_use_flex_start_and_preserve_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #layer { justify-content: center; } } @layer theme { #layer { justify-content: revert-layer; } } #reset { justify-content: flex-end; } #reset { justify-content: INITIAL; } #unset { justify-content: center; } #unset { justify-content: UnSeT; } #revert { justify-content: space-between; } #revert { justify-content: ReVeRt; } #invalid { justify-content: center; } #invalid { justify-content: inherit; } #important { justify-content: flex-end !important; } #important { justify-content: initial; }"
+                .into(),
+        ])
+        .unwrap();
+        let layer = node("<div id='layer'>Layer</div>");
+        let reset = node("<div id='reset'>Reset</div>");
+        let unset = node("<div id='unset'>Unset</div>");
+        let revert = node("<div id='revert'>Revert</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let important = node("<div id='important'>Important</div>");
+
+        let assert_justify = |element: &NativeNode, value: JustifyContentValue| {
+            assert_eq!(stylesheet.computed_for(element).justify_content(), value);
+        };
+
+        assert_justify(&layer, JustifyContentValue::Center);
+        assert_justify(&reset, JustifyContentValue::FlexStart);
+        assert_justify(&unset, JustifyContentValue::FlexStart);
+        assert_justify(&revert, JustifyContentValue::FlexStart);
+        assert_justify(&invalid, JustifyContentValue::Center);
+        assert_justify(&important, JustifyContentValue::FlexEnd);
     }
 
     #[test]

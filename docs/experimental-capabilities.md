@@ -488,7 +488,10 @@ and standalone `flex:revert-layer`, `flex-flow:revert-layer`, and
 `place-content:revert-layer` shorthand rollback with native fallbacks and
 finite shorthand expansion, plus bounded case-insensitive gap-family
 `revert-layer` rollback for `gap`, `row-gap`, and `column-gap` with independent
-finite-pixel components,
+finite-pixel components, plus standalone case-insensitive `initial|unset|revert`
+reset forms for all three gap declarations that resolve to zero; `inherit`,
+parent-gap propagation, percentages, and fractional/intrinsic values remain
+bounded diagnostics,
 bounded case-insensitive 15-layer/unlayered inherited `revert-layer` rollback
 for `text-transform`, `font-weight`, `font-style`, and `word-break` with finite
 parent/root fallbacks,

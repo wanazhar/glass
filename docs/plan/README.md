@@ -2130,6 +2130,19 @@ diagnostics remain bounded. Full native integration (242/242) and the feature
 library (1,024 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
 and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-205](tasks/native-engine-205.md)
+slice is implemented at `46128c2e` (design `8852adee`). It adds bounded
+standalone case-insensitive `initial`, `unset`, and one-author-origin `revert`
+to local `gap`, `row-gap`, and `column-gap`, retaining finite non-negative
+pixel values and `revert-layer` rollback. Zero-gap reset fallback,
+shorthand/longhand axis projection, important/source order, invalid-later
+preservation, flex placement, display-list, raster/PNG, hit testing, and
+diagnostics remain bounded; parent-gap propagation, `inherit`, percentages,
+fractional/intrinsic values, and generic CSS-wide machinery remain outside the
+contract. Full native integration (243/243) and the feature library (1,025
+passed, 1 ignored) pass locally. Remote CI, push, release, tag, and registry
+publication remain unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

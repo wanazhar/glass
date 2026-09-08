@@ -869,6 +869,12 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) padding: [u32; 4],
     pub(crate) margin: [NativeMarginValue; 4],
     pub(crate) box_sizing: NativeBoxSizing,
+    pub(crate) width: Option<u32>,
+    pub(crate) height: Option<u32>,
+    pub(crate) min_width: Option<u32>,
+    pub(crate) max_width: Option<u32>,
+    pub(crate) min_height: Option<u32>,
+    pub(crate) max_height: Option<u32>,
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
@@ -903,6 +909,12 @@ impl Default for NativeInheritedStyle {
             padding: [0; 4],
             margin: [NativeMarginValue::Length(0); 4],
             box_sizing: NativeBoxSizing::ContentBox,
+            width: None,
+            height: None,
+            min_width: None,
+            max_width: None,
+            min_height: None,
+            max_height: None,
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
@@ -2670,12 +2682,24 @@ impl NativeStylesheet {
             ),
             gap: resolve_gap_axis(gap.shorthand_column, gap.column_gap),
             row_gap: resolve_gap_axis(gap.shorthand_row, gap.row_gap),
-            width: resolve_local_optional_cascade_declaration(width),
-            height: resolve_local_optional_cascade_declaration(height),
-            min_width: resolve_local_optional_cascade_declaration(min_width),
-            max_width: resolve_local_optional_cascade_declaration(max_width),
-            min_height: resolve_local_optional_cascade_declaration(min_height),
-            max_height: resolve_local_optional_cascade_declaration(max_height),
+            width: resolve_local_inherited_nullable_cascade_declaration(width, inherited.width),
+            height: resolve_local_inherited_nullable_cascade_declaration(height, inherited.height),
+            min_width: resolve_local_inherited_nullable_cascade_declaration(
+                min_width,
+                inherited.min_width,
+            ),
+            max_width: resolve_local_inherited_nullable_cascade_declaration(
+                max_width,
+                inherited.max_width,
+            ),
+            min_height: resolve_local_inherited_nullable_cascade_declaration(
+                min_height,
+                inherited.min_height,
+            ),
+            max_height: resolve_local_inherited_nullable_cascade_declaration(
+                max_height,
+                inherited.max_height,
+            ),
             line_height: resolve_line_height(line_height, inherited.line_height),
             background_color: resolved_background_color,
             border: NativeBorder::from_sides(resolved_border),
@@ -3088,6 +3112,17 @@ fn resolve_local_inherited_optional_cascade_declaration<T: Copy, const N: usize>
     resolve_alignment_candidates(candidates, None, |declaration| match declaration {
         LocalCascadeDeclaration::Value(value) => Some(Some(value)),
         LocalCascadeDeclaration::Inherit => Some(Some(inherited)),
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_local_inherited_nullable_cascade_declaration<T: Copy, const N: usize>(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
+    inherited: Option<T>,
+) -> Option<T> {
+    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => Some(Some(value)),
+        LocalCascadeDeclaration::Inherit => Some(inherited),
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -6996,7 +7031,7 @@ fn parse_local_box_edges(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 4
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
-    if is_box_model_inherit(value) {
+    if is_inherit_keyword(value) {
         return Some([LocalCascadeDeclaration::Inherit; 4]);
     }
     if is_box_model_reset(value) {
@@ -7021,7 +7056,7 @@ fn parse_local_box_edge_pair(value: &str) -> Option<[LocalCascadeDeclaration<u32
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 2]);
     }
-    if is_box_model_inherit(value) {
+    if is_inherit_keyword(value) {
         return Some([LocalCascadeDeclaration::Inherit; 2]);
     }
     if is_box_model_reset(value) {
@@ -7052,7 +7087,7 @@ fn parse_local_margin_edges(
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
-    if is_box_model_inherit(value) {
+    if is_inherit_keyword(value) {
         return Some([LocalCascadeDeclaration::Inherit; 4]);
     }
     if is_box_model_reset(value) {
@@ -7079,7 +7114,7 @@ fn parse_local_margin_edge_pair(
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 2]);
     }
-    if is_box_model_inherit(value) {
+    if is_inherit_keyword(value) {
         return Some([LocalCascadeDeclaration::Inherit; 2]);
     }
     if is_box_model_reset(value) {
@@ -8327,11 +8362,14 @@ fn parse_text_indent_declaration(value: &str) -> Option<LocalCascadeDeclaration<
 }
 
 fn parse_local_dimension_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
     parse_local_cascade_declaration(value, parse_dimension)
 }
 
 fn parse_local_padding_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
-    if is_box_model_inherit(value) {
+    if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
     if is_box_model_reset(value) {
@@ -8343,7 +8381,7 @@ fn parse_local_padding_declaration(value: &str) -> Option<LocalCascadeDeclaratio
 fn parse_local_margin_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeMarginValue>> {
-    if is_box_model_inherit(value) {
+    if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
     if is_box_model_reset(value) {
@@ -8355,7 +8393,7 @@ fn parse_local_margin_declaration(
 fn parse_local_box_sizing_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeBoxSizing>> {
-    if is_box_model_inherit(value) {
+    if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
     if is_box_model_reset(value) {
@@ -8371,7 +8409,7 @@ fn is_box_model_reset(value: &str) -> bool {
         || value.eq_ignore_ascii_case("revert")
 }
 
-fn is_box_model_inherit(value: &str) -> bool {
+fn is_inherit_keyword(value: &str) -> bool {
     value.trim().eq_ignore_ascii_case("inherit")
 }
 
@@ -16270,6 +16308,10 @@ mod tests {
     #[test]
     fn local_dimension_declaration_parser_accepts_only_standalone_revert_layer() {
         assert_eq!(
+            parse_local_dimension_declaration("InHeRiT"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+        assert_eq!(
             parse_local_dimension_declaration("ReVeRt-LaYeR"),
             Some(LocalCascadeDeclaration::RevertLayer)
         );
@@ -16281,6 +16323,7 @@ mod tests {
         assert_eq!(parse_local_dimension_declaration("-1px"), None);
         assert_eq!(parse_local_dimension_declaration("50%"), None);
         assert_eq!(parse_local_dimension_declaration("auto"), None);
+        assert_eq!(parse_local_dimension_declaration("inherit 24px"), None);
         let declarations = parse_declarations(
             "width:24px;width:1px 2px;height:30px;height:bad;min-width:8px;min-width:-1px;max-height:40px;max-height:50%;",
         );
@@ -16296,6 +16339,65 @@ mod tests {
         assert_eq!(
             declarations.max_height,
             Some(LocalCascadeDeclaration::Value(40))
+        );
+    }
+
+    #[test]
+    fn stylesheet_cascade_resolves_explicit_dimension_inheritance() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { width:24px; height:18px; min-width:4px; max-width:40px; min-height:6px; max-height:30px; }
+            #child { width:inherit; height:INHERIT; min-width:InHeRiT; max-width:inherit; min-height:inherit; max-height:inherit; }
+            #none-child { width:inherit; height:inherit; min-width:inherit; max-width:inherit; min-height:inherit; max-height:inherit; }
+            @layer base { #rollback-child { width:12px; height:13px; min-width:2px; max-width:20px; min-height:3px; max-height:21px; } }
+            @layer theme { #rollback-child { width:inherit; height:inherit; min-width:inherit; max-width:inherit; min-height:inherit; max-height:inherit; } #rollback-child { width:revert-layer; height:revert-layer; min-width:revert-layer; max-width:revert-layer; min-height:revert-layer; max-height:revert-layer; } }
+            #important-child { width:4px !important; height:5px !important; min-width:1px !important; max-width:6px !important; min-height:2px !important; max-height:7px !important; }
+            #important-child { width:inherit !important; height:inherit !important; min-width:inherit !important; max-width:inherit !important; min-height:inherit !important; max-height:inherit !important; }
+            #root-child { width:inherit; height:inherit; min-width:inherit; max-width:inherit; min-height:inherit; max-height:inherit; }
+            </style>
+            <div id='parent'><div id='child'>Child</div></div>
+            <div id='none-parent'><div id='none-child'>None</div></div>
+            <div id='rollback-parent' style='width:24px;height:18px;min-width:4px;max-width:40px;min-height:6px;max-height:30px'><div id='rollback-child'>Rollback</div></div>
+            <div id='important-parent' style='width:24px;height:18px;min-width:4px;max-width:40px;min-height:6px;max-height:30px'><div id='important-child'>Important</div></div>
+            <div id='root-child'>Root</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        let dimensions = |style: NativeComputedStyle| {
+            [
+                style.width(),
+                style.height(),
+                style.min_width(),
+                style.max_width(),
+                style.min_height(),
+                style.max_height(),
+            ]
+        };
+
+        assert_eq!(
+            dimensions(style("child")),
+            [Some(24), Some(18), Some(4), Some(40), Some(6), Some(30)]
+        );
+        assert_eq!(
+            dimensions(style("none-child")),
+            [None, None, None, None, None, None]
+        );
+        assert_eq!(
+            dimensions(style("rollback-child")),
+            [Some(12), Some(13), Some(2), Some(20), Some(3), Some(21)]
+        );
+        assert_eq!(
+            dimensions(style("important-child")),
+            [Some(24), Some(18), Some(4), Some(40), Some(6), Some(30)]
+        );
+        assert_eq!(
+            dimensions(style("root-child")),
+            [None, None, None, None, None, None]
         );
     }
 

@@ -36,7 +36,7 @@ bounded-paint-color-revert-layer,
 bounded-paint-color-important/bounded-physical-border-color-important,
 bounded-logical-border-color-important/bounded-text-presentation-important/
 bounded-local-presentation-important,
-bounded-flex-gap-important,
+bounded-flex-gap-important/bounded-dimension-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
 bounded-inherited-color-current-color,
@@ -168,9 +168,15 @@ and `opacity` declarations also accept that bounded priority through a private
 doubled local partition. The normal-only flex and gap declarations also accept
 that bounded priority through a private doubled flex/gap partition; shorthand
 expansions carry one declaration's priority to each supported component, while
-the existing computed-value and layout/artifact owners remain unchanged.
-Dimensions, box-model declarations, overflow, and remaining properties retain
-their existing bounded behavior, and
+the existing computed-value and layout/artifact owners remain unchanged. The
+six normal-only dimension declarations (`width`, `height`, `min-width`,
+`max-width`, `min-height`, and `max-height`) also accept that bounded priority
+through private doubled dimension candidate streams; important-over-normal
+ordering, reversed named-layer priority, inline precedence, invalid-later
+preservation, and `revert-layer` rollback are carried into the existing
+optional computed dimensions without changing the geometry/artifact owners.
+Box-model declarations, overflow, and remaining properties retain their
+existing bounded behavior, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
@@ -1595,6 +1601,22 @@ this slice. Scoped check, focused units/integration, full native integration
 (227/227), strict Clippy, warning-denied rustdoc, and formatting pass locally;
 final static, paired-crate, package, workspace, security/fuzz, cleanup,
 issue-level, and remote-CI gates remain pending.
+
+The completed dependency-ordered `native-engine-190` slice is recorded in
+`docs/plan/tasks/native-engine-190.md` and implemented at `d5cc6e6b`. It extends
+the bounded author-origin `!important` partition to the six normal-only local
+dimension declarations through private doubled candidate arrays and per-
+property importance bits. Important-over-normal ordering, reversed named-layer
+priority, inline precedence in the unlayered important bucket, invalid-later
+preservation, independent dimension streams, and `revert-layer` rollback flow
+through the existing min/max, box geometry, clipping, hit-test, display-list,
+raster, and PNG capture owners. Box-model declarations, overflow priority,
+other properties, dependencies, defaults, multiple origins, and browser-wide
+CSS sizing conformance remain outside this slice. Scoped check, focused units/
+integration, full native integration (228/228), strict Clippy, warning-denied
+rustdoc, and formatting pass locally; final static, paired-crate, package,
+workspace, security/fuzz, cleanup, issue-level, and remote-CI gates remain
+pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

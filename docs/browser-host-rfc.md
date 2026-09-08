@@ -152,8 +152,12 @@ declarations (`justify-content`, `align-items`, `align-self`, `align-content`,
 `place-content`, `flex-direction`, `flex-wrap`, `flex-flow`, `order`,
 `flex-grow`, `flex-shrink`, `flex-basis`, `flex`, `gap`, `row-gap`, and
 `column-gap`) honor it through their existing shorthand/component owners;
-dimensions, box-model declarations, overflow, and remaining properties retain
-their existing bounded behavior.
+the six normal-only dimension declarations (`width`, `height`, `min-width`,
+`max-width`, `min-height`, and `max-height`) also honor it through private
+doubled candidate streams with important-over-normal ordering, reversed
+named-layer priority, inline precedence, invalid-later preservation, and
+`revert-layer` rollback; box-model declarations, overflow, and remaining
+properties retain their existing bounded behavior.
 owner also accepts exact case-insensitive CSS-wide `inherit`, `unset`,
 `initial`, and one-author-origin `revert`: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width

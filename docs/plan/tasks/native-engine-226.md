@@ -1,7 +1,7 @@
 ---
 id: native-engine-226
 scope: glass-browser/native-engine/flex-basis-inherit
-status: planned
+status: complete
 depends-on: [native-engine-225]
 ---
 
@@ -93,6 +93,12 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Pending implementation and local certification. Remote CI, push, release, tag,
+Implementation is `4ee2e1ed` (design `c52398fd`). The locked native-feature
+check passed before tests. Focused flex parser/cascade coverage passed (35
+tests), and the public direct-basis sizing/artifact fixture passed (1 test).
+Full native integration passed (264/264), and the feature library passed
+(1,044 passed, 1 ignored). Formatting, workspace check, strict Clippy, paired
+package builds, and warning-denied rustdoc for both crates also passed locally.
+Remote CI, push, release, tag,
 registry publication, browser-parity, security-boundary certification, and
 promotion remain outside this local task.

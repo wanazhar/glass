@@ -18297,6 +18297,107 @@ fn native_inherited_text_css_wide_resets_reach_layout_and_artifacts() {
 }
 
 #[test]
+fn native_inherited_alignment_css_wide_resets_reach_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        r#"<style>
+        #parent { display:block; width:64px; height:100px; direction:rtl; text-align:start; text-align-last:auto; text-justify:inter-word; }
+        .probe { display:block; width:64px; height:20px; }
+        #inherit { direction:inherit; text-align:inherit; text-align-last:inherit; text-justify:inherit; background-color:#ff0000; }
+        #unset { direction:unset; text-align:unset; text-align-last:unset; text-justify:unset; background-color:#00ff00; }
+        #revert { direction:revert; text-align:revert; text-align-last:revert; text-justify:revert; background-color:#0000ff; }
+        #initial { direction:initial; text-align:initial; text-align-last:initial; text-justify:initial; background-color:#ffff00; }
+        #terminal { direction:rtl; direction:initial; text-align:start; text-align:initial; text-align-last:right; text-align-last:initial; text-justify:none; text-justify:initial; background-color:#ff00ff; }
+        </style>
+        <div id='parent'><div id='inherit' class='probe' role='button'>A</div><div id='unset' class='probe' role='button'>A</div><div id='revert' class='probe' role='button'>A</div><div id='initial' class='probe' role='button'>A</div><div id='terminal' class='probe' role='button'>A</div></div>"#,
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 64,
+        height: 112,
+        device_scale_factor_milli: 1000,
+    };
+    let parent = document.resolve_target("id=parent").unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let unset = document.resolve_target("id=unset").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let initial = document.resolve_target("id=initial").unwrap();
+    let terminal = document.resolve_target("id=terminal").unwrap();
+    let targets = [inherit, unset, revert, initial, terminal];
+
+    assert!(document.diagnostics().iter().all(|diagnostic| {
+        !(diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && matches!(
+                diagnostic.detail.as_str(),
+                "direction" | "text-align" | "text-align-last" | "text-justify"
+            ))
+    }));
+
+    let layout = document.layout(viewport).unwrap();
+    assert!(layout.box_for(parent).is_some());
+    for target in targets {
+        assert!(layout.box_for(target).is_some());
+        assert!(layout.text_runs.iter().any(|run| run.node_id == target));
+    }
+    let text_x = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id)
+            .unwrap()
+            .origin
+            .x
+    };
+    assert_eq!(text_x(inherit), text_x(unset));
+    assert_eq!(text_x(inherit), text_x(revert));
+    assert!(text_x(inherit) > text_x(initial));
+    assert_eq!(text_x(initial), text_x(terminal));
+
+    let list = document.display_list(viewport).unwrap();
+    for target in targets {
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::FillRect { node_id, .. } if *node_id == target
+            )
+        }));
+        assert!(list.commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeDisplayCommand::TextRun { node_id, .. } if *node_id == target
+            )
+        }));
+    }
+
+    let surface = list.rasterize().unwrap();
+    for (target, color) in [
+        (inherit, [255, 0, 0, 255]),
+        (unset, [0, 255, 0, 255]),
+        (revert, [0, 0, 255, 255]),
+        (initial, [255, 255, 0, 255]),
+        (terminal, [255, 0, 255, 255]),
+    ] {
+        let rect = layout.box_for(target).unwrap();
+        assert_eq!(
+            layout
+                .hit_test(i64::from(rect.x + 1), i64::from(rect.y + 1))
+                .unwrap(),
+            Some(target)
+        );
+        assert_eq!(surface.pixel(rect.x + 1, rect.y + 1), Some(color));
+    }
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(
+        document
+            .semantic_nodes()
+            .iter()
+            .filter(|semantic_node| targets.contains(&semantic_node.node_id))
+            .count()
+            >= targets.len()
+    );
+}
+
+#[test]
 fn native_box_model_revert_layer_preserves_geometry_and_artifacts() {
     let document = NativeDocument::parse(
         "<style>@layer base { #box { display:block; width:32px; height:20px; padding:2px; border:1px solid red; box-sizing:content-box; margin:1px 2px 3px 4px; background-color:red; } } @layer theme { #box { padding:4px 5px 6px 7px; box-sizing:border-box; margin:5px 6px 7px 8px; } } #box { padding:ReVeRt-LaYeR; box-sizing:revert-layer; margin:revert-layer; }</style><button id='box'>Box</button>",

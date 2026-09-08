@@ -490,12 +490,6 @@ pub(crate) enum TextAlignValue {
     Justify,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextAlignDeclaration {
-    Value(TextAlignValue),
-    RevertLayer,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TextAlignLastValue {
     #[default]
@@ -506,12 +500,6 @@ pub(crate) enum TextAlignLastValue {
     Start,
     End,
     Justify,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextAlignLastDeclaration {
-    Value(TextAlignLastValue),
-    RevertLayer,
 }
 
 impl TextAlignLastValue {
@@ -537,12 +525,6 @@ pub(crate) enum TextJustifyValue {
     Auto,
     None,
     InterWord,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextJustifyDeclaration {
-    Value(TextJustifyValue),
-    RevertLayer,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -636,12 +618,6 @@ pub(crate) enum DirectionValue {
     #[default]
     Ltr,
     Rtl,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DirectionDeclaration {
-    Value(DirectionValue),
-    RevertLayer,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1442,13 +1418,14 @@ impl NativeStylesheet {
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
         let mut white_space: [Option<CascadeValue<InheritedTextDeclaration<WhiteSpaceValue>>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_align: [Option<CascadeValue<TextAlignDeclaration>>;
+        let mut text_align: [Option<CascadeValue<InheritedTextDeclaration<TextAlignValue>>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_align_last: [Option<CascadeValue<TextAlignLastDeclaration>>;
+        let mut text_align_last: [Option<
+            CascadeValue<InheritedTextDeclaration<TextAlignLastValue>>,
+        >; MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
+        let mut text_justify: [Option<CascadeValue<InheritedTextDeclaration<TextJustifyValue>>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut text_justify: [Option<CascadeValue<TextJustifyDeclaration>>;
-            MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
-        let mut direction: [Option<CascadeValue<DirectionDeclaration>>;
+        let mut direction: [Option<CascadeValue<InheritedTextDeclaration<DirectionValue>>>;
             MAX_NATIVE_TEXT_CASCADE_LAYERS] = [None; MAX_NATIVE_TEXT_CASCADE_LAYERS];
         let mut justify_content: [Option<CascadeValue<JustifyContentDeclaration>>;
             MAX_NATIVE_LOCAL_CASCADE_LAYERS] = [None; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
@@ -2830,13 +2807,11 @@ fn resolve_line_height(
 }
 
 fn resolve_direction(
-    candidates: [Option<CascadeValue<DirectionDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<InheritedTextDeclaration<DirectionValue>>>;
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: DirectionValue,
 ) -> DirectionValue {
-    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        DirectionDeclaration::Value(value) => Some(value),
-        DirectionDeclaration::RevertLayer => None,
-    })
+    resolve_inherited_text_declaration(candidates, inherited, DirectionValue::Ltr)
 }
 
 fn resolve_flex_direction(
@@ -2952,33 +2927,27 @@ fn resolve_flex_basis(
 }
 
 fn resolve_text_align(
-    candidates: [Option<CascadeValue<TextAlignDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<InheritedTextDeclaration<TextAlignValue>>>;
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: TextAlignValue,
 ) -> TextAlignValue {
-    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        TextAlignDeclaration::Value(value) => Some(value),
-        TextAlignDeclaration::RevertLayer => None,
-    })
+    resolve_inherited_text_declaration(candidates, inherited, TextAlignValue::Left)
 }
 
 fn resolve_text_align_last(
-    candidates: [Option<CascadeValue<TextAlignLastDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<InheritedTextDeclaration<TextAlignLastValue>>>;
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: TextAlignLastValue,
 ) -> TextAlignLastValue {
-    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        TextAlignLastDeclaration::Value(value) => Some(value),
-        TextAlignLastDeclaration::RevertLayer => None,
-    })
+    resolve_inherited_text_declaration(candidates, inherited, TextAlignLastValue::Auto)
 }
 
 fn resolve_text_justify(
-    candidates: [Option<CascadeValue<TextJustifyDeclaration>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
+    candidates: [Option<CascadeValue<InheritedTextDeclaration<TextJustifyValue>>>;
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: TextJustifyValue,
 ) -> TextJustifyValue {
-    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        TextJustifyDeclaration::Value(value) => Some(value),
-        TextJustifyDeclaration::RevertLayer => None,
-    })
+    resolve_inherited_text_declaration(candidates, inherited, TextJustifyValue::Auto)
 }
 
 fn resolve_inherited_text_declaration<T: Copy>(
@@ -4693,15 +4662,15 @@ struct NativeDeclarations {
     flex_importance: NativeFlexDeclarationImportance,
     text_importance: NativeTextDeclarationImportance,
     white_space: Option<InheritedTextDeclaration<WhiteSpaceValue>>,
-    text_align: Option<TextAlignDeclaration>,
-    text_align_last: Option<TextAlignLastDeclaration>,
-    text_justify: Option<TextJustifyDeclaration>,
+    text_align: Option<InheritedTextDeclaration<TextAlignValue>>,
+    text_align_last: Option<InheritedTextDeclaration<TextAlignLastValue>>,
+    text_justify: Option<InheritedTextDeclaration<TextJustifyValue>>,
     justify_content: Option<JustifyContentDeclaration>,
     align_items: Option<AlignItemsDeclaration>,
     align_self: Option<AlignSelfDeclaration>,
     align_content: Option<AlignContentDeclaration>,
     flex_direction: Option<FlexDirectionDeclaration>,
-    direction: Option<DirectionDeclaration>,
+    direction: Option<InheritedTextDeclaration<DirectionValue>>,
     flex_wrap: Option<FlexWrapDeclaration>,
     order: Option<FlexItemOrderDeclaration>,
     flex_grow: Option<FlexGrowDeclaration>,
@@ -7866,12 +7835,8 @@ fn parse_text_align(value: &str) -> Option<TextAlignValue> {
     }
 }
 
-fn parse_text_align_declaration(value: &str) -> Option<TextAlignDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(TextAlignDeclaration::RevertLayer)
-    } else {
-        parse_text_align(value).map(TextAlignDeclaration::Value)
-    }
+fn parse_text_align_declaration(value: &str) -> Option<InheritedTextDeclaration<TextAlignValue>> {
+    parse_inherited_text_declaration(value, parse_text_align)
 }
 
 fn parse_text_align_last(value: &str) -> Option<TextAlignLastValue> {
@@ -7887,12 +7852,10 @@ fn parse_text_align_last(value: &str) -> Option<TextAlignLastValue> {
     }
 }
 
-fn parse_text_align_last_declaration(value: &str) -> Option<TextAlignLastDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(TextAlignLastDeclaration::RevertLayer)
-    } else {
-        parse_text_align_last(value).map(TextAlignLastDeclaration::Value)
-    }
+fn parse_text_align_last_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<TextAlignLastValue>> {
+    parse_inherited_text_declaration(value, parse_text_align_last)
 }
 
 fn parse_text_justify(value: &str) -> Option<TextJustifyValue> {
@@ -7904,12 +7867,10 @@ fn parse_text_justify(value: &str) -> Option<TextJustifyValue> {
     }
 }
 
-fn parse_text_justify_declaration(value: &str) -> Option<TextJustifyDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(TextJustifyDeclaration::RevertLayer)
-    } else {
-        parse_text_justify(value).map(TextJustifyDeclaration::Value)
-    }
+fn parse_text_justify_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<TextJustifyValue>> {
+    parse_inherited_text_declaration(value, parse_text_justify)
 }
 
 fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
@@ -8053,12 +8014,8 @@ fn parse_direction(value: &str) -> Option<DirectionValue> {
     }
 }
 
-fn parse_direction_declaration(value: &str) -> Option<DirectionDeclaration> {
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        Some(DirectionDeclaration::RevertLayer)
-    } else {
-        parse_direction(value).map(DirectionDeclaration::Value)
-    }
+fn parse_direction_declaration(value: &str) -> Option<InheritedTextDeclaration<DirectionValue>> {
+    parse_inherited_text_declaration(value, parse_direction)
 }
 
 fn parse_flex_wrap(value: &str) -> Option<FlexWrapValue> {
@@ -8819,15 +8776,15 @@ mod tests {
         );
         assert_eq!(
             declarations.text_align,
-            Some(TextAlignDeclaration::Value(TextAlignValue::Center))
+            Some(InheritedTextDeclaration::Value(TextAlignValue::Center))
         );
         assert_eq!(
             declarations.text_align_last,
-            Some(TextAlignLastDeclaration::Value(TextAlignLastValue::End))
+            Some(InheritedTextDeclaration::Value(TextAlignLastValue::End))
         );
         assert_eq!(
             declarations.text_justify,
-            Some(TextJustifyDeclaration::Value(TextJustifyValue::InterWord))
+            Some(InheritedTextDeclaration::Value(TextJustifyValue::InterWord))
         );
         assert_eq!(
             declarations.justify_content,
@@ -8855,7 +8812,7 @@ mod tests {
         );
         assert_eq!(
             declarations.direction,
-            Some(DirectionDeclaration::Value(DirectionValue::Rtl))
+            Some(InheritedTextDeclaration::Value(DirectionValue::Rtl))
         );
         assert_eq!(
             declarations.flex_wrap,
@@ -12708,21 +12665,52 @@ mod tests {
     }
 
     #[test]
-    fn alignment_declaration_parser_accepts_only_standalone_case_insensitive_revert_layer() {
+    fn inherited_alignment_declaration_parser_accepts_standalone_css_wide_keywords() {
         assert_eq!(
             parse_text_align_declaration("ReVeRt-LaYeR"),
-            Some(TextAlignDeclaration::RevertLayer)
+            Some(InheritedTextDeclaration::RevertLayer)
         );
         assert_eq!(
             parse_text_align_last_declaration(" REVERT-LAYER "),
-            Some(TextAlignLastDeclaration::RevertLayer)
+            Some(InheritedTextDeclaration::RevertLayer)
         );
         assert_eq!(
             parse_text_justify_declaration("revert-LAYER"),
-            Some(TextJustifyDeclaration::RevertLayer)
+            Some(InheritedTextDeclaration::RevertLayer)
+        );
+        assert_eq!(
+            parse_text_align_declaration("INHERIT"),
+            Some(InheritedTextDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_text_align_last_declaration("initial"),
+            Some(InheritedTextDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_text_justify_declaration("UnSeT"),
+            Some(InheritedTextDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_text_align_declaration("ReVeRt"),
+            Some(InheritedTextDeclaration::Revert)
+        );
+        assert_eq!(
+            parse_text_align_last_declaration("inherit"),
+            Some(InheritedTextDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_text_justify_declaration("INITIAL"),
+            Some(InheritedTextDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_text_align_declaration("unset"),
+            Some(InheritedTextDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_text_align_last_declaration("REVERT"),
+            Some(InheritedTextDeclaration::Revert)
         );
         assert_eq!(parse_text_align_declaration("center revert-layer"), None);
-        assert_eq!(parse_text_align_last_declaration("inherit"), None);
         assert_eq!(parse_text_justify_declaration("none revert-layer"), None);
     }
 
@@ -12771,20 +12759,35 @@ mod tests {
     }
 
     #[test]
-    fn direction_declaration_parser_accepts_only_standalone_case_insensitive_revert_layer() {
+    fn direction_declaration_parser_accepts_standalone_css_wide_keywords() {
         assert_eq!(
             parse_direction_declaration("ReVeRt-LaYeR"),
-            Some(DirectionDeclaration::RevertLayer)
+            Some(InheritedTextDeclaration::RevertLayer)
         );
         assert_eq!(
             parse_direction_declaration("RTL"),
-            Some(DirectionDeclaration::Value(DirectionValue::Rtl))
+            Some(InheritedTextDeclaration::Value(DirectionValue::Rtl))
         );
         assert_eq!(
             parse_direction_declaration(" REVERT-LAYER "),
-            Some(DirectionDeclaration::RevertLayer)
+            Some(InheritedTextDeclaration::RevertLayer)
         );
-        assert_eq!(parse_direction_declaration("inherit"), None);
+        assert_eq!(
+            parse_direction_declaration("INHERIT"),
+            Some(InheritedTextDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_direction_declaration("initial"),
+            Some(InheritedTextDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_direction_declaration("UnSeT"),
+            Some(InheritedTextDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_direction_declaration("ReVeRt"),
+            Some(InheritedTextDeclaration::Revert)
+        );
         assert_eq!(parse_direction_declaration("vertical-rl"), None);
         assert_eq!(parse_direction_declaration("revert-layer rtl"), None);
     }
@@ -16392,6 +16395,55 @@ mod tests {
             VerticalAlignValue::Baseline,
             0,
             0,
+        );
+
+        assert_eq!(values("parent"), inherited);
+        assert_eq!(values("inherit"), inherited);
+        assert_eq!(values("unset"), inherited);
+        assert_eq!(values("revert"), inherited);
+        assert_eq!(values("initial"), initial);
+        assert_eq!(values("terminal"), initial);
+        assert_eq!(values("invalid"), inherited);
+    }
+
+    #[test]
+    fn inherited_alignment_css_wide_keywords_resolve_parent_initial_and_terminal_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { text-align:right; text-align-last:justify; text-justify:inter-word; direction:rtl; }
+            #inherit { text-align:inherit; text-align-last:inherit; text-justify:inherit; direction:inherit; }
+            #unset { text-align:unset; text-align-last:unset; text-justify:unset; direction:unset; }
+            #revert { text-align:ReVeRt; text-align-last:ReVeRt; text-justify:ReVeRt; direction:ReVeRt; }
+            #initial { text-align:initial; text-align-last:initial; text-justify:initial; direction:initial; }
+            #terminal { text-align:center; text-align:initial; text-align-last:end; text-align-last:initial; text-justify:none; text-justify:initial; direction:ltr; direction:initial; }
+            #invalid { text-align:right; text-align:match-parent; text-align-last:justify; text-align-last:match-parent; text-justify:inter-word; text-justify:inter-character; direction:rtl; direction:vertical-rl; }
+            </style>
+            <div id='parent'><span id='inherit'>inherit</span><span id='unset'>unset</span><span id='revert'>revert</span><span id='initial'>initial</span><span id='terminal'>terminal</span><span id='invalid'>invalid</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let values = |id| {
+            let style = document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap());
+            (
+                style.text_align(),
+                style.text_align_last(),
+                style.text_justify(),
+                style.direction(),
+            )
+        };
+        let inherited = (
+            TextAlignValue::Right,
+            TextAlignLastValue::Justify,
+            TextJustifyValue::InterWord,
+            DirectionValue::Rtl,
+        );
+        let initial = (
+            TextAlignValue::Left,
+            TextAlignLastValue::Auto,
+            TextJustifyValue::Auto,
+            DirectionValue::Ltr,
         );
 
         assert_eq!(values("parent"), inherited);

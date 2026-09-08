@@ -288,6 +288,10 @@ pub enum NativeTextDecorationSkipInk {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationSkipInkDeclaration {
     Value(NativeTextDecorationSkipInk),
+    Inherit,
+    Initial,
+    Unset,
+    Revert,
     RevertLayer,
 }
 
@@ -295,6 +299,8 @@ impl NativeTextDecorationSkipInkDeclaration {
     const fn resolve(self, inherited: NativeTextDecorationSkipInk) -> NativeTextDecorationSkipInk {
         match self {
             Self::Value(value) => value,
+            Self::Inherit | Self::Unset | Self::Revert => inherited,
+            Self::Initial => NativeTextDecorationSkipInk::Auto,
             Self::RevertLayer => inherited,
         }
     }
@@ -7214,6 +7220,10 @@ fn parse_text_decoration_skip_ink(value: &str) -> Option<NativeTextDecorationSki
         "none" => Some(NativeTextDecorationSkipInkDeclaration::Value(
             NativeTextDecorationSkipInk::None,
         )),
+        "inherit" => Some(NativeTextDecorationSkipInkDeclaration::Inherit),
+        "initial" => Some(NativeTextDecorationSkipInkDeclaration::Initial),
+        "unset" => Some(NativeTextDecorationSkipInkDeclaration::Unset),
+        "revert" => Some(NativeTextDecorationSkipInkDeclaration::Revert),
         "revert-layer" => Some(NativeTextDecorationSkipInkDeclaration::RevertLayer),
         _ => None,
     }
@@ -13647,9 +13657,24 @@ mod tests {
             parse_text_decoration_skip_ink("ReVeRt-LaYeR"),
             Some(NativeTextDecorationSkipInkDeclaration::RevertLayer)
         );
+        assert_eq!(
+            parse_text_decoration_skip_ink("InHeRiT"),
+            Some(NativeTextDecorationSkipInkDeclaration::Inherit)
+        );
+        assert_eq!(
+            parse_text_decoration_skip_ink("InItIaL"),
+            Some(NativeTextDecorationSkipInkDeclaration::Initial)
+        );
+        assert_eq!(
+            parse_text_decoration_skip_ink("UnSeT"),
+            Some(NativeTextDecorationSkipInkDeclaration::Unset)
+        );
+        assert_eq!(
+            parse_text_decoration_skip_ink("ReVeRt"),
+            Some(NativeTextDecorationSkipInkDeclaration::Revert)
+        );
         assert_eq!(parse_text_decoration_skip_ink("all"), None);
-        assert_eq!(parse_text_decoration_skip_ink("inherit"), None);
-        assert_eq!(parse_text_decoration_skip_ink("revert"), None);
+        assert_eq!(parse_text_decoration_skip_ink("inherit initial"), None);
         assert_eq!(parse_text_decoration_skip_ink(""), None);
         assert_eq!(
             parse_declarations("text-decoration-skip-ink: none").text_decoration_skip_ink,
@@ -13905,6 +13930,34 @@ mod tests {
                 .text_decoration_skip_ink(),
             NativeTextDecorationSkipInk::None
         );
+    }
+
+    #[test]
+    fn text_decoration_skip_ink_css_wide_resets_follow_parent_and_initial() {
+        let document = NativeDocument::parse(
+            "<style>#parent { text-decoration-skip-ink: none; } #initial { text-decoration-skip-ink: initial; } #inherit { text-decoration-skip-ink: inherit; } #unset { text-decoration-skip-ink: unset; } #revert { text-decoration-skip-ink: revert; } #invalid { text-decoration-skip-ink: none; text-decoration-skip-ink: all; } #important { text-decoration-skip-ink: none !important; } #important { text-decoration-skip-ink: initial; }</style><div id='parent'><span id='initial'>Initial</span><span id='inherit'>Inherit</span><span id='unset'>Unset</span><span id='revert'>Revert</span><span id='invalid'>Invalid</span><span id='important'>Important</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_decoration_skip_ink()
+        };
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(document.root())
+                .text_decoration_skip_ink(),
+            NativeTextDecorationSkipInk::Auto
+        );
+        assert_eq!(style("parent"), NativeTextDecorationSkipInk::None);
+        assert_eq!(style("initial"), NativeTextDecorationSkipInk::Auto);
+        assert_eq!(style("inherit"), NativeTextDecorationSkipInk::None);
+        assert_eq!(style("unset"), NativeTextDecorationSkipInk::None);
+        assert_eq!(style("revert"), NativeTextDecorationSkipInk::None);
+        assert_eq!(style("invalid"), NativeTextDecorationSkipInk::None);
+        assert_eq!(style("important"), NativeTextDecorationSkipInk::None);
     }
 
     #[test]

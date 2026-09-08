@@ -2095,6 +2095,18 @@ boundary remain bounded. Full native integration (255/255) and the feature
 library (1,038 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
 and registry publication remain unclaimed for this local-only checkout.
 
+The completed dependency-ordered `native-engine-218` slice is recorded in
+`docs/plan/tasks/native-engine-218.md` and implemented at `52adc7d1` (design
+`ca9afd5f`). It adds standalone, case-insensitive `align-self: inherit`
+through the existing private ancestor-style chain while keeping omitted
+`align-self` local `auto`; explicit `auto` continues to delegate to the
+containing flex parent's `align-items`. Mixed forms, source order, cross-axis
+placement, complete-subtree movement, display-list, raster/PNG, point-hit,
+semantics, diagnostics, and the two-crate boundary remain bounded. Full native
+integration (256/256) and the feature library (1,039 passed, 1 ignored) pass
+locally. Remote CI, push, release, tag, and registry publication remain
+unclaimed for this local-only checkout.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -3084,6 +3096,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded explicit case-insensitive `align-items:inherit` propagation through
   the private parent-style chain, while omitted `align-items` stays
   non-inherited and uses the existing `flex-start` fallback.
+- bounded explicit case-insensitive `align-self:inherit` propagation through
+  the private parent-style chain, while omitted `align-self` remains local
+  `auto` and explicit `auto` delegates to the containing `align-items` owner.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

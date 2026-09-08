@@ -665,6 +665,7 @@ pub(crate) enum FlexWrapValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexWrapDeclaration {
     Value(FlexWrapValue),
+    Inherit,
     Reset,
     RevertLayer,
 }
@@ -900,6 +901,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) align_self: AlignSelfValue,
     pub(crate) align_content: AlignContentValue,
     pub(crate) flex_direction: FlexDirectionValue,
+    pub(crate) flex_wrap: FlexWrapValue,
     pub(crate) direction: DirectionValue,
     pub(crate) white_space: WhiteSpaceValue,
     pub(crate) line_height: Option<u32>,
@@ -945,6 +947,7 @@ impl Default for NativeInheritedStyle {
             align_self: AlignSelfValue::Auto,
             align_content: AlignContentValue::FlexStart,
             flex_direction: FlexDirectionValue::Row,
+            flex_wrap: FlexWrapValue::NoWrap,
             direction: DirectionValue::Ltr,
             white_space: WhiteSpaceValue::Normal,
             line_height: None,
@@ -2659,7 +2662,7 @@ impl NativeStylesheet {
             align_content: resolve_align_content(align_content, inherited.align_content),
             flex_direction: resolve_flex_direction(flex_direction, inherited.flex_direction),
             direction: resolved_direction,
-            flex_wrap: resolve_flex_wrap(flex_wrap),
+            flex_wrap: resolve_flex_wrap(flex_wrap, inherited.flex_wrap),
             flex_item_order: resolve_flex_item_order(flex_item_order),
             flex_grow: resolve_flex_grow(flex_grow),
             flex_shrink: resolve_flex_shrink(flex_shrink),
@@ -2981,12 +2984,14 @@ fn resolve_align_content(
 
 fn resolve_flex_wrap(
     candidates: [Option<CascadeValue<FlexWrapDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: FlexWrapValue,
 ) -> FlexWrapValue {
     resolve_alignment_candidates(
         candidates,
         FlexWrapValue::NoWrap,
         |declaration| match declaration {
             FlexWrapDeclaration::Value(value) => Some(value),
+            FlexWrapDeclaration::Inherit => Some(inherited),
             FlexWrapDeclaration::Reset => Some(FlexWrapValue::NoWrap),
             FlexWrapDeclaration::RevertLayer => None,
         },
@@ -8228,6 +8233,9 @@ fn parse_flex_wrap_declaration(value: &str) -> Option<FlexWrapDeclaration> {
     if is_local_reset_keyword(value) {
         return Some(FlexWrapDeclaration::Reset);
     }
+    if value.trim().eq_ignore_ascii_case("inherit") {
+        return Some(FlexWrapDeclaration::Inherit);
+    }
     parse_flex_wrap(value).map(FlexWrapDeclaration::Value)
 }
 
@@ -13350,6 +13358,11 @@ mod tests {
         );
         assert_eq!(parse_flex_wrap("row"), None);
         assert_eq!(parse_flex_wrap("normal"), None);
+        assert_eq!(
+            parse_flex_wrap_declaration(" InHeRiT "),
+            Some(FlexWrapDeclaration::Inherit)
+        );
+        assert_eq!(parse_flex_wrap_declaration("inherit wrap"), None);
     }
 
     #[test]
@@ -19419,6 +19432,49 @@ mod tests {
         );
         assert_eq!(
             document.computed_style_for_layout(invalid).flex_wrap(),
+            FlexWrapValue::NoWrap
+        );
+    }
+
+    #[test]
+    fn flex_wrap_explicit_inherit_uses_parent_without_implicit_inheritance() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#inherit { flex-wrap: InHeRiT; } #invalid { flex-wrap: wrap; flex-wrap: inherit wrap; } #important { flex-wrap: wrap !important; } #important { flex-wrap: inherit; }"
+                .into(),
+        ])
+        .unwrap();
+        let inherited = FlexWrapValue::WrapReverse;
+        let computed = |element: &NativeNode| {
+            stylesheet.computed_for_with_matcher(
+                element,
+                NativeInheritedStyle {
+                    flex_wrap: inherited,
+                    ..NativeInheritedStyle::default()
+                },
+                |selector| selector.matches(element),
+            )
+        };
+
+        assert_eq!(
+            computed(&node("<div id='inherit'>Inherit</div>")).flex_wrap(),
+            inherited
+        );
+        assert_eq!(
+            computed(&node("<div id='omitted'>Omitted</div>")).flex_wrap(),
+            FlexWrapValue::NoWrap
+        );
+        assert_eq!(
+            computed(&node("<div id='invalid'>Invalid</div>")).flex_wrap(),
+            FlexWrapValue::Wrap
+        );
+        assert_eq!(
+            computed(&node("<div id='important'>Important</div>")).flex_wrap(),
+            FlexWrapValue::Wrap
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for(&node("<div id='root'>Root</div>"))
+                .flex_wrap(),
             FlexWrapValue::NoWrap
         );
     }

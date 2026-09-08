@@ -10,7 +10,7 @@ use super::{
     config::{MAX_NATIVE_DOM_DEPTH, TextFragmentTerms, Viewport},
     css::{
         AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, FlexDirectionValue,
-        FontStyleValue, FontWeightValue, JustifyContentValue, NativeBorderRadius,
+        FlexWrapValue, FontStyleValue, FontWeightValue, JustifyContentValue, NativeBorderRadius,
         NativeBorderStyleValue, NativeBoxSizing, NativeColor, NativeComputedStyle,
         NativeInheritedStyle, NativeMarginValue, NativeTextDecorationSkipInk,
         NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, TextAlignLastValue,
@@ -872,6 +872,7 @@ impl NativeDocument {
         let mut inherited_align_self = AlignSelfValue::Auto;
         let mut inherited_align_content = AlignContentValue::FlexStart;
         let mut inherited_flex_direction = FlexDirectionValue::Row;
+        let mut inherited_flex_wrap = FlexWrapValue::NoWrap;
         let mut inherited_direction = DirectionValue::Ltr;
         let mut inherited_white_space = WhiteSpaceValue::Normal;
         let mut inherited_line_height = None;
@@ -920,6 +921,7 @@ impl NativeDocument {
                     align_self: inherited_align_self,
                     align_content: inherited_align_content,
                     flex_direction: inherited_flex_direction,
+                    flex_wrap: inherited_flex_wrap,
                     direction: inherited_direction,
                     white_space: inherited_white_space,
                     line_height: inherited_line_height,
@@ -969,6 +971,7 @@ impl NativeDocument {
             inherited_align_self = style.align_self();
             inherited_align_content = style.align_content();
             inherited_flex_direction = style.flex_direction();
+            inherited_flex_wrap = style.flex_wrap();
             inherited_direction = style.direction();
             inherited_white_space = style.white_space();
             inherited_line_height = style.line_height().or(inherited_line_height);

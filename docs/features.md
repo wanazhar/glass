@@ -483,6 +483,9 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   standalone case-insensitive `flex-direction:inherit` copies the computed
   parent direction only when explicitly authored while omitted
   `flex-direction` remains local with the bounded `row` fallback,
+  standalone case-insensitive `flex-wrap:inherit` copies the computed parent
+  wrap mode only when explicitly authored while omitted `flex-wrap` remains
+  local with the bounded `nowrap` fallback,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
   placement using explicit content height or the auto row's maximum item outer
   height,
@@ -835,6 +838,9 @@ projection, and point hit-testing,
   standalone case-insensitive `flex-direction:inherit` copies the computed
   parent direction only when explicitly authored while omitted
   `flex-direction` remains local with the bounded `row` fallback,
+  standalone case-insensitive `flex-wrap:inherit` copies the computed parent
+  wrap mode only when explicitly authored while omitted `flex-wrap` remains
+  local with the bounded `nowrap` fallback,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
   placement using explicit content height or the auto row's maximum item outer
   height,

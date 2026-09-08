@@ -15,7 +15,7 @@ use super::{
         NativeComputedStyle, NativeInheritedStyle, NativeMarginValue, NativeOrderValue,
         NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
         TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
-        TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use std::collections::BTreeMap;
@@ -895,6 +895,7 @@ impl NativeDocument {
         let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_font_style = FontStyleValue::Normal;
         let mut inherited_word_break = WordBreakValue::Normal;
+        let mut inherited_text_overflow = TextOverflowValue::Clip;
         let mut inherited_vertical_align = VerticalAlignValue::Baseline;
         let mut inherited_text_indent = 0;
         let mut inherited_word_spacing = 0;
@@ -951,6 +952,7 @@ impl NativeDocument {
                     font_weight: inherited_font_weight,
                     font_style: inherited_font_style,
                     word_break: inherited_word_break,
+                    text_overflow: inherited_text_overflow,
                     vertical_align: inherited_vertical_align,
                     text_indent: inherited_text_indent,
                     word_spacing: inherited_word_spacing,
@@ -1008,6 +1010,7 @@ impl NativeDocument {
             inherited_font_weight = style.font_weight();
             inherited_font_style = style.font_style();
             inherited_word_break = style.word_break();
+            inherited_text_overflow = style.text_overflow();
             inherited_vertical_align = style.vertical_align();
             inherited_text_indent = style.text_indent();
             inherited_word_spacing = style.word_spacing();

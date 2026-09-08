@@ -930,6 +930,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
     pub(crate) word_break: WordBreakValue,
+    pub(crate) text_overflow: TextOverflowValue,
     pub(crate) vertical_align: VerticalAlignValue,
     pub(crate) text_indent: u32,
     pub(crate) word_spacing: u32,
@@ -983,6 +984,7 @@ impl Default for NativeInheritedStyle {
             font_weight: FontWeightValue::Normal,
             font_style: FontStyleValue::Normal,
             word_break: WordBreakValue::Normal,
+            text_overflow: TextOverflowValue::Clip,
             vertical_align: VerticalAlignValue::Baseline,
             text_indent: 0,
             word_spacing: 0,
@@ -2733,10 +2735,7 @@ impl NativeStylesheet {
                 inherited.word_break,
                 WordBreakValue::Normal,
             ),
-            text_overflow: resolve_local_cascade_declaration(
-                text_overflow,
-                TextOverflowValue::Clip,
-            ),
+            text_overflow: resolve_text_overflow(text_overflow, inherited.text_overflow),
             vertical_align: resolve_inherited_text_declaration(
                 vertical_align,
                 inherited.vertical_align,
@@ -3133,6 +3132,21 @@ fn resolve_text_indent(
         LocalCascadeDeclaration::Inherit => Some(inherited),
         LocalCascadeDeclaration::Reset => Some(0),
         LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
+fn resolve_text_overflow(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<TextOverflowValue>>>;
+        MAX_NATIVE_TEXT_CASCADE_LAYERS],
+    inherited: TextOverflowValue,
+) -> TextOverflowValue {
+    resolve_alignment_candidates(candidates, TextOverflowValue::Clip, |declaration| {
+        match declaration {
+            LocalCascadeDeclaration::Value(value) => Some(value),
+            LocalCascadeDeclaration::Inherit => Some(inherited),
+            LocalCascadeDeclaration::Reset => Some(TextOverflowValue::Clip),
+            LocalCascadeDeclaration::RevertLayer => None,
+        }
     })
 }
 
@@ -8663,6 +8677,9 @@ fn parse_vertical_align_declaration(
 fn parse_text_overflow_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<TextOverflowValue>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
     parse_local_reset_cascade_declaration(value, parse_text_overflow)
 }
 
@@ -18063,7 +18080,14 @@ mod tests {
                 "text-indent {keyword}"
             );
         }
-        assert_eq!(parse_text_overflow_declaration("inherit"), None);
+        for keyword in ["inherit", "InHeRiT"] {
+            assert_eq!(
+                parse_text_overflow_declaration(keyword),
+                Some(LocalCascadeDeclaration::Inherit),
+                "text-overflow {keyword}"
+            );
+        }
+        assert_eq!(parse_text_overflow_declaration("inherit ellipsis"), None);
         for keyword in ["inherit", "InHeRiT"] {
             assert_eq!(
                 parse_text_indent_declaration(keyword),
@@ -18922,6 +18946,30 @@ mod tests {
                 .text_overflow(),
             TextOverflowValue::Clip
         );
+    }
+
+    #[test]
+    fn text_overflow_explicit_inherit_uses_parent_and_respects_cascade() {
+        let document = NativeDocument::parse(
+            "<style>#parent { text-overflow: ellipsis; } #inherit { text-overflow: InHeRiT; } #ordered { text-overflow: clip; text-overflow: inherit; } #invalid { text-overflow: ellipsis; text-overflow: inherit ellipsis; } #important { text-overflow: ellipsis !important; } #important { text-overflow: inherit; } #important-inherit { text-overflow: clip; } #important-inherit { text-overflow: inherit !important; } #reset { text-overflow: inherit; text-overflow: initial; } #unset { text-overflow: inherit; text-overflow: unset; } #revert { text-overflow: inherit; text-overflow: revert; }</style><div id='parent'><span id='inherit'>Inherit</span><span id='ordered'>Ordered</span><span id='invalid'>Invalid</span><span id='important'>Important</span><span id='important-inherit'>Important inherit</span><span id='reset'>Reset</span><span id='unset'>Unset</span><span id='revert'>Revert</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_overflow()
+        };
+
+        assert_eq!(style("parent"), TextOverflowValue::Ellipsis);
+        assert_eq!(style("inherit"), TextOverflowValue::Ellipsis);
+        assert_eq!(style("ordered"), TextOverflowValue::Ellipsis);
+        assert_eq!(style("invalid"), TextOverflowValue::Ellipsis);
+        assert_eq!(style("important"), TextOverflowValue::Ellipsis);
+        assert_eq!(style("important-inherit"), TextOverflowValue::Ellipsis);
+        for id in ["reset", "unset", "revert"] {
+            assert_eq!(style(id), TextOverflowValue::Clip, "text-overflow for {id}");
+        }
     }
 
     #[test]

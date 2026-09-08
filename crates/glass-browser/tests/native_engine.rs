@@ -9620,6 +9620,105 @@ fn native_text_indent_inherit_reaches_first_line_layout_and_artifacts() {
 }
 
 #[test]
+fn native_text_overflow_inherit_reaches_truncation_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>#parent{display:block;width:40px;text-overflow:ellipsis;}#inherit,#omitted,#invalid{display:block;width:40px;height:20px;line-height:20px;white-space:nowrap;overflow-x:clip;}#inherit{text-overflow:inherit;background-color:red;}#omitted{background-color:green;}#invalid{text-overflow:inherit ellipsis;background-color:blue;}</style><div id='parent'><button id='inherit'>ABCDEFG</button><button id='omitted'>ABCDEFG</button><button id='invalid'>ABCDEFG</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let inherit = document.resolve_target("id=inherit").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let viewport = Viewport {
+        width: 48,
+        height: 64,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let first_run = |node_id| {
+        layout
+            .text_runs
+            .iter()
+            .find(|run| run.node_id == node_id)
+            .expect("text run")
+    };
+    assert_eq!(
+        (
+            first_run(inherit).text.as_str(),
+            first_run(inherit).truncated
+        ),
+        ("AB...", true)
+    );
+    assert_eq!(
+        (
+            first_run(omitted).text.as_str(),
+            first_run(omitted).truncated
+        ),
+        ("ABCDEFG", false)
+    );
+    assert_eq!(
+        (
+            first_run(invalid).text.as_str(),
+            first_run(invalid).truncated
+        ),
+        ("ABCDEFG", false)
+    );
+    assert_eq!(layout.max_scroll_offset().x, 0);
+
+    let semantic_nodes = document.semantic_nodes();
+    let source_position = |node_id| {
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .unwrap()
+    };
+    assert!(source_position(inherit) < source_position(omitted));
+    assert!(source_position(omitted) < source_position(invalid));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::TextRun {
+                node_id,
+                text,
+                truncated,
+                ..
+            } if *node_id == inherit && text == "AB..." && *truncated
+        )
+    }));
+    let invalid_rect = layout.box_for(invalid).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == invalid
+                    && *rect == invalid_rect
+                    && *color == NativeColor {
+                        red: 0,
+                        green: 0,
+                        blue: 255,
+                        alpha: 255,
+                    }
+        )
+    }));
+    assert_eq!(
+        layout.hit_test(i64::from(invalid_rect.x + 1), i64::from(invalid_rect.y + 1),),
+        Ok(Some(invalid))
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(invalid_rect.x + 1, invalid_rect.y + 1),
+        Some([0, 0, 255, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "text-overflow"
+    }));
+}
+
+#[test]
 fn native_local_text_css_wide_resets_reach_layout_raster_and_truncation() {
     let document = NativeDocument::parse(
         "<style>.indent { display:block; width:48px; line-height:20px; } .overflow { display:block; width:40px; line-height:20px; white-space:nowrap; overflow-x:clip; } #indent-initial { text-indent:InItIaL; } #indent-unset { text-indent:UnSeT; } #indent-revert { text-indent:ReVeRt; } #indent-invalid { text-indent:16px; text-indent:1px 2px; } #indent-important { text-indent:16px !important; } #indent-important { text-indent:initial; } #overflow-initial { text-overflow:INITIAL; } #overflow-unset { text-overflow:UnSeT; } #overflow-revert { text-overflow:ReVeRt; } #overflow-invalid { text-overflow:ellipsis; text-overflow:fade; } #overflow-important { text-overflow:ellipsis !important; } #overflow-important { text-overflow:initial; }</style><div id='indent-initial' class='indent'>A</div><div id='indent-unset' class='indent'>B</div><div id='indent-revert' class='indent'>C</div><div id='indent-invalid' class='indent'>D</div><div id='indent-important' class='indent'>E</div><div id='overflow-initial' class='overflow'>ABCDEFG</div><div id='overflow-unset' class='overflow'>ABCDEFG</div><div id='overflow-revert' class='overflow'>ABCDEFG</div><div id='overflow-invalid' class='overflow'>ABCDEFG</div><div id='overflow-important' class='overflow'>ABCDEFG</div>",

@@ -1,7 +1,7 @@
 ---
 id: native-engine-214
 scope: glass-browser/native-engine/local-place-content-css-wide-resets
-status: planned
+status: complete
 depends-on: [native-engine-213]
 ---
 
@@ -83,7 +83,25 @@ targets, issue snapshots, and unrelated workloads remain untouched.
 
 ## Completion evidence
 
-Implementation and validation evidence will be recorded here after the
-bounded implementation and documentation closeout. Remote CI, push, release,
-tag, registry publication, browser-parity, security-boundary certification,
-and promotion remain outside this local task.
+Implementation is `24ae15a7`; the design checkpoint is `9f26239d`. The locked
+native-feature test-target check passed in the isolated task target. Focused
+flex parser/cascade coverage passed 31 tests plus a dedicated place-content
+cascade test, the public two-axis reset fixture passed, full native integration
+passed 252/252, and the serial native-feature library passed 1,035 tests with
+one ignored. Workspace all-target/all-feature checking, strict Clippy, paired
+browser/dev builds, warning-denied rustdoc for both crates, formatting, and
+diff checks passed locally. The fixture covers standalone case-insensitive
+reset parsing, two-component `flex-start` fallback projection, terminal reset,
+invalid-later preservation, `!important`, source order, named-layer
+`revert-layer`, wrapped-line distribution, main-axis placement, item
+alignment, flex sizing, display-list, fixed-cell raster/PNG, point-hit,
+semantics, and typed unsupported-value diagnostics for excluded mixed/invalid
+forms. No public schema, dependency, feature default, or crate-boundary change
+was made.
+
+The preceding task's six-target nightly fuzz certification remains current
+because this slice changes only CSS flex shorthand parsing/cascade. Package and
+security evidence is retained from the preceding dependency-stable task until
+the next issue-level validation boundary. Remote CI, push, release, tag,
+registry publication, browser-parity, security-boundary certification, and
+promotion remain outside this local task.

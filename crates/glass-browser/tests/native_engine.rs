@@ -19801,6 +19801,130 @@ fn native_overflow_inherit_reaches_axis_clips_scroll_and_artifacts() {
 }
 
 #[test]
+fn native_overflow_css_wide_resets_reach_axis_clips_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>#initial,#x-reset,#y-reset,#revert,#invalid,#important,#important-reset{display:block;width:16px;height:10px;margin:0;padding:0;border:0;}#initial{overflow:hidden;overflow:InItIaL;}#x-reset{overflow-x:hidden;overflow-x:INITIAL;overflow-y:clip;}#y-reset{overflow-x:clip;overflow-y:hidden;overflow-y:unset;}#revert{overflow:clip;overflow:ReVeRt;}#invalid{overflow:hidden;overflow:initial hidden;}#important{overflow:hidden !important;}#important{overflow:initial;}#important-reset{overflow:hidden;}#important-reset{overflow:initial !important;}.wide{display:block;width:56px;min-width:56px;height:10px;background-color:blue;}</style><button id='initial'><span id='initial-child' class='wide'></span></button><button id='x-reset'><span id='x-reset-child' class='wide'></span></button><button id='y-reset'><span id='y-reset-child' class='wide'></span></button><button id='revert'><span id='revert-child' class='wide'></span></button><button id='invalid'><span id='invalid-child' class='wide'></span></button><button id='important'><span id='important-child' class='wide'></span></button><button id='important-reset'><span id='important-reset-child' class='wide'></span></button>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let initial = document.resolve_target("id=initial").unwrap();
+    let initial_child = document.resolve_target("id=initial-child").unwrap();
+    let x_reset = document.resolve_target("id=x-reset").unwrap();
+    let x_reset_child = document.resolve_target("id=x-reset-child").unwrap();
+    let y_reset = document.resolve_target("id=y-reset").unwrap();
+    let y_reset_child = document.resolve_target("id=y-reset-child").unwrap();
+    let revert = document.resolve_target("id=revert").unwrap();
+    let revert_child = document.resolve_target("id=revert-child").unwrap();
+    let invalid = document.resolve_target("id=invalid").unwrap();
+    let invalid_child = document.resolve_target("id=invalid-child").unwrap();
+    let important = document.resolve_target("id=important").unwrap();
+    let important_child = document.resolve_target("id=important-child").unwrap();
+    let important_reset = document.resolve_target("id=important-reset").unwrap();
+    let important_reset_child = document.resolve_target("id=important-reset-child").unwrap();
+    let viewport = Viewport {
+        width: 32,
+        height: 80,
+        device_scale_factor_milli: 1000,
+    };
+
+    let layout = document.layout(viewport).unwrap();
+    let expected_visible = |y| {
+        Some(NativeRect {
+            x: 0,
+            y,
+            width: 32,
+            height: 10,
+        })
+    };
+    let expected_x_clip = |y| {
+        Some(NativeRect {
+            x: 0,
+            y,
+            width: 16,
+            height: 10,
+        })
+    };
+    assert_eq!(layout.viewport_rect_for(initial_child), expected_visible(0));
+    assert_eq!(
+        layout.viewport_rect_for(x_reset_child),
+        expected_visible(10)
+    );
+    assert_eq!(layout.viewport_rect_for(y_reset_child), expected_x_clip(20));
+    assert_eq!(layout.viewport_rect_for(revert_child), expected_visible(30));
+    assert_eq!(layout.viewport_rect_for(invalid_child), expected_x_clip(40));
+    assert_eq!(
+        layout.viewport_rect_for(important_child),
+        expected_x_clip(50)
+    );
+    assert_eq!(
+        layout.viewport_rect_for(important_reset_child),
+        expected_visible(60)
+    );
+    assert_eq!(layout.content_width, 56);
+    assert_eq!(layout.max_scroll_offset().x, 24);
+    assert_eq!(layout.hit_test(20, 5).unwrap(), Some(initial_child));
+    assert_eq!(layout.hit_test(20, 15).unwrap(), Some(x_reset_child));
+    assert_ne!(layout.hit_test(20, 25).unwrap(), Some(y_reset_child));
+    assert_eq!(layout.hit_test(20, 35).unwrap(), Some(revert_child));
+    assert_ne!(layout.hit_test(20, 45).unwrap(), Some(invalid_child));
+    assert_ne!(layout.hit_test(20, 55).unwrap(), Some(important_child));
+    assert_eq!(
+        layout.hit_test(20, 65).unwrap(),
+        Some(important_reset_child)
+    );
+
+    let semantic_nodes = document.semantic_nodes();
+    let source_position = |node_id| {
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .unwrap()
+    };
+    assert!(source_position(initial) < source_position(x_reset));
+    assert!(source_position(x_reset) < source_position(y_reset));
+    assert!(source_position(y_reset) < source_position(revert));
+    assert!(source_position(revert) < source_position(invalid));
+    assert!(source_position(invalid) < source_position(important));
+    assert!(source_position(important) < source_position(important_reset));
+
+    let list = document.display_list(viewport).unwrap();
+    let fill = |node_id| {
+        list.commands.iter().find_map(|command| match command {
+            NativeDisplayCommand::FillRect {
+                node_id: command_node_id,
+                rect,
+                clip,
+                ..
+            } if *command_node_id == node_id => Some((*rect, *clip)),
+            _ => None,
+        })
+    };
+    for child in [initial_child, revert_child, important_reset_child] {
+        let (rect, clip) = fill(child).unwrap();
+        assert_eq!(rect.width, 56);
+        assert_eq!(clip, None);
+    }
+    for child in [invalid_child, important_child] {
+        let (rect, clip) = fill(child).unwrap();
+        assert_eq!(rect.width, 56);
+        assert!(clip.is_some());
+    }
+
+    let surface = list.rasterize().unwrap();
+    for (x, y) in [(20, 5), (20, 15), (20, 35), (20, 65)] {
+        assert_eq!(surface.pixel(x, y), Some([0, 0, 255, 255]));
+    }
+    for y in [25, 45, 55] {
+        assert_ne!(surface.pixel(20, y), Some([0, 0, 255, 255]));
+    }
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "overflow"
+    }));
+}
+
+#[test]
 fn native_overflow_revert_layer_preserves_axis_clips_across_consumers() {
     let document = NativeDocument::parse(
         "<style>@layer base { #named { overflow: hidden; width: 16px; height: 10px; white-space: nowrap; } #inline { overflow: hidden; width: 16px; height: 10px; white-space: nowrap; } #axis { overflow-y: clip; width: 16px; height: 10px; white-space: nowrap; } } @layer theme { #named { overflow-x: clip; overflow-y: revert-layer; } #axis { overflow-x: hidden; } } @layer top { #named { overflow: revert-layer; } #axis { overflow-x: revert-layer; } } #named { overflow: revert-layer; } #fallback { overflow: revert-layer; width: 16px; height: 10px; white-space: nowrap; }</style><div id='named'><div id='named-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Named</div></div><div id='fallback'><div id='fallback-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Fallback</div></div><div id='inline' style='overflow:ReVeRt-LaYeR'><div id='inline-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Inline</div></div><div id='axis'><div id='axis-child' style='display:inline-block;width:56px;height:20px;background-color:red'>Axis</div></div>",

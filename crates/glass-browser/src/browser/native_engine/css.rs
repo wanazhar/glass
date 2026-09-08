@@ -5546,6 +5546,7 @@ fn parse_declarations_with_diagnostics(
                     matches!(
                         value,
                         LocalCascadeDeclaration::Inherit
+                            | LocalCascadeDeclaration::Reset
                             | LocalCascadeDeclaration::RevertLayer
                             | LocalCascadeDeclaration::Value(
                                 OverflowValue::Hidden | OverflowValue::Clip
@@ -8814,10 +8815,7 @@ fn parse_overflow_declaration(value: &str) -> Option<LocalCascadeDeclaration<Ove
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    if value.trim().eq_ignore_ascii_case("revert-layer") {
-        return Some(LocalCascadeDeclaration::RevertLayer);
-    }
-    parse_overflow(value).map(LocalCascadeDeclaration::Value)
+    parse_local_reset_cascade_declaration(value, parse_overflow)
 }
 
 fn parse_selector(source: &str) -> Option<NativeSelector> {
@@ -12353,6 +12351,81 @@ mod tests {
             Some(LocalCascadeDeclaration::Inherit)
         );
         assert_eq!(parse_overflow_declaration("inherit hidden"), None);
+    }
+
+    #[test]
+    fn overflow_css_wide_resets_use_visible_fallback_and_preserve_priority() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#initial { overflow: hidden; overflow: InItIaL; } #x-reset { overflow-x: hidden; overflow-x: INITIAL; overflow-y: clip; } #y-reset { overflow-x: clip; overflow-y: hidden; overflow-y: unset; } #revert { overflow: clip; overflow: ReVeRt; } #invalid { overflow: hidden; overflow: initial hidden; } #important { overflow: hidden !important; } #important { overflow: initial; } #important-reset { overflow: hidden; } #important-reset { overflow: initial !important; }".into(),
+        ])
+        .unwrap();
+        let inherited = NativeInheritedStyle {
+            overflow_x: OverflowValue::Clip,
+            overflow_y: OverflowValue::Other,
+            ..NativeInheritedStyle::default()
+        };
+        let style = |id| {
+            let element = node(&format!("<div id='{id}'>Test</div>"));
+            stylesheet.computed_for_with_matcher(&element, inherited, |selector| {
+                selector.matches(&element)
+            })
+        };
+
+        for id in ["initial", "revert"] {
+            assert_eq!(
+                (style(id).overflow_clip_x(), style(id).overflow_clip_y()),
+                (false, false),
+                "overflow reset for {id}"
+            );
+        }
+        assert_eq!(
+            (
+                style("x-reset").overflow_clip_x(),
+                style("x-reset").overflow_clip_y()
+            ),
+            (false, true)
+        );
+        assert_eq!(
+            (
+                style("y-reset").overflow_clip_x(),
+                style("y-reset").overflow_clip_y()
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            (
+                style("invalid").overflow_clip_x(),
+                style("invalid").overflow_clip_y()
+            ),
+            (true, true)
+        );
+        assert_eq!(
+            (
+                style("important").overflow_clip_x(),
+                style("important").overflow_clip_y()
+            ),
+            (true, true)
+        );
+        assert_eq!(
+            (
+                style("important-reset").overflow_clip_x(),
+                style("important-reset").overflow_clip_y()
+            ),
+            (false, false)
+        );
+
+        for keyword in ["INITIAL", "UnSeT", "ReVeRt"] {
+            assert_eq!(
+                parse_overflow_declaration(keyword),
+                Some(LocalCascadeDeclaration::Reset),
+                "overflow {keyword}"
+            );
+        }
+        assert_eq!(parse_overflow_declaration("initial hidden"), None);
+        assert_eq!(
+            parse_overflow_declaration("ReVeRt-LaYeR"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
     }
 
     #[test]

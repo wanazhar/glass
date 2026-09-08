@@ -16390,6 +16390,123 @@ fn native_flex_align_self_overrides_parent_and_moves_complete_subtrees() {
 }
 
 #[test]
+fn native_flex_place_content_css_wide_resets_reach_both_axes_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>.row { display:flex; width:32px; height:32px; gap:2px; flex-wrap:wrap; align-items:center; } #initial { place-content:center space-between; } #initial { place-content:INITIAL; } #unset { place-content:flex-end center; } #unset { place-content:UNSET; } #revert { place-content:center flex-end; } #revert { place-content:ReVeRt; } #terminal { place-content:center flex-end; place-content:initial; } #invalid { place-content:center space-between; place-content:initial center; } #important { place-content:flex-end center !important; } #important { place-content:initial; } #layered { place-content:flex-start flex-start; } @layer theme { #layered { place-content:flex-end flex-end; } } #layered { place-content:revert-layer; } .item { width:8px; height:4px; flex-shrink:0; } .nested { display:block; height:2px; }</style><div id='initial' class='row'><button id='initial-first' class='item' style='background-color:red'><span id='nested' class='nested'>A</span></button><button id='initial-second' class='item' style='background-color:blue'>B</button><button id='initial-third' class='item' style='background-color:green'>C</button><button id='initial-fourth' class='item' style='background-color:black'>D</button></div><div id='unset' class='row'><button id='unset-first' class='item' style='background-color:red'>E</button><button id='unset-second' class='item' style='background-color:blue'>F</button><button id='unset-third' class='item' style='background-color:green'>G</button><button id='unset-fourth' class='item' style='background-color:black'>H</button></div><div id='revert' class='row'><button id='revert-first' class='item' style='background-color:red'>I</button><button id='revert-second' class='item' style='background-color:blue'>J</button><button id='revert-third' class='item' style='background-color:green'>K</button><button id='revert-fourth' class='item' style='background-color:black'>L</button></div><div id='terminal' class='row'><button id='terminal-first' class='item' style='background-color:red'>M</button><button id='terminal-second' class='item' style='background-color:blue'>N</button><button id='terminal-third' class='item' style='background-color:green'>O</button><button id='terminal-fourth' class='item' style='background-color:black'>P</button></div><div id='invalid' class='row'><button id='invalid-first' class='item' style='background-color:red'>Q</button><button id='invalid-second' class='item' style='background-color:blue'>R</button><button id='invalid-third' class='item' style='background-color:green'>S</button><button id='invalid-fourth' class='item' style='background-color:black'>T</button></div><div id='important' class='row'><button id='important-first' class='item' style='background-color:red'>U</button><button id='important-second' class='item' style='background-color:blue'>V</button><button id='important-third' class='item' style='background-color:green'>W</button><button id='important-fourth' class='item' style='background-color:black'>X</button></div><div id='layered' class='row'><button id='layered-first' class='item' style='background-color:red'>Y</button><button id='layered-second' class='item' style='background-color:blue'>Z</button><button id='layered-third' class='item' style='background-color:green'>AA</button><button id='layered-fourth' class='item' style='background-color:black'>AB</button></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 40,
+        height: 240,
+        device_scale_factor_milli: 1000,
+    };
+    let target = |id: &str| document.resolve_target(&format!("id={id}")).unwrap();
+    let initial_first = target("initial-first");
+    let initial_second = target("initial-second");
+    let unset_first = target("unset-first");
+    let unset_second = target("unset-second");
+    let revert_first = target("revert-first");
+    let revert_second = target("revert-second");
+    let terminal_first = target("terminal-first");
+    let terminal_second = target("terminal-second");
+    let invalid_first = target("invalid-first");
+    let invalid_second = target("invalid-second");
+    let important_first = target("important-first");
+    let important_second = target("important-second");
+    let layered_first = target("layered-first");
+    let layered_second = target("layered-second");
+    let nested = target("nested");
+
+    let layout = document.layout(viewport).unwrap();
+    let rect = |node_id| layout.box_for(node_id).expect("layout rectangle");
+    assert_eq!(rect(initial_first).x, 0);
+    assert_eq!(rect(initial_second).x, 10);
+    assert_eq!(rect(initial_first).y, 0);
+    assert_eq!(rect(unset_first).x, 0);
+    assert_eq!(rect(unset_second).x, 10);
+    assert_eq!(rect(unset_first).y, 32);
+    assert_eq!(rect(revert_first).x, 0);
+    assert_eq!(rect(revert_second).x, 10);
+    assert_eq!(rect(revert_first).y, 64);
+    assert_eq!(rect(terminal_first).x, 0);
+    assert_eq!(rect(terminal_second).x, 10);
+    assert_eq!(rect(terminal_first).y, 96);
+    assert_eq!(rect(invalid_first).x, 0);
+    assert_eq!(rect(invalid_second).x, 12);
+    assert_eq!(rect(invalid_first).y, 139);
+    assert_eq!(rect(important_first).x, 2);
+    assert_eq!(rect(important_second).x, 12);
+    assert_eq!(rect(important_first).y, 182);
+    assert_eq!(rect(layered_first).x, 4);
+    assert_eq!(rect(layered_second).x, 14);
+    assert_eq!(rect(layered_first).y, 214);
+    assert_eq!(rect(nested).y, 0);
+
+    let semantic_nodes = document.semantic_nodes();
+    for pair in [
+        initial_first,
+        initial_second,
+        unset_first,
+        unset_second,
+        revert_first,
+        revert_second,
+        terminal_first,
+        terminal_second,
+        invalid_first,
+        invalid_second,
+        important_first,
+        important_second,
+        layered_first,
+        layered_second,
+    ]
+    .windows(2)
+    {
+        assert!(
+            semantic_nodes
+                .iter()
+                .position(|node| node.node_id == pair[0])
+                < semantic_nodes
+                    .iter()
+                    .position(|node| node.node_id == pair[1]),
+            "semantic/source order lost for {pair:?}"
+        );
+    }
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == initial_first
+                    && rect.x == 0
+                    && rect.y == 0
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == important_first
+                    && rect.x == 2
+                    && rect.y == 182
+                    && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(layout.hit_test(1, 1).unwrap(), Some(nested));
+    assert_eq!(layout.hit_test(3, 183).unwrap(), Some(important_first));
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(3, 183), Some([255, 0, 0, 255]));
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "place-content"
+    }));
+}
+
+#[test]
 fn native_flex_place_content_reuses_axis_distribution_and_artifacts() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:24px;height:60px;gap:2px;flex-wrap:wrap;align-items:center;place-content:center space-between'><div id='first' style='width:8px;height:6px;background-color:red'><span id='nested' style='display:block;height:2px'>F</span></div><div id='second' style='width:8px;height:10px;background-color:green'>S</div><div id='third' style='width:8px;height:14px;background-color:blue'>T</div></div>",

@@ -8022,6 +8022,12 @@ fn parse_place_content_declaration(
             JustifyContentDeclaration::RevertLayer,
         ));
     }
+    if is_local_reset_keyword(value) {
+        return Some((
+            AlignContentDeclaration::Reset,
+            JustifyContentDeclaration::Reset,
+        ));
+    }
     let (align_content, justify_content) = parse_place_content(value)?;
     Some((
         AlignContentDeclaration::Value(align_content),
@@ -13078,6 +13084,27 @@ mod tests {
         assert_eq!(parse_place_content("center center center"), None);
         assert_eq!(parse_place_content("start center"), None);
         assert_eq!(
+            parse_place_content_declaration("InItIaL"),
+            Some((
+                AlignContentDeclaration::Reset,
+                JustifyContentDeclaration::Reset,
+            ))
+        );
+        assert_eq!(
+            parse_place_content_declaration("UNSET"),
+            Some((
+                AlignContentDeclaration::Reset,
+                JustifyContentDeclaration::Reset,
+            ))
+        );
+        assert_eq!(
+            parse_place_content_declaration(" ReVeRt "),
+            Some((
+                AlignContentDeclaration::Reset,
+                JustifyContentDeclaration::Reset,
+            ))
+        );
+        assert_eq!(
             parse_place_content_declaration("ReVeRt-LaYeR"),
             Some((
                 AlignContentDeclaration::RevertLayer,
@@ -13085,6 +13112,7 @@ mod tests {
             ))
         );
         assert_eq!(parse_place_content_declaration("revert-layer center"), None);
+        assert_eq!(parse_place_content_declaration("initial center"), None);
         assert_eq!(
             parse_declarations("place-content: revert-layer; justify-content: flex-end"),
             NativeDeclarations {
@@ -13616,6 +13644,59 @@ mod tests {
         assert_align(&revert, AlignContentValue::FlexStart);
         assert_align(&invalid, AlignContentValue::Center);
         assert_align(&important, AlignContentValue::FlexEnd);
+    }
+
+    #[test]
+    fn stylesheet_place_content_css_wide_resets_project_component_fallbacks() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@layer base { #layer { place-content: center flex-end; } } @layer theme { #layer { place-content: revert-layer; } } #reset { place-content: flex-end center; } #reset { place-content: INITIAL; } #unset { place-content: center space-between; } #unset { place-content: UnSeT; } #revert { place-content: flex-end center; } #revert { place-content: ReVeRt; } #invalid { place-content: center space-between; } #invalid { place-content: initial center; } #important { place-content: flex-end center !important; } #important { place-content: initial; }"
+                .into(),
+        ])
+        .unwrap();
+        let layer = node("<div id='layer'>Layer</div>");
+        let reset = node("<div id='reset'>Reset</div>");
+        let unset = node("<div id='unset'>Unset</div>");
+        let revert = node("<div id='revert'>Revert</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let important = node("<div id='important'>Important</div>");
+
+        let assert_values =
+            |element: &NativeNode, align_content: AlignContentValue, justify_content| {
+                let style = stylesheet.computed_for(element);
+                assert_eq!(style.align_content(), align_content);
+                assert_eq!(style.justify_content(), justify_content);
+            };
+
+        assert_values(
+            &layer,
+            AlignContentValue::Center,
+            JustifyContentValue::FlexEnd,
+        );
+        assert_values(
+            &reset,
+            AlignContentValue::FlexStart,
+            JustifyContentValue::FlexStart,
+        );
+        assert_values(
+            &unset,
+            AlignContentValue::FlexStart,
+            JustifyContentValue::FlexStart,
+        );
+        assert_values(
+            &revert,
+            AlignContentValue::FlexStart,
+            JustifyContentValue::FlexStart,
+        );
+        assert_values(
+            &invalid,
+            AlignContentValue::Center,
+            JustifyContentValue::SpaceBetween,
+        );
+        assert_values(
+            &important,
+            AlignContentValue::FlexEnd,
+            JustifyContentValue::Center,
+        );
     }
 
     #[test]

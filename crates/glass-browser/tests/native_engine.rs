@@ -22312,6 +22312,89 @@ fn native_order_inherit_reorders_visual_items_and_preserves_semantics() {
 }
 
 #[test]
+fn native_gap_inherit_reaches_row_column_layout_and_artifacts() {
+    let document = NativeDocument::parse(
+        "<style>#outer{display:flex;width:28px;height:18px;gap:3px 4px;align-items:flex-start;}#inherit{display:flex;width:12px;height:14px;flex-wrap:wrap;gap:InHeRiT;align-items:flex-start;align-content:flex-start;}#omitted{display:flex;width:12px;height:14px;flex-wrap:wrap;align-items:flex-start;align-content:flex-start;}#first,#second,#third,#omitted-first,#omitted-second,#omitted-third{width:4px;height:4px;flex-shrink:0;}#first{background-color:green;}#second{background-color:red;}#third{background-color:blue;}#omitted-first,#omitted-second,#omitted-third{background-color:#804000;}#invalid{display:none;gap:inherit 1px;}</style><div id='outer'><div id='inherit'><button id='first'>A</button><button id='second'>B</button><button id='third'>C</button></div><div id='omitted'><button id='omitted-first'>D</button><button id='omitted-second'>E</button><button id='omitted-third'>F</button></div><div id='invalid'>Invalid</div></div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let outer = document.resolve_target("id=outer").unwrap();
+    let inherited = document.resolve_target("id=inherit").unwrap();
+    let first = document.resolve_target("id=first").unwrap();
+    let second = document.resolve_target("id=second").unwrap();
+    let third = document.resolve_target("id=third").unwrap();
+    let omitted = document.resolve_target("id=omitted").unwrap();
+    let omitted_first = document.resolve_target("id=omitted-first").unwrap();
+    let omitted_second = document.resolve_target("id=omitted-second").unwrap();
+    let omitted_third = document.resolve_target("id=omitted-third").unwrap();
+    let viewport = Viewport {
+        width: 36,
+        height: 24,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let rect = |node_id| layout.box_for(node_id).expect("layout rectangle");
+    let outer_rect = rect(outer);
+    let inherited_rect = rect(inherited);
+    let first_rect = rect(first);
+    let second_rect = rect(second);
+    let third_rect = rect(third);
+    let omitted_rect = rect(omitted);
+    assert_eq!(outer_rect.width, 28);
+    assert_eq!(inherited_rect.x, outer_rect.x);
+    assert_eq!(omitted_rect.x, inherited_rect.x + inherited_rect.width + 4);
+    assert_eq!(first_rect.x, inherited_rect.x);
+    assert_eq!(first_rect.y, inherited_rect.y);
+    assert_eq!(second_rect.x, first_rect.x + first_rect.width + 4);
+    assert_eq!(second_rect.y, first_rect.y);
+    assert_eq!(third_rect.x, first_rect.x);
+    assert_eq!(third_rect.y, first_rect.y + first_rect.height + 3);
+    assert_eq!(rect(omitted_first).x, omitted_rect.x);
+    assert_eq!(rect(omitted_second).x, omitted_rect.x + 4);
+    assert_eq!(rect(omitted_third).x, omitted_rect.x + 8);
+    assert_eq!(rect(omitted_third).y, omitted_rect.y);
+
+    let semantic_nodes = document.semantic_nodes();
+    let source_position = |node_id| {
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .unwrap()
+    };
+    assert!(source_position(first) < source_position(second));
+    assert!(source_position(second) < source_position(third));
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == third
+                    && *rect == third_rect
+                    && *color == NativeColor {
+                        red: 0,
+                        green: 0,
+                        blue: 255,
+                        alpha: 255,
+                    }
+        )
+    }));
+    assert_eq!(
+        layout.hit_test(i64::from(third_rect.x + 1), i64::from(third_rect.y + 1),),
+        Ok(Some(third))
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(third_rect.x + 1, third_rect.y + 1),
+        Some([0, 0, 255, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    assert!(document.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue && diagnostic.detail == "gap"
+    }));
+}
+
+#[test]
 fn native_flex_shorthand_expands_zero_basis_and_preserves_shared_consumers() {
     let document = NativeDocument::parse(
         "<div id='row' style='display:flex;width:20px;gap:2px'><div id='first' style='width:100px;height:8px;flex:1;background-color:red'><span id='nested' style='display:block;height:4px'>A</span></div><div id='second' style='width:100px;height:8px;flex:1;background-color:blue'>B</div></div>",

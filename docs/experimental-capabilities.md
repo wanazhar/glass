@@ -507,7 +507,9 @@ negative/fractional/intrinsic basis values; standalone
 `initial|unset|revert` reset forms for local `align-self` reuse the existing
 bounded `auto` fallback and continue through parent `align-items`;
 standalone `initial|unset|revert` reset forms for local `align-content` reuse
-the existing bounded `flex-start` fallback; standalone
+the existing bounded `flex-start` fallback; standalone case-insensitive
+`align-content:inherit` copies the computed parent only when explicitly
+authored, while omitted `align-content` remains non-inherited; standalone
 `initial|unset|revert` reset forms for local `place-content` project through
 the existing bounded `flex-start` fallbacks for both `align-content` and
 `justify-content`; mixed reset/finite tokens remain bounded diagnostics, plus
@@ -532,7 +534,7 @@ one-author-origin `revert` for inherited `text-align`, `text-align-last`,
 `text-justify`, and `direction`, with left/auto/auto/`ltr` root defaults,
 parent fallback for inherited forms, the existing `revert-layer` distinction,
 and logical `ltr`/`rtl` projection preserved through the same artifact owners,
-bounded case-insensitive 15-layer/unlayered rollback for non-inherited
+bounded case-insensitive 15-layer/unlayered rollback for local
 `flex-wrap`, `justify-content`, `align-items`, `align-self`, `align-content`,
 and `flex-direction` owners with their native fallbacks,
 bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis

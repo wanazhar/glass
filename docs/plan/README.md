@@ -2255,6 +2255,17 @@ boundary remain bounded. Full native integration (252/252) and the feature
 library (1,035 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
 and registry publication remain unclaimed.
 
+The completed dependency-ordered [native-engine-215](tasks/native-engine-215.md)
+slice is implemented at `a66f474b` (design `0cd2040d`). It adds bounded
+standalone case-insensitive `align-content: inherit` through the existing
+private ancestor-style chain while keeping omitted `align-content`
+non-inherited with the bounded `flex-start` fallback. Mixed invalid forms,
+source order, wrapped-line placement, display-list, raster/PNG, point-hit,
+semantics, diagnostics, and the two-crate boundary remain bounded. Full native
+integration (253/253) and the feature library (1,036 passed, 1 ignored) pass
+locally. Remote CI, push, release, tag, and registry publication remain
+unclaimed.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

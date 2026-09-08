@@ -2201,6 +2201,19 @@ Full native integration (263/263) and the feature library (1,044 passed, 1
 ignored) pass locally. Remote CI, push, release, tag, and registry publication
 remain unclaimed for this local-only checkout.
 
+The completed dependency-ordered `native-engine-226` slice is recorded in
+`docs/plan/tasks/native-engine-226.md` and implemented at `4ee2e1ed` (design
+`c52398fd`). It adds standalone, case-insensitive `flex-basis: inherit` through
+the existing private basis component and ancestor-style chain, copying the
+computed parent basis value—including the bounded `auto` fallback—while
+keeping omitted `flex-basis` local. Mixed forms, source order, important
+priority, finite shorthand/longhand precedence, reset semantics,
+`revert-layer`, row/column and wrapped sizing, display-list, raster/PNG,
+point-hit, semantics, diagnostics, and the two-crate boundary remain bounded.
+Full native integration (264/264) and the feature library (1,044 passed, 1
+ignored) pass locally. Remote CI, push, release, tag, and registry publication
+remain unclaimed for this local-only checkout.
+
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list
 markers. The rasterizer composites each group inside-out through bounded
@@ -3213,6 +3226,9 @@ Phase 1 and current Phase 2 semantic-DOM/interaction tests cover:
 - bounded explicit case-insensitive `flex-shrink:inherit` propagation through
   the existing private shrink owner, while omitted `flex-shrink` remains local
   with the bounded `1` fallback.
+- bounded explicit case-insensitive `flex-basis:inherit` propagation through
+  the existing private basis owner, while omitted `flex-basis` remains local
+  with the bounded `auto` fallback.
 - bounded non-negative fixed-pixel `text-indent` parsing and cascade for the
   first line of block containers, with one-cell clamping and shared
   layout/wrapping/fragment/paint/hit-test/overflow coordinates.

@@ -2468,11 +2468,13 @@ visual stacking.
 | `native-engine-223` | completed bounded standalone case-insensitive `flex:inherit` by projecting to the existing private `flex-grow`, `flex-shrink`, and `flex-basis` inheritance owners; all three computed parent components copy only when the shorthand is explicitly authored while omitted `flex` remains local with the bounded `0 1 auto` fallbacks, preserving finite shorthand expansion, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, longhand/component precedence, row/column and wrapped sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `c94b6006`; locked scoped check, focused flex-shorthand parser (3 tests) and inheritance cascade (1 test), public inheritance integration (1 test), full-native integration (261/261), feature library (1,044 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-222` | percentages, intrinsic sizing, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 | `native-engine-224` | completed bounded standalone case-insensitive `flex-grow:inherit` through the existing private grow component and ancestor-style chain; the computed parent grow value copies only when explicitly authored while omitted `flex-grow` remains local with the bounded `0` fallback, preserving finite longhand/shorthand precedence, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, row/column and wrapped sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `bc8de568`; locked scoped check, focused flex parser/cascade (35 tests), public inheritance integration (1 test), full-native integration (262/262), feature library (1,044 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-223` | direct `flex-shrink:inherit`, direct `flex-basis:inherit`, percentages, intrinsic sizing, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 | `native-engine-225` | completed bounded standalone case-insensitive `flex-shrink:inherit` through the existing private shrink component and ancestor-style chain; the computed parent shrink value copies only when explicitly authored while omitted `flex-shrink` remains local with the bounded `1` fallback, preserving finite longhand/shorthand precedence, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, row/column and wrapped sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `b4f465db`; locked scoped check, focused flex parser/cascade (35 tests), public inheritance integration (1 test), full-native integration (263/263), feature library (1,044 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-224` | direct `flex-basis:inherit`, percentages, intrinsic sizing, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
+| `native-engine-226` | completed bounded standalone case-insensitive `flex-basis:inherit` through the existing private basis component and ancestor-style chain; the computed parent basis value copies only when explicitly authored while omitted `flex-basis` remains local with the bounded `auto` fallback, preserving finite longhand/shorthand precedence, CSS-wide resets, `revert-layer`, mixed-invalid preservation, important/source order, row/column and wrapped sizing, display-list, fixed-cell raster, PNG capture, point-hit, semantics, diagnostics, and the two-crate boundary; implementation `4ee2e1ed`; locked scoped check, focused flex parser/cascade (35 tests), public inheritance integration (1 test), full-native integration (264/264), feature library (1,044 passed, 1 ignored), workspace all-target/all-feature check, strict Clippy, paired binaries, warning-denied rustdoc, and formatting passed locally | `native-engine-225` | `order:inherit`, percentages, intrinsic sizing, additional origins, transitions, animations, generic CSS-wide machinery, browser parity, and browser-wide flex conformance |
 
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-225.md` is the latest completed task;
+`docs/plan/tasks/native-engine-226.md` is the latest completed task;
+`docs/plan/tasks/native-engine-225.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-224.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-223.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-222.md` is the preceding completed task;
@@ -2634,6 +2636,18 @@ The task file for each slice owns its touched paths and verification commands;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed checkpoint is recorded for
+`docs/plan/tasks/native-engine-226.md`: implementation is `4ee2e1ed` (design
+`c52398fd`). It adds standalone, case-insensitive `flex-basis: inherit`
+through the existing private basis component and ancestor-style chain, copying
+the computed parent basis value only when explicitly authored while omitted
+`flex-basis` remains local with bounded `auto` fallback. The locked scoped
+native check, focused flex parser/cascade coverage (35 tests), public
+inheritance integration (1 test), full-native integration (264/264), feature
+library (1,044 passed, 1 ignored), workspace all-target/all-feature check,
+strict Clippy, paired binaries, warning-denied rustdoc, and formatting/diff
+checks passed. Remote CI, push, release, tag, registry publication,
+browser-parity, security-boundary, and promotion claims are not made.
+The preceding completed checkpoint remains recorded for
 `docs/plan/tasks/native-engine-225.md`: implementation is `b4f465db` (design
 `7064801b`). It adds standalone, case-insensitive `flex-shrink: inherit`
 through the existing private shrink component and ancestor-style chain,

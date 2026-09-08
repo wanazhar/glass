@@ -54,6 +54,7 @@ bounded-box-model-explicit-inheritance/bounded-dimension-explicit-inheritance/
 bounded-dimension-css-wide-resets/bounded-inherited-text-css-wide-resets/
 bounded-overflow-important,
 bounded-overflow-inherit,
+bounded-overflow-css-wide-resets,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
 bounded-inherited-color-current-color,
@@ -2310,8 +2311,12 @@ preservation, axis-specific paint clips, viewport/root-scroll projection,
 display-list, fixed-cell raster/PNG, point-hit, semantics, diagnostics, and the
 two-crate boundary. The focused batch passed 9 library-target tests and 19
 overflow-matching native integration tests; formatting and diff checks pass.
-Full issue-level gates and remote CI remain unclaimed for this local-only
-checkout.
+The follow-on 233 slice adds standalone case-insensitive `initial`, `unset`,
+and one-author-origin `revert` reset forms for the same three declarations,
+resetting each affected axis to visible/no-clip while preserving explicit
+`inherit` and named-layer `revert-layer`. Its focused reset batch passed 1
+library-target test and 1 native integration test. Full issue-level gates and
+remote CI remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

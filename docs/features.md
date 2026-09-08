@@ -432,6 +432,9 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   flex-item `order` resolve through the existing local resolver to finite `0`;
   standalone `initial|unset|revert` reset forms for local `justify-content`
   reuse the existing bounded `flex-start` fallback; standalone
+  case-insensitive `justify-content:inherit` copies the computed parent only
+  when explicitly authored, while omitted `justify-content` remains
+  non-inherited; standalone
   `initial|unset|revert` reset forms for local `align-items` reuse the existing
   bounded `flex-start` fallback; `inherit`, percentages,
   negative/fractional/intrinsic basis values; standalone
@@ -788,6 +791,9 @@ projection, and point hit-testing,
   flex-item `order` resolve through the existing local resolver to finite `0`;
   standalone `initial|unset|revert` reset forms for local `justify-content`
   reuse the existing bounded `flex-start` fallback; standalone
+  case-insensitive `justify-content:inherit` copies the computed parent only
+  when explicitly authored, while omitted `justify-content` remains
+  non-inherited; standalone
   `initial|unset|revert` reset forms for local `align-items` reuse the existing
   bounded `flex-start` fallback; `inherit`, percentages,
   negative/fractional/intrinsic basis values; standalone

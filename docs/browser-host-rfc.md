@@ -452,6 +452,9 @@ unsupported child shapes,
 one non-negative fixed-pixel `gap` between visible items in eligible flex rows,
 bounded `justify-content:flex-start|center|flex-end|space-between` free-space
 placement for eligible fixed-width flex rows,
+standalone case-insensitive `justify-content:inherit` copies the computed
+parent only when explicitly authored while omitted `justify-content` remains
+non-inherited,
 bounded non-inherited signed flex-item `order` in `-1024..=1024` with stable
 source-order ties,
 bounded non-inherited `flex-grow:0..=1024` and `flex-shrink:0..=1024`

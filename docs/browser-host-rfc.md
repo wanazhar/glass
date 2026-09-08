@@ -397,7 +397,12 @@ one-author-origin `revert`: inherited forms use the computed parent, `initial`
 uses the finite `1px` root default, and `revert-layer` remains the named-layer
 rollback, plus inherited
 `text-decoration-skip-ink:auto|none` same-run glyph intersection skipping for
-underline and overline while preserving line-through, bounded inherited
+underline and overline while preserving line-through. The inherited owner also
+accepts standalone case-insensitive `inherit|initial|unset|revert`: inherited
+forms use the computed parent, `initial` uses finite `auto` at the root, and
+`revert` uses the current one-author-origin parent fallback; `revert-layer`
+remains the named-layer rollback and mixed/unsupported forms remain bounded;
+bounded inherited
 `text-decoration-skip-spaces:none|all` same-run ASCII-space interval skipping
 including adjacent letter, word, and final-line justification spacing across
 underline, overline, and line-through, and bounded inherited

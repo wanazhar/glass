@@ -70,6 +70,7 @@ bounded-inherited-alignment-css-wide-resets,
 bounded-inherited-text-decoration-style-css-wide-resets,
 bounded-inherited-text-decoration-thickness-css-wide-resets,
 bounded-inherited-text-decoration-skip-ink-css-wide-resets,
+bounded-inherited-text-decoration-line-css-wide-resets,
 bounded-text-decoration-skip-spaces-line-edges,
 bounded-text-decoration-skip-spaces-initial/bounded-text-decoration-skip-spaces-inherit/
 bounded-text-decoration-skip-spaces-unset/bounded-text-decoration-skip-spaces-revert,
@@ -1878,6 +1879,20 @@ tests (1,023 passed, 1 ignored in the browser library; 240 native integration;
 1 dev), paired binaries, strict Clippy, warning-denied rustdoc, fuzz, package,
 security, and formatting gates pass locally. Remote CI, push, release, tag, and
 registry publication remain unclaimed for this local-only checkout.
+
+The completed dependency-ordered `native-engine-203` slice is recorded in
+`docs/plan/tasks/native-engine-203.md` and implemented at `73c00616` (design
+`deeedd19`). It extends the inherited three-bit `text-decoration-line` owner,
+including the existing bounded `text-decoration` shorthand route, with
+standalone case-insensitive `inherit`, `initial`, `unset`, and one-author-origin
+`revert`, retaining finite line combinations and `revert-layer` rollback.
+Parent/root fallback, `none` initial behavior, terminal reset semantics,
+invalid-later preservation, shorthand/longhand source order, display-list,
+fixed-cell raster, PNG capture, diagnostics, and the two-crate boundary remain
+bounded; full shorthand expansion and generic CSS-wide machinery remain
+outside the contract. Full native integration (241/241) and the feature
+library (1,023 passed, 1 ignored) pass locally. Remote CI, push, release, tag,
+and registry publication remain unclaimed for this local-only checkout.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

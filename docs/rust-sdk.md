@@ -392,8 +392,12 @@ line paint, plus case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
 `revert`: explicit `inherit` copies the parent's effective decoration color,
 the reset forms resolve to the element's current glyph color, and omission
 keeps the existing local fallback. Bounded `text-decoration-line` longhand
-combinations sharing the same
-line-state owner, bounded inherited
+combinations sharing the same line-state owner now also accept standalone
+case-insensitive `inherit|initial|unset|revert`: inherited forms use the
+computed parent, `initial` uses finite `none` at the root, and `revert` uses
+the current one-author-origin parent fallback; `revert-layer` remains the
+named-layer rollback and mixed/unsupported forms remain bounded. The same
+line-state owner is bounded inherited
 `text-decoration-style:solid|dashed|dotted|double|wavy` presentation, where
 `double` paints two thickness-preserving solid bands separated by one pixel and
 `wavy` repeats a fixed eight-pixel phase `[0,1,2,1,0,-1,-2,-1]`,

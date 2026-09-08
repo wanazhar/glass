@@ -489,6 +489,9 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   standalone case-insensitive `flex-flow:inherit` copies both computed parent
   direction and wrap components only when explicitly authored while omitted
   `flex-flow` remains local with bounded `row`/`nowrap` fallbacks,
+  standalone case-insensitive `flex:inherit` copies the computed parent
+  grow, shrink, and basis components only when explicitly authored while
+  omitted `flex` remains local with bounded `0 1 auto` fallbacks,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
   placement using explicit content height or the auto row's maximum item outer
   height,
@@ -847,6 +850,9 @@ projection, and point hit-testing,
   standalone case-insensitive `flex-flow:inherit` copies both computed parent
   direction and wrap components only when explicitly authored while omitted
   `flex-flow` remains local with bounded `row`/`nowrap` fallbacks,
+  standalone case-insensitive `flex:inherit` copies the computed parent
+  grow, shrink, and basis components only when explicitly authored while
+  omitted `flex` remains local with bounded `0 1 auto` fallbacks,
   bounded non-inherited `align-items:flex-start|center|flex-end` cross-axis
   placement using explicit content height or the auto row's maximum item outer
   height,

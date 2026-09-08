@@ -73,6 +73,11 @@ source-behavior reference.
   visible/no-clip fallbacks and the existing paint, projection, point-hit,
   root-overflow, capture, and semantic/source-order owners; nested scrolling,
   scrollbars, and browser-wide overflow semantics remain outside the boundary,
+  plus bounded terminal case-insensitive `!important` priority for those three
+  overflow declarations: important candidates outrank normal candidates,
+  named-layer priority reverses in the private important partition, and
+  per-axis shorthand/longhand, invalid-later, inline, and `revert-layer`
+  behavior remain bounded through the same clip and artifact owners,
   plus bounded case-insensitive 15-layer/unlayered local `border-radius:revert-layer`
   rollback for the one-to-four-value integer shorthand, preserving the
   zero-corner fallback and existing rounded layout, fill, border, point-hit,
@@ -110,8 +115,12 @@ source-behavior reference.
   physical margin shorthand/longhand edges) also honor the same priority
   through private doubled candidate streams with per-edge importance,
   preserving content-box/border-box conversion, `auto` margin provenance,
-  and existing geometry/artifact owners; logical edges, overflow, and
-  remaining properties remain outside generic `!important` semantics,
+  and existing geometry/artifact owners; the normal-only `overflow`,
+  `overflow-x`, and `overflow-y` declarations also honor the same priority
+  through private doubled x/y candidate streams with shorthand/x/y importance,
+  preserving independent clip projection and visible/no-clip fallback;
+  logical edges and remaining properties remain outside generic `!important`
+  semantics,
   plus exact case-insensitive CSS-wide `inherit`, `unset`, `initial`, and
   one-author-origin `revert` for the radius owner: explicit `inherit` copies
   the parent's effective four-corner radius, including from unpainted or
@@ -608,6 +617,10 @@ projection, and point hit-testing,
   `box-sizing`, physical padding and margin edges, including bounded
   `margin:auto`, with content-box/zero local fallbacks, explicit box sizing,
   and bounded root horizontal and vertical viewport scrolling,
+  plus bounded terminal case-insensitive `!important` priority for `overflow`,
+  `overflow-x`, and `overflow-y` through private doubled x/y candidate streams
+  with important-over-normal ordering, reversed named-layer priority, inline
+  precedence, invalid-later preservation, and per-axis `revert-layer` rollback,
   bounded inherited fixed-cell text-decoration lines with bounded
   `text-decoration-style:solid|dashed|dotted|double|wavy` and
   `text-decoration-thickness:1px|2px|3px|4px` positive-y raster bands,

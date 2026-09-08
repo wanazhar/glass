@@ -1905,6 +1905,23 @@ strict Clippy, warning-denied rustdoc, and formatting pass locally; final
 issue-level gates and remote CI remain pending until issue #40 reaches its
 final validation boundary.
 
+The completed dependency-ordered [native-engine-192](tasks/native-engine-192.md)
+slice is implemented at `fc2c461e` (design `7e693b79`). It extends bounded
+author-origin `!important` priority to the normal-only `overflow`, `overflow-x`,
+and `overflow-y` declarations through private doubled x/y candidate streams
+and shorthand/x/y importance bits. Important-over-normal ordering, reversed
+named-layer priority, inline precedence in the unlayered important bucket,
+invalid-later preservation, independent axis projection, and
+`revert-layer !important` rollback flow through the existing clip, root-overflow,
+layout, display-list, raster, capture, point-hit, and semantic/source-order
+owners. Nested scrolling, visible/auto/scroll used-value parity, logical writing
+modes, multiple origins, and browser-wide CSS overflow conformance remain
+outside this slice. Scoped check, focused units/integration, full native
+integration (230/230), strict Clippy, warning-denied rustdoc, and formatting
+pass locally; final static, paired-crate, package, workspace, security/fuzz,
+cleanup, issue-level, and remote-CI gates remain pending until issue #40 reaches
+its final validation boundary.
+
 The dependency-ordered [native-engine-121](tasks/native-engine-121.md)
 implementation is complete at `f361415a`. It accepts explicit case-insensitive
 `text-decoration-skip-spaces: revert` through a distinct private

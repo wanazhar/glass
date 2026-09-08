@@ -160,9 +160,13 @@ named-layer priority, inline precedence, invalid-later preservation, and
 (`box-sizing`, physical padding, and physical margin shorthand/longhand edges)
 also honor the same priority through private doubled candidate streams with
 per-edge importance, preserving content-box/border-box conversion, `auto`
-margin provenance, and existing geometry/artifact owners; logical edges,
-overflow priority, and remaining properties retain their existing bounded
-behavior.
+margin provenance, and existing geometry/artifact owners. The normal-only
+`overflow`, `overflow-x`, and `overflow-y` declarations also honor the same
+priority through private doubled x/y candidate streams with shorthand/x/y
+importance, preserving important-over-normal ordering, reversed named-layer
+priority, inline precedence, invalid-later preservation, independent axis
+projection, and `revert-layer !important` rollback; logical edges and remaining
+properties retain their existing bounded behavior.
 owner also accepts exact case-insensitive CSS-wide `inherit`, `unset`,
 `initial`, and one-author-origin `revert`: explicit `inherit` copies the
 parent's effective four-corner radius, including from unpainted or zero-width

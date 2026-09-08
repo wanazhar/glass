@@ -36,7 +36,8 @@ bounded-paint-color-revert-layer,
 bounded-paint-color-important/bounded-physical-border-color-important,
 bounded-logical-border-color-important/bounded-text-presentation-important/
 bounded-local-presentation-important,
-bounded-flex-gap-important/bounded-dimension-important/bounded-box-model-important,
+bounded-flex-gap-important/bounded-dimension-important/bounded-box-model-important/
+bounded-overflow-important,
 bounded-physical-border-width-important,
 bounded-physical-border-style-important,
 bounded-inherited-color-current-color,
@@ -179,8 +180,15 @@ The normal-only physical box-model declarations (`box-sizing`, `padding`, and
 `margin` with their four physical longhands) also accept that bounded priority
 through private doubled candidate streams with per-edge importance, preserving
 content-box/border-box conversion, auto-margin provenance, and the existing
-geometry/artifact owners. Overflow and remaining properties retain their
-existing bounded behavior, and
+geometry/artifact owners. The normal-only `overflow`, `overflow-x`, and
+`overflow-y` declarations also accept that bounded priority through private
+doubled x/y candidate streams and shorthand/x/y importance bits, preserving
+important-over-normal ordering, reversed named-layer priority, inline
+precedence, invalid-later preservation, independent axis projection, and
+`revert-layer !important` rollback through the existing clip, root-overflow,
+layout, display-list, raster, capture, point-hit, and semantic/source-order
+owners. Nested scrolling, visible/auto/scroll used-value parity, and
+remaining properties retain their existing bounded behavior, and
 bounded block-level `display:flex` single-row placement for eligible direct
 element children, and
 bounded one-value non-negative fixed-pixel `gap` spacing between visible flex
@@ -1637,6 +1645,23 @@ outside this slice. Focused units, the dedicated integration fixture, full
 native integration (229/229), strict Clippy, warning-denied rustdoc, and
 formatting pass locally; final static, paired-crate, package, workspace,
 security/fuzz, cleanup, issue-level, and remote-CI gates remain pending.
+
+The completed dependency-ordered `native-engine-192` slice is recorded in
+`docs/plan/tasks/native-engine-192.md` and implemented at `fc2c461e` (design
+`7e693b79`). It extends the bounded author-origin `!important` partition to
+the normal-only `overflow`, `overflow-x`, and `overflow-y` declarations through
+private doubled x/y candidate streams and shorthand/x/y importance bits.
+Important-over-normal ordering, reversed named-layer priority, inline
+precedence in the unlayered important bucket, invalid-later preservation,
+independent axis projection, and `revert-layer !important` rollback flow through
+the existing clip, root-overflow, layout, display-list, raster, capture,
+point-hit, and semantic/source-order owners. Nested scrolling, visible/auto/
+scroll used-value parity, logical writing modes, multiple origins, and
+browser-wide CSS overflow conformance remain outside this slice. Scoped check,
+focused units/integration, full native integration (230/230), strict Clippy,
+warning-denied rustdoc, and formatting pass locally; final static, paired-crate,
+package, workspace, security/fuzz, cleanup, issue-level, and remote-CI gates
+remain pending.
 
 The 051 boundary adds local `opacity` values quantized to bounded 8-bit alpha
 and brackets reduced-opacity rendered subtrees with immutable display-list

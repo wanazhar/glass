@@ -147,7 +147,12 @@ local `revert-layer` rollback for `overflow`, `overflow-x`, and `overflow-y`,
 preserving independent visible/no-clip fallbacks and the existing paint,
 projection, point-hit, root-overflow, capture, and semantic/source-order owners;
 nested scrolling, scrollbars, and browser-wide overflow semantics remain
-outside the boundary. The same bounded local cascade path also accepts
+outside the boundary. The same three overflow declarations also accept a
+bounded terminal case-insensitive `!important` marker through private doubled
+x/y candidate streams with important-over-normal ordering, reversed named-layer
+priority, inline precedence, invalid-later preservation, independent axis
+projection, and `revert-layer !important` rollback. The same bounded local
+cascade path also accepts
 standalone, case-insensitive 15-layer/unlayered local
 `border-radius:revert-layer` for the one-to-four-value integer shorthand,
 preserving the zero-corner fallback and the existing rounded layout, fill,
@@ -185,9 +190,8 @@ named-layer priority, inline precedence, invalid-later preservation, and
 (`box-sizing`, physical padding, and physical margin shorthand/longhand edges)
 also honor the same priority through private doubled candidate streams with
 per-edge importance, preserving content-box/border-box conversion, `auto`
-margin provenance, and existing geometry/artifact owners; logical edges,
-overflow, and remaining properties do not claim generic `!important`
-semantics.
+margin provenance, and existing geometry/artifact owners. Logical edges and
+remaining properties do not claim generic `!important` semantics.
 CSS-wide `inherit`, `unset`, `initial`, and one-author-origin `revert`: explicit
 `inherit` copies the parent's effective four-corner radius, including from
 unpainted or zero-width parents; reset forms resolve to zero corners and

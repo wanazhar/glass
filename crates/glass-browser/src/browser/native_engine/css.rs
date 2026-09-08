@@ -931,6 +931,8 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_style: FontStyleValue,
     pub(crate) word_break: WordBreakValue,
     pub(crate) text_overflow: TextOverflowValue,
+    pub(crate) overflow_x: OverflowValue,
+    pub(crate) overflow_y: OverflowValue,
     pub(crate) vertical_align: VerticalAlignValue,
     pub(crate) text_indent: u32,
     pub(crate) word_spacing: u32,
@@ -985,6 +987,8 @@ impl Default for NativeInheritedStyle {
             font_style: FontStyleValue::Normal,
             word_break: WordBreakValue::Normal,
             text_overflow: TextOverflowValue::Clip,
+            overflow_x: OverflowValue::Other,
+            overflow_y: OverflowValue::Other,
             vertical_align: VerticalAlignValue::Baseline,
             text_indent: 0,
             word_spacing: 0,
@@ -2787,10 +2791,14 @@ impl NativeStylesheet {
             margin_auto: NativeAutoEdges::from_values(resolved_margin),
             box_sizing: resolved_box_sizing,
             color: resolved_color,
-            overflow_clip_x: resolve_local_optional_cascade_declaration(overflow_x)
-                .is_some_and(|value| matches!(value, OverflowValue::Hidden | OverflowValue::Clip)),
-            overflow_clip_y: resolve_local_optional_cascade_declaration(overflow_y)
-                .is_some_and(|value| matches!(value, OverflowValue::Hidden | OverflowValue::Clip)),
+            overflow_clip_x: matches!(
+                resolve_overflow_axis(overflow_x, inherited.overflow_x),
+                OverflowValue::Hidden | OverflowValue::Clip
+            ),
+            overflow_clip_y: matches!(
+                resolve_overflow_axis(overflow_y, inherited.overflow_y),
+                OverflowValue::Hidden | OverflowValue::Clip
+            ),
         }
     }
 }
@@ -2802,7 +2810,7 @@ enum VisibilityValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OverflowValue {
+pub(crate) enum OverflowValue {
     Hidden,
     Clip,
     Other,
@@ -3148,6 +3156,23 @@ fn resolve_text_overflow(
             LocalCascadeDeclaration::RevertLayer => None,
         }
     })
+}
+
+fn resolve_overflow_axis(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
+        MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: OverflowValue,
+) -> OverflowValue {
+    resolve_alignment_candidates(
+        candidates,
+        OverflowValue::Other,
+        |declaration| match declaration {
+            LocalCascadeDeclaration::Value(value) => Some(value),
+            LocalCascadeDeclaration::Inherit => Some(inherited),
+            LocalCascadeDeclaration::Reset => Some(OverflowValue::Other),
+            LocalCascadeDeclaration::RevertLayer => None,
+        },
+    )
 }
 
 fn resolve_local_optional_cascade_declaration<T: Copy, const N: usize>(
@@ -5520,7 +5545,8 @@ fn parse_declarations_with_diagnostics(
                 .is_some_and(|value| {
                     matches!(
                         value,
-                        LocalCascadeDeclaration::RevertLayer
+                        LocalCascadeDeclaration::Inherit
+                            | LocalCascadeDeclaration::RevertLayer
                             | LocalCascadeDeclaration::Value(
                                 OverflowValue::Hidden | OverflowValue::Clip
                             )
@@ -8785,6 +8811,9 @@ fn parse_overflow(value: &str) -> Option<OverflowValue> {
 }
 
 fn parse_overflow_declaration(value: &str) -> Option<LocalCascadeDeclaration<OverflowValue>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some(LocalCascadeDeclaration::RevertLayer);
     }
@@ -12245,6 +12274,85 @@ mod tests {
             declarations.overflow_y,
             Some(LocalCascadeDeclaration::Value(OverflowValue::Other))
         );
+    }
+
+    #[test]
+    fn overflow_explicit_inherit_uses_parent_axes_and_preserves_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#both { overflow: inherit; } #x { overflow-x: inherit; } #y { overflow-y: inherit; } #omitted { overflow: visible; } #invalid { overflow: hidden; overflow: inherit hidden; } #important { overflow: hidden !important; } #important { overflow: inherit; } #important-inherit { overflow: visible; } #important-inherit { overflow: inherit !important; }".into(),
+        ])
+        .unwrap();
+        let inherited = NativeInheritedStyle {
+            overflow_x: OverflowValue::Clip,
+            overflow_y: OverflowValue::Other,
+            ..NativeInheritedStyle::default()
+        };
+        let style = |id| {
+            let element = node(&format!("<div id='{id}'>Test</div>"));
+            stylesheet.computed_for_with_matcher(&element, inherited, |selector| {
+                selector.matches(&element)
+            })
+        };
+
+        assert_eq!(
+            (
+                style("both").overflow_clip_x(),
+                style("both").overflow_clip_y()
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            (style("x").overflow_clip_x(), style("x").overflow_clip_y()),
+            (true, false)
+        );
+        assert_eq!(
+            (style("y").overflow_clip_x(), style("y").overflow_clip_y()),
+            (false, false)
+        );
+        assert_eq!(
+            (
+                style("omitted").overflow_clip_x(),
+                style("omitted").overflow_clip_y()
+            ),
+            (false, false)
+        );
+        assert_eq!(
+            (
+                style("invalid").overflow_clip_x(),
+                style("invalid").overflow_clip_y()
+            ),
+            (true, true)
+        );
+        assert_eq!(
+            (
+                style("important").overflow_clip_x(),
+                style("important").overflow_clip_y()
+            ),
+            (true, true)
+        );
+        assert_eq!(
+            (
+                style("important-inherit").overflow_clip_x(),
+                style("important-inherit").overflow_clip_y()
+            ),
+            (true, false)
+        );
+
+        let root = node("<div id='both'>Root</div>");
+        let root_style = stylesheet.computed_for_with_matcher(
+            &root,
+            NativeInheritedStyle::default(),
+            |selector| selector.matches(&root),
+        );
+        assert_eq!(
+            (root_style.overflow_clip_x(), root_style.overflow_clip_y()),
+            (false, false)
+        );
+        assert_eq!(
+            parse_overflow_declaration("InHeRiT"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+        assert_eq!(parse_overflow_declaration("inherit hidden"), None);
     }
 
     #[test]

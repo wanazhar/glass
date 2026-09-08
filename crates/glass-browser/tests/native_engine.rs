@@ -15901,7 +15901,102 @@ fn native_flex_align_content_css_wide_resets_reach_layout_and_raster() {
     assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
     assert_eq!(surface.pixel(1, 183), Some([255, 0, 0, 255]));
     assert!(!surface.to_png().unwrap().is_empty());
-    assert!(document.diagnostics().iter().any(|diagnostic| {
+    let unsupported = NativeDocument::parse(
+        "<div style='align-content:initial center'>Unsupported</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(unsupported.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "align-content"
+    }));
+}
+
+#[test]
+fn native_flex_align_content_inherit_reaches_nested_layout_and_raster() {
+    let document = NativeDocument::parse(
+        concat!(
+            "<style>",
+            "#parent{display:flex;flex-direction:column;align-items:flex-start;align-content:center;width:20px;height:120px;}",
+            "#child{display:flex;width:12px;height:32px;flex-wrap:wrap;gap:2px;align-content:inherit;flex-shrink:0;}",
+            "#omitted{display:flex;width:12px;height:32px;flex-wrap:wrap;gap:2px;flex-shrink:0;}",
+            "#invalid{display:flex;width:12px;height:32px;flex-wrap:wrap;gap:2px;align-content:center;align-content:inherit center;flex-shrink:0;}",
+            ".item{width:4px;height:4px;flex-shrink:0;}",
+            "</style>",
+            "<div id='parent'>",
+            "<div id='child'><button id='child-first' class='item' style='background-color:red'>A</button><button id='child-second' class='item'>B</button><button id='child-third' class='item'>C</button></div>",
+            "<div id='omitted'><button id='omitted-first' class='item'>D</button><button id='omitted-second' class='item'>E</button><button id='omitted-third' class='item'>F</button></div>",
+            "<div id='invalid'><button id='invalid-first' class='item'>G</button><button id='invalid-second' class='item'>H</button><button id='invalid-third' class='item'>I</button></div>",
+            "</div>"
+        ),
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 24,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let target = |id: &str| document.resolve_target(&format!("id={id}")).unwrap();
+    let child = target("child");
+    let child_first = target("child-first");
+    let omitted = target("omitted");
+    let omitted_first = target("omitted-first");
+    let invalid = target("invalid");
+    let invalid_first = target("invalid-first");
+
+    let layout = document.layout(viewport).unwrap();
+    let child_box = layout.box_for(child).unwrap();
+    let child_first_box = layout.box_for(child_first).unwrap();
+    let omitted_box = layout.box_for(omitted).unwrap();
+    let omitted_first_box = layout.box_for(omitted_first).unwrap();
+    let invalid_box = layout.box_for(invalid).unwrap();
+    let invalid_first_box = layout.box_for(invalid_first).unwrap();
+    assert!(child_first_box.y > child_box.y);
+    assert_eq!(omitted_first_box.y, omitted_box.y);
+    assert!(invalid_first_box.y > invalid_box.y);
+
+    let semantic_nodes = document.semantic_nodes();
+    assert!(
+        semantic_nodes
+            .iter()
+            .position(|node| node.node_id == child_first)
+            .unwrap()
+            < semantic_nodes
+                .iter()
+                .position(|node| node.node_id == omitted_first)
+                .unwrap()
+    );
+
+    let list = document.display_list(viewport).unwrap();
+    assert!(list.commands.iter().any(|command| {
+        matches!(
+            command,
+            NativeDisplayCommand::FillRect { node_id, rect, color, .. }
+                if *node_id == child_first && rect.y == child_first_box.y && *color == NativeColor::RED
+        )
+    }));
+    assert_eq!(
+        layout
+            .hit_test(
+                i64::from(child_first_box.x + 1),
+                i64::from(child_first_box.y + 1),
+            )
+            .unwrap(),
+        Some(child_first)
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(
+        surface.pixel(child_first_box.x + 1, child_first_box.y + 1),
+        Some([255, 0, 0, 255])
+    );
+    assert!(!surface.to_png().unwrap().is_empty());
+    let unsupported = NativeDocument::parse(
+        "<div style='align-content:inherit center'>Unsupported</div>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    assert!(unsupported.diagnostics().iter().any(|diagnostic| {
         diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
             && diagnostic.detail == "align-content"
     }));
